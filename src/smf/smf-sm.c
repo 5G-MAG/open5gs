@@ -29,6 +29,7 @@
 #include "nnrf-handler.h"
 #include "namf-handler.h"
 #include "npcf-handler.h"
+#include "nmbsmf-handler.h"
 
 void smf_state_initial(ogs_fsm_t *s, smf_event_t *e)
 {
@@ -624,6 +625,34 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
                             sbi_message.h.resource.component[0]));
                 END
                 break;
+            DEFAULT
+                ogs_error("Invalid resource name [%s]",
+                        sbi_message.h.resource.component[0]);
+                ogs_assert(true ==
+                    ogs_sbi_server_send_error(stream,
+                        OGS_SBI_HTTP_STATUS_BAD_REQUEST, &sbi_message,
+                        "Invalid resource name",
+                        sbi_message.h.resource.component[0]));
+            END
+            break;
+
+        CASE(OGS_SBI_SERVICE_NAME_NMBSMF_TMGI)
+            SWITCH(sbi_message.h.resource.component[0])
+            CASE(OGS_SBI_RESOURCE_NAME_TMGI)
+                SWITCH(sbi_message.h.method)
+                CASE(OGS_SBI_HTTP_METHOD_POST)
+                    smf_nmbsmf_handle_allocate_tmgi(stream, &sbi_message);
+                    break;
+
+                DEFAULT
+                    ogs_error("Invalid HTTP method [%s]", sbi_message.h.method);
+                    ogs_assert(true ==
+                        ogs_sbi_server_send_error(stream,
+                            OGS_SBI_HTTP_STATUS_FORBIDDEN, &sbi_message,
+                            "Invalid HTTP method", sbi_message.h.method));
+                END
+                break;
+
             DEFAULT
                 ogs_error("Invalid resource name [%s]",
                         sbi_message.h.resource.component[0]);
