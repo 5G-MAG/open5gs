@@ -84,6 +84,8 @@
 #include "model/sec_negotiate_rsp_data.h"
 #include "model/patch_item.h"
 #include "model/ue_authentication_ctx.h"
+#include "model/tmgi_allocate.h"
+#include "model/tmgi_allocated.h"
 
 #include "custom/links.h"
 

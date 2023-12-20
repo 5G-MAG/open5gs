@@ -189,6 +189,8 @@ void ogs_sbi_message_free(ogs_sbi_message_t *message)
         OpenAPI_sec_negotiate_req_data_free(message->SecNegotiateReqData);
     if (message->SecNegotiateRspData)
         OpenAPI_sec_negotiate_rsp_data_free(message->SecNegotiateRspData);
+    if (message->TmgiAllocate)
+        OpenAPI_tmgi_allocate_free(message->TmgiAllocate);
 
     /* HTTP Part */
     for (i = 0; i < message->num_of_part; i++) {
@@ -1339,6 +1341,10 @@ static char *build_json(ogs_sbi_message_t *message)
         item = OpenAPI_sec_negotiate_rsp_data_convertToJSON(
             message->SecNegotiateRspData);
         ogs_assert(item);
+    } else if (message->TmgiAllocated) {
+        item = OpenAPI_tmgi_allocated_convertToJSON(
+                message->TmgiAllocated);
+        ogs_assert(item);
     }
 
     if (item) {
@@ -2433,6 +2439,34 @@ static int parse_json(ogs_sbi_message_t *message,
                     rv = OGS_ERROR;
                     ogs_error("Unknown resource name [%s]",
                             message->h.resource.component[2]);
+                END
+                break;
+
+            DEFAULT
+                rv = OGS_ERROR;
+                ogs_error("Unknown resource name [%s]",
+                        message->h.resource.component[0]);
+            END
+            break;
+
+        CASE(OGS_SBI_SERVICE_NAME_NMBSMF_TMGI)
+            SWITCH(message->h.resource.component[0])
+            CASE(OGS_SBI_RESOURCE_NAME_TMGI)
+                SWITCH(message->h.method)
+                CASE(OGS_SBI_HTTP_METHOD_POST)
+                    if (message->res_status == 0) {
+                        message->TmgiAllocate =
+                            OpenAPI_tmgi_allocate_parseFromJSON(item);
+                        if (!message->TmgiAllocate) {
+                            rv = OGS_ERROR;
+                            ogs_error("JSON parse error");
+                        }
+                    }
+                    break;
+
+                DEFAULT
+                    rv = OGS_ERROR;
+                    ogs_error("Unknown method [%s]", message->h.method);
                 END
                 break;
 
