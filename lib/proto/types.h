@@ -934,12 +934,6 @@ typedef struct ogs_port_s {
 #define OGS_MIN_MBS_SERVICE_ID      0x000000
 #define OGS_MAX_MBS_SERVICE_ID      0xFFFFFF
 
-// NOTE (borieher): Not defined in the specs, limited to 20 for now
-#define OGS_MAX_NUM_OF_TMGI 20
-
-// NOTE (borieher): Not defined in the specs, default to 2 extra hours
-#define OGS_DEFAULT_EXPIRATION_TIME_VALIDITY 7200
-
 typedef struct ogs_tmgi_s {
     ogs_lnode_t lnode;      /* A node of list_t */
     char *mbs_service_id;

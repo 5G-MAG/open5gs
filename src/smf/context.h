@@ -434,6 +434,12 @@ typedef struct smf_sess_s {
     bool n2_released;
 } smf_sess_t;
 
+// NOTE (borieher): Not defined in the specs, limited to 20 for now
+#define OGS_MAX_NUM_OF_TMGI 20
+
+// NOTE (borieher): Not defined in the specs, default to 2 extra hours
+#define OGS_DEFAULT_EXPIRATION_TIME_VALIDITY 7200
+
 void smf_context_init(void);
 void smf_context_final(void);
 smf_context_t *smf_self(void);
