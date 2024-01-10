@@ -1567,3 +1567,34 @@ void ogs_sbi_free_qos_data(OpenAPI_qos_data_t *QosData)
 
     ogs_free(QosData);
 }
+
+bool ogs_sbi_parse_tmgi(ogs_tmgi_t *tmgi, OpenAPI_tmgi_t *Tmgi)
+{
+    ogs_assert(tmgi);
+    ogs_assert(Tmgi);
+    ogs_assert(Tmgi->mbs_service_id);
+    ogs_assert(Tmgi->plmn_id);
+
+    tmgi->mbs_service_id = Tmgi->mbs_service_id;
+    ogs_sbi_parse_plmn_id(&tmgi->plmn_id, Tmgi->plmn_id);
+
+    return true;
+}
+
+OpenAPI_tmgi_t *ogs_sbi_build_tmgi(ogs_tmgi_t *tmgi)
+{
+    OpenAPI_tmgi_t *Tmgi = NULL;
+    OpenAPI_plmn_id_t *Plmn_id = NULL;
+    char *mcc = NULL;
+    char *mnc = NULL;
+
+    ogs_assert(tmgi);
+
+    mcc = ogs_plmn_id_mcc_string(&tmgi->plmn_id);
+    mnc = ogs_plmn_id_mnc_string(&tmgi->plmn_id);
+
+    Plmn_id = OpenAPI_plmn_id_create(mcc, mnc);
+    Tmgi = OpenAPI_tmgi_create(ogs_strdup(tmgi->mbs_service_id), Plmn_id);
+
+    return Tmgi;
+}

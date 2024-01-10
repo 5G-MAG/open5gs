@@ -120,6 +120,9 @@ void ogs_sbi_free_pcc_rule(OpenAPI_pcc_rule_t *PccRule);
 OpenAPI_qos_data_t *ogs_sbi_build_qos_data(ogs_pcc_rule_t *pcc_rule);
 void ogs_sbi_free_qos_data(OpenAPI_qos_data_t *QosData);
 
+OpenAPI_tmgi_t *ogs_sbi_build_tmgi(ogs_tmgi_t *tmgi);
+bool ogs_sbi_parse_tmgi(ogs_tmgi_t *tmgi, OpenAPI_tmgi_t *Tmgi);
+
 #ifdef __cplusplus
 }
 #endif
