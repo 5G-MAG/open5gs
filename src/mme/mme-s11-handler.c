@@ -376,7 +376,7 @@ void mme_s11_handle_create_session_response(
                 rsp->pdn_address_allocation.len);
         session->session_type = session->paa.session_type;
         ogs_assert(OGS_OK ==
-                ogs_gtp2_paa_to_ip(&session->paa, &session->ue_ip));
+                ogs_paa_to_ip(&session->paa, &session->ue_ip));
     }
 
     /* ePCO */
@@ -606,6 +606,8 @@ void mme_s11_handle_delete_session_response(
 
     if (action == OGS_GTP_DELETE_IN_PATH_SWITCH_REQUEST) {
         source_ue = sgw_ue_cycle(target_ue->source_ue);
+        if (!source_ue) /* InterRAT to 2G/3G (SGSN) case: */
+             source_ue = target_ue;
         ogs_assert(source_ue);
     } else {
         source_ue = target_ue;

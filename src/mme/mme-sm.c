@@ -528,14 +528,14 @@ void mme_state_operational(ogs_fsm_t *s, mme_event_t *e)
          */
         if (gtp_message.h.teid_presence && gtp_message.h.teid != 0) {
             /* Cause is not "Context not found" */
-            mme_ue = mme_ue_find_by_teid(gtp_message.h.teid);
+            mme_ue = mme_ue_find_by_s11_local_teid(gtp_message.h.teid);
         } else if (xact->local_teid) { /* rx no TEID or TEID=0 */
             /* 3GPP TS 29.274 5.5.2: we receive TEID=0 under some
              * conditions, such as cause "Session context not found". In those
              * cases, we still want to identify the local session which
              * originated the message, so try harder by using the TEID we
              * locally stored in xact when sending the original request: */
-            mme_ue = mme_ue_find_by_teid(xact->local_teid);
+            mme_ue = mme_ue_find_by_s11_local_teid(xact->local_teid);
         }
 
         switch (gtp_message.h.type) {
@@ -655,12 +655,27 @@ void mme_state_operational(ogs_fsm_t *s, mme_event_t *e)
             break;
         }
 
+        if (gtp1_message.h.teid != 0) {
+            /* Cause is not "Context not found" */
+            mme_ue = mme_ue_find_by_gn_local_teid(gtp1_message.h.teid);
+        } else if (xact->local_teid) { /* rx no TEID or TEID=0 */
+            /* Try harder by using the TEID we locally stored in xact when
+             *sending the original request: */
+            mme_ue = mme_ue_find_by_gn_local_teid(xact->local_teid);
+        }
+
         switch (gtp1_message.h.type) {
         case OGS_GTP1_ECHO_REQUEST_TYPE:
             mme_gn_handle_echo_request(xact, &gtp1_message.echo_request);
             break;
         case OGS_GTP1_ECHO_RESPONSE_TYPE:
             mme_gn_handle_echo_response(xact, &gtp1_message.echo_response);
+            break;
+        case OGS_GTP1_SGSN_CONTEXT_REQUEST_TYPE:
+            mme_gn_handle_sgsn_context_request(xact, &gtp1_message.sgsn_context_request);
+            break;
+        case OGS_GTP1_SGSN_CONTEXT_ACKNOWLEDGE_TYPE:
+            mme_gn_handle_sgsn_context_acknowledge(xact, mme_ue, &gtp1_message.sgsn_context_acknowledge);
             break;
         case OGS_GTP1_RAN_INFORMATION_RELAY_TYPE:
             mme_gn_handle_ran_information_relay(xact, &gtp1_message.ran_information_relay);
@@ -670,6 +685,37 @@ void mme_state_operational(ogs_fsm_t *s, mme_event_t *e)
             break;
         }
         ogs_pkbuf_free(pkbuf);
+        break;
+
+    case MME_EVENT_GN_TIMER:
+        mme_ue = e->mme_ue;
+        ogs_assert(mme_ue);
+        sgw_ue = mme_ue->sgw_ue;
+        ogs_assert(sgw_ue);
+
+        switch (e->timer_id) {
+        case MME_TIMER_GN_HOLDING:
+            /* 3GPP TS 23.401 Annex D.3.5 "Routing Area Update":
+            * Step 13. "When the timer started in step 2) (see mme_gn_handle_sgsn_context_request()) expires the old MME
+            * releases any RAN and Serving GW resources. If the PLMN has configured Secondary RAT usage data reporting,
+            * the MME first releases RAN resource before releasing Serving GW resources."
+            */
+            GTP_COUNTER_CLEAR(mme_ue,
+                    GTP_COUNTER_DELETE_SESSION_BY_PATH_SWITCH);
+            ogs_list_for_each(&mme_ue->sess_list, sess) {
+                GTP_COUNTER_INCREMENT(
+                    mme_ue, GTP_COUNTER_DELETE_SESSION_BY_PATH_SWITCH);
+                ogs_assert(OGS_OK ==
+                    mme_gtp_send_delete_session_request(
+                        sgw_ue, sess,
+                        OGS_GTP_DELETE_IN_PATH_SWITCH_REQUEST));
+            }
+            break;
+
+        default:
+            ogs_error("Unknown timer[%s:%d]",
+                    mme_timer_get_name(e->timer_id), e->timer_id);
+        }
         break;
 
     case MME_EVENT_SGSAP_LO_SCTP_COMM_UP:
