@@ -29,8 +29,16 @@ extern "C" {
 
 /* Nmbsmf_TMGI Service API */
 
+/* Application error codes */
+#define NMBSMF_TMGI_MANDATORY_IE_INCORRECT  "MANDATORY_IE_INCORRECT"
+#define NMBSMF_TMGI_UNKNOWN_TMGI            "UNKNOWN_TMGI"
+
+/* TMGI API constants */
+#define NMBSMF_TMGI_MIN_TMGI_NUMBER 1
+#define NMBSMF_TMGI_MAX_TMGI_NUMBER 255
+
 /* Nmbsmf_TMGI Service - TMGI Allocate service operation */
-bool smf_nmbsmf_handle_allocate_tmgi(
+bool smf_nmbsmf_handle_tmgi_allocate(
     ogs_sbi_stream_t *stream, ogs_sbi_message_t *message);
 
 #ifdef __cplusplus

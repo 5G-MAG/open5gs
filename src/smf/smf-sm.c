@@ -641,7 +641,7 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
             CASE(OGS_SBI_RESOURCE_NAME_TMGI)
                 SWITCH(sbi_message.h.method)
                 CASE(OGS_SBI_HTTP_METHOD_POST)
-                    smf_nmbsmf_handle_allocate_tmgi(stream, &sbi_message);
+                    smf_nmbsmf_handle_tmgi_allocate(stream, &sbi_message);
                     break;
 
                 DEFAULT
