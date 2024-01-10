@@ -926,6 +926,54 @@ typedef struct ogs_port_s {
     uint16_t port;
 } ogs_port_t;
 
+/**************************************************
+ * TMGI Structure
+ * 3GPP TS 23.003 Ch. 15.2 - Structure of TMGI
+ */
+#define OGS_MAX_MBS_SERVICE_ID_LEN  6
+#define OGS_MIN_MBS_SERVICE_ID      0x000000
+#define OGS_MAX_MBS_SERVICE_ID      0xFFFFFF
+
+// NOTE (borieher): Not defined in the specs, limited to 20 for now
+#define OGS_MAX_NUM_OF_TMGI 20
+
+// NOTE (borieher): Not defined in the specs, default to 2 extra hours
+#define OGS_DEFAULT_EXPIRATION_TIME_VALIDITY 7200
+
+typedef struct ogs_tmgi_s {
+    ogs_lnode_t lnode;      /* A node of list_t */
+    char *mbs_service_id;
+    ogs_plmn_id_t plmn_id;
+    char *expiration_time;
+} ogs_tmgi_t;
+
+/**************************************************
+ * SSM Structure
+ * 3GPP TS 23.247 Ch. 6.5.3 - Source Specific IP Multicast Address
+ */
+typedef struct ogs_ssm_s {
+    ogs_ip_t src_ip_addr;
+    ogs_ip_t dst_ip_addr;
+} ogs_ssm_t;
+
+/***************************************************
+ * Network Identifier
+ * 3GPP TS 23.003 Ch. 12.7.1 - Network Identifier (NID)
+ */
+#define OGS_MAX_NID_LEN 11
+
+/**********************************
+ * MBS Session ID Structure
+ * 3GPP TS 23.247 Ch. 6.5.1 - MBS Session ID
+ */
+typedef struct ogs_mbs_session_id_s {
+    union {
+        ogs_tmgi_t tmgi;
+        ogs_ssm_t ssm;
+    };
+    char *nid;
+} ogs_mbs_session_id_t;
+
 #ifdef __cplusplus
 }
 #endif
