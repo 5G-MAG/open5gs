@@ -79,9 +79,62 @@ bool smf_nmbsmf_handle_tmgi_allocate(
         goto cleanup;
     }
 
+    // Error checking for TmgiAllocate->tmgi_list
+    if (TmgiAllocate->tmgi_list) {
+        // Check for errors in TmgiAllocate->tmgi_list
+        OpenAPI_list_for_each(TmgiAllocate->tmgi_list, node) {
+            if (!node->data)
+                continue;
+
+            Tmgi_received = node->data;
+
+            ogs_sbi_parse_tmgi(&tmgi_received, Tmgi_received);
+
+            tmgi_found = smf_tmgi_find_by_tmgi(&tmgi_received);
+
+            if (!tmgi_found) {
+                ogs_error("TMGI Allocate: refresh error, TMGI not present");
+                // TMGI not found, send error (404 + UNKNOWN_TMGI)
+                smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_NOT_FOUND,
+                    "Unknown TMGI",
+                    "Requested TMGI Allocate (refresh) failed, TMGI expired or cannot be found",
+                    NMBSMF_TMGI_UNKNOWN_TMGI);
+                rv = OGS_ERROR;
+                goto cleanup;
+            }
+        }
+    }
+
+    // Error checking for TmgiAllocate->tmgi_number
+    if (TmgiAllocate->tmgi_number) {
+        if (TmgiAllocate->tmgi_number >= NMBSMF_TMGI_MIN_TMGI_NUMBER && \
+                TmgiAllocate->tmgi_number <= NMBSMF_TMGI_MAX_TMGI_NUMBER) {
+
+            // Check the number of TMGIs available
+            if ((smf_tmgi_count() + TmgiAllocate->tmgi_number) > OGS_MAX_NUM_OF_TMGI) {
+                ogs_error("TMGI Allocate: Cannot allocate %d TMGIs", TmgiAllocate->tmgi_number);
+                // Custom error handling, not the 3GPP TS
+                // Avoid reaching the maximum number of TMGI, send error (403)
+                smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
+                    "Forbidden", "Cannot allocate [tmgiNumber] of TMGIs", NULL);
+                rv = OGS_ERROR;
+                goto cleanup;
+            }
+        } else {
+            ogs_error("TMGI Allocate: allocate error, incorrect number in tmgi_number");
+            // tmgi_number needs to be between 1 and 255, send error (403 + MANDATORY_IE_INCORRECT)
+            smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
+                "Mandatory IE incorrect",
+                "Requested TMGI Allocate failed, incorrect number in [tmgiNumber]",
+                NMBSMF_TMGI_MANDATORY_IE_INCORRECT);
+            rv = OGS_ERROR;
+            goto cleanup;
+        }
+    }
+
     expiration_time = smf_tmgi_gen_expiration_time(OGS_DEFAULT_EXPIRATION_TIME_VALIDITY);
 
-    // Always include a list, even if its empty
+    // Include a list, even if its empty
     tmgi_list = OpenAPI_list_create();
 
     // Perform the TMGI refresh operation for TmgiAllocate->tmgi_list
@@ -100,51 +153,17 @@ bool smf_nmbsmf_handle_tmgi_allocate(
                 // TMGI present, refresh the expiration_time
                 ogs_free(tmgi_found->expiration_time);
                 tmgi_found->expiration_time = ogs_strdup(expiration_time);
-            } else {
-                ogs_error("TMGI Allocate: refresh error, TMGI not present");
-                // TMGI not found, send error (404 + UNKNOWN_TMGI)
-                smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_NOT_FOUND,
-                    "Unknown TMGI",
-                    "Requested TMGI Allocate (refresh) failed, TMGI expired or cannot be found",
-                    NMBSMF_TMGI_UNKNOWN_TMGI);
-                rv = OGS_ERROR;
-                goto cleanup;
             }
         }
     }
 
     // Perform the TMGI allocate operation for TmgiAllocate->tmgi_number
     if (TmgiAllocate->tmgi_number) {
-        if (TmgiAllocate->tmgi_number >= NMBSMF_TMGI_MIN_TMGI_NUMBER && \
-                TmgiAllocate->tmgi_number <= NMBSMF_TMGI_MAX_TMGI_NUMBER) {
-
-            // Check the number of TMGIs available
-            if ((smf_tmgi_count() + TmgiAllocate->tmgi_number) > OGS_MAX_NUM_OF_TMGI) {
-                ogs_error("TMGI Allocate: Cannot allocate %d TMGIs", TmgiAllocate->tmgi_number);
-                // Custom error handling, not the 3GPP TS
-                // Avoid reaching the maximum number of TMGI, send error (403)
-                smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
-                    "Forbidden", "Cannot allocate [tmgiNumber] of TMGIs", NULL);
-                rv = OGS_ERROR;
-                goto cleanup;
-            }
-
-            int i;
-            for (i = 0; i < TmgiAllocate->tmgi_number; i++) {
-                tmgi_allocated = smf_tmgi_allocate(expiration_time);
-
-                Tmgi_copy = ogs_sbi_build_tmgi(tmgi_allocated);
-                OpenAPI_list_add(tmgi_list, Tmgi_copy);
-            }
-        } else {
-            ogs_error("TMGI Allocate: allocate error, incorrect number in [tmgiNumber]");
-            // tmgi_number needs to be between 1 and 255, send error (403 + MANDATORY_IE_INCORRECT)
-            smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
-                "Mandatory IE incorrect",
-                "Requested TMGI Allocate failed, incorrect number in [tmgiNumber]",
-                NMBSMF_TMGI_MANDATORY_IE_INCORRECT);
-            rv = OGS_ERROR;
-            goto cleanup;
+        int i;
+        for (i = 0; i < TmgiAllocate->tmgi_number; i++) {
+            tmgi_allocated = smf_tmgi_allocate(expiration_time);
+            Tmgi_copy = ogs_sbi_build_tmgi(tmgi_allocated);
+            OpenAPI_list_add(tmgi_list, Tmgi_copy);
         }
     }
 
@@ -175,14 +194,6 @@ cleanup:
     if (TmgiAllocated) {
         OpenAPI_tmgi_allocated_free(TmgiAllocated);
         tmgi_list = NULL;
-    }
-
-    // If tmgi_list is created but not added to TmgiAllocated (error case)
-    if (tmgi_list) {
-        OpenAPI_list_for_each(tmgi_list, node) {
-            OpenAPI_tmgi_free(node->data);
-        }
-        OpenAPI_list_free(tmgi_list);
     }
 
     if (rv == OGS_OK)

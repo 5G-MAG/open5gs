@@ -3264,7 +3264,6 @@ ogs_tmgi_t *smf_tmgi_find_by_tmgi(ogs_tmgi_t *tmgi_to_find)
             // Check same PLMN ID
             if (strcmp(tmgi_mcc, tmgi_to_find_mcc) == 0 && \
                     strcmp(tmgi_mnc, tmgi_to_find_mnc) == 0) {
-                ogs_debug("smf_tmgi_find_by_tmgi(): TMGI found");
                 ogs_free(tmgi_mcc);
                 ogs_free(tmgi_mnc);
                 ogs_free(tmgi_to_find_mcc);
