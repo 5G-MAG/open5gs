@@ -35,12 +35,17 @@ static OGS_POOL(smf_pf_pool, smf_pf_t);
 static OGS_POOL(smf_sess_pool, smf_sess_t);
 static OGS_POOL(smf_n4_seid_pool, ogs_pool_id_t);
 
+static OGS_POOL(tmgi_pool, ogs_tmgi_t);
+
 static int context_initialized = 0;
 
 static int num_of_smf_sess = 0;
 
 static void stats_add_smf_session(void);
 static void stats_remove_smf_session(smf_sess_t *sess);
+
+static void smf_tmgi_remove(ogs_tmgi_t *tmgi);
+static void smf_tmgi_remove_all(void);
 
 int smf_ctf_config_init(smf_ctf_config_t *ctf_config)
 {
@@ -91,6 +96,9 @@ void smf_context_init(void)
     ogs_pool_init(&smf_n4_seid_pool, ogs_app()->pool.sess);
     ogs_pool_random_id_generate(&smf_n4_seid_pool);
 
+    ogs_pool_init(&tmgi_pool, OGS_MAX_NUM_OF_TMGI);
+    ogs_list_init(&self.tmgi_list);
+
     self.supi_hash = ogs_hash_make();
     ogs_assert(self.supi_hash);
     self.imsi_hash = ogs_hash_make();
@@ -113,6 +121,7 @@ void smf_context_final(void)
     ogs_assert(context_initialized == 1);
 
     smf_ue_remove_all();
+    smf_tmgi_remove_all();
 
     ogs_assert(self.supi_hash);
     ogs_hash_destroy(self.supi_hash);
@@ -133,6 +142,8 @@ void smf_context_final(void)
 
     ogs_pool_final(&smf_sess_pool);
     ogs_pool_final(&smf_n4_seid_pool);
+
+    ogs_pool_final(&tmgi_pool);
 
     ogs_list_for_each_entry_safe(&self.sgw_s5c_list, next_gnode, gnode, node) {
         smf_gtp_node_t *smf_gnode = gnode->data_ptr;
@@ -3120,4 +3131,153 @@ int smf_maximum_integrity_protected_data_rate_downlink_value2enum(
 {
     ogs_assert(value);
     return smf_maximum_integrity_protected_data_rate_uplink_value2enum(value);
+}
+
+static ogs_tmgi_t *smf_tmgi_add(void)
+{
+    ogs_tmgi_t *tmgi = NULL;
+
+    ogs_pool_alloc(&tmgi_pool, &tmgi);
+    if (!tmgi) {
+        ogs_error("Maximum number of TMGIs[%d] reached",
+                    OGS_MAX_NUM_OF_TMGI);
+        return NULL;
+    }
+    memset(tmgi, 0, sizeof *tmgi);
+
+    ogs_list_add(&self.tmgi_list, tmgi);
+
+    ogs_info("[Added] Number of TMGIs in SMF is now %d",
+                ogs_list_count(&self.tmgi_list));
+
+    return tmgi;
+}
+
+static void smf_tmgi_remove(ogs_tmgi_t *tmgi)
+{
+    ogs_assert(tmgi);
+
+    ogs_list_remove(&self.tmgi_list, tmgi);
+
+    if (tmgi->mbs_service_id)
+        ogs_free(tmgi->mbs_service_id);
+
+    if (tmgi->expiration_time)
+        ogs_free(tmgi->expiration_time);
+
+    ogs_pool_free(&tmgi_pool, tmgi);
+
+    ogs_info("[Removed] Number of TMGIs in SMF is now %d",
+                ogs_list_count(&self.tmgi_list));
+}
+
+static void smf_tmgi_remove_all(void)
+{
+    ogs_tmgi_t *tmgi = NULL, *next = NULL;
+
+    ogs_list_for_each_safe(&self.tmgi_list, next, tmgi)
+        smf_tmgi_remove(tmgi);
+}
+
+int smf_tmgi_count(void)
+{
+    return ogs_list_count(&self.tmgi_list);
+}
+
+static char *smf_tmgi_gen_random_mbs_service_id(void)
+{
+    char *mbs_service_id = NULL;
+
+    uint32_t random_id = ogs_random32() % (OGS_MAX_MBS_SERVICE_ID + 1);
+
+    mbs_service_id = ogs_msprintf("%06X", random_id);
+
+    return mbs_service_id;
+}
+
+// Using the 2024-05-13T13:05:40.483504+00:00 format
+char *smf_tmgi_gen_expiration_time(int validity_seconds)
+{
+    char *expiration_time = NULL;
+
+    expiration_time = ogs_sbi_localtime_string(
+        ogs_time_now() + ogs_time_from_sec(validity_seconds));
+
+    return expiration_time;
+}
+
+ogs_tmgi_t *smf_tmgi_allocate(char *expiration_time)
+{
+    ogs_tmgi_t *tmgi;
+
+    ogs_assert(expiration_time);
+
+    if ((tmgi = smf_tmgi_add()) == NULL) {
+        ogs_error("smf_tmgi_allocate() failed");
+        return NULL;
+    }
+
+    // Option 1: TMGI range
+    // TODO (borieher): Grab TMGI from the TMGI range
+
+    // Option 2: Random MBS Service ID + PLMN from SMF info
+    tmgi->mbs_service_id = smf_tmgi_gen_random_mbs_service_id();
+
+    // NOTE (borieher): What happens when there is more than one PLMN?
+    ogs_sbi_nf_info_t *nf_info = NULL;
+    ogs_list_for_each(&ogs_sbi_self()->nf_instance->nf_info_list, nf_info) {
+        ogs_sbi_smf_info_t *smf_info = &nf_info->smf;
+
+        // NOTE (borieher): Ignoring num_of_nr_tai_range for now, using num_of_nr_tai
+        for (int l = 0; l < smf_info->num_of_nr_tai; l++) {
+            memcpy(&tmgi->plmn_id, &smf_info->nr_tai[l].plmn_id, sizeof(ogs_plmn_id_t));
+        }
+    }
+
+    tmgi->expiration_time = ogs_strdup(expiration_time);
+
+    return tmgi;
+}
+
+ogs_tmgi_t *smf_tmgi_find_by_tmgi(ogs_tmgi_t *tmgi_to_find)
+{
+    ogs_tmgi_t *tmgi = NULL;
+
+    ogs_assert(tmgi_to_find);
+
+    ogs_list_for_each(&self.tmgi_list, tmgi) {
+
+        ogs_assert(tmgi);
+
+        // Check same MBS Session ID
+        if (strcmp(tmgi->mbs_service_id, tmgi_to_find->mbs_service_id) == 0) {
+            char *tmgi_mcc = NULL;
+            char *tmgi_mnc = NULL;
+            char *tmgi_to_find_mcc = NULL;
+            char *tmgi_to_find_mnc = NULL;
+
+            tmgi_mcc = ogs_plmn_id_mcc_string(&tmgi->plmn_id);
+            tmgi_mnc = ogs_plmn_id_mnc_string(&tmgi->plmn_id);
+            tmgi_to_find_mcc = ogs_plmn_id_mcc_string(&tmgi_to_find->plmn_id);
+            tmgi_to_find_mnc = ogs_plmn_id_mnc_string(&tmgi_to_find->plmn_id);
+
+            // Check same PLMN ID
+            if (strcmp(tmgi_mcc, tmgi_to_find_mcc) == 0 && \
+                    strcmp(tmgi_mnc, tmgi_to_find_mnc) == 0) {
+                ogs_debug("smf_tmgi_find_by_tmgi(): TMGI found");
+                ogs_free(tmgi_mcc);
+                ogs_free(tmgi_mnc);
+                ogs_free(tmgi_to_find_mcc);
+                ogs_free(tmgi_to_find_mnc);
+                return tmgi;
+            }
+
+            ogs_free(tmgi_mcc);
+            ogs_free(tmgi_mnc);
+            ogs_free(tmgi_to_find_mcc);
+            ogs_free(tmgi_to_find_mnc);
+        }
+    }
+
+    return NULL;
 }

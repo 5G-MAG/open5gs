@@ -103,6 +103,10 @@ void smf_sbi_send_sm_context_update_error(
 
 bool smf_sbi_send_sm_context_status_notify(smf_sess_t *sess);
 
+bool smf_sbi_send_nmbsmf_error(
+        ogs_sbi_stream_t *stream, int status,
+        const char *title, const char *detail, const char *cause);
+
 #ifdef __cplusplus
 }
 #endif

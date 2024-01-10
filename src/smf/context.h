@@ -103,6 +103,8 @@ typedef struct smf_context_s {
 #define SMF_UE_IS_LAST_SESSION(__sMF) \
      ((__sMF) && (ogs_list_count(&(__sMF)->sess_list)) == 1)
     ogs_list_t      smf_ue_list;
+
+    ogs_list_t      tmgi_list;
 } smf_context_t;
 
 typedef struct smf_gtp_node_s {
@@ -538,6 +540,11 @@ int smf_maximum_integrity_protected_data_rate_uplink_value2enum(
 int smf_maximum_integrity_protected_data_rate_downlink_value2enum(
         const char *value);
 int smf_instance_get_load(void);
+
+int smf_tmgi_count(void);
+char *smf_tmgi_gen_expiration_time(int validity_seconds);
+ogs_tmgi_t *smf_tmgi_allocate(char *expiration_time);
+ogs_tmgi_t *smf_tmgi_find_by_tmgi(ogs_tmgi_t *tmgi_to_find);
 
 #ifdef __cplusplus
 }
