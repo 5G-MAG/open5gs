@@ -40,6 +40,9 @@ extern "C" {
 /* Nmbsmf_TMGI Service - TMGI Allocate service operation */
 bool smf_nmbsmf_handle_tmgi_allocate(
     ogs_sbi_stream_t *stream, ogs_sbi_message_t *message);
+/* Nmbsmf_TMGI Service - TMGI Deallocate service operation */
+bool smf_nmbsmf_handle_tmgi_deallocate(
+    ogs_sbi_stream_t *stream, ogs_sbi_message_t *message);
 
 #ifdef __cplusplus
 }

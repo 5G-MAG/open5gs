@@ -201,3 +201,18 @@ cleanup:
     else
         return false;
 }
+
+/*
+ * 3GPP TS 29.532 - Release 17.4.0
+ * 5G System; 5G Multicast-Broadcast Session Management Services; Stage 3
+ * Ch. 5.2.2.3 - Nmbsmf_TMGI Service API - TMGI Deallocate service operation
+ */
+bool smf_nmbsmf_handle_tmgi_deallocate(
+    ogs_sbi_stream_t *stream, ogs_sbi_message_t *message)
+{
+    // TODO (borieher): Implement TMGI Dellocate service operation
+
+    ogs_warn("TMGI deallocate request received");
+
+    return true;
+}

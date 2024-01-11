@@ -644,6 +644,10 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
                     smf_nmbsmf_handle_tmgi_allocate(stream, &sbi_message);
                     break;
 
+                CASE(OGS_SBI_HTTP_METHOD_DELETE)
+                    smf_nmbsmf_handle_tmgi_deallocate(stream, &sbi_message);
+                    break;
+
                 DEFAULT
                     ogs_error("Invalid HTTP method [%s]", sbi_message.h.method);
                     ogs_assert(true ==
