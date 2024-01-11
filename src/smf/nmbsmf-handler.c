@@ -31,7 +31,9 @@
 bool smf_nmbsmf_handle_tmgi_allocate(
     ogs_sbi_stream_t *stream, ogs_sbi_message_t *message)
 {
-    ogs_warn("TMGI allocate request received");
+    // TODO (borieher): Not handling the 307 Temporary Redirect and 308 Permanent Redirect errors for now
+    ogs_debug("TMGI allocate request received");
+
     OpenAPI_tmgi_allocate_t *TmgiAllocate = NULL;
 
     ogs_tmgi_t tmgi_received;
@@ -81,15 +83,12 @@ bool smf_nmbsmf_handle_tmgi_allocate(
 
     // Error checking for TmgiAllocate->tmgi_list
     if (TmgiAllocate->tmgi_list) {
-        // Check for errors in TmgiAllocate->tmgi_list
         OpenAPI_list_for_each(TmgiAllocate->tmgi_list, node) {
             if (!node->data)
                 continue;
 
             Tmgi_received = node->data;
-
             ogs_sbi_parse_tmgi(&tmgi_received, Tmgi_received);
-
             tmgi_found = smf_tmgi_find_by_tmgi(&tmgi_received);
 
             if (!tmgi_found) {
@@ -144,9 +143,7 @@ bool smf_nmbsmf_handle_tmgi_allocate(
                 continue;
 
             Tmgi_received = node->data;
-
             ogs_sbi_parse_tmgi(&tmgi_received, Tmgi_received);
-
             tmgi_found = smf_tmgi_find_by_tmgi(&tmgi_received);
 
             if (tmgi_found) {
@@ -210,9 +207,80 @@ cleanup:
 bool smf_nmbsmf_handle_tmgi_deallocate(
     ogs_sbi_stream_t *stream, ogs_sbi_message_t *message)
 {
-    // TODO (borieher): Implement TMGI Dellocate service operation
+    // TODO (borieher): Not handling the 307 Temporary Redirect and 308 Permanent Redirect errors for now
+    ogs_debug("TMGI deallocate request received");
 
-    ogs_warn("TMGI deallocate request received");
+    OpenAPI_list_t *tmgi_list = NULL;
+
+    ogs_tmgi_t tmgi_received;
+    ogs_tmgi_t *tmgi_found = NULL;
+
+    OpenAPI_lnode_t *node = NULL;
+    OpenAPI_tmgi_t *Tmgi_received = NULL;
+
+    ogs_sbi_message_t sendmsg;
+    ogs_sbi_response_t *response = NULL;
+
+    ogs_assert(stream);
+    ogs_assert(message);
+
+    tmgi_list = message->param.tmgi_list;
+
+    if (!tmgi_list) {
+        // Extracted from the OpenAPI spec, not the 3GPP TS
+        // tmgi_list not present, send error (400)
+        ogs_error("TMGI Deallocate: No tmgi_list");
+        smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            "Bad Request", "Requested TMGI Deallocate failed, no tmgi-list", NULL);
+        return false;
+    }
+
+    // Error checking for tmgi_list
+    OpenAPI_list_for_each(tmgi_list, node) {
+        if (!node->data)
+            continue;
+
+        Tmgi_received = node->data;
+        ogs_sbi_parse_tmgi(&tmgi_received, Tmgi_received);
+        tmgi_found = smf_tmgi_find_by_tmgi(&tmgi_received);
+
+        if (!tmgi_found) {
+            ogs_error("TMGI Deallocate: deallocate error, TMGI not present");
+            // TMGI not found, send error (404 + UNKNOWN_TMGI)
+            smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_NOT_FOUND,
+                "Unknown TMGI",
+                "Requested TMGI Deallocate failed, TMGI expired or cannot be found",
+                NMBSMF_TMGI_UNKNOWN_TMGI);
+            return false;
+        }
+    }
+
+    // Perform the TMGI dellocate operation for tmgi_list
+    OpenAPI_list_for_each(tmgi_list, node) {
+        if (!node->data)
+            continue;
+
+        Tmgi_received = node->data;
+        ogs_sbi_parse_tmgi(&tmgi_received, Tmgi_received);
+        tmgi_found = smf_tmgi_find_by_tmgi(&tmgi_received);
+
+        if (tmgi_found) {
+            // TMGI present, deallocate
+            smf_tmgi_deallocate(tmgi_found);
+        }
+    }
+
+    /*********************************************************************
+     * Send HTTP_STATUS_NO_CONTENT (/nmbsmf-tmgi/v1/tmgi) to the consumer NF
+     *********************************************************************/
+
+    memset(&sendmsg, 0, sizeof(sendmsg));
+
+    response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
+
+    ogs_assert(response);
+
+    ogs_assert(true == ogs_sbi_server_send_response(stream, response));
 
     return true;
 }

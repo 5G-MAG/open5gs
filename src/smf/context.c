@@ -3208,7 +3208,7 @@ char *smf_tmgi_gen_expiration_time(int validity_seconds)
 
 ogs_tmgi_t *smf_tmgi_allocate(char *expiration_time)
 {
-    ogs_tmgi_t *tmgi;
+    ogs_tmgi_t *tmgi = NULL;
 
     ogs_assert(expiration_time);
 
@@ -3237,6 +3237,10 @@ ogs_tmgi_t *smf_tmgi_allocate(char *expiration_time)
     tmgi->expiration_time = ogs_strdup(expiration_time);
 
     return tmgi;
+}
+
+void smf_tmgi_deallocate(ogs_tmgi_t *tmgi) {
+    smf_tmgi_remove(tmgi);
 }
 
 ogs_tmgi_t *smf_tmgi_find_by_tmgi(ogs_tmgi_t *tmgi_to_find)

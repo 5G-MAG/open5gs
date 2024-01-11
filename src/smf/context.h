@@ -550,6 +550,7 @@ int smf_instance_get_load(void);
 int smf_tmgi_count(void);
 char *smf_tmgi_gen_expiration_time(int validity_seconds);
 ogs_tmgi_t *smf_tmgi_allocate(char *expiration_time);
+void smf_tmgi_deallocate(ogs_tmgi_t *tmgi);
 ogs_tmgi_t *smf_tmgi_find_by_tmgi(ogs_tmgi_t *tmgi_to_find);
 
 #ifdef __cplusplus
