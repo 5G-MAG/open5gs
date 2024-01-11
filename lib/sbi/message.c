@@ -63,6 +63,15 @@ void ogs_sbi_message_free(ogs_sbi_message_t *message)
     if (message->param.discovery_option)
         ogs_sbi_discovery_option_free(message->param.discovery_option);
 
+    /* URL Query Parameter */
+    if (message->param.tmgi_list) {
+        OpenAPI_lnode_t *node = NULL;
+        OpenAPI_list_for_each(message->param.tmgi_list, node) {
+            OpenAPI_tmgi_free(node->data);
+        }
+        OpenAPI_list_free(message->param.tmgi_list);
+    }
+
     /* JSON Data */
     if (message->NFProfile)
         OpenAPI_nf_profile_free(message->NFProfile);
@@ -939,6 +948,38 @@ int ogs_sbi_parse_request(
             message->param.ipv4addr = ogs_hash_this_val(hi);
         } else if (!strcmp(ogs_hash_this_key(hi), OGS_SBI_PARAM_IPV6PREFIX)) {
             message->param.ipv6prefix = ogs_hash_this_val(hi);
+        } else if (!strcmp(ogs_hash_this_key(hi), OGS_SBI_PARAM_TMGI_LIST)) {
+            char *v = NULL;
+            char *value_decoded = NULL;
+            char *saveptr = NULL;
+
+            cJSON *item = NULL;
+            cJSON *tmgi = NULL;
+
+            v = ogs_hash_this_val(hi);
+            if (v) {
+                value_decoded = ogs_sbi_parse_uri(v, "=", &saveptr);
+                if (value_decoded) {
+                    item = cJSON_Parse(value_decoded);
+                    if (item) {
+                        if (cJSON_IsArray(item)) {
+                            message->param.tmgi_list = OpenAPI_list_create();
+                            cJSON_ArrayForEach(tmgi, item) {
+                                if (!cJSON_IsObject(tmgi)) {
+                                    ogs_error("tmgi-list param: Cannot decode TMGI JSON object");
+                                } else {
+                                    OpenAPI_tmgi_t *tmgi_list_item = OpenAPI_tmgi_parseFromJSON(tmgi);
+                                    OpenAPI_list_add(message->param.tmgi_list, tmgi_list_item);
+                                }
+                            }
+                        }
+                        cJSON_Delete(item);
+                    } else {
+                        ogs_error("tmgi-list param: Cannot decode TMGI JSON list");
+                    }
+                    ogs_free(value_decoded);
+                }
+            }
         }
     }
 

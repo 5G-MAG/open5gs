@@ -338,6 +338,7 @@ extern "C" {
         "slice-info-request-for-pdu-session"
 #define OGS_SBI_PARAM_IPV4ADDR                      "ipv4Addr"
 #define OGS_SBI_PARAM_IPV6PREFIX                    "ipv6Prefix"
+#define OGS_SBI_PARAM_TMGI_LIST                     "tmgi-list"
 
 #define OGS_SBI_CONTENT_JSON_TYPE                   \
     OGS_SBI_APPLICATION_TYPE "/" OGS_SBI_APPLICATION_JSON_TYPE
@@ -483,6 +484,8 @@ typedef struct ogs_sbi_message_s {
 
         char *ipv4addr;
         char *ipv6prefix;
+
+        OpenAPI_list_t *tmgi_list;
     } param;
 
     int res_status;
