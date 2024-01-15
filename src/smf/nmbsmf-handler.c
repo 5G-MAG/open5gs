@@ -264,10 +264,9 @@ bool smf_nmbsmf_handle_tmgi_deallocate(
         ogs_sbi_parse_tmgi(&tmgi_received, Tmgi_received);
         tmgi_found = smf_tmgi_find_by_tmgi(&tmgi_received);
 
-        if (tmgi_found) {
-            // TMGI present, deallocate
+        // Protection against TMGI duplicates in tmgi_list
+        if (tmgi_found)
             smf_tmgi_deallocate(tmgi_found);
-        }
     }
 
     /*********************************************************************
