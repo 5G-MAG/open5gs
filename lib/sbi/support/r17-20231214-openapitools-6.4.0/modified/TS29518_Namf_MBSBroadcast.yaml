@@ -738,15 +738,44 @@ components:
       - type: string
 
     NgapIeType:
-      description: NGAP Information Element Type
-      anyOf:
-      - type: string
+#      description: NGAP Information Element Type
+#      anyOf:
+#      - type: string
         enum:
+        #From: TS29518_Namf_Communication.yaml
+          - PDU_RES_SETUP_REQ
+          - PDU_RES_REL_CMD
+          - PDU_RES_MOD_REQ
+          - HANDOVER_CMD
+          - HANDOVER_REQUIRED
+          - HANDOVER_PREP_FAIL
+          - SRC_TO_TAR_CONTAINER
+          - TAR_TO_SRC_CONTAINER
+          - TAR_TO_SRC_FAIL_CONTAINER
+          - RAN_STATUS_TRANS_CONTAINER
+          - SON_CONFIG_TRANSFER
+          - NRPPA_PDU
+          - UE_RADIO_CAPABILITY
+          - RIM_INFO_TRANSFER
+          - SECONDARY_RAT_USAGE
+          - PC5_QOS_PARA
+          - EARLY_STATUS_TRANS_CONTAINER
+          - UE_RADIO_CAPABILITY_FOR_PAGING
+        #From: TS29532_Nmbsmf_MBSSession.yaml
+          - MBS_DIS_SETUP_REQ
+          - MBS_DIS_SETUP_RSP
+          - MBS_DIS_SETUP_FAIL
+          - MBS_DIS_REL_REQ
+        #From: TS29518_Namf_MBSCommunication.yaml
+          - MBS_SES_ACT_REQ
+          - MBS_SES_DEACT_REQ
+          - MBS_SES_UPD_REQ
+        #From: TS29518_Namf_MBSBroadcast.yaml
           - MBS_SES_REQ
           - MBS_SES_RSP
           - MBS_SES_FAIL
           - MBS_SES_REL_RSP
-      - type: string
+#      - type: string
 
     OpEventType:
       description: Operation Event Type.

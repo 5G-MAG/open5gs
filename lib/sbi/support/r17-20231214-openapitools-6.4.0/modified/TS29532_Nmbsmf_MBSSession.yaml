@@ -724,7 +724,7 @@ components:
       #   - $ref: '#/components/schemas/MbsSessionExtension'
       type: object
       properties:
-        #From: 'TS29571_CommonData.yaml#/components/schemas/MbsSession'
+        #'TS29571_CommonData.yaml#/components/schemas/MbsSession'
         mbsSessionId:
           $ref: 'TS29571_CommonData.yaml#/components/schemas/MbsSessionId'
         tmgiAllocReq:
@@ -795,7 +795,7 @@ components:
             $ref: 'TS29571_CommonData.yaml#/components/schemas/MbsFsaId'
           minItems: 1
 
-        #From: '#/components/schemas/MbsSessionExtension'
+        #'#/components/schemas/MbsSessionExtension'
         mbsSecurityContext:
           $ref: 'TS29571_CommonData.yaml#/components/schemas/MbsSecurityContext'
         contactPcfInd:
@@ -1106,7 +1106,7 @@ components:
       #   - $ref: '#/components/schemas/ProblemDetailsExtension'
       type: object
       properties:
-        #From: 'TS29571_CommonData.yaml#/components/schemas/ProblemDetails'
+        #'TS29571_CommonData.yaml#/components/schemas/ProblemDetails'
         type:
           $ref: 'TS29571_CommonData.yaml#/components/schemas/Uri'
         title:
@@ -1140,7 +1140,7 @@ components:
         nrfId:
           $ref: 'TS29571_CommonData.yaml#/components/schemas/Fqdn'
         
-        #From: '#/components/schemas/ProblemDetailsExtension'
+        #'#/components/schemas/ProblemDetailsExtension'
         accMbsServiceInfo:
           $ref: 'TS29537_Npcf_MBSPolicyAuthorization.yaml#/components/schemas/AcceptableMbsServInfo'
 
@@ -1198,8 +1198,37 @@ components:
 #      anyOf:
 #      - type: string
         enum:
+        #From: TS29518_Namf_Communication.yaml
+          - PDU_RES_SETUP_REQ
+          - PDU_RES_REL_CMD
+          - PDU_RES_MOD_REQ
+          - HANDOVER_CMD
+          - HANDOVER_REQUIRED
+          - HANDOVER_PREP_FAIL
+          - SRC_TO_TAR_CONTAINER
+          - TAR_TO_SRC_CONTAINER
+          - TAR_TO_SRC_FAIL_CONTAINER
+          - RAN_STATUS_TRANS_CONTAINER
+          - SON_CONFIG_TRANSFER
+          - NRPPA_PDU
+          - UE_RADIO_CAPABILITY
+          - RIM_INFO_TRANSFER
+          - SECONDARY_RAT_USAGE
+          - PC5_QOS_PARA
+          - EARLY_STATUS_TRANS_CONTAINER
+          - UE_RADIO_CAPABILITY_FOR_PAGING
+        #From: TS29532_Nmbsmf_MBSSession.yaml
           - MBS_DIS_SETUP_REQ
           - MBS_DIS_SETUP_RSP
           - MBS_DIS_SETUP_FAIL
           - MBS_DIS_REL_REQ
+        #From: TS29518_Namf_MBSCommunication.yaml
+          - MBS_SES_ACT_REQ
+          - MBS_SES_DEACT_REQ
+          - MBS_SES_UPD_REQ
+        #From: TS29518_Namf_MBSBroadcast.yaml
+          - MBS_SES_REQ
+          - MBS_SES_RSP
+          - MBS_SES_FAIL
+          - MBS_SES_REL_RSP
 #      - type: string
