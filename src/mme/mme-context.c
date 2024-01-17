@@ -2488,6 +2488,15 @@ mme_sgsn_t *mme_sgsn_find_by_routing_address(const ogs_nas_rai_t *rai, uint16_t 
         }
     }
 
+    /* If no exact match found, try using any with same RAI: */
+    ogs_list_for_each(&self.sgsn_list, sgsn) {
+        mme_sgsn_route_t *rt = NULL;
+        ogs_list_for_each(&sgsn->route_list, rt) {
+            if (memcmp(&rt->rai, rai, sizeof(ogs_nas_rai_t)) == 0)
+                return sgsn;
+        }
+    }
+
     /* No route found, return default route if available: */
     return mme_sgsn_find_by_default_routing_address();
 }
@@ -3175,6 +3184,11 @@ void mme_ue_confirm_guti(mme_ue_t *mme_ue)
 
     /* Clear Next GUTI */
     mme_ue->next.m_tmsi = NULL;
+
+    ogs_debug("Confirm GUTI[G:%d,C:%d,M_TMSI:0x%x]",
+              mme_ue->current.guti.mme_gid,
+              mme_ue->current.guti.mme_code,
+              mme_ue->current.guti.m_tmsi);
 }
 
 static bool compare_ue_info(mme_sgw_t *node, enb_ue_t *enb_ue)
