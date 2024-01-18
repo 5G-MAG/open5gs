@@ -44,6 +44,12 @@ bool smf_nmbsmf_handle_tmgi_allocate(
 bool smf_nmbsmf_handle_tmgi_deallocate(
     ogs_sbi_stream_t *stream, ogs_sbi_message_t *message);
 
+/* Nmbsmf_MBSSession Service API */
+
+/* Nmbsmf_MBSSession Service - MBS Session Create service operation */
+bool smf_nmbsmf_handle_mbs_session_create(
+    ogs_sbi_stream_t *stream, ogs_sbi_message_t *message);
+
 #ifdef __cplusplus
 }
 #endif

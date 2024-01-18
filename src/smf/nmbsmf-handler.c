@@ -283,3 +283,20 @@ bool smf_nmbsmf_handle_tmgi_deallocate(
 
     return true;
 }
+
+/* Nmbsmf_MBSSession Service API */
+
+/*
+ * 3GPP TS 29.532 - Release 17.4.0
+ * 5G System; 5G Multicast-Broadcast Session Management Services; Stage 3
+ * Ch. 5.3.2.2 - Nmbsmf_MBSSession Service - MBS Session Create service operation
+ */
+bool smf_nmbsmf_handle_mbs_session_create(
+    ogs_sbi_stream_t *stream, ogs_sbi_message_t *message)
+{
+    // TODO (borieher): Implement MBS Session Create service operation
+
+    ogs_warn("MBS Session create request received");
+
+    return true;
+}
