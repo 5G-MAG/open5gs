@@ -86,6 +86,8 @@
 #include "model/ue_authentication_ctx.h"
 #include "model/tmgi_allocate.h"
 #include "model/tmgi_allocated.h"
+#include "model/create_req_data.h"
+#include "model/create_rsp_data.h"
 
 #include "custom/links.h"
 

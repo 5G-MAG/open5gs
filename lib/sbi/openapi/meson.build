@@ -1369,6 +1369,26 @@ libsbi_openapi_sources = files('''
     model/wlan_per_ts_performance_info.c
     model/tmgi_allocate.c
     model/tmgi_allocated.c
+    model/create_req_data.c
+    model/create_rsp_data.c
+    model/ext_mbs_session.c
+    model/mbs_service_info.c
+    model/mbs_service_type.c
+    model/external_mbs_service_area.c
+    model/mbs_session_subscription.c
+    model/mbs_session_activity_status.c
+    model/mbs_session_event_type.c
+    model/mbs_session_event_report.c
+    model/mbs_session_event_report_list.c
+    model/mbs_key_info.c
+    model/mbs_qo_s_req.c
+    model/mbs_media_info.c
+    model/mbs_media_comp_rm.c
+    model/mbs_session_event.c
+    model/mbs_security_context.c
+    model/tunnel_address.c
+    model/ingress_tun_addr_info.c
+    model/broadcast_delivery_status.c
 '''.split())
 
 libsbi_openapi_inc = include_directories('.')

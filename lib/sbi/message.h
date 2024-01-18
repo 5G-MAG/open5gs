@@ -147,6 +147,7 @@ extern "C" {
 #define OGS_SBI_RESOURCE_NAME_EXCHANGE_CAPABILITY   "exchange-capability"
 
 #define OGS_SBI_RESOURCE_NAME_TMGI                  "tmgi"
+#define OGS_SBI_RESOURCE_NAME_MBS_SESSIONS          "mbs-sessions"
 
 #define OGS_SBI_PATCH_PATH_NF_STATUS                "/nfStatus"
 #define OGS_SBI_PATCH_PATH_LOAD                     "/load"
@@ -549,6 +550,8 @@ typedef struct ogs_sbi_message_s {
     OpenAPI_sec_negotiate_rsp_data_t *SecNegotiateRspData;
     OpenAPI_tmgi_allocate_t *TmgiAllocate;
     OpenAPI_tmgi_allocated_t *TmgiAllocated;
+    OpenAPI_create_req_data_t *CreateReqData;
+    OpenAPI_create_rsp_data_t *CreateRspData;
 
     ogs_sbi_links_t *links;
 
