@@ -36,6 +36,7 @@ static OGS_POOL(smf_sess_pool, smf_sess_t);
 static OGS_POOL(smf_n4_seid_pool, ogs_pool_id_t);
 
 static OGS_POOL(tmgi_pool, ogs_tmgi_t);
+static OGS_POOL(smf_mbs_sess_pool, smf_mbs_sess_t);
 
 static int context_initialized = 0;
 
@@ -46,6 +47,9 @@ static void stats_remove_smf_session(smf_sess_t *sess);
 
 static void smf_tmgi_remove(ogs_tmgi_t *tmgi);
 static void smf_tmgi_remove_all(void);
+
+static void smf_mbs_sess_remove(smf_mbs_sess_t *smf_mbs_sess);
+static void smf_mbs_sess_remove_all(void);
 
 int smf_ctf_config_init(smf_ctf_config_t *ctf_config)
 {
@@ -98,6 +102,8 @@ void smf_context_init(void)
 
     ogs_pool_init(&tmgi_pool, OGS_MAX_NUM_OF_TMGI);
     ogs_list_init(&self.tmgi_list);
+    ogs_pool_init(&smf_mbs_sess_pool, OGS_MAX_NUM_OF_MBS_SESSIONS);
+    ogs_list_init(&self.smf_mbs_sess_list);
 
     self.supi_hash = ogs_hash_make();
     ogs_assert(self.supi_hash);
@@ -121,6 +127,7 @@ void smf_context_final(void)
     ogs_assert(context_initialized == 1);
 
     smf_ue_remove_all();
+    smf_mbs_sess_remove_all();
     smf_tmgi_remove_all();
 
     ogs_assert(self.supi_hash);
@@ -143,6 +150,7 @@ void smf_context_final(void)
     ogs_pool_final(&smf_sess_pool);
     ogs_pool_final(&smf_n4_seid_pool);
 
+    ogs_pool_final(&smf_mbs_sess_pool);
     ogs_pool_final(&tmgi_pool);
 
     ogs_list_for_each_entry_safe(&self.sgw_s5c_list, next_gnode, gnode, node) {
@@ -3283,4 +3291,101 @@ ogs_tmgi_t *smf_tmgi_find_by_tmgi(ogs_tmgi_t *tmgi_to_find)
     }
 
     return NULL;
+}
+
+static smf_mbs_sess_t *smf_mbs_sess_add(void)
+{
+    smf_mbs_sess_t *smf_mbs_sess = NULL;
+
+    ogs_pool_alloc(&smf_mbs_sess_pool, &smf_mbs_sess);
+    if (!smf_mbs_sess) {
+        ogs_error("Maximum number of MBS Sessions[%d] reached",
+                    OGS_MAX_NUM_OF_MBS_SESSIONS);
+        return NULL;
+    }
+    memset(smf_mbs_sess, 0, sizeof *smf_mbs_sess);
+
+    smf_mbs_sess->index = ogs_pool_index(&smf_mbs_sess_pool, smf_mbs_sess);
+    ogs_assert(smf_mbs_sess->index > 0 && smf_mbs_sess->index <= OGS_MAX_NUM_OF_MBS_SESSIONS);
+
+    // Set mbsSessionRef
+    smf_mbs_sess->mbs_session_ref = ogs_msprintf("%d", smf_mbs_sess->index);
+    ogs_assert(smf_mbs_sess->mbs_session_ref);
+
+    ogs_list_add(&self.smf_mbs_sess_list, smf_mbs_sess);
+
+    ogs_info("[Added] Number of MBS Sessions in SMF is now %d",
+                ogs_list_count(&self.smf_mbs_sess_list));
+
+    return smf_mbs_sess;
+}
+
+static void smf_mbs_sess_remove(smf_mbs_sess_t *smf_mbs_sess)
+{
+    ogs_assert(smf_mbs_sess);
+
+    ogs_list_remove(&self.smf_mbs_sess_list, smf_mbs_sess);
+
+    if (smf_mbs_sess->mbs_session_ref)
+        ogs_free(smf_mbs_sess->mbs_session_ref);
+
+    if (smf_mbs_sess->service_type)
+        ogs_free(smf_mbs_sess->service_type);
+
+    if (smf_mbs_sess->state)
+        ogs_free(smf_mbs_sess->state);
+
+    // TMGI is allocated/freed separately
+
+    if (smf_mbs_sess->mbs_session_id.is_ssm)
+        ogs_free(smf_mbs_sess->mbs_session_id.ssm);
+
+    if (smf_mbs_sess->mbs_session_id.nid)
+        ogs_free(smf_mbs_sess->mbs_session_id.nid);
+
+    ogs_pool_free(&smf_mbs_sess_pool, smf_mbs_sess);
+
+    ogs_info("[Removed] Number of MBS Sessions in SMF is now %d",
+                ogs_list_count(&self.smf_mbs_sess_list));
+}
+
+static void smf_mbs_sess_remove_all(void)
+{
+    smf_mbs_sess_t *smf_mbs_sess = NULL, *next = NULL;
+
+    ogs_list_for_each_safe(&self.smf_mbs_sess_list, next, smf_mbs_sess)
+        smf_mbs_sess_remove(smf_mbs_sess);
+}
+
+smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, ogs_ssm_t *ssm, char *service_type)
+{
+    smf_mbs_sess_t *smf_mbs_sess = NULL;
+
+    ogs_assert(tmgi);
+    ogs_assert(service_type);
+
+    if ((smf_mbs_sess = smf_mbs_sess_add()) == NULL) {
+        ogs_error("smf_mbs_sess_create() failed");
+        return NULL;
+    }
+
+    smf_mbs_sess->tmgi = tmgi;
+
+    smf_mbs_sess->service_type = ogs_strdup(service_type);
+
+    if (ogs_strcasecmp(smf_mbs_sess->service_type, "BROADCAST") == 0) {
+        smf_mbs_sess->mbs_session_id.tmgi = tmgi;
+        smf_mbs_sess->mbs_session_id.is_tmgi = 1;
+    } else if (ogs_strcasecmp(smf_mbs_sess->service_type, "MULTICAST") == 0) {
+        if (ssm != NULL) {
+            smf_mbs_sess->mbs_session_id.ssm = ssm;
+            smf_mbs_sess->mbs_session_id.is_ssm = 1;
+        } else {
+            smf_mbs_sess->mbs_session_id.tmgi = tmgi;
+            smf_mbs_sess->mbs_session_id.is_tmgi = 1;
+        }
+        smf_mbs_sess->state = ogs_strdup("Start");
+    }
+
+    return smf_mbs_sess;
 }

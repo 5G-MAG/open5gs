@@ -164,8 +164,7 @@ bool smf_nmbsmf_handle_tmgi_allocate(
         }
     }
 
-    // TODO (borieher): Add the NID parameter
-    TmgiAllocated = OpenAPI_tmgi_allocated_create(tmgi_list, ogs_strdup(expiration_time), NULL);
+    TmgiAllocated = OpenAPI_tmgi_allocated_create(tmgi_list, ogs_strdup(expiration_time), nid);
 
     /*********************************************************************
      * Send HTTP_STATUS_OK (/nmbsmf-tmgi/v1/tmgi) to the consumer NF
@@ -294,9 +293,277 @@ bool smf_nmbsmf_handle_tmgi_deallocate(
 bool smf_nmbsmf_handle_mbs_session_create(
     ogs_sbi_stream_t *stream, ogs_sbi_message_t *message)
 {
-    // TODO (borieher): Implement MBS Session Create service operation
+    // TODO (borieher): Not handling the 307 Temporary Redirect and 308 Permanent Redirect errors for now
+    ogs_debug("MBS Session create request received");
 
-    ogs_warn("MBS Session create request received");
+    OpenAPI_create_req_data_t *CreateReqData = NULL;
 
-    return true;
+    ogs_tmgi_t tmgi_received;
+    ogs_ssm_t ssm_received;
+    ogs_tmgi_t *tmgi = NULL;
+    ogs_ssm_t *ssm = NULL;
+    smf_mbs_sess_t *mbs_sess = NULL;
+
+    /* TODO (borieher): Move this to a different place after PFCP and the AMF request are done */
+    OpenAPI_create_rsp_data_t *CreateRspData = NULL;
+    OpenAPI_tmgi_t *Tmgi = NULL;
+    OpenAPI_tmgi_t *Tmgi_copy = NULL;
+    OpenAPI_ssm_t * Ssm = NULL;
+    OpenAPI_ssm_t * Ssm_copy = NULL;
+    OpenAPI_mbs_session_id_t *Mbs_session_id = NULL;
+    OpenAPI_mbs_service_type_e Mbs_service_type = OpenAPI_mbs_service_type_NULL;
+    OpenAPI_ext_mbs_session_t *Ext_mbs_session = NULL;
+    /* */
+
+    ogs_sbi_message_t sendmsg;
+    ogs_sbi_server_t *server = NULL;
+    ogs_sbi_header_t header;
+    ogs_sbi_response_t *response = NULL;
+
+    ogs_assert(stream);
+    ogs_assert(message);
+
+    char *expiration_time = NULL;
+    // TODO (borieher): How to get NID?
+    char *nid = NULL;
+    char *service_type = NULL;
+
+    int rv = OGS_OK;
+
+    CreateReqData = message->CreateReqData;
+
+    if (!CreateReqData) {
+        ogs_error("MBS Session Create: No CreateReqData");
+        // Extracted from the OpenAPI spec, not the 3GPP TS
+        // CreateReqData must be present, send error (400)
+        smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            "Bad Request", "Requested MBS Session Create failed, no CreateReqData", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    if (!CreateReqData->mbs_session->service_type) {
+        ogs_error("MBS Session Create: service_type not present");
+        // service_type should be present, send error (400 + ERROR_INPUT_PARAMETERS)
+        smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            "Error input parameters",
+            "MBS Session Create failed, no [serviceType] present",
+            NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    service_type = ogs_strdup(OpenAPI_mbs_service_type_ToString(CreateReqData->mbs_session->service_type));
+
+    // Check service_type is not NULL
+    if (ogs_strcasecmp(service_type, "NULL") == 0) {
+        ogs_error("MBS Session Create: service_type should be MULTICAST or BROADCAST");
+        // Custom error handling, not the 3GPP TS
+        // service_type should be MULTICAST or BROADCAST, send error (400 + ERROR_INPUT_PARAMETERS)
+        smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            "Error input parameters",
+            "MBS Session Create failed, [serviceType] should be MULTICAST or BROADCAST",
+            NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    // Error when mbs_session_id is not provided and tmgi_alloc_req is not provided or set to false
+    if ((!CreateReqData->mbs_session->mbs_session_id && CreateReqData->mbs_session->tmgi_alloc_req <= 0) || \
+            (!CreateReqData->mbs_session->mbs_session_id && !CreateReqData->mbs_session->tmgi_alloc_req)) {
+        ogs_error("MBS Session Create: mbs_session_id or tmgi_alloc_req not present");
+        // Custom error handling, not the 3GPP TS
+        // mbs_session_id or tmgi_alloc_req should be present, send error (400 + ERROR_INPUT_PARAMETERS)
+        smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            "Error input parameters",
+            "MBS Session Create failed, no [mbsSessionId] nor [tmgiAllocReq] present",
+            NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    // Perform the TMGI allocate operation
+    if (CreateReqData->mbs_session->tmgi_alloc_req > 0) {
+        if (CreateReqData->mbs_session->mbs_session_id) {
+            // For multicast, SSM can be provided as MBS Session ID. But TMGI must be allocated too
+            if (CreateReqData->mbs_session->mbs_session_id->ssm) {
+                if (ogs_strcasecmp(service_type, "MULTICAST") == 0) {
+                    // TODO (borieher): Check SSM exists
+                    ogs_sbi_parse_ssm(&ssm_received, CreateReqData->mbs_session->mbs_session_id->ssm);
+                    ssm = ogs_malloc(sizeof(ogs_ssm_t));
+                    memcpy(ssm, &ssm_received, sizeof(ogs_ssm_t));
+                    // Continue with the TMGI allocate
+                } else {
+                    ogs_error("MBS Session Create: SSM as mbs_session_id and tmgi_alloc_req but service_type is not MULTICAST");
+                    // Custom error handling, not the 3GPP TS
+                    // SSM as mbs_session_id and tmgi_alloc_req should not be present if service_type is not MULTICAST, send error (400 + ERROR_INPUT_PARAMETERS)
+                    smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                        "Error input parameters",
+                        "MBS Session Create failed, SSM as [mbsSessionId] and [tmgiAllocReq] both present but service_type is not MULTICAST",
+                        NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
+                    rv = OGS_ERROR;
+                    goto cleanup;
+                }
+            } else {
+                ogs_error("MBS Session Create: TMGI as mbs_session_id and tmgi_alloc_req both present");
+                // Custom error handling, not the 3GPP TS
+                // TMGI as mbs_session_id and tmgi_alloc_req should not be present at the same time, send error (400 + ERROR_INPUT_PARAMETERS)
+                smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                    "Error input parameters",
+                    "MBS Session Create failed, TMGI as [mbsSessionId] and [tmgiAllocReq] both present",
+                    NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
+                rv = OGS_ERROR;
+                goto cleanup;
+            }
+        }
+
+        // Error checking, check the number of TMGIs available
+        if (smf_tmgi_count() >= OGS_MAX_NUM_OF_TMGI) {
+            ogs_error("MBS Session Create: Cannot allocate TMGI");
+            // Custom error handling, not the 3GPP TS
+            // Avoid reaching the maximum number of TMGI, send error (403)
+            smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
+                "Forbidden", "Cannot allocate TMGIs", NULL);
+            rv = OGS_ERROR;
+            goto cleanup;
+        }
+
+        // TMGI allocate
+        expiration_time = smf_tmgi_gen_expiration_time(OGS_DEFAULT_EXPIRATION_TIME_VALIDITY);
+        tmgi = smf_tmgi_allocate(expiration_time);
+    }
+
+    // Grab the provided TMGI as MBS Session ID
+    if (!CreateReqData->mbs_session->tmgi_alloc_req || CreateReqData->mbs_session->tmgi_alloc_req <= 0) {
+        if (CreateReqData->mbs_session->mbs_session_id) {
+            // When TMGI is already allocated, TMGI must be present either as MBS Session ID or separated
+            if (CreateReqData->mbs_session->mbs_session_id->tmgi) {
+                ogs_sbi_parse_tmgi(&tmgi_received, CreateReqData->mbs_session->mbs_session_id->tmgi);
+                tmgi = smf_tmgi_find_by_tmgi(&tmgi_received);
+            } else if (CreateReqData->mbs_session->mbs_session_id->ssm) {
+                if (ogs_strcasecmp(service_type, "MULTICAST") == 0) {
+                    if (CreateReqData->mbs_session->tmgi) {
+                        ogs_sbi_parse_tmgi(&tmgi_received, CreateReqData->mbs_session->tmgi);
+                        tmgi = smf_tmgi_find_by_tmgi(&tmgi_received);
+                        // TODO (borieher): Check SSM exists
+                        ogs_sbi_parse_ssm(&ssm_received, CreateReqData->mbs_session->mbs_session_id->ssm);
+                        ssm = ogs_malloc(sizeof(ogs_ssm_t));
+                        memcpy(ssm, &ssm_received, sizeof(ogs_ssm_t));
+                    } else {
+                        // Custom error handling, not the 3GPP TS
+                        // No TMGI provided, send error (400 + ERROR_INPUT_PARAMETERS)
+                        smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                            "Error input parameters",
+                            "MBS Session Create failed, no TMGI provided",
+                            NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
+                        rv = OGS_ERROR;
+                        goto cleanup;
+                    }
+                } else {
+                    // Error SSM provided but service type is not MULTICAST (no TMGI provided)
+                    ogs_error("MBS Session Create: SSM as mbs_session_id but service-type is not MULTICAST");
+                    // Custom error handling, not the 3GPP TS
+                    // SSM as mbs_session_id is only for MULTICAST service_type, send error (400 + ERROR_INPUT_PARAMETERS)
+                    smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                        "Error input parameters",
+                        "MBS Session Create failed, SSM as [mbsSessionId] but [serviceType] is not MULTICAST",
+                        NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
+                    rv = OGS_ERROR;
+                    goto cleanup;
+                }
+            }
+
+            // Error checking, TMGI not found
+            if (!tmgi) {
+                // TMGI not found, send error (404 + UNKNOWN_TMGI)
+                smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_NOT_FOUND,
+                    "Unknown TMGI",
+                    "Requested MBS Session Create failed, TMGI provided expired or cannot be found",
+                    NMBSMF_MBSSESSION_UNKNOWN_TMGI);
+                rv = OGS_ERROR;
+                goto cleanup;
+            }
+        }
+    }
+
+    // TODO (borieher): Check provided TMGI is not added to an existing MBS Session
+
+    // MBS Session create
+    mbs_sess = smf_mbs_sess_create(tmgi, ssm, service_type);
+
+    Tmgi = ogs_sbi_build_tmgi(mbs_sess->tmgi);
+    if (mbs_sess->mbs_session_id.is_tmgi) {
+        Tmgi_copy = OpenAPI_tmgi_copy(Tmgi_copy, Tmgi);
+        Mbs_session_id = OpenAPI_mbs_session_id_create(Tmgi_copy, NULL, mbs_sess->mbs_session_id.nid);
+    }
+
+    if (mbs_sess->mbs_session_id.is_ssm) {
+        Ssm = ogs_sbi_build_ssm(mbs_sess->mbs_session_id.ssm);
+        Ssm_copy = OpenAPI_ssm_copy(Ssm_copy, Ssm);
+        Mbs_session_id = OpenAPI_mbs_session_id_create(NULL, Ssm_copy, nid);
+    }
+
+    Mbs_service_type = OpenAPI_mbs_service_type_FromString(mbs_sess->service_type);
+
+    Ext_mbs_session = OpenAPI_ext_mbs_session_create(Mbs_session_id, NULL, 0, Tmgi, NULL, Mbs_service_type,
+        NULL, 0, NULL, 0, NULL, 0, NULL, Ssm, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+        OpenAPI_mbs_session_activity_status_NULL, NULL, 0, NULL, NULL, NULL, 0);
+
+    CreateRspData = OpenAPI_create_rsp_data_create(Ext_mbs_session, NULL);
+
+    // TODO (borieher): Check the TMGIs in the already created MBS Sessions to avoid collisions
+
+    // TODO (borieher): Send here the PFCP Session Establishment request (handle the response on the PFCP state-machine)
+
+    // NOTE (borieher): Currently the response is right after the request, but in the call flow is after the PFCP Session Establishment
+    //                  separate this in request and response
+
+    /*********************************************************************
+     * Send OGS_SBI_HTTP_STATUS_CREATED (/nmbsmf-mbssession/v1/mbs-sessions) to the consumer NF
+     *********************************************************************/
+
+    memset(&sendmsg, 0, sizeof(sendmsg));
+
+    server = ogs_sbi_server_from_stream(stream);
+    ogs_assert(server);
+
+    // Adding the mbsSessionRef in the headers for the created resource
+    memset(&header, 0, sizeof(header));
+    header.service.name = (char *) OGS_SBI_SERVICE_NAME_NMBSMF_MBS_SESSIONS;
+    header.api.version = (char *) OGS_SBI_API_V1;
+    header.resource.component[0] =
+        (char *) OGS_SBI_RESOURCE_NAME_MBS_SESSIONS;
+    header.resource.component[1] = mbs_sess->mbs_session_ref;
+
+    sendmsg.http.location = ogs_sbi_server_uri(server, &header);
+
+    sendmsg.CreateRspData = CreateRspData;
+
+    response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_CREATED);
+
+    ogs_assert(response);
+
+    ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+
+cleanup:
+    if (expiration_time)
+        ogs_free(expiration_time);
+
+    if (nid)
+        ogs_free(nid);
+
+    if (service_type) {
+        ogs_free(service_type);
+    }
+
+    if (CreateRspData)
+        OpenAPI_create_rsp_data_free(CreateRspData);
+
+    if (sendmsg.http.location)
+        ogs_free(sendmsg.http.location);
+
+    if (rv == OGS_OK)
+        return true;
+    else
+        return false;
 }

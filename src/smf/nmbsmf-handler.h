@@ -46,6 +46,12 @@ bool smf_nmbsmf_handle_tmgi_deallocate(
 
 /* Nmbsmf_MBSSession Service API */
 
+/* Application error codes */
+#define NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS "ERROR_INPUT_PARAMETERS"
+#define NMBSMF_MBSSESSION_MBS_SESSION_ALREADY_CREATED "MBS_SESSION_ALREADY_CREATED"
+#define NMBSMF_MBSSESSION_UNKNOWN_TMGI "UNKNOWN_TMGI"
+#define NMBSMF_MBSESSION_UNKNOWN_MBS_SESSION "UNKNOWN_MBS_SESSION"
+
 /* Nmbsmf_MBSSession Service - MBS Session Create service operation */
 bool smf_nmbsmf_handle_mbs_session_create(
     ogs_sbi_stream_t *stream, ogs_sbi_message_t *message);

@@ -105,6 +105,7 @@ typedef struct smf_context_s {
     ogs_list_t      smf_ue_list;
 
     ogs_list_t      tmgi_list;
+    ogs_list_t      smf_mbs_sess_list;
 } smf_context_t;
 
 typedef struct smf_gtp_node_s {
@@ -434,8 +435,27 @@ typedef struct smf_sess_s {
     bool n2_released;
 } smf_sess_t;
 
+typedef struct smf_mbs_sess_s {
+    ogs_lnode_t lnode;      /* A node of list_t */
+
+    uint32_t index;         /* An index of this node */
+    char *mbs_session_ref;  /* mbsSessionRef */
+
+    ogs_mbs_session_id_t mbs_session_id;
+    // expiration_time is stored in TMGI
+    ogs_tmgi_t *tmgi;
+    char *service_type;
+
+    // Multicast specific
+    char *state;
+
+} smf_mbs_sess_t;
+
 // NOTE (borieher): Not defined in the specs, limited to 20 for now
 #define OGS_MAX_NUM_OF_TMGI 20
+
+// NOTE (borieher): Not defined in the specs, limited to OGS_MAX_NUM_OF_TMGI
+#define OGS_MAX_NUM_OF_MBS_SESSIONS OGS_MAX_NUM_OF_TMGI
 
 // NOTE (borieher): Not defined in the specs, default to 2 extra hours
 #define OGS_DEFAULT_EXPIRATION_TIME_VALIDITY 7200
@@ -552,6 +572,8 @@ char *smf_tmgi_gen_expiration_time(int validity_seconds);
 ogs_tmgi_t *smf_tmgi_allocate(char *expiration_time);
 void smf_tmgi_deallocate(ogs_tmgi_t *tmgi);
 ogs_tmgi_t *smf_tmgi_find_by_tmgi(ogs_tmgi_t *tmgi_to_find);
+
+smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, ogs_ssm_t *ssm, char *service_type);
 
 #ifdef __cplusplus
 }
