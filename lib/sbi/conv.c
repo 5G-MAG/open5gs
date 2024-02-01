@@ -1609,3 +1609,74 @@ OpenAPI_tmgi_t *ogs_sbi_build_tmgi(ogs_tmgi_t *tmgi)
 
     return Tmgi;
 }
+
+bool ogs_sbi_parse_ssm(ogs_ssm_t *ssm, OpenAPI_ssm_t *Ssm)
+{
+    ogs_assert(ssm);
+    ogs_assert(Ssm);
+    ogs_assert(Ssm->source_ip_addr);
+    ogs_assert(Ssm->dest_ip_addr);
+
+    if (Ssm->source_ip_addr->ipv4_addr) {
+        ogs_ipv4_from_string(&ssm->src_ip_addr.addr, Ssm->source_ip_addr->ipv4_addr);
+        ssm->src_ip_addr.ipv4 = 1;
+        ssm->src_ip_addr.len = OGS_IPV4_LEN;
+    } else if (Ssm->source_ip_addr->ipv6_addr) {
+        ogs_ipv6addr_from_string(ssm->src_ip_addr.addr6, Ssm->source_ip_addr->ipv6_addr);
+        ssm->src_ip_addr.ipv6 = 1;
+        ssm->src_ip_addr.len = OGS_IPV6_LEN;
+    } else if (Ssm->source_ip_addr->ipv6_prefix) {
+        // TODO (borieher): What to do with the IPv6 prefix?
+        //ogs_ipv6prefix_from_string(ssm->src_ip_addr.addr6, OGS_IPV6_128_PREFIX_LEN, Ssm->source_ip_addr->ipv6_prefix);
+        ogs_error("SSM with IPv6 prefix is not implemented");
+    }
+
+    if (Ssm->dest_ip_addr->ipv4_addr) {
+        ogs_ipv4_from_string(&ssm->dest_ip_addr.addr, Ssm->dest_ip_addr->ipv4_addr);
+        ssm->dest_ip_addr.ipv4 = 1;
+        ssm->dest_ip_addr.len = OGS_IPV4_LEN;
+    } else if (Ssm->dest_ip_addr->ipv6_addr) {
+        ogs_ipv6addr_from_string(ssm->dest_ip_addr.addr6, Ssm->dest_ip_addr->ipv6_addr);
+        ssm->dest_ip_addr.ipv6 = 1;
+        ssm->dest_ip_addr.len = OGS_IPV6_LEN;
+    } else if (Ssm->dest_ip_addr->ipv6_prefix) {
+        // TODO (borieher): What to do with the IPv6 prefix?
+        //ogs_ipv6prefix_from_string(ssm->dst_ip_addr.addr6, OGS_IPV6_128_PREFIX_LEN, Ssm->dest_ip_addr->ipv6_prefix);
+        ogs_error("SSM with IPv6 prefix is not implemented");
+    }
+
+    return true;
+}
+
+OpenAPI_ssm_t *ogs_sbi_build_ssm(ogs_ssm_t *ssm)
+{
+    OpenAPI_ssm_t *Ssm = NULL;
+    OpenAPI_ip_addr_t *Src_ip_addr = NULL;
+    OpenAPI_ip_addr_t *Dest_ip_addr = NULL;
+    char *src_ip_addr = NULL;
+    char *dest_ip_addr = NULL;
+
+    ogs_assert(ssm);
+
+    if (ssm->src_ip_addr.ipv4) {
+        src_ip_addr = ogs_ipv4_to_string(ssm->src_ip_addr.addr);
+        Src_ip_addr = OpenAPI_ip_addr_create(src_ip_addr, NULL, NULL);
+    } else if (ssm->src_ip_addr.ipv6) {
+        src_ip_addr = ogs_ipv6addr_to_string(ssm->src_ip_addr.addr6);
+        Src_ip_addr = OpenAPI_ip_addr_create(NULL, src_ip_addr, NULL);
+    }
+    // TODO (borieher): What to do with the prefix here?
+
+    if (ssm->dest_ip_addr.ipv4) {
+        dest_ip_addr = ogs_ipv4_to_string(ssm->dest_ip_addr.addr);
+        Dest_ip_addr = OpenAPI_ip_addr_create(dest_ip_addr, NULL, NULL);
+    } else if (ssm->dest_ip_addr.ipv6) {
+        dest_ip_addr = ogs_ipv6addr_to_string(ssm->dest_ip_addr.addr6);
+        Dest_ip_addr = OpenAPI_ip_addr_create(NULL, dest_ip_addr, NULL);
+    }
+    // TODO (borieher): What to do with the prefix here?
+
+    Ssm = OpenAPI_ssm_create(Src_ip_addr, Dest_ip_addr);
+
+    return Ssm;
+}
