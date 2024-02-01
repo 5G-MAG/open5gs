@@ -947,7 +947,7 @@ typedef struct ogs_tmgi_s {
  */
 typedef struct ogs_ssm_s {
     ogs_ip_t src_ip_addr;
-    ogs_ip_t dst_ip_addr;
+    ogs_ip_t dest_ip_addr;
 } ogs_ssm_t;
 
 /***************************************************
@@ -962,10 +962,13 @@ typedef struct ogs_ssm_s {
  */
 typedef struct ogs_mbs_session_id_s {
     union {
-        ogs_tmgi_t tmgi;
-        ogs_ssm_t ssm;
+        ogs_tmgi_t *tmgi;
+        ogs_ssm_t *ssm;
     };
     char *nid;
+ED3(uint8_t is_tmgi:1;,
+    uint8_t is_ssm:1;,
+    uint8_t spare:6;)
 } ogs_mbs_session_id_t;
 
 #ifdef __cplusplus
