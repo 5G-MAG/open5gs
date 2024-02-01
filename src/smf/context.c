@@ -2135,7 +2135,7 @@ void smf_sess_create_indirect_data_forwarding(smf_sess_t *sess)
 
                 resource = ogs_pfcp_find_gtpu_resource(
                         &sess->pfcp_node->gtpu_resource_list,
-                        sess->session.name, OGS_PFCP_INTERFACE_ACCESS);
+                        sess->session.name, pdr->src_if);
 
                 if (resource) {
                     ogs_user_plane_ip_resource_info_to_sockaddr(&resource->info,
@@ -2884,6 +2884,7 @@ int smf_pco_build(uint8_t *pco_buf, uint8_t *buffer, int length)
 
                 ogs_assert(num_of_ipcp <= OGS_PCO_MAX_NUM_OF_IPCP);
                 pco_ipcp[num_of_ipcp].code = 2; /* Code : Configuration Ack */
+                pco_ipcp[num_of_ipcp].identifier = ipcp->identifier; /* ID: Needs to match request */
 
                 out_len = 4;
                 /* Primary DNS Server IP Address */

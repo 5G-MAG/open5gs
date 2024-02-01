@@ -748,6 +748,9 @@ int ogs_pfcp_context_parse_config(const char *local, const char *remote)
                         const char *high[OGS_MAX_NUM_OF_SUBNET_RANGE];
                         int i, num = 0;
 
+                        memset(low, 0, sizeof(low));
+                        memset(high, 0, sizeof(high));
+
                         if (ogs_yaml_iter_type(&subnet_array) ==
                                 YAML_MAPPING_NODE) {
                             memcpy(&subnet_iter, &subnet_array,
@@ -1181,7 +1184,7 @@ void ogs_pfcp_object_teid_hash_set(
             ogs_gtpu_resource_t *resource = NULL;
             resource = ogs_pfcp_find_gtpu_resource(
                     &ogs_gtp_self()->gtpu_resource_list,
-                    pdr->dnn, OGS_PFCP_INTERFACE_ACCESS);
+                    pdr->dnn, pdr->src_if);
             if (resource) {
                 ogs_assert(
                     (resource->info.v4 && pdr->f_teid.ipv4) ||
