@@ -3390,3 +3390,14 @@ smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, ogs_ssm_t *ssm, char *serv
 
     return smf_mbs_sess;
 }
+
+smf_mbs_sess_t *smf_mbs_sess_find(uint32_t index)
+{
+    return ogs_pool_find(&smf_mbs_sess_pool, index);
+}
+
+smf_mbs_sess_t *smf_mbs_sess_find_by_mbs_session_ref(char *mbs_session_ref)
+{
+    ogs_assert(mbs_session_ref);
+    return smf_mbs_sess_find(atoll(mbs_session_ref));
+}

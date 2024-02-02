@@ -567,3 +567,18 @@ cleanup:
     else
         return false;
 }
+
+/*
+ * 3GPP TS 29.532 - Release 17.4.0
+ * 5G System; 5G Multicast-Broadcast Session Management Services; Stage 3
+ * Ch. 5.3.2.4 - Nmbsmf_MBSSession Service - MBS Session Release service operation
+ */
+bool smf_nmbsmf_handle_mbs_session_release(
+    smf_mbs_sess_t *mbs_sess, ogs_sbi_stream_t *stream, ogs_sbi_message_t *message)
+{
+    // TODO (borieher): Implement MBS Session Release service operation
+
+    ogs_warn("MBS Session release request received");
+
+    return true;
+}

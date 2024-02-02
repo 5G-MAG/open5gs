@@ -56,6 +56,7 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
     smf_sess_t *sess = NULL;
     smf_ue_t *smf_ue = NULL;
     smf_gtp_node_t *smf_gnode = NULL;
+    smf_mbs_sess_t *mbs_sess = NULL;
 
     ogs_gtp_xact_t *gtp_xact = NULL;
     ogs_gtp2_message_t gtp2_message;
@@ -674,6 +675,28 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
                 SWITCH(sbi_message.h.method)
                 CASE(OGS_SBI_HTTP_METHOD_POST)
                     smf_nmbsmf_handle_mbs_session_create(stream, &sbi_message);
+                    break;
+
+                CASE(OGS_SBI_HTTP_METHOD_DELETE)
+                    if (!sbi_message.h.resource.component[1]) {
+                        ogs_error("No mbsSessionRef [%s]",
+                                sbi_message.h.resource.component[1]);
+                        smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                            "Bad Request", "No mbsSessionRef", NULL);
+                        break;
+                    }
+
+                    mbs_sess = smf_mbs_sess_find_by_mbs_session_ref(
+                            sbi_message.h.resource.component[1]);
+
+                    if (!mbs_sess) {
+                        ogs_warn("Not found [%s]", sbi_message.h.uri);
+                        smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_NOT_FOUND,
+                            "Not Found", "Unknown MBS Session", NMBSMF_MBSESSION_UNKNOWN_MBS_SESSION);
+                        break;
+                    }
+
+                    smf_nmbsmf_handle_mbs_session_release(mbs_sess, stream, &sbi_message);
                     break;
 
                 DEFAULT
