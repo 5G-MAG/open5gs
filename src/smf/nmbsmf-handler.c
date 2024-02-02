@@ -576,9 +576,35 @@ cleanup:
 bool smf_nmbsmf_handle_mbs_session_release(
     smf_mbs_sess_t *mbs_sess, ogs_sbi_stream_t *stream, ogs_sbi_message_t *message)
 {
-    // TODO (borieher): Implement MBS Session Release service operation
+    // TODO (borieher): Not handling the 307 Temporary Redirect and 308 Permanent Redirect errors for now
+    ogs_debug("MBS Session release request received");
 
-    ogs_warn("MBS Session release request received");
+    ogs_sbi_message_t sendmsg;
+    ogs_sbi_response_t *response = NULL;
+
+    ogs_assert(stream);
+    ogs_assert(message);
+    ogs_assert(mbs_sess);
+
+    // TODO (borieher): Send here the MBS Broadcast Context Release (handle the response and perform the PFCP Release)
+
+    // NOTE (borieher): Currently the response is right after the request, but in the call flow is after the PFCP Session Deletion
+    //                  separate this in request and response
+
+    // MBS Session release
+    smf_mbs_sess_release(mbs_sess);
+
+    /*********************************************************************
+     * Send HTTP_STATUS_NO_CONTENT (/nmbsmf-mbssession/v1/mbs-sessions) to the consumer NF
+     *********************************************************************/
+
+    memset(&sendmsg, 0, sizeof(sendmsg));
+
+    response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
+
+    ogs_assert(response);
+
+    ogs_assert(true == ogs_sbi_server_send_response(stream, response));
 
     return true;
 }
