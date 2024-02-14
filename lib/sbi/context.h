@@ -228,6 +228,8 @@ typedef struct ogs_sbi_nf_service_s {
     int capacity;
     int load;
 
+    char *supported_features;
+
     /* Related Context */
     ogs_sbi_nf_instance_t *nf_instance;
     void *client;

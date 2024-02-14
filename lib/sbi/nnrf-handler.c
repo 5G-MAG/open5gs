@@ -317,6 +317,10 @@ static void handle_nf_service(
         nf_service->capacity = NFService->capacity;
     if (NFService->is_load == true)
         nf_service->load = NFService->load;
+
+    if(NFService->supported_features)
+       nf_service->supported_features = ogs_strdup(NFService->supported_features);
+
 }
 
 static void handle_smf_info(
