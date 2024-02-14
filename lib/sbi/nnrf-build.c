@@ -691,6 +691,9 @@ static OpenAPI_nf_service_t *build_nf_service(
     NFService->is_load = true;
     NFService->load = nf_service->load;
 
+    if(nf_service->supported_features)
+        NFService->supported_features = nf_service->supported_features;
+
     return NFService;
 }
 
@@ -729,6 +732,9 @@ static void free_nf_service(OpenAPI_nf_service_t *NFService)
 
     if (NFService->fqdn)
         ogs_free(NFService->fqdn);
+
+    if(NFService->supported_features)
+        ogs_free(NFService->supported_features); 
 
     ogs_free(NFService);
 }
