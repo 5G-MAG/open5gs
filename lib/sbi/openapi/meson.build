@@ -1370,6 +1370,7 @@ libsbi_openapi_sources = files('''
 '''.split())
 
 libsbi_openapi_inc = include_directories('.')
+libsbi_openapi_model_inc = include_directories('model')
 
 sbi_openapi_cc_flags = ['-DOGS_SBI_COMPILATION']
 

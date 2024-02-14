@@ -33,6 +33,8 @@ version_conf = configuration_data()
 version_conf.set_quoted('OPEN5GS_VERSION', package_version)
 configure_file(output : 'version.h', configuration : version_conf)
 
+app_main_c = files(['main.c'])
+
 subdir('mme')
 subdir('hss')
 subdir('sgwc')
