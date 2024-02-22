@@ -318,7 +318,7 @@ static void handle_nf_service(
     if (NFService->is_load == true)
         nf_service->load = NFService->load;
 
-    if(NFService->supported_features)
+    if (NFService->supported_features)
        nf_service->supported_features = ogs_strdup(NFService->supported_features);
 
 }
