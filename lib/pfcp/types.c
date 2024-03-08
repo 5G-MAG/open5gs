@@ -751,3 +751,222 @@ int16_t ogs_pfcp_build_user_id(
 
     return octet->len;
 }
+
+int16_t ogs_pfcp_build_mbs_session_identifier(ogs_tlv_octet_t *octet,
+        ogs_pfcp_mbs_session_identifier_t *mbs_session_identifier, void *data, int data_len)
+{
+    ogs_pfcp_mbs_session_identifier_t target;
+    int16_t size = 0;
+
+    ogs_assert(mbs_session_identifier);
+    ogs_assert(octet);
+    ogs_assert(data);
+    ogs_assert(data_len);
+
+    octet->data = data;
+    memcpy(&target, mbs_session_identifier, sizeof(ogs_pfcp_mbs_session_identifier_t));
+
+    ogs_assert(size + sizeof(target.octet5) <= data_len);
+    memcpy((uint8_t *)octet->data + size,
+            &target.octet5, sizeof(target.octet5));
+    size += sizeof(target.octet5);
+
+    if (target.tmgif) {
+        ogs_assert(size + sizeof(target.tmgi.mbs_service_id) <= data_len);
+        memcpy((uint8_t *)octet->data + size, &target.tmgi.mbs_service_id,
+            sizeof(target.tmgi.mbs_service_id));
+        size += sizeof(target.tmgi.mbs_service_id);
+
+        ogs_assert(size + sizeof(target.tmgi.plmn_id) <= data_len);
+        memcpy((uint8_t *)octet->data + size, &target.tmgi.plmn_id,
+            sizeof(target.tmgi.plmn_id));
+        size += sizeof(target.tmgi.plmn_id);
+    }
+
+    if (target.ssmif) {
+        // TODO (borieher): Add SSM
+    }
+
+    if (target.nidif) {
+        // TODO (borieher): Add NID
+    }
+
+    octet->len = size;
+
+    return octet->len;
+}
+
+int16_t ogs_pfcp_parse_mbs_session_identifier(
+        ogs_pfcp_mbs_session_identifier_t *mbs_session_identifier, ogs_tlv_octet_t *octet)
+{
+    int16_t size = 0;
+
+    ogs_assert(mbs_session_identifier);
+    ogs_assert(octet);
+
+    memset(mbs_session_identifier, 0, sizeof(ogs_pfcp_mbs_session_identifier_t));
+
+    mbs_session_identifier->octet5 = ((uint8_t *)octet->data)[size];
+    size += sizeof(mbs_session_identifier->octet5);
+
+    if (mbs_session_identifier->tmgif) {
+        mbs_session_identifier->tmgi.mbs_service_id[0] = ((uintptr_t)octet->data >> 16) & 0xff;
+        mbs_session_identifier->tmgi.mbs_service_id[1] = ((uintptr_t)octet->data >> 8) & 0xff;
+        mbs_session_identifier->tmgi.mbs_service_id[2] = ((uintptr_t)octet->data) & 0xff;
+        size += sizeof(mbs_session_identifier->tmgi.mbs_service_id);
+
+        memcpy(&mbs_session_identifier->tmgi.plmn_id, (uint8_t *)octet->data + size,
+        sizeof(mbs_session_identifier->tmgi.plmn_id));
+        size += sizeof(mbs_session_identifier->tmgi.plmn_id);
+    }
+
+    if (mbs_session_identifier->ssmif) {
+        // TODO (borieher): Add SSM
+    }
+
+    if (mbs_session_identifier->nidif) {
+        // TODO (borieher): Add NID
+    }
+
+    ogs_assert(size == octet->len);
+
+    return size;
+}
+
+int16_t ogs_pfcp_build_multicast_transport_information(ogs_tlv_octet_t *octet,
+        ogs_pfcp_multicast_transport_information_t *multicast_transport_information, void *data, int data_len)
+{
+    ogs_pfcp_multicast_transport_information_t target;
+    int16_t size = 0;
+
+    ogs_assert(multicast_transport_information);
+    ogs_assert(octet);
+    ogs_assert(data);
+    ogs_assert(data_len);
+
+    octet->data = data;
+    memcpy(&target, multicast_transport_information, sizeof(ogs_pfcp_multicast_transport_information_t));
+
+    // spare
+    ogs_assert(size + sizeof(target.spare) <= data_len);
+    memcpy((uint8_t *)octet->data + size,
+            &target.spare, sizeof(target.spare));
+    size += sizeof(target.spare);
+
+    // c_teid
+    ogs_assert(size + sizeof(target.c_teid) <= data_len);
+    memcpy((uint8_t *)octet->data + size,
+            &target.c_teid, sizeof(target.c_teid));
+    size += sizeof(target.c_teid);
+
+    // ip_multicast_distribution_address
+    ogs_assert(size + sizeof(target.ip_multicast_distribution_address.flags) <= data_len);
+    memcpy((uint8_t *)octet->data + size,
+            &target.ip_multicast_distribution_address.flags, sizeof(target.ip_multicast_distribution_address.flags));
+    size += sizeof(target.ip_multicast_distribution_address.flags);
+
+    if (target.ip_multicast_distribution_address.address_type == 0) {
+        // IPv4
+        ogs_assert(target.ip_multicast_distribution_address.address_length == sizeof(target.ip_multicast_distribution_address.ipv4_addr));
+        ogs_assert(size + sizeof(target.ip_multicast_distribution_address.ipv4_addr) <= data_len);
+        memcpy((uint8_t *)octet->data + size,
+                &target.ip_multicast_distribution_address.ipv4_addr, sizeof(target.ip_multicast_distribution_address.ipv4_addr));
+        size += sizeof(target.ip_multicast_distribution_address.ipv4_addr);
+    } else if (target.ip_multicast_distribution_address.address_type == 1) {
+        // IPv6
+        ogs_assert(target.ip_multicast_distribution_address.address_length == OGS_IPV6_LEN);
+        ogs_assert(size + OGS_IPV6_LEN <= data_len);
+        memcpy((uint8_t *)octet->data + size,
+                &target.ip_multicast_distribution_address.ipv6_addr, OGS_IPV6_LEN);
+        size += OGS_IPV6_LEN;
+    }
+
+    // ip_source_address
+    ogs_assert(size + sizeof(target.ip_source_address.flags) <= data_len);
+    memcpy((uint8_t *)octet->data + size,
+            &target.ip_source_address.flags, sizeof(target.ip_source_address.flags));
+    size += sizeof(target.ip_source_address.flags);
+
+    if (target.ip_source_address.address_type == 0) {
+        // IPv4
+        ogs_assert(target.ip_source_address.address_length == sizeof(target.ip_source_address.ipv4_addr));
+        ogs_assert(size + sizeof(target.ip_source_address.ipv4_addr) <= data_len);
+        memcpy((uint8_t *)octet->data + size,
+                &target.ip_source_address.ipv4_addr, sizeof(target.ip_source_address.ipv4_addr));
+        size += sizeof(target.ip_source_address.ipv4_addr);
+    } else if (target.ip_source_address.address_type == 1) {
+        // IPv6
+        ogs_assert(target.ip_source_address.address_length == OGS_IPV6_LEN);
+        ogs_assert(size + OGS_IPV6_LEN <= data_len);
+        memcpy((uint8_t *)octet->data + size,
+                &target.ip_source_address.ipv6_addr, OGS_IPV6_LEN);
+        size += OGS_IPV6_LEN;
+    }
+
+    octet->len = size;
+
+    return octet->len;
+}
+
+int16_t ogs_pfcp_parse_multicast_transport_information(
+        ogs_pfcp_multicast_transport_information_t *multicast_transport_information, ogs_tlv_octet_t *octet)
+{
+    int16_t size = 0;
+
+    ogs_assert(multicast_transport_information);
+    ogs_assert(octet);
+
+    memset(multicast_transport_information, 0, sizeof(ogs_pfcp_multicast_transport_information_t));
+
+    // spare
+    multicast_transport_information->spare = ((uint8_t *)octet->data)[size];
+    size += sizeof(multicast_transport_information->spare);
+
+    // c_teid
+    ogs_assert(size + sizeof(multicast_transport_information->c_teid) <= octet->len);
+    memcpy(&multicast_transport_information->c_teid, (unsigned char *)octet->data + size,
+            sizeof(multicast_transport_information->c_teid));
+    size += sizeof(multicast_transport_information->c_teid);
+
+    // ip_multicast_distribution_address
+    multicast_transport_information->ip_multicast_distribution_address.flags = ((uint8_t *)octet->data)[size];
+    size += sizeof(multicast_transport_information->ip_multicast_distribution_address.flags);
+    if (multicast_transport_information->ip_multicast_distribution_address.address_type == 0) {
+        // IPv4
+        ogs_assert(multicast_transport_information->ip_multicast_distribution_address.address_length == sizeof(multicast_transport_information->ip_multicast_distribution_address.ipv4_addr));
+        ogs_assert(size + sizeof(multicast_transport_information->ip_multicast_distribution_address.ipv4_addr) <= octet->len);
+        memcpy(&multicast_transport_information->ip_multicast_distribution_address.ipv4_addr,
+            (unsigned char *)octet->data + size,
+            sizeof(multicast_transport_information->ip_multicast_distribution_address.ipv4_addr));
+        size += sizeof(multicast_transport_information->ip_multicast_distribution_address.ipv4_addr);
+    } else if (multicast_transport_information->ip_multicast_distribution_address.address_type == 1) {
+        // IPv6
+        ogs_assert(multicast_transport_information->ip_multicast_distribution_address.address_length == OGS_IPV6_LEN);
+        ogs_assert(size + OGS_IPV6_LEN <= octet->len);
+        memcpy(&multicast_transport_information->ip_multicast_distribution_address.ipv6_addr, (unsigned char *)octet->data + size, OGS_IPV6_LEN);
+        size += OGS_IPV6_LEN;
+    }
+
+    // ip_source_address
+    multicast_transport_information->ip_source_address.flags = ((uint8_t *)octet->data)[size];
+    size += sizeof(multicast_transport_information->ip_source_address.flags);
+    if (multicast_transport_information->ip_source_address.address_type == 0) {
+        // IPv4
+        ogs_assert(multicast_transport_information->ip_source_address.address_length == sizeof(multicast_transport_information->ip_source_address.ipv4_addr));
+        ogs_assert(size + sizeof(multicast_transport_information->ip_source_address.ipv4_addr) <= octet->len);
+        memcpy(&multicast_transport_information->ip_source_address.ipv4_addr,
+            (unsigned char *)octet->data + size,
+            sizeof(multicast_transport_information->ip_source_address.ipv4_addr));
+        size += sizeof(multicast_transport_information->ip_source_address.ipv4_addr);
+    } else if (multicast_transport_information->ip_source_address.address_type == 1) {
+        // IPv6
+        ogs_assert(multicast_transport_information->ip_source_address.address_length == OGS_IPV6_LEN);
+        ogs_assert(size + OGS_IPV6_LEN <= octet->len);
+        memcpy(&multicast_transport_information->ip_source_address.ipv6_addr, (unsigned char *)octet->data + size, OGS_IPV6_LEN);
+        size += OGS_IPV6_LEN;
+    }
+
+    ogs_assert(size == octet->len);
+
+    return size;
+}

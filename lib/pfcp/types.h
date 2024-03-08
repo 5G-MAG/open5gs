@@ -1673,6 +1673,213 @@ ED3(uint8_t     spare:6;,
     };
 } __attribute__ ((packed)) ogs_pfcp_sereq_flags_t;
 
+/*
+ * 8.2.137 IP Multicast Address
+ *
+ * The following flags are coded within Octet 5:
+ * - Bit 1 – V6: If this bit is set to "1", then the (start) IPv6 address field shall be present,
+ *   otherwise the (start) IPv6 address field shall not be present.
+ * - Bit 2 – V4: If this bit is set to "1", then the (start) IPv4 address field shall be present,
+ *   otherwise the (start) IPv4 address field shall not be present.
+ * - Bit 3 – R (Range): If this bit is set to "1", this indicates that a range of addresses is included,
+ *   i.e. that
+ *   - the (start) IPv4 address and (end) IPv4 address fields shall be present if bit 2 (V4)
+ *     is set to "1";
+ *   - the (start) IPv6 address and (end) IPv6 address fields shall be present if bit 1 (V6) is set to "1",
+ *     otherwise (end) address fields shall not be present.
+ * - Bit 4 – Any: If this bit is set to "1", this indicates any IP multicast address;
+ *   in this case, no IP address field shall be included.
+ */
+typedef struct ogs_pfcp_ip_multicast_address_s {
+    union {
+        struct {
+ED5(uint8_t         spare:4;,
+    uint8_t         a:1;,
+    uint8_t         r:1;,
+    uint8_t         v4:1;,
+    uint8_t         v6:1;)
+        };
+        uint8_t     octet5;
+    };
+        uint32_t    s_ipv4_addr;
+        uint8_t     s_ipv6_addr[OGS_IPV6_LEN];
+        uint32_t    e_ipv4_addr;
+        uint8_t     e_ipv6_addr[OGS_IPV6_LEN];
+} __attribute__ ((packed)) ogs_pfcp_ip_multicast_address_t;
+
+/*
+ * 8.2.138 Source IP Address
+ *
+ * The following flags are coded within Octet 5:
+ * - Bit 1 – V6: If this bit is set to "1", then the IPv6 address field shall be present,
+ *   otherwise the IPv6 address field shall not be present.
+ * - Bit 2 – V4: If this bit is set to "1", then the IPv4 address field shall be present,
+ *   otherwise the IPv4 address field shall not be present.
+ * - Bit 3 – Mask/Prefix Length: If this bit is set to "1", then the mask
+ *   (for IPv4) / prefix (for IPv6) length field shall be present, otherwise this field shall
+ *   not be present.
+ */
+typedef struct ogs_pfcp_source_ip_address_s {
+    union {
+        struct {
+ED4(uint8_t         spare:5;,
+    uint8_t         mpl:1;,
+    uint8_t         v4:1;,
+    uint8_t         v6:1;)
+        };
+        uint8_t     octet5;
+    };
+        uint32_t    ipv4_addr;
+        uint8_t     ipv6_addr[OGS_IPV6_LEN];
+        uint8_t     mask_prefix_len;
+} __attribute__ ((packed)) ogs_pfcp_source_ip_address_t;
+
+/*
+ * 8.2.206 MBS Session Identifier
+ *
+ * The following bits within Octet 5 shall indicate:
+ * - Bit 1 – TMGI: if this bit is set to "1", it indicates that the TMGI field
+ *   shall be present, otherwise it shall not be present;
+ * - Bit 2 – SSMI: if this bit is set to "1", it indicates that the Source Specific IP Multicast Address
+ *   field shall be present, otherwise it shall not be present;
+ * - Bit 3 – NIDI: if this bit is set to "1", it indicates that the Network Identifier (NID)
+ *   field shall be present, otherwise it shall not be present.
+ */
+typedef struct ogs_pfcp_mbs_session_identifier_s {
+    union {
+        struct {
+ED4(uint8_t         spare:5;,
+    uint8_t         nidif:1;,
+    uint8_t         ssmif:1;,
+    uint8_t         tmgif:1;)
+        };
+        uint8_t     octet5;
+    };
+
+    struct {
+        uint8_t     mbs_service_id[3];
+        union {
+            struct {
+ED2(uint8_t         mcc2:4;,
+    uint8_t         mcc1:4;)
+ED2(uint8_t         mnc3:4;,
+    uint8_t         mcc3:4;)
+ED2(uint8_t         mnc2:4;,
+    uint8_t         mnc1:4;)
+            };
+            uint8_t plmn_id[3];
+        };
+    } tmgi;
+
+    struct {
+        struct {
+            union {
+                struct {
+ED2(uint8_t         address_type:2;,
+    uint8_t         address_length:6;)
+                };
+                uint8_t flags;
+            };
+            union {
+                uint32_t    ipv4_addr;
+                uint8_t     ipv6_addr[OGS_IPV6_LEN];
+            };
+        } ip_multicast_distribution_address;
+
+        struct {
+            union {
+                struct {
+ED2(uint8_t         address_type:2;,
+    uint8_t         address_length:6;)
+                };
+                uint8_t flags;
+            };
+            union {
+                uint32_t    ipv4_addr;
+                uint8_t     ipv6_addr[OGS_IPV6_LEN];
+            };
+        } ip_source_address;
+    } ssm;
+
+    uint8_t nid[6];
+
+} __attribute__ ((packed)) ogs_pfcp_mbs_session_identifier_t;
+
+int16_t ogs_pfcp_build_mbs_session_identifier(ogs_tlv_octet_t *octet,
+        ogs_pfcp_mbs_session_identifier_t *mbs_session_identifier, void *data, int data_len);
+int16_t ogs_pfcp_parse_mbs_session_identifier(
+        ogs_pfcp_mbs_session_identifier_t *mbs_session_identifier, ogs_tlv_octet_t *octet);
+
+/*
+ * 8.2.207 Multicast Transport Information
+ */
+typedef struct ogs_pfcp_multicast_transport_information_s {
+    uint8_t     spare;
+    uint32_t    c_teid;
+
+    struct {
+        union {
+            struct {
+ED2(uint8_t         address_type:2;,
+    uint8_t         address_length:6;)
+            };
+            uint8_t flags;
+        };
+        union {
+            uint32_t    ipv4_addr;
+            uint8_t     ipv6_addr[OGS_IPV6_LEN];
+        };
+    } ip_multicast_distribution_address;
+
+    struct {
+        union {
+            struct {
+ED2(uint8_t         address_type:2;,
+    uint8_t         address_length:6;)
+            };
+            uint8_t flags;
+        };
+        union {
+            uint32_t    ipv4_addr;
+            uint8_t     ipv6_addr[OGS_IPV6_LEN];
+        };
+    } ip_source_address;
+
+} __attribute__ ((packed)) ogs_pfcp_multicast_transport_information_t;
+
+int16_t ogs_pfcp_build_multicast_transport_information(ogs_tlv_octet_t *octet,
+        ogs_pfcp_multicast_transport_information_t *multicast_transport_information, void *data, int data_len);
+int16_t ogs_pfcp_parse_multicast_transport_information(
+        ogs_pfcp_multicast_transport_information_t *multicast_transport_information, ogs_tlv_octet_t *octet);
+
+/*
+ * 8.2.208 MBSN4mbReq-Flags
+ *
+ * The following bits within Octet 5 shall indicate:
+ * - Bit 1 - PLLSM (Provide Lower Layer SSM): if this bit is set to "1",
+ *   it indicates that the MB-UPF shall allocate a lower layer SSM
+ *   (i.e. multicast destination address and related source IP address) and a GTP-U Common
+ *   Tunnel EndPoint Identifier (C-TEID) in the Multicast Transport Address IE.
+ * - Bit 2 – JMBSSM (Join MBS Session SSM): if this bit is set to "1",
+ *   it indicates that the MB-UPF shall join the multicast tree towards the
+ *   Source Specific Multicast (SSM) address information provided by AF/AS or MBSTF
+ *   for the MBS Session.
+ * - Bit 3 – MBS RESTI (MBS Restoration Indication): if this bit is set to "1",
+ *   it indicates to the MB-UPF that the PFCP session to be established is to restore
+ *   an existing PFCP session of an MBS session.
+ */
+typedef struct ogs_pfcp_mbsn4mbreq_flags_s {
+    union {
+        struct {
+ED4(uint8_t     spare:5;,
+    uint8_t     restoration_indication:1;,
+    uint8_t     join_mbs_session_ssm:1;,
+    uint8_t     provide_lower_layer_ssm:1;)
+        };
+        uint8_t value;
+    };
+} __attribute__ ((packed)) ogs_pfcp_mbsn4mbreq_flags_t;
+
 #ifdef __cplusplus
 }
 #endif
