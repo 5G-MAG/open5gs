@@ -926,6 +926,12 @@ typedef struct ogs_port_s {
     uint16_t port;
 } ogs_port_t;
 
+// NOTE (borieher): Not defined in the specs, limited to 20 for now
+#define OGS_MAX_NUM_OF_TMGI 20
+
+// NOTE (borieher): Not defined in the specs, limited to OGS_MAX_NUM_OF_TMGI
+#define OGS_MAX_NUM_OF_MBS_SESSIONS OGS_MAX_NUM_OF_TMGI
+
 /**************************************************
  * TMGI Structure
  * 3GPP TS 23.003 Ch. 15.2 - Structure of TMGI
