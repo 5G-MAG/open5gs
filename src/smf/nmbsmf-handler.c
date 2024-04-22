@@ -19,6 +19,7 @@
  */
 
 #include "sbi-path.h"
+#include "pfcp-path.h"
 #include "nmbsmf-handler.h"
 
 /* Nmbsmf_TMGI Service API */
@@ -488,8 +489,29 @@ bool smf_nmbsmf_handle_mbs_session_create(
 
     // TODO (borieher): Check provided TMGI is not added to an existing MBS Session
 
+    // Parse the outer SSM field in the request
+    if (CreateReqData->mbs_session->ssm) {
+        // TODO (borieher): Check SSM exists
+        // TODO (borieher): Compare CreateReqData->mbs_session->ssm and CreateReqData->mbs_session->mbs_session_id->ssm
+        ogs_sbi_parse_ssm(&ssm_received, CreateReqData->mbs_session->ssm);
+        if (!ssm)
+            ssm = ogs_malloc(sizeof(ogs_ssm_t));
+        memcpy(ssm, &ssm_received, sizeof(ogs_ssm_t));
+    }
+
     // MBS Session create
     mbs_sess = smf_mbs_sess_create(tmgi, ssm, service_type);
+
+    /*********************************************************************
+     * Send PFCP N4mb Session Establishment Request to the UPF
+     *********************************************************************/
+
+    smf_mbs_sess_create_mbs_data_forwarding(mbs_sess);
+
+    smf_5gc_pfcp_n4mb_send_session_establishment_request(mbs_sess, 0);
+
+    // NOTE (borieher): Currently the response is right after the request, but in the call flow is after the PFCP Session Establishment
+    //                  separate this in request and response
 
     Tmgi = ogs_sbi_build_tmgi(mbs_sess->tmgi);
     if (mbs_sess->mbs_session_id.is_tmgi) {
@@ -512,11 +534,6 @@ bool smf_nmbsmf_handle_mbs_session_create(
     CreateRspData = OpenAPI_create_rsp_data_create(Ext_mbs_session, NULL);
 
     // TODO (borieher): Check the TMGIs in the already created MBS Sessions to avoid collisions
-
-    // TODO (borieher): Send here the PFCP Session Establishment request (handle the response on the PFCP state-machine)
-
-    // NOTE (borieher): Currently the response is right after the request, but in the call flow is after the PFCP Session Establishment
-    //                  separate this in request and response
 
     /*********************************************************************
      * Send OGS_SBI_HTTP_STATUS_CREATED (/nmbsmf-mbssession/v1/mbs-sessions) to the consumer NF
@@ -552,9 +569,8 @@ cleanup:
     if (nid)
         ogs_free(nid);
 
-    if (service_type) {
+    if (service_type)
         ogs_free(service_type);
-    }
 
     if (CreateRspData)
         OpenAPI_create_rsp_data_free(CreateRspData);

@@ -21,6 +21,7 @@
 #include "pfcp-path.h"
 
 #include "n4-handler.h"
+#include "n4mb-handler.h"
 
 static void pfcp_restoration(ogs_pfcp_node_t *node);
 static void reselect_upf(ogs_pfcp_node_t *node);
@@ -180,6 +181,7 @@ void smf_pfcp_state_associated(ogs_fsm_t *s, smf_event_t *e)
 
     ogs_sockaddr_t *addr = NULL;
     smf_sess_t *sess = NULL;
+    smf_mbs_sess_t *mbs_sess = NULL;
 
     ogs_assert(s);
     ogs_assert(e);
@@ -322,6 +324,22 @@ void smf_pfcp_state_associated(ogs_fsm_t *s, smf_event_t *e)
                         OGS_GTP2_CAUSE_CONTEXT_NOT_FOUND);
                 break;
             }
+
+            // NOTE (borieher): Quick workaround to differentiate between N4 and N4mb
+            // the issue is that N4mb information is only present when PLLSSM flag is used
+            if (message->pfcp_session_establishment_response.mbs_session_n4mb_information.presence) {
+                // Find MBS Session by the SEID
+                if (message->h.seid_presence && message->h.seid != 0) {
+                    mbs_sess = smf_mbs_sess_find_by_seid(message->h.seid);
+                } else if (xact->local_seid) { /* rx no SEID or SEID=0 */
+                    mbs_sess = smf_mbs_sess_find_by_seid(xact->local_seid);
+                }
+
+                smf_n4mb_handle_session_establishment_response(mbs_sess, xact,
+                    &message->pfcp_session_establishment_response);
+                break;
+            }
+
             ogs_fsm_dispatch(&sess->sm, e);
             break;
 

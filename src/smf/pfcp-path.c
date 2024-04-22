@@ -865,3 +865,137 @@ int smf_pfcp_send_session_report_response(
 
     return rv;
 }
+
+static void mbs_sess_5gc_timeout(ogs_pfcp_xact_t *xact, void *data)
+{
+    smf_mbs_sess_t *mbs_sess = NULL;
+    ogs_sbi_stream_t *stream = NULL;
+    uint8_t type;
+    int trigger;
+    char *strerror = NULL;
+    smf_event_t *e = NULL;
+    int rv;
+
+    ogs_assert(xact);
+    ogs_assert(data);
+
+    mbs_sess = data;
+    ogs_assert(mbs_sess);
+
+    stream = xact->assoc_stream;
+    type = xact->seq[0].type;
+
+    switch (type) {
+    case OGS_PFCP_SESSION_ESTABLISHMENT_REQUEST_TYPE:
+        ogs_warn("No PFCP N4mb session establishment response");
+
+        e = smf_event_new(SMF_EVT_N4_TIMER);
+        ogs_assert(e);
+        e->mbs_sess = mbs_sess;
+        e->h.timer_id = SMF_TIMER_PFCP_NO_ESTABLISHMENT_RESPONSE;
+        e->pfcp_node = mbs_sess->pfcp_node;
+
+        rv = ogs_queue_push(ogs_app()->queue, e);
+        if (rv != OGS_OK) {
+            ogs_error("ogs_queue_push() failed:%d", (int)rv);
+            ogs_event_free(e);
+        }
+        break;
+    case OGS_PFCP_SESSION_MODIFICATION_REQUEST_TYPE:
+        // TODO (borieher): Add identifiers depending on TMGI or SSM as MBS Session ID
+        strerror = ogs_msprintf("No PFCP N4mb session modification response");
+        ogs_assert(strerror);
+
+        ogs_error("%s", strerror);
+        if (stream) {
+            smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_GATEWAY_TIMEOUT,
+                "Gateway Timeout", strerror, NULL);
+        }
+        ogs_free(strerror);
+        break;
+    case OGS_PFCP_SESSION_DELETION_REQUEST_TYPE:
+        // TODO (borieher): Add identifiers depending on TMGI or SSM as MBS Session ID
+        trigger = xact->delete_trigger;
+        ogs_assert(trigger);
+
+        // TODO (borieher): Check if triggers make sense in the MBS context
+        strerror = ogs_msprintf("No PFCP N4mb session deletion response [%d]",
+                trigger);
+        ogs_assert(strerror);
+
+        ogs_error("%s", strerror);
+
+        if (trigger == OGS_PFCP_DELETE_TRIGGER_LOCAL_INITIATED ||
+            trigger == OGS_PFCP_DELETE_TRIGGER_PCF_INITIATED) {
+
+            /* Nothing */
+
+        } else if (trigger == OGS_PFCP_DELETE_TRIGGER_UE_REQUESTED ||
+                trigger == OGS_PFCP_DELETE_TRIGGER_AMF_UPDATE_SM_CONTEXT ||
+                trigger == OGS_PFCP_DELETE_TRIGGER_AMF_RELEASE_SM_CONTEXT) {
+
+            ogs_assert(stream);
+            ogs_assert(true ==
+                smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_GATEWAY_TIMEOUT,
+                    "Gateway Timeout", strerror, NULL));
+        } else {
+            ogs_fatal("Unknown trigger [%d]", trigger);
+            ogs_assert_if_reached();
+        }
+
+        ogs_free(strerror);
+
+        // TODO (borieher): Check if it should be done here or no
+        smf_mbs_sess_release(mbs_sess);
+        break;
+    default:
+        ogs_error("Not implemented [type:%d]", type);
+        break;
+    }
+}
+
+int smf_5gc_pfcp_n4mb_send_session_establishment_request(
+        smf_mbs_sess_t *mbs_sess, uint64_t flags)
+{
+    int rv;
+    ogs_pkbuf_t *n4mbbuf = NULL;
+    ogs_pfcp_header_t h;
+    ogs_pfcp_xact_t *xact = NULL;
+
+    ogs_assert(mbs_sess);
+
+    xact = ogs_pfcp_xact_local_create(mbs_sess->pfcp_node, mbs_sess_5gc_timeout, mbs_sess);
+    if (!xact) {
+        ogs_error("ogs_pfcp_xact_local_create() failed");
+        return OGS_ERROR;
+    }
+
+    xact->local_seid = mbs_sess->smf_n4mb_seid;
+    xact->create_flags = flags;
+
+    memset(&h, 0, sizeof(ogs_pfcp_header_t));
+    h.type = OGS_PFCP_SESSION_ESTABLISHMENT_REQUEST_TYPE;
+
+/*
+ * 7.2.2.4.2 Conditions for Sending SEID=0 in PFCP Header
+ * Check smf_5gc_pfcp_send_session_establishment_request()
+ */
+    h.seid = mbs_sess->upf_n4mb_seid;
+
+    n4mbbuf = smf_n4mb_build_session_establishment_request(mbs_sess, xact);
+    if (!n4mbbuf) {
+        ogs_error("smf_n4mb_build_session_establishment_request() failed");
+        return OGS_ERROR;
+    }
+
+    rv = ogs_pfcp_xact_update_tx(xact, &h, n4mbbuf);
+    if (rv != OGS_OK) {
+        ogs_error("ogs_pfcp_xact_update_tx() failed");
+        return OGS_ERROR;
+    }
+
+    rv = ogs_pfcp_xact_commit(xact);
+    ogs_expect(rv == OGS_OK);
+
+    return rv;
+}
