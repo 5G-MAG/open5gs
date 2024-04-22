@@ -65,3 +65,39 @@ upf_sess_t *upf_sess_find_by_ue_ip_address(ogs_pkbuf_t *pkbuf)
 
     return sess;
 }
+
+upf_mbs_sess_t *upf_mbs_sess_find_by_ssm(ogs_pkbuf_t *pkbuf)
+{
+    upf_mbs_sess_t *mbs_sess = NULL;
+
+    char buf[OGS_ADDRSTRLEN];
+
+    struct ip *ip_h = NULL;
+    struct ip6_hdr *ip6_h = NULL;
+
+    ogs_assert(pkbuf);
+    ogs_assert(pkbuf->len);
+    ogs_assert(pkbuf->data);
+
+    ip_h = (struct ip *)pkbuf->data;
+    if (ip_h->ip_v == 4) {
+        ip_h = (struct ip *)pkbuf->data;
+        mbs_sess = upf_mbs_sess_find_by_ipv4(ip_h->ip_dst.s_addr);
+    } else if (ip_h->ip_v == 6) {
+        ip6_h = (struct ip6_hdr *)pkbuf->data;
+        mbs_sess = upf_mbs_sess_find_by_ipv6((uint32_t *)ip6_h->ip6_dst.s6_addr);
+    } else {
+        ogs_error("Invalid packet [IP version:%d, Packet Length:%d]",
+                ip_h->ip_v, pkbuf->len);
+        ogs_log_hexdump(OGS_LOG_ERROR, pkbuf->data, pkbuf->len);
+    }
+
+    if (mbs_sess) {
+        if (ip_h && mbs_sess->ssm.dest_ip_addr.ipv4)
+            ogs_trace("PAA IPv4:%s", OGS_INET_NTOP(&mbs_sess->ssm.dest_ip_addr.addr, buf));
+        if (ip6_h && mbs_sess->ssm.dest_ip_addr.ipv6)
+            ogs_trace("PAA IPv6:%s", OGS_INET6_NTOP(&mbs_sess->ssm.dest_ip_addr.addr6, buf));
+    }
+
+    return mbs_sess;
+}
