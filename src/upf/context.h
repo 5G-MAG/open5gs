@@ -60,6 +60,7 @@ typedef struct upf_context_s {
     struct upf_route_trie_node *ipv6_framed_routes;
 
     ogs_list_t sess_list;
+    ogs_list_t upf_mbs_sess_list;
 } upf_context_t;
 
 /* trie mapping from IP framed routes to session. */
@@ -125,6 +126,34 @@ typedef struct upf_sess_s {
     char            *apn_dnn;            /* APN/DNN Item */
 } upf_sess_t;
 
+// TODO (borieher): Continue implementing this
+typedef struct upf_mbs_sess_s {
+    ogs_lnode_t lnode;      /* A node of list_t */
+
+    ogs_pool_id_t *upf_n4mb_seid_node;  /* A node of UPF-N4mb-SEID */
+    uint64_t upf_n4mb_seid;   /* UPF N4mb SEID is derived from NODE */
+    struct {
+        uint64_t    seid;
+        ogs_ip_t    ip;
+    } smf_n4mb_f_seid;      /* SMF N4mb SEID is received from Peer */
+
+    ogs_mbs_session_id_t mbs_session_id;
+    char *service_type;
+
+    ogs_pfcp_sess_t pfcp;   /* PFCP session context */
+
+    char *dnn;
+
+    uint32_t c_teid; /* C-TEID */
+
+    ogs_ssm_t ssm;        /* AF SSM N6mb IPv4/IPv6 */
+    ogs_ssm_t ll_ssm;     /* lower layer SSM N3mb IPv4/IPv6 */
+
+    ogs_pfcp_node_t *pfcp_node;
+
+    ogs_pfcp_mbsn4mbreq_flags_t mbs_flags;
+} upf_mbs_sess_t;
+
 void upf_context_init(void);
 void upf_context_final(void);
 upf_context_t *upf_self(void);
@@ -154,6 +183,13 @@ void upf_sess_urr_acc_fill_usage_report(upf_sess_t *sess, const ogs_pfcp_urr_t *
                                         ogs_pfcp_user_plane_report_t *report, unsigned int idx);
 void upf_sess_urr_acc_snapshot(upf_sess_t *sess, ogs_pfcp_urr_t *urr);
 void upf_sess_urr_acc_timers_setup(upf_sess_t *sess, ogs_pfcp_urr_t *urr);
+
+upf_mbs_sess_t *upf_mbs_sess_find_by_smf_n4mb_f_seid(ogs_pfcp_f_seid_t *f_seid);
+upf_mbs_sess_t *upf_mbs_sess_add_by_message(ogs_pfcp_message_t *message);
+upf_mbs_sess_t *upf_mbs_sess_find_by_ipv4(uint32_t addr);
+upf_mbs_sess_t *upf_mbs_sess_find_by_ipv6(uint32_t *addr6);
+void upf_mbs_sess_set_ssm(upf_mbs_sess_t *mbs_sess);
+void upf_mbs_sess_set_llssm_and_c_teid(upf_mbs_sess_t *mbs_sess);
 
 #ifdef __cplusplus
 }

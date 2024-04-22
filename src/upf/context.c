@@ -27,9 +27,14 @@ int __upf_log_domain;
 static OGS_POOL(upf_sess_pool, upf_sess_t);
 static OGS_POOL(upf_n4_seid_pool, ogs_pool_id_t);
 
+static OGS_POOL(upf_mbs_sess_pool, upf_mbs_sess_t);
+
 static int context_initialized = 0;
 
 static void upf_sess_urr_acc_remove_all(upf_sess_t *sess);
+
+static void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess);
+static void upf_mbs_sess_remove_all(void);
 
 void upf_context_init(void)
 {
@@ -52,6 +57,9 @@ void upf_context_init(void)
     ogs_pool_init(&upf_sess_pool, ogs_app()->pool.sess);
     ogs_pool_init(&upf_n4_seid_pool, ogs_app()->pool.sess);
     ogs_pool_random_id_generate(&upf_n4_seid_pool);
+
+    ogs_pool_init(&upf_mbs_sess_pool, OGS_MAX_NUM_OF_MBS_SESSIONS);
+    ogs_list_init(&self.upf_mbs_sess_list);
 
     self.upf_n4_seid_hash = ogs_hash_make();
     ogs_assert(self.upf_n4_seid_hash);
@@ -81,6 +89,7 @@ void upf_context_final(void)
     ogs_assert(context_initialized == 1);
 
     upf_sess_remove_all();
+    upf_mbs_sess_remove_all();
 
     ogs_assert(self.upf_n4_seid_hash);
     ogs_hash_destroy(self.upf_n4_seid_hash);
@@ -98,6 +107,8 @@ void upf_context_final(void)
 
     ogs_pool_final(&upf_sess_pool);
     ogs_pool_final(&upf_n4_seid_pool);
+
+    ogs_pool_final(&upf_mbs_sess_pool);
 
     context_initialized = 0;
 }
@@ -865,4 +876,176 @@ static void upf_sess_urr_acc_remove_all(upf_sess_t *sess)
             sess->urr_acc[i].t_time_threshold = NULL;
         }
     }
+}
+
+static upf_mbs_sess_t *upf_mbs_sess_add(ogs_pfcp_f_seid_t *cp_f_seid)
+{
+    upf_mbs_sess_t *upf_mbs_sess = NULL;
+
+    ogs_pool_alloc(&upf_mbs_sess_pool, &upf_mbs_sess);
+    if (!upf_mbs_sess) {
+        ogs_error("Maximum number of MBS Sessions[%d] reached",
+                    OGS_MAX_NUM_OF_MBS_SESSIONS);
+        return NULL;
+    }
+    memset(upf_mbs_sess, 0, sizeof *upf_mbs_sess);
+
+    // PFCP initialization
+    ogs_pfcp_pool_init(&upf_mbs_sess->pfcp);
+
+    // Set SEID
+    ogs_pool_alloc(&upf_n4_seid_pool, &upf_mbs_sess->upf_n4mb_seid_node);
+    ogs_assert(upf_mbs_sess->upf_n4mb_seid_node);
+
+    upf_mbs_sess->upf_n4mb_seid = *(upf_mbs_sess->upf_n4mb_seid_node);
+
+    ogs_hash_set(self.upf_n4_seid_hash, &upf_mbs_sess->upf_n4mb_seid,
+        sizeof(upf_mbs_sess->upf_n4mb_seid), upf_mbs_sess);
+
+    /* Since F-SEID is composed of ogs_ip_t and uint64-seid,
+     * all these values must be put into the structure-smf_n4mb_f_seid
+     * before creating hash */
+    upf_mbs_sess->smf_n4mb_f_seid.seid = cp_f_seid->seid;
+    ogs_assert(OGS_OK ==
+            ogs_pfcp_f_seid_to_ip(cp_f_seid, &upf_mbs_sess->smf_n4mb_f_seid.ip));
+
+    ogs_hash_set(self.smf_n4_f_seid_hash, &upf_mbs_sess->smf_n4mb_f_seid,
+            sizeof(upf_mbs_sess->smf_n4mb_f_seid), upf_mbs_sess);
+    ogs_hash_set(self.smf_n4_seid_hash, &upf_mbs_sess->smf_n4mb_f_seid.seid,
+            sizeof(upf_mbs_sess->smf_n4mb_f_seid.seid), upf_mbs_sess);
+
+    ogs_list_add(&self.upf_mbs_sess_list, upf_mbs_sess);
+
+    ogs_info("[Added] Number of MBS Sessions in UPF is now %d",
+            ogs_list_count(&self.upf_mbs_sess_list));
+
+    return upf_mbs_sess;
+}
+
+static void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess)
+{
+    ogs_assert(upf_mbs_sess);
+
+    ogs_list_remove(&self.upf_mbs_sess_list, upf_mbs_sess);
+    ogs_pfcp_sess_clear(&upf_mbs_sess->pfcp);
+
+    ogs_hash_set(self.upf_n4_seid_hash, &upf_mbs_sess->upf_n4mb_seid,
+            sizeof(upf_mbs_sess->upf_n4mb_seid), NULL);
+
+    ogs_hash_set(self.smf_n4_seid_hash, &upf_mbs_sess->smf_n4mb_f_seid.seid,
+            sizeof(upf_mbs_sess->smf_n4mb_f_seid.seid), NULL);
+    ogs_hash_set(self.smf_n4_f_seid_hash, &upf_mbs_sess->smf_n4mb_f_seid,
+            sizeof(upf_mbs_sess->smf_n4mb_f_seid), NULL);
+
+    // PFCP finalization
+    ogs_pfcp_pool_final(&upf_mbs_sess->pfcp);
+
+    ogs_pool_free(&upf_n4_seid_pool, upf_mbs_sess->upf_n4mb_seid_node);
+
+    ogs_pool_free(&upf_mbs_sess_pool, upf_mbs_sess);
+
+    ogs_info("[Removed] Number of MBS Sessions in UPF is now %d",
+            ogs_list_count(&self.upf_mbs_sess_list));
+}
+
+static void upf_mbs_sess_remove_all(void)
+{
+    upf_mbs_sess_t *upf_mbs_sess = NULL, *next = NULL;
+
+    ogs_list_for_each_safe(&self.upf_mbs_sess_list, next, upf_mbs_sess)
+        upf_mbs_sess_remove(upf_mbs_sess);
+}
+
+upf_mbs_sess_t *upf_mbs_sess_find_by_smf_n4mb_f_seid(ogs_pfcp_f_seid_t *f_seid)
+{
+    struct {
+        uint64_t seid;
+        ogs_ip_t ip;
+    } key;
+
+    ogs_assert(f_seid);
+    ogs_assert(OGS_OK == ogs_pfcp_f_seid_to_ip(f_seid, &key.ip));
+    key.seid = f_seid->seid;
+
+    return ogs_hash_get(self.smf_n4_f_seid_hash, &key, sizeof(key));
+}
+
+upf_mbs_sess_t *upf_mbs_sess_add_by_message(ogs_pfcp_message_t *message)
+{
+    upf_mbs_sess_t *mbs_sess = NULL;
+    ogs_pfcp_f_seid_t *f_seid = NULL;
+
+    ogs_pfcp_session_establishment_request_t *req =
+        &message->pfcp_session_establishment_request;
+
+    f_seid = req->cp_f_seid.data;
+    if (req->cp_f_seid.presence == 0 || f_seid == NULL) {
+        ogs_error("No CP F-SEID");
+        return NULL;
+    }
+    f_seid->seid = be64toh(f_seid->seid);
+
+    mbs_sess = upf_mbs_sess_find_by_smf_n4mb_f_seid(f_seid);
+    if (!mbs_sess) {
+        mbs_sess = upf_mbs_sess_add(f_seid);
+        if (!mbs_sess) {
+            ogs_error("No MBS Session Context");
+            return NULL;
+        }
+    }
+    ogs_assert(mbs_sess);
+
+    return mbs_sess;
+}
+
+upf_mbs_sess_t *upf_mbs_sess_find_by_ipv4(uint32_t addr)
+{
+    ogs_assert(self.ipv4_hash);
+
+    return ogs_hash_get(self.ipv4_hash, &addr, OGS_IPV4_LEN);
+}
+
+upf_mbs_sess_t *upf_mbs_sess_find_by_ipv6(uint32_t *addr6)
+{
+    ogs_assert(self.ipv6_hash);
+    ogs_assert(addr6);
+
+    return ogs_hash_get(
+            self.ipv6_hash, addr6, OGS_IPV6_DEFAULT_PREFIX_LEN >> 3);
+}
+
+void upf_mbs_sess_set_ssm(upf_mbs_sess_t *mbs_sess)
+{
+    ogs_assert(mbs_sess);
+
+    if (mbs_sess->ssm.dest_ip_addr.ipv4) {
+        ogs_hash_set(self.ipv4_hash, &mbs_sess->ssm.dest_ip_addr.addr, OGS_IPV4_LEN, NULL);
+        ogs_hash_set(self.ipv4_hash, &mbs_sess->ssm.dest_ip_addr.addr, OGS_IPV4_LEN, mbs_sess);
+    }
+
+    if (mbs_sess->ssm.dest_ip_addr.ipv6) {
+        ogs_hash_set(self.ipv6_hash,
+                &mbs_sess->ssm.dest_ip_addr.addr6, OGS_IPV6_DEFAULT_PREFIX_LEN >> 3, NULL);
+        ogs_hash_set(self.ipv6_hash,
+                &mbs_sess->ssm.dest_ip_addr.addr6, OGS_IPV6_DEFAULT_PREFIX_LEN >> 3, mbs_sess);
+    }
+}
+
+// TODO (borieher): Modify this to allocate a real address
+void upf_mbs_sess_set_llssm_and_c_teid(upf_mbs_sess_t *mbs_sess)
+{
+    ogs_assert(mbs_sess);
+
+    // N3mb address: 239.0.0.4
+    mbs_sess->ll_ssm.dest_ip_addr.ipv4 = 1;
+    mbs_sess->ll_ssm.dest_ip_addr.addr = htobe32(4009754628);
+    mbs_sess->ll_ssm.dest_ip_addr.len = OGS_IPV4_LEN;
+
+    // Source address (MB-UPF): 192.168.55.5
+    mbs_sess->ll_ssm.src_ip_addr.ipv4 = 1;
+    mbs_sess->ll_ssm.src_ip_addr.addr = htobe32(3232249605);
+    mbs_sess->ll_ssm.src_ip_addr.len = OGS_IPV4_LEN;
+
+    // C-TEID: 33
+    mbs_sess->c_teid = 33;
 }
