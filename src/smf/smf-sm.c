@@ -670,7 +670,7 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
                     ogs_assert(true ==
                         ogs_sbi_server_send_error(stream,
                             OGS_SBI_HTTP_STATUS_FORBIDDEN, &sbi_message,
-                            "Invalid HTTP method", sbi_message.h.method));
+                            "Invalid HTTP method", sbi_message.h.method, NULL));
                 END
                 break;
 
@@ -681,7 +681,7 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
                     ogs_sbi_server_send_error(stream,
                         OGS_SBI_HTTP_STATUS_BAD_REQUEST, &sbi_message,
                         "Invalid resource name",
-                        sbi_message.h.resource.component[0]));
+                        sbi_message.h.resource.component[0], NULL));
             END
             break;
 
@@ -720,7 +720,7 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
                     ogs_assert(true ==
                         ogs_sbi_server_send_error(stream,
                             OGS_SBI_HTTP_STATUS_FORBIDDEN, &sbi_message,
-                            "Invalid HTTP method", sbi_message.h.method));
+                            "Invalid HTTP method", sbi_message.h.method, NULL));
                 END
                 break;
 
@@ -731,7 +731,7 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
                     ogs_sbi_server_send_error(stream,
                         OGS_SBI_HTTP_STATUS_BAD_REQUEST, &sbi_message,
                         "Invalid resource name",
-                        sbi_message.h.resource.component[0]));
+                        sbi_message.h.resource.component[0], NULL));
             END
             break;
 
