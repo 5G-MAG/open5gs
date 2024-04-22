@@ -103,7 +103,6 @@ void mme_s11_handle_create_session_response(
     ogs_assert(rsp);
 
     ogs_debug("Create Session Response");
-    MME_UE_LIST_CHECK;
 
     /********************
      * Check Transaction
@@ -112,6 +111,8 @@ void mme_s11_handle_create_session_response(
     create_action = xact->create_action;
     sess = xact->data;
     ogs_assert(sess);
+
+    MME_UE_CHECK(OGS_LOG_DEBUG, sess->mme_ue);
     mme_ue = mme_ue_cycle(sess->mme_ue);
 
     rv = ogs_gtp_xact_commit(xact);
@@ -159,7 +160,7 @@ void mme_s11_handle_create_session_response(
         if (create_action == OGS_GTP_CREATE_IN_ATTACH_REQUEST) {
             ogs_error("[%s] Attach reject [Cause:%d]",
                     mme_ue->imsi_bcd, session_cause);
-            r = nas_eps_send_attach_reject(mme_ue,
+            r = nas_eps_send_attach_reject(mme_ue->enb_ue, mme_ue,
                     OGS_NAS_EMM_CAUSE_NETWORK_FAILURE,
                     OGS_NAS_ESM_CAUSE_NETWORK_FAILURE);
             ogs_expect(r == OGS_OK);
@@ -227,7 +228,7 @@ void mme_s11_handle_create_session_response(
         if (create_action == OGS_GTP_CREATE_IN_ATTACH_REQUEST) {
             ogs_error("[%s] Attach reject [Cause:%d]",
                     mme_ue->imsi_bcd, session_cause);
-            r = nas_eps_send_attach_reject(mme_ue,
+            r = nas_eps_send_attach_reject(mme_ue->enb_ue, mme_ue,
                     OGS_NAS_EMM_CAUSE_NETWORK_FAILURE,
                     OGS_NAS_ESM_CAUSE_NETWORK_FAILURE);
             ogs_expect(r == OGS_OK);
@@ -235,7 +236,8 @@ void mme_s11_handle_create_session_response(
         } else if (create_action == OGS_GTP_CREATE_IN_TRACKING_AREA_UPDATE) {
             ogs_error("[%s] TAU reject [Cause:%d]",
                     mme_ue->imsi_bcd, session_cause);
-            r = nas_eps_send_tau_reject(mme_ue, OGS_NAS_EMM_CAUSE_NETWORK_FAILURE);
+            r = nas_eps_send_tau_reject(mme_ue->enb_ue, mme_ue,
+                    OGS_NAS_EMM_CAUSE_NETWORK_FAILURE);
             ogs_expect(r == OGS_OK);
             ogs_assert(r != OGS_ERROR);
         }
@@ -265,7 +267,7 @@ void mme_s11_handle_create_session_response(
                     mme_ue->imsi_bcd, bearer_cause);
             if (create_action == OGS_GTP_CREATE_IN_ATTACH_REQUEST) {
                 ogs_error("[%s] Attach reject", mme_ue->imsi_bcd);
-                r = nas_eps_send_attach_reject(mme_ue,
+                r = nas_eps_send_attach_reject(mme_ue->enb_ue, mme_ue,
                         OGS_NAS_EMM_CAUSE_NETWORK_FAILURE,
                         OGS_NAS_ESM_CAUSE_NETWORK_FAILURE);
                 ogs_expect(r == OGS_OK);
@@ -285,7 +287,7 @@ void mme_s11_handle_create_session_response(
         ogs_error("[%s] GTP Cause [VALUE:%d]", mme_ue->imsi_bcd, session_cause);
         if (create_action == OGS_GTP_CREATE_IN_ATTACH_REQUEST) {
             ogs_error("[%s] Attach reject", mme_ue->imsi_bcd);
-            r = nas_eps_send_attach_reject(mme_ue,
+            r = nas_eps_send_attach_reject(mme_ue->enb_ue, mme_ue,
                     OGS_NAS_EMM_CAUSE_NETWORK_FAILURE,
                     OGS_NAS_ESM_CAUSE_NETWORK_FAILURE);
             ogs_expect(r == OGS_OK);
@@ -425,22 +427,25 @@ void mme_s11_handle_create_session_response(
         mme_csmap_t *csmap = mme_csmap_find_by_tai(&mme_ue->tai);
         mme_ue->csmap = csmap;
 
-        if (csmap) {
-            ogs_assert(OGS_PDU_SESSION_TYPE_IS_VALID(
-                        session->paa.session_type));
-            ogs_assert(OGS_OK ==
-                sgsap_send_location_update_request(mme_ue));
-        } else {
+        if (!csmap ||
+            mme_ue->network_access_mode ==
+                OGS_NETWORK_ACCESS_MODE_ONLY_PACKET ||
+            mme_ue->nas_eps.attach.value ==
+                OGS_NAS_ATTACH_TYPE_EPS_ATTACH) {
             ogs_assert(OGS_PDU_SESSION_TYPE_IS_VALID(
                         session->paa.session_type));
             r = nas_eps_send_attach_accept(mme_ue);
             ogs_expect(r == OGS_OK);
             ogs_assert(r != OGS_ERROR);
+        } else {
+            ogs_assert(OGS_PDU_SESSION_TYPE_IS_VALID(
+                        session->paa.session_type));
+            ogs_assert(OGS_OK == sgsap_send_location_update_request(mme_ue));
         }
 
     } else if (create_action == OGS_GTP_CREATE_IN_TRACKING_AREA_UPDATE) {
         /* 3GPP TS 23.401 D.3.6 step 13, 14: */
-        mme_s6a_send_ulr(mme_ue);
+        mme_s6a_send_ulr(mme_ue->enb_ue, mme_ue);
     } else if (create_action == OGS_GTP_CREATE_IN_UPLINK_NAS_TRANSPORT) {
         ogs_assert(OGS_PDU_SESSION_TYPE_IS_VALID(session->paa.session_type));
         r = nas_eps_send_activate_default_bearer_context_request(
@@ -480,13 +485,14 @@ void mme_s11_handle_modify_bearer_response(
     ogs_assert(rsp);
 
     ogs_debug("Modify Bearer Response");
-    MME_UE_LIST_CHECK;
 
     /********************
      * Check Transaction
      ********************/
     ogs_assert(xact);
     modify_action = xact->modify_action;
+
+    MME_UE_CHECK(OGS_LOG_DEBUG, xact->data);
     mme_ue = mme_ue_cycle(xact->data);
 
     rv = ogs_gtp_xact_commit(xact);
@@ -592,7 +598,6 @@ void mme_s11_handle_delete_session_response(
     ogs_assert(rsp);
 
     ogs_debug("Delete Session Response");
-    MME_UE_LIST_CHECK;
 
     /********************
      * Check Transaction
@@ -602,6 +607,9 @@ void mme_s11_handle_delete_session_response(
     ogs_assert(action);
     sess = xact->data;
     ogs_assert(sess);
+
+    ogs_debug("delete_session_response - xact:%p, sess:%p", xact, sess);
+    MME_UE_CHECK(OGS_LOG_DEBUG, sess->mme_ue);
     mme_ue = mme_ue_cycle(sess->mme_ue);
 
     rv = ogs_gtp_xact_commit(xact);
@@ -676,7 +684,7 @@ void mme_s11_handle_delete_session_response(
          * of the detach accept from UE */
     } else if (action == OGS_GTP_DELETE_SEND_AUTHENTICATION_REQUEST) {
         if (mme_sess_count(mme_ue) == 1) /* Last Session */ {
-            mme_s6a_send_air(mme_ue, NULL);
+            mme_s6a_send_air(mme_ue->enb_ue, mme_ue, NULL);
         }
 
     } else if (action == OGS_GTP_DELETE_SEND_DETACH_ACCEPT) {
@@ -704,11 +712,8 @@ void mme_s11_handle_delete_session_response(
     } else if (action == OGS_GTP_DELETE_SEND_RELEASE_WITH_UE_CONTEXT_REMOVE) {
         if (mme_sess_count(mme_ue) == 1) /* Last Session */ {
             if (ECM_IDLE(mme_ue)) {
-                if (mme_ue->location_updated_but_not_canceled_yet == true) {
-                    mme_s6a_send_pur(mme_ue);
-                } else {
-                    mme_ue_remove(mme_ue);
-                }
+                MME_UE_CHECK(OGS_LOG_ERROR, mme_ue);
+                mme_ue_remove(mme_ue);
             } else {
                 ogs_assert(mme_ue->enb_ue);
                 r = s1ap_send_ue_context_release_command(mme_ue->enb_ue,
@@ -741,7 +746,7 @@ void mme_s11_handle_delete_session_response(
                     &mme_ue->pdn_connectivity_request);
             if (rv != OGS_OK) {
                 ogs_error("nas_eps_send_emm_to_esm() failed");
-                r = nas_eps_send_attach_reject(mme_ue,
+                r = nas_eps_send_attach_reject(mme_ue->enb_ue, mme_ue,
                         OGS_NAS_EMM_CAUSE_PROTOCOL_ERROR_UNSPECIFIED,
                         OGS_NAS_ESM_CAUSE_PROTOCOL_ERROR_UNSPECIFIED);
                 ogs_expect(r == OGS_OK);
@@ -788,7 +793,7 @@ void mme_s11_handle_create_bearer_request(
     ogs_assert(xact);
     ogs_assert(req);
 
-    ogs_debug("Create Bearer Response");
+    ogs_debug("Create Bearer Request");
 
     /***********************
      * Check MME-UE Context
@@ -872,12 +877,25 @@ void mme_s11_handle_create_bearer_request(
     ogs_debug("    MME_S11_TEID[%d] SGW_S11_TEID[%d]",
             mme_ue->mme_s11_teid, sgw_ue->sgw_s11_teid);
 
+    /*
+     * DEPRECATED : Issues #3072
+     *
+     * PTI 0 is set here to prevent a InitialContextSetupRequest message
+     * with a PTI of 0 from being created when the Create Bearer Request occurs
+     * and InitialContextSetupRequest occurs.
+     *
+     * If you implement the creation of a dedicated bearer
+     * in the ESM procedure reqeusted by the UE,
+     * you will need to refactor the part that sets the PTI.
+     */
+#if 0
     /* Set PTI */
     sess->pti = OGS_NAS_PROCEDURE_TRANSACTION_IDENTITY_UNASSIGNED;
     if (req->procedure_transaction_id.presence) {
         sess->pti = req->procedure_transaction_id.u8;
         ogs_debug("    PTI[%d]", sess->pti);
     }
+#endif
 
     /* Data Plane(UL) : SGW-S1U */
     sgw_s1u_teid = req->bearer_contexts.s1_u_enodeb_f_teid.data;
@@ -1247,7 +1265,6 @@ void mme_s11_handle_release_access_bearers_response(
     ogs_assert(rsp);
 
     ogs_debug("Release Access Bearers Response");
-    MME_UE_LIST_CHECK;
 
     /********************
      * Check Transaction
@@ -1255,6 +1272,8 @@ void mme_s11_handle_release_access_bearers_response(
     ogs_assert(xact);
     action = xact->release_action;
     ogs_assert(action);
+
+    MME_UE_CHECK(OGS_LOG_DEBUG, xact->data);
     mme_ue = mme_ue_cycle(xact->data);
 
     rv = ogs_gtp_xact_commit(xact);

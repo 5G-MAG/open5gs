@@ -288,7 +288,7 @@ typedef struct test_esm_information_param_s {
 typedef struct test_ue_s {
     ogs_lnode_t     lnode;          /**< A node of list_t */
 
-    uint32_t ran_ue_ngap_id; /* gNB-UE-NGAP-ID received from gNB */
+    uint64_t ran_ue_ngap_id; /* gNB-UE-NGAP-ID received from gNB */
     uint64_t amf_ue_ngap_id; /* AMF-UE-NGAP-ID received from AMF */
     uint32_t enb_ue_s1ap_id; /* eNB-UE-S1AP-ID received from eNB */
     uint32_t mme_ue_s1ap_id; /* MME-UE-S1AP-ID received from MME */
@@ -513,6 +513,7 @@ void test_sess_remove_all(test_ue_t *test_ue);
 
 test_sess_t *test_sess_find_by_apn(
         test_ue_t *test_ue, char *apn, uint8_t rat_type);
+test_sess_t *test_sess_find_by_pti(test_ue_t *test_ue, uint8_t pti);
 test_sess_t *test_sess_find_by_psi(test_ue_t *test_ue, uint8_t psi);
 
 test_bearer_t *test_bearer_add(test_sess_t *sess, uint8_t ebi);
@@ -530,6 +531,7 @@ int test_db_remove_ue(test_ue_t *test_ue);
 
 bson_t *test_db_new_simple(test_ue_t *test_ue);
 bson_t *test_db_new_qos_flow(test_ue_t *test_ue);
+bson_t *test_db_new_qos_flow_bi_directional(test_ue_t *test_ue);
 bson_t *test_db_new_session(test_ue_t *test_ue);
 bson_t *test_db_new_ims(test_ue_t *test_ue);
 bson_t *test_db_new_slice_with_same_dnn(test_ue_t *test_ue);

@@ -146,44 +146,45 @@ typedef struct mme_context_s {
     /* Generator for unique identification */
     uint32_t        mme_ue_s1ap_id;         /* mme_ue_s1ap_id generator */
 
-#define MME_UE_LIST_CHECK \
-    if (ogs_log_get_domain_level(OGS_LOG_DOMAIN) >= OGS_LOG_TRACE) { \
-        mme_ue_t *mme_ue = NULL; \
-        sgw_ue_t *sgw_ue = NULL; \
-        enb_ue_t *enb_ue = NULL; \
-        mme_sess_t *sess = NULL; \
-        mme_bearer_t *bearer = NULL; \
-        ogs_list_for_each(&mme_self()->mme_ue_list, mme_ue) { \
-            ogs_trace("MME_UE(%p) [%s] MME_S11_TEID[%d]", \
-                    mme_ue, mme_ue->imsi_bcd, mme_ue->mme_s11_teid); \
-            if (mme_ue->sgw_ue) { \
-                sgw_ue = mme_ue->sgw_ue; \
-                ogs_trace("SGW_UE(%p) MME_UE(%p) SGW_S11_TEID[%d]", \
-                        sgw_ue, mme_ue, sgw_ue->sgw_s11_teid); \
-            } \
-            if (mme_ue->enb_ue) { \
-                enb_ue = mme_ue->enb_ue; \
-                ogs_trace("ENB_UE(%p) MME_UE(%p) " \
-                    "[ENB_UE_S1AP_ID:%d MME_UE_S1AP_ID:%d]", \
-                    enb_ue, enb_ue->mme_ue, \
-                    enb_ue->enb_ue_s1ap_id, enb_ue->mme_ue_s1ap_id); \
-            } \
-            ogs_list_for_each(&mme_ue->sess_list, sess) { \
-                ogs_trace("SESS(%p) [%s:%d]", sess, \
-                        sess->session ? sess->session->name : "Unknown", \
-                        sess->pti); \
-                ogs_assert(sess->mme_ue == mme_ue); \
-                ogs_list_for_each(&sess->bearer_list, bearer) { \
-                    ogs_trace("BEARER(%p) [%d] " \
-                            "ENB_S1U_TEID[%d] SGW_S1U_TEID[%d]", \
-                            bearer, bearer->ebi, \
-                            bearer->enb_s1u_teid, bearer->sgw_s1u_teid); \
-                    ogs_assert(bearer->sess == sess); \
-                    ogs_assert(bearer->mme_ue == mme_ue); \
-                } \
-            } \
+#define MME_UE_CHECK(level, __mME) \
+    do { \
+        sgw_ue_t *__sGW = (((mme_ue_t *)__mME)->sgw_ue); \
+        mme_sess_t *__sESS = NULL; \
+        mme_bearer_t *__bEARER = NULL; \
+        \
+        ogs_log_message(level, 0, "MME-UE Context Memory[%p:%p]", \
+                (__mME), mme_ue_cycle((__mME))); \
+        ogs_log_message(level, 0, "SGW-UE Context Memory[%p:%p]", \
+                (__sGW), sgw_ue_cycle((__sGW))); \
+        ogs_log_message(level, 0, \
+                "IMSI [%s] NAS-EPS Type[%d]", \
+                (__mME) ? ((mme_ue_t *)__mME)->imsi_bcd : "No MME_UE", \
+                (__mME) ? ((mme_ue_t *)__mME)->nas_eps.type : 0); \
+        ogs_log_message(level, 0, \
+                "MME_S11_TEID[%d] SGW_S11_TEID[%d]", \
+                (__mME) ? ((mme_ue_t *)__mME)->mme_s11_teid : 0, \
+                (__sGW) ? (__sGW)->sgw_s11_teid : 0); \
+        if (!mme_ue_cycle(__mME)) { \
+            ogs_log_message(level, 0, \
+                    "MME-UE Context has already been removed"); \
+            break; \
         } \
-    }
+        ogs_list_for_each(&((mme_ue_t *)__mME)->sess_list, (__sESS)) { \
+            ogs_log_message(level, 0, "SESS(%p) [%s:%d]", (__sESS), \
+                    (__sESS)->session ? (__sESS)->session->name : "Unknown", \
+                    (__sESS)->pti); \
+            ogs_list_for_each(&(__sESS)->bearer_list, (__bEARER)) { \
+                ogs_log_message(level, 0, \
+                        "BEARER(%p) [%d] ENB_S1U_TEID[%d] SGW_S1U_TEID[%d]", \
+                        (__bEARER), (__bEARER)->ebi, \
+                        (__bEARER)->enb_s1u_teid, (__bEARER)->sgw_s1u_teid); \
+                ogs_assert((__bEARER)->sess == (__sESS)); \
+                ogs_assert((__bEARER)->mme_ue == (__mME)); \
+            } \
+            ogs_assert((__sESS)->mme_ue == (__mME)); \
+        } \
+    } while(0)
+
     ogs_list_t      mme_ue_list;
 
     ogs_hash_t *enb_addr_hash;  /* hash table for ENB Address */
@@ -463,8 +464,6 @@ struct mme_ue_s {
     } while(0)
     int             security_context_available;
     int             mac_failed;
-
-    bool            location_updated_but_not_canceled_yet;
 
     /* Security Context */
     ogs_nas_ue_network_capability_t ue_network_capability;

@@ -29,7 +29,7 @@
 #define OGS_LOG_DOMAIN __gmm_log_domain
 
 static ogs_nas_5gmm_cause_t gmm_handle_nas_message_container(
-        amf_ue_t *amf_ue, uint8_t message_type,
+        ran_ue_t *ran_ue, amf_ue_t *amf_ue, uint8_t message_type,
         ogs_nas_message_container_t *nas_message_container);
 
 static uint8_t gmm_cause_from_access_control(ogs_plmn_id_t *plmn_id);
@@ -127,6 +127,12 @@ ogs_nas_5gmm_cause_t gmm_handle_registration_request(amf_ue_t *amf_ue,
 
     if (!mobile_identity->length || !mobile_identity->buffer) {
         ogs_error("No Mobile Identity");
+        return OGS_5GMM_CAUSE_SEMANTICALLY_INCORRECT_MESSAGE;
+    }
+
+    if (mobile_identity->length < OGS_NAS_5GS_MOBILE_IDENTITY_SUCI_MIN_SIZE) {
+        ogs_error("The length of Mobile Identity(%d) is less then the min(%d)",
+            mobile_identity->length, OGS_NAS_5GS_MOBILE_IDENTITY_SUCI_MIN_SIZE);
         return OGS_5GMM_CAUSE_SEMANTICALLY_INCORRECT_MESSAGE;
     }
 
@@ -333,7 +339,8 @@ ogs_nas_5gmm_cause_t gmm_handle_registration_request(amf_ue_t *amf_ue,
     return OGS_5GMM_CAUSE_REQUEST_ACCEPTED;
 }
 
-ogs_nas_5gmm_cause_t gmm_handle_registration_update(amf_ue_t *amf_ue,
+ogs_nas_5gmm_cause_t gmm_handle_registration_update(
+        ran_ue_t *ran_ue, amf_ue_t *amf_ue,
         ogs_nas_5gs_registration_request_t *registration_request)
 {
     amf_sess_t *sess = NULL;
@@ -346,6 +353,7 @@ ogs_nas_5gmm_cause_t gmm_handle_registration_update(amf_ue_t *amf_ue,
     ogs_nas_5gs_update_type_t *update_type = NULL;
 
     ogs_assert(amf_ue);
+    ogs_assert(ran_ue);
     ogs_assert(registration_request);
 
     last_visited_registered_tai =
@@ -370,7 +378,7 @@ ogs_nas_5gmm_cause_t gmm_handle_registration_update(amf_ue_t *amf_ue,
         OGS_NAS_5GS_REGISTRATION_REQUEST_NAS_MESSAGE_CONTAINER_PRESENT) {
 
         return gmm_handle_nas_message_container(
-                amf_ue, OGS_NAS_5GS_REGISTRATION_REQUEST,
+                ran_ue, amf_ue, OGS_NAS_5GS_REGISTRATION_REQUEST,
                 &registration_request->nas_message_container);
     }
 
@@ -466,7 +474,7 @@ ogs_nas_5gmm_cause_t gmm_handle_registration_update(amf_ue_t *amf_ue,
             if ((psimask & (1 << sess->psi)) == 0) {
                 if (SESSION_CONTEXT_IN_SMF(sess))
                     amf_sbi_send_release_session(
-                        sess, AMF_RELEASE_SM_CONTEXT_REGISTRATION_ACCEPT);
+                        ran_ue, sess, AMF_RELEASE_SM_CONTEXT_REGISTRATION_ACCEPT);
             }
         }
     }
@@ -485,7 +493,8 @@ ogs_nas_5gmm_cause_t gmm_handle_registration_update(amf_ue_t *amf_ue,
             if (psimask & (1 << sess->psi)) {
                 if (SESSION_CONTEXT_IN_SMF(sess))
                     amf_sbi_send_activating_session(
-                            sess, AMF_UPDATE_SM_CONTEXT_REGISTRATION_REQUEST);
+                            ran_ue, sess,
+                            AMF_UPDATE_SM_CONTEXT_REGISTRATION_REQUEST);
             }
         }
     }
@@ -647,7 +656,8 @@ ogs_nas_5gmm_cause_t gmm_handle_service_request(amf_ue_t *amf_ue,
     return OGS_5GMM_CAUSE_REQUEST_ACCEPTED;
 }
 
-ogs_nas_5gmm_cause_t gmm_handle_service_update(amf_ue_t *amf_ue,
+ogs_nas_5gmm_cause_t gmm_handle_service_update(
+        ran_ue_t *ran_ue, amf_ue_t *amf_ue,
         ogs_nas_5gs_service_request_t *service_request)
 {
     amf_sess_t *sess = NULL;
@@ -659,6 +669,8 @@ ogs_nas_5gmm_cause_t gmm_handle_service_update(amf_ue_t *amf_ue,
     ogs_nas_allowed_pdu_session_status_t *allowed_pdu_session_status = NULL;
 
     ogs_assert(amf_ue);
+    ogs_assert(ran_ue);
+    ogs_assert(service_request);
 
     uplink_data_status = &service_request->uplink_data_status;
     ogs_assert(uplink_data_status);
@@ -671,7 +683,7 @@ ogs_nas_5gmm_cause_t gmm_handle_service_update(amf_ue_t *amf_ue,
         OGS_NAS_5GS_SERVICE_REQUEST_NAS_MESSAGE_CONTAINER_PRESENT) {
 
         return gmm_handle_nas_message_container(
-                amf_ue, OGS_NAS_5GS_SERVICE_REQUEST,
+                ran_ue, amf_ue, OGS_NAS_5GS_SERVICE_REQUEST,
                 &service_request->nas_message_container);
     }
 
@@ -706,7 +718,7 @@ ogs_nas_5gmm_cause_t gmm_handle_service_update(amf_ue_t *amf_ue,
             if ((psimask & (1 << sess->psi)) == 0) {
                 if (SESSION_CONTEXT_IN_SMF(sess))
                     amf_sbi_send_release_session(
-                        sess, AMF_RELEASE_SM_CONTEXT_SERVICE_ACCEPT);
+                        ran_ue, sess, AMF_RELEASE_SM_CONTEXT_SERVICE_ACCEPT);
             }
         }
     }
@@ -733,7 +745,8 @@ ogs_nas_5gmm_cause_t gmm_handle_service_update(amf_ue_t *amf_ue,
             if (psimask & (1 << sess->psi)) {
                 if (SESSION_CONTEXT_IN_SMF(sess))
                     amf_sbi_send_activating_session(
-                            sess, AMF_UPDATE_SM_CONTEXT_SERVICE_REQUEST);
+                            ran_ue, sess,
+                            AMF_UPDATE_SM_CONTEXT_SERVICE_REQUEST);
             }
         }
     }
@@ -751,9 +764,12 @@ int gmm_handle_deregistration_request(amf_ue_t *amf_ue,
         ogs_nas_5gs_deregistration_request_from_ue_t *deregistration_request)
 {
     int r, state, xact_count = 0;
+    ran_ue_t *ran_ue = NULL;
     ogs_nas_de_registration_type_t *de_registration_type = NULL;
 
     ogs_assert(amf_ue);
+    ran_ue = ran_ue_cycle(amf_ue->ran_ue);
+    ogs_assert(ran_ue);
     ogs_assert(deregistration_request);
 
     de_registration_type = &deregistration_request->de_registration_type;
@@ -784,7 +800,7 @@ int gmm_handle_deregistration_request(amf_ue_t *amf_ue,
     xact_count = amf_sess_xact_count(amf_ue);
 
     state = AMF_UE_INITIATED_DE_REGISTERED;
-    amf_sbi_send_release_all_sessions(amf_ue, state);
+    amf_sbi_send_release_all_sessions(ran_ue, amf_ue, state);
 
     if (!AMF_SESSION_RELEASE_PENDING(amf_ue) &&
         amf_sess_xact_count(amf_ue) == xact_count) {
@@ -878,11 +894,18 @@ ogs_nas_5gmm_cause_t gmm_handle_identity_response(amf_ue_t *amf_ue,
     ogs_assert(amf_ue);
     ran_ue = ran_ue_cycle(amf_ue->ran_ue);
     ogs_assert(ran_ue);
+    ogs_assert(identity_response);
 
     mobile_identity = &identity_response->mobile_identity;
 
     if (!mobile_identity->length || !mobile_identity->buffer) {
         ogs_error("No Mobile Identity");
+        return OGS_5GMM_CAUSE_SEMANTICALLY_INCORRECT_MESSAGE;
+    }
+
+    if (mobile_identity->length < OGS_NAS_5GS_MOBILE_IDENTITY_SUCI_MIN_SIZE) {
+        ogs_error("The length of Mobile Identity(%d) is less then the min(%d)",
+            mobile_identity->length, OGS_NAS_5GS_MOBILE_IDENTITY_SUCI_MIN_SIZE);
         return OGS_5GMM_CAUSE_SEMANTICALLY_INCORRECT_MESSAGE;
     }
 
@@ -928,12 +951,15 @@ ogs_nas_5gmm_cause_t gmm_handle_identity_response(amf_ue_t *amf_ue,
 }
 
 ogs_nas_5gmm_cause_t gmm_handle_security_mode_complete(amf_ue_t *amf_ue,
-    ogs_nas_5gs_security_mode_complete_t *security_mode_complete)
+        ogs_nas_5gs_security_mode_complete_t *security_mode_complete)
 {
+    ran_ue_t *ran_ue = NULL;
     ogs_nas_5gs_mobile_identity_t *imeisv = NULL;
     ogs_nas_mobile_identity_imeisv_t *mobile_identity_imeisv = NULL;
 
     ogs_assert(amf_ue);
+    ran_ue = ran_ue_cycle(amf_ue->ran_ue);
+    ogs_assert(ran_ue);
     ogs_assert(security_mode_complete);
 
     /*
@@ -1009,7 +1035,7 @@ ogs_nas_5gmm_cause_t gmm_handle_security_mode_complete(amf_ue_t *amf_ue,
         OGS_NAS_5GS_SECURITY_MODE_COMPLETE_NAS_MESSAGE_CONTAINER_PRESENT) {
 
         return gmm_handle_nas_message_container(
-                amf_ue, OGS_NAS_5GS_SECURITY_MODE_COMPLETE,
+                ran_ue, amf_ue, OGS_NAS_5GS_SECURITY_MODE_COMPLETE,
                 &security_mode_complete->nas_message_container);
     }
 
@@ -1099,6 +1125,23 @@ int gmm_handle_ul_nas_transport(ran_ue_t *ran_ue, amf_ue_t *amf_ue,
             if (!sess) {
                 sess = amf_sess_add(amf_ue, *pdu_session_id);
                 ogs_assert(sess);
+            } else {
+            /*
+             * These are variables that should be initialized
+             * when a PDU session establishment message is received
+             * for an existing session.
+             *
+             * It should be noted that XXX_recieved, which is initialized now,
+             * has a different initialization location than XXX_gsm_type.
+             *
+             * XXX_received is initialized in the ESTABLISHMENT phase,
+             * but XXX_gsm_type is initialized in the RELEASE phase
+             * when a PDU session release command with a Reactivation Request
+             * and a PDU session release complete are sent simultaneously.
+             */
+                sess->pdu_session_resource_release_response_received = false;
+                sess->pdu_session_release_complete_received = false;
+
             }
         } else {
             sess = amf_sess_find_by_psi(amf_ue, *pdu_session_id);
@@ -1240,9 +1283,11 @@ int gmm_handle_ul_nas_transport(ran_ue_t *ran_ue, amf_ue_t *amf_ue,
             sess->s_nssai.sd.v = selected_slice->s_nssai.sd.v;
 
             ogs_info("UE SUPI[%s] DNN[%s] S_NSSAI[SST:%d SD:0x%x] "
-                    "smContextRef [%s]",
+                    "smContextRef[%s] smContextResourceURI[%s]",
                 amf_ue->supi, sess->dnn, sess->s_nssai.sst, sess->s_nssai.sd.v,
-                sess->sm_context_ref ? sess->sm_context_ref : "NULL");
+                sess->sm_context.ref ? sess->sm_context.ref : "NULL",
+                sess->sm_context.resource_uri ?
+                    sess->sm_context.resource_uri : "NULL");
 
             if (!SESSION_CONTEXT_IN_SMF(sess)) {
                 ogs_sbi_nf_instance_t *nf_instance = NULL;
@@ -1287,14 +1332,15 @@ int gmm_handle_ul_nas_transport(ran_ue_t *ran_ue, amf_ue_t *amf_ue,
                             OGS_SBI_SERVICE_TYPE_NSMF_PDUSESSION,
                             discovery_option,
                             amf_nsmf_pdusession_build_create_sm_context,
-                            sess, AMF_CREATE_SM_CONTEXT_NO_STATE, NULL);
+                            ran_ue, sess, AMF_CREATE_SM_CONTEXT_NO_STATE, NULL);
                     ogs_expect(r == OGS_OK);
                     ogs_assert(r != OGS_ERROR);
                 } else {
                     r = amf_sess_sbi_discover_and_send(
                             OGS_SBI_SERVICE_TYPE_NNSSF_NSSELECTION,
                             discovery_option,
-                            amf_nnssf_nsselection_build_get, sess, 0, NULL);
+                            amf_nnssf_nsselection_build_get,
+                            ran_ue, sess, 0, NULL);
                     ogs_expect(r == OGS_OK);
                     ogs_assert(r != OGS_ERROR);
                 }
@@ -1308,7 +1354,8 @@ int gmm_handle_ul_nas_transport(ran_ue_t *ran_ue, amf_ue_t *amf_ue,
                 r = amf_sess_sbi_discover_and_send(
                         OGS_SBI_SERVICE_TYPE_NSMF_PDUSESSION, NULL,
                         amf_nsmf_pdusession_build_update_sm_context,
-                        sess, AMF_UPDATE_SM_CONTEXT_DUPLICATED_PDU_SESSION_ID,
+                        ran_ue, sess,
+                        AMF_UPDATE_SM_CONTEXT_DUPLICATED_PDU_SESSION_ID,
                         &param);
                 ogs_expect(r == OGS_OK);
                 ogs_assert(r != OGS_ERROR);
@@ -1337,7 +1384,8 @@ int gmm_handle_ul_nas_transport(ran_ue_t *ran_ue, amf_ue_t *amf_ue,
                 r = amf_sess_sbi_discover_and_send(
                         OGS_SBI_SERVICE_TYPE_NSMF_PDUSESSION, NULL,
                         amf_nsmf_pdusession_build_update_sm_context,
-                        sess, AMF_UPDATE_SM_CONTEXT_N1_RELEASED, &param);
+                        ran_ue, sess,
+                        AMF_UPDATE_SM_CONTEXT_N1_RELEASED, &param);
                 ogs_expect(r == OGS_OK);
                 ogs_assert(r != OGS_ERROR);
             } else {
@@ -1345,7 +1393,7 @@ int gmm_handle_ul_nas_transport(ran_ue_t *ran_ue, amf_ue_t *amf_ue,
                 r = amf_sess_sbi_discover_and_send(
                         OGS_SBI_SERVICE_TYPE_NSMF_PDUSESSION, NULL,
                         amf_nsmf_pdusession_build_update_sm_context,
-                        sess, AMF_UPDATE_SM_CONTEXT_MODIFIED, &param);
+                        ran_ue, sess, AMF_UPDATE_SM_CONTEXT_MODIFIED, &param);
                 ogs_expect(r == OGS_OK);
                 ogs_assert(r != OGS_ERROR);
             }
@@ -1386,8 +1434,10 @@ int gmm_handle_ul_nas_transport(ran_ue_t *ran_ue, amf_ue_t *amf_ue,
                 }
                 break;
             case OGS_NAS_5GS_PDU_SESSION_RELEASE_COMPLETE:
-                /* Prevent to invoke SMF for this session */
-                CLEAR_SM_CONTEXT_REF(sess);
+                sess->pdu_session_release_complete_received = true;
+                if (sess->pdu_session_resource_release_response_received ==
+                        true)
+                    CLEAR_SESSION_CONTEXT(sess);
                 break;
             default:
                 break;
@@ -1409,7 +1459,7 @@ int gmm_handle_ul_nas_transport(ran_ue_t *ran_ue, amf_ue_t *amf_ue,
 }
 
 static ogs_nas_5gmm_cause_t gmm_handle_nas_message_container(
-        amf_ue_t *amf_ue, uint8_t message_type,
+        ran_ue_t *ran_ue, amf_ue_t *amf_ue, uint8_t message_type,
         ogs_nas_message_container_t *nas_message_container)
 {
     int gmm_cause;
@@ -1418,6 +1468,7 @@ static ogs_nas_5gmm_cause_t gmm_handle_nas_message_container(
     ogs_nas_5gs_message_t nas_message;
 
     ogs_assert(amf_ue);
+    ogs_assert(ran_ue);
     ogs_assert(nas_message_container);
 
     if (!nas_message_container->buffer || !nas_message_container->length) {
@@ -1474,12 +1525,12 @@ static ogs_nas_5gmm_cause_t gmm_handle_nas_message_container(
         case OGS_NAS_5GS_REGISTRATION_REQUEST:
             ogs_debug("Registration request in NAS message container");
             gmm_cause = gmm_handle_registration_update(
-                    amf_ue, &nas_message.gmm.registration_request);
+                    ran_ue, amf_ue, &nas_message.gmm.registration_request);
             break;
         case OGS_NAS_5GS_SERVICE_REQUEST:
             ogs_debug("Service request in NAS message container");
             gmm_cause = gmm_handle_service_update(
-                    amf_ue, &nas_message.gmm.service_request);
+                    ran_ue, amf_ue, &nas_message.gmm.service_request);
             break;
         default:
             ogs_error("Unknown message [%d]", nas_message.gmm.h.message_type);
@@ -1487,6 +1538,243 @@ static ogs_nas_5gmm_cause_t gmm_handle_nas_message_container(
 
     ogs_pkbuf_free(nasbuf);
     return gmm_cause;
+}
+
+static ogs_nas_5gmm_capability_t
+        amf_namf_comm_base64_decode_5gmm_capability(char *encoded)
+{
+    ogs_nas_5gmm_capability_t gmm_capability;
+    char *gmm_capability_octets_string = NULL;
+    uint8_t gmm_capability_iei = 0;
+
+    memset(&gmm_capability, 0, sizeof(gmm_capability));
+    gmm_capability_octets_string =
+            (char*) ogs_calloc(sizeof(gmm_capability) + 1, sizeof(char));
+    ogs_assert(gmm_capability_octets_string);
+
+    int len = ogs_base64_decode(gmm_capability_octets_string, encoded);
+
+    if (len == 0)
+        ogs_error("Gmm capability not decoded");
+
+    ogs_assert(sizeof(gmm_capability_octets_string) <=
+            sizeof(gmm_capability) + 1);
+
+    gmm_capability_iei = // not copied anywhere for now
+            gmm_capability_octets_string[0];
+    if (gmm_capability_iei !=
+            OGS_NAS_5GS_REGISTRATION_REQUEST_5GMM_CAPABILITY_TYPE) {
+        ogs_error("Type of 5GMM capability IEI is incorrect");
+    }
+    memcpy(&gmm_capability,
+            gmm_capability_octets_string + 1,
+            sizeof(gmm_capability));
+    if (gmm_capability_octets_string) {
+        ogs_free(gmm_capability_octets_string);
+    }
+
+    return gmm_capability;
+}
+
+static ogs_nas_ue_security_capability_t
+        amf_namf_comm_base64_decode_ue_security_capability(char *encoded)
+{
+    ogs_nas_ue_security_capability_t ue_security_capability;
+    char *ue_security_capability_octets_string = NULL;
+    uint8_t ue_security_capability_iei = 0;
+
+    memset(&ue_security_capability, 0, sizeof(ue_security_capability));
+    ue_security_capability_octets_string =
+            (char*) ogs_calloc(sizeof(ue_security_capability), sizeof(char));
+    ogs_assert(ue_security_capability_octets_string);
+
+    ogs_base64_decode(ue_security_capability_octets_string, encoded);
+
+    ogs_assert(sizeof(ue_security_capability_octets_string) <=
+            sizeof(ogs_nas_ue_security_capability_t) + 1);
+
+    ue_security_capability_iei = // not copied anywhere for now
+            ue_security_capability_octets_string[0];
+    if (ue_security_capability_iei !=
+            OGS_NAS_5GS_REGISTRATION_REQUEST_UE_SECURITY_CAPABILITY_TYPE) {
+        ogs_error("UE security capability IEI is incorrect");
+    }
+
+    memcpy(&ue_security_capability, ue_security_capability_octets_string + 1,
+            sizeof(ue_security_capability));
+
+    if (ue_security_capability_octets_string) {
+        ogs_free(ue_security_capability_octets_string);
+    }
+
+    return ue_security_capability;
+}
+
+static void amf_namf_comm_decode_ue_mm_context_list(
+            amf_ue_t *amf_ue, OpenAPI_list_t *MmContextList) {
+
+    OpenAPI_lnode_t *node = NULL;
+
+    OpenAPI_list_for_each(MmContextList, node) {
+
+        OpenAPI_mm_context_t *MmContext = NULL;
+        OpenAPI_list_t *AllowedNssaiList = NULL;
+        OpenAPI_lnode_t *node1 = NULL;
+        OpenAPI_list_t *NssaiMappingList = NULL;
+        int num_of_s_nssai = 0;
+        int num_of_nssai_mapping = 0;
+
+        MmContext = node->data;
+
+        AllowedNssaiList = MmContext->allowed_nssai;
+        NssaiMappingList = MmContext->nssai_mapping_list;
+
+        OpenAPI_list_for_each(AllowedNssaiList, node1) {
+            OpenAPI_snssai_t *AllowedNssai = node1->data;
+
+            ogs_assert(num_of_s_nssai < OGS_MAX_NUM_OF_SLICE);
+
+            amf_ue->allowed_nssai.s_nssai[num_of_s_nssai].sst =
+                    (uint8_t)AllowedNssai->sst;
+            amf_ue->allowed_nssai.s_nssai[num_of_s_nssai].sd =
+                    ogs_s_nssai_sd_from_string(AllowedNssai->sd);
+
+            num_of_s_nssai++;
+            amf_ue->allowed_nssai.num_of_s_nssai = num_of_s_nssai;
+        }
+
+        OpenAPI_list_for_each(NssaiMappingList, node1) {
+            OpenAPI_nssai_mapping_t *NssaiMapping = node1->data;
+            OpenAPI_snssai_t *HSnssai = NssaiMapping->h_snssai;
+
+            ogs_assert(num_of_nssai_mapping < OGS_MAX_NUM_OF_SLICE);
+
+            amf_ue->allowed_nssai.s_nssai[num_of_nssai_mapping].
+                    mapped_hplmn_sst = HSnssai->sst;
+            amf_ue->allowed_nssai.s_nssai[num_of_nssai_mapping].
+                    mapped_hplmn_sd = ogs_s_nssai_sd_from_string(HSnssai->sd);
+
+            num_of_nssai_mapping++;
+        }
+
+        if (MmContext->ue_security_capability) {
+            amf_ue->ue_security_capability =
+                    amf_namf_comm_base64_decode_ue_security_capability(
+                    MmContext->ue_security_capability);
+        }
+    }
+}
+
+static void amf_namf_comm_decode_ue_session_context_list(
+            amf_ue_t *amf_ue, OpenAPI_list_t *SessionContextList)
+{
+    OpenAPI_lnode_t *node = NULL;
+
+    OpenAPI_list_for_each(SessionContextList, node) {
+        OpenAPI_pdu_session_context_t *PduSessionContext;
+        PduSessionContext = node->data;
+        amf_sess_t *sess = NULL;
+
+        sess = amf_sess_add(amf_ue, PduSessionContext->pdu_session_id);
+        ogs_assert(sess);
+
+        sess->sm_context.ref = PduSessionContext->sm_context_ref;
+
+        if (PduSessionContext->s_nssai) {
+            memset(&sess->s_nssai, 0, sizeof(sess->s_nssai));
+
+            sess->s_nssai.sst = PduSessionContext->s_nssai->sst;
+            sess->s_nssai.sd = ogs_s_nssai_sd_from_string(
+                    PduSessionContext->s_nssai->sd);
+        }
+
+        if (PduSessionContext->dnn)
+            sess->dnn = ogs_strdup(PduSessionContext->dnn);
+        if (PduSessionContext->access_type)
+            amf_ue->nas.access_type = (int)PduSessionContext->access_type;
+    }
+}
+
+int amf_namf_comm_handle_ue_context_transfer_response(
+        ogs_sbi_message_t *recvmsg, amf_ue_t *amf_ue)
+{
+    OpenAPI_ue_context_t *UeContext = NULL;
+
+ogs_error("V funkciji amf_namf_comm_handle_ue_context_transfer_response");
+
+    if (!recvmsg->UeContextTransferRspData) {
+        ogs_error("No UeContextTransferRspData");
+        return OGS_ERROR;
+    }
+
+    if (!recvmsg->UeContextTransferRspData->ue_context) {
+        ogs_error("No UE context");
+        return OGS_ERROR;
+    }
+
+    UeContext = recvmsg->UeContextTransferRspData->ue_context;
+
+    if (UeContext->supi) {
+        amf_ue_set_supi(amf_ue, UeContext->supi);
+        if (!UeContext->supi_unauth_ind){
+            amf_ue->auth_result = OpenAPI_auth_result_AUTHENTICATION_SUCCESS;
+        }
+    }
+
+    if (UeContext->pei) {
+        if (amf_ue->pei)
+            ogs_free(amf_ue->pei);
+        amf_ue->pei = ogs_strdup(UeContext->pei);
+    }
+
+    if (UeContext->sub_ue_ambr) {
+        amf_ue->ue_ambr.downlink =
+            ogs_sbi_bitrate_from_string(UeContext->sub_ue_ambr->downlink);
+        amf_ue->ue_ambr.uplink =
+            ogs_sbi_bitrate_from_string(UeContext->sub_ue_ambr->uplink);
+    }
+
+    if (UeContext->seaf_data) {
+        if (UeContext->seaf_data->ng_ksi->tsc != OpenAPI_sc_type_NULL) {
+            amf_ue->nas.ue.tsc =
+                (UeContext->seaf_data->ng_ksi->tsc == OpenAPI_sc_type_NATIVE) ? 0 : 1;
+            amf_ue->nas.ue.ksi = (uint8_t)UeContext->seaf_data->ng_ksi->ksi;
+
+            ogs_ascii_to_hex(
+                UeContext->seaf_data->key_amf->key_val,
+                strlen(UeContext->seaf_data->key_amf->key_val),
+                amf_ue->kamf,
+                sizeof(amf_ue->kamf));
+        }
+    }
+
+    if (UeContext->_5g_mm_capability) {
+        ogs_nas_5gmm_capability_t gmm_capability;
+
+        gmm_capability = amf_namf_comm_base64_decode_5gmm_capability(
+                    UeContext->_5g_mm_capability);
+        amf_ue->gmm_capability.lte_positioning_protocol_capability =
+                (bool)gmm_capability.lte_positioning_protocol_capability;
+        amf_ue->gmm_capability.ho_attach = (bool)gmm_capability.ho_attach;
+        amf_ue->gmm_capability.s1_mode = (bool)gmm_capability.s1_mode;
+    }
+
+    if (UeContext->pcf_id) {
+        /* TODO */
+    }
+
+    /* TODO UeContext->pcfAmPolicyUri */
+    /* TODO UeContext->pcfUePolicyUri */
+
+    if (UeContext->mm_context_list)
+        amf_namf_comm_decode_ue_mm_context_list(amf_ue, UeContext->mm_context_list);
+
+    if (UeContext->session_context_list)
+        amf_namf_comm_decode_ue_session_context_list(amf_ue, UeContext->session_context_list);
+
+    /* TODO ueRadioCapability */
+
+    return OGS_OK;
 }
 
 static uint8_t gmm_cause_from_access_control(ogs_plmn_id_t *plmn_id)

@@ -40,6 +40,7 @@ static void stats_add_ran_ue(void);
 static void stats_remove_ran_ue(void);
 static void stats_add_amf_session(void);
 static void stats_remove_amf_session(void);
+static bool amf_namf_comm_parse_guti(ogs_nas_5gs_guti_t *guti, char *ue_context_id);
 
 void amf_context_init(void)
 {
@@ -1318,7 +1319,7 @@ amf_gnb_t *amf_gnb_cycle(amf_gnb_t *gnb)
 }
 
 /** ran_ue_context handling function */
-ran_ue_t *ran_ue_add(amf_gnb_t *gnb, uint32_t ran_ue_ngap_id)
+ran_ue_t *ran_ue_add(amf_gnb_t *gnb, uint64_t ran_ue_ngap_id)
 {
     ran_ue_t *ran_ue = NULL;
 
@@ -1397,7 +1398,7 @@ void ran_ue_switch_to_gnb(ran_ue_t *ran_ue, amf_gnb_t *new_gnb)
 }
 
 ran_ue_t *ran_ue_find_by_ran_ue_ngap_id(
-        amf_gnb_t *gnb, uint32_t ran_ue_ngap_id)
+        amf_gnb_t *gnb, uint64_t ran_ue_ngap_id)
 {
     ran_ue_t *ran_ue = NULL;
 
@@ -1675,13 +1676,17 @@ void amf_ue_remove(amf_ue_t *amf_ue)
     /* Clear SubscribedInfo */
     amf_clear_subscribed_info(amf_ue);
 
-    if (amf_ue->policy_association_id)
-        ogs_free(amf_ue->policy_association_id);
-    if (amf_ue->data_change_subscription_id)
-        ogs_free(amf_ue->data_change_subscription_id);
+    PCF_AM_POLICY_CLEAR(amf_ue);
+    if (amf_ue->policy_association.client)
+        ogs_sbi_client_remove(amf_ue->policy_association.client);
 
-    if (amf_ue->confirmation_url_for_5g_aka)
-        ogs_free(amf_ue->confirmation_url_for_5g_aka);
+    UDM_SDM_CLEAR(amf_ue);
+    if (amf_ue->data_change_subscription.client)
+        ogs_sbi_client_remove(amf_ue->data_change_subscription.client);
+
+    CLEAR_5G_AKA_CONFIRMATION(amf_ue);
+    if (amf_ue->confirmation_for_5g_aka.client)
+        ogs_sbi_client_remove(amf_ue->confirmation_for_5g_aka.client);
 
     /* Free UeRadioCapability */
     OGS_ASN_CLEAR_DATA(&amf_ue->ueRadioCapability);
@@ -1955,6 +1960,105 @@ amf_ue_t *amf_ue_find_by_message(ogs_nas_5gs_message_t *message)
     return amf_ue;
 }
 
+static bool amf_namf_comm_parse_guti(ogs_nas_5gs_guti_t *guti, char *ue_context_id)
+{
+#define MIN_LENGTH_OF_MNC 2
+#define MAX_LENGTH_OF_MNC 3
+#define LENGTH_OF_MCC 3
+#define LENGTH_OF_AMF_ID 6
+#define LENGTH_OF_TMSI 8
+
+    char amf_id_string[LENGTH_OF_AMF_ID + 1];
+    char tmsi_string[LENGTH_OF_TMSI + 1];
+    char mcc_string[LENGTH_OF_MCC + 1];
+    char mnc_string[MAX_LENGTH_OF_MNC + 1];
+    OpenAPI_plmn_id_t Plmn_id;
+    ogs_plmn_id_t plmn_id;
+
+    /* TS29.518 6.1.3.2.2 Guti pattern (27 or 28 characters):
+    "5g-guti-[0-9]{5,6}[0-9a-fA-F]{14}" */
+
+    short index = 8; /* start parsing guti after "5g-guti-" */
+
+    strncpy(mcc_string, &ue_context_id[index], LENGTH_OF_MCC);
+    mcc_string[LENGTH_OF_MCC] = '\0';
+    index += LENGTH_OF_MCC;
+
+    if (strlen(ue_context_id) == OGS_MAX_5G_GUTI_LEN - 1) {
+        /* mnc is 2 characters long */
+        mnc_string[MIN_LENGTH_OF_MNC] = '\0';
+        strncpy(mnc_string, &ue_context_id[index], MIN_LENGTH_OF_MNC);
+        index += MIN_LENGTH_OF_MNC;
+    } else if (strlen(ue_context_id) == OGS_MAX_5G_GUTI_LEN) {
+        /* mnc is 3 characters long */
+        mnc_string[MAX_LENGTH_OF_MNC] = '\0';
+        strncpy(mnc_string, &ue_context_id[index], MAX_LENGTH_OF_MNC);
+        index += MAX_LENGTH_OF_MNC;
+    } else {
+        ogs_error("Invalid Ue context id");
+        return false;
+    }
+
+    strncpy(amf_id_string, &ue_context_id[index], LENGTH_OF_AMF_ID);
+    amf_id_string[LENGTH_OF_AMF_ID] = '\0';
+    index += LENGTH_OF_AMF_ID;
+
+    strncpy(tmsi_string, &ue_context_id[index], LENGTH_OF_TMSI);
+    tmsi_string[LENGTH_OF_TMSI] = '\0';
+
+    memset(&Plmn_id, 0, sizeof(Plmn_id));
+    Plmn_id.mcc = mcc_string;
+    Plmn_id.mnc = mnc_string;
+
+    memset(&plmn_id, 0, sizeof(plmn_id));
+    ogs_sbi_parse_plmn_id(&plmn_id, &Plmn_id);
+    ogs_nas_from_plmn_id(&guti->nas_plmn_id, &plmn_id);
+    ogs_amf_id_from_string(&guti->amf_id, amf_id_string);
+
+    guti->m_tmsi = (u_int32_t)strtol(tmsi_string, NULL, 16);
+    return true;
+}
+
+amf_ue_t *amf_ue_find_by_ue_context_id(char *ue_context_id)
+{
+    amf_ue_t *amf_ue = NULL;
+
+    ogs_assert(ue_context_id);
+
+    if (strncmp(ue_context_id, OGS_ID_SUPI_TYPE_IMSI,
+            strlen(OGS_ID_SUPI_TYPE_IMSI)) == 0) {
+
+        amf_ue = amf_ue_find_by_supi(ue_context_id);
+        if (!amf_ue) {
+            ogs_info("[%s] Unknown UE by SUPI", ue_context_id);
+            return NULL;
+        }
+
+    } else if (strncmp(ue_context_id, OGS_ID_5G_GUTI_TYPE,
+            strlen(OGS_ID_5G_GUTI_TYPE)) == 0) {
+
+        ogs_nas_5gs_guti_t guti;
+        memset(&guti, 0, sizeof(guti));
+
+        if (amf_namf_comm_parse_guti(&guti, ue_context_id) == false) {
+            ogs_error("amf_namf_comm_parse_guti() failed");
+            return NULL;
+        }
+
+        amf_ue = amf_ue_find_by_guti(&guti);
+        if (!amf_ue) {
+            ogs_info("[%s] Unknown UE by GUTI", ue_context_id);
+            return NULL;
+        }
+
+    } else {
+        ogs_error("Unsupported UE context ID type");
+        return NULL;
+    }
+
+    return amf_ue;
+}
+
 void amf_ue_set_suci(amf_ue_t *amf_ue,
         ogs_nas_5gs_mobile_identity_t *mobile_identity)
 {
@@ -1978,8 +2082,9 @@ void amf_ue_set_suci(amf_ue_t *amf_ue,
             if (CM_CONNECTED(old_amf_ue)) {
                 /* Implcit NG release */
                 ogs_warn("[%s] Implicit NG release", suci);
-                ogs_warn("[%s]    RAN_UE_NGAP_ID[%d] AMF_UE_NGAP_ID[%lld]",
-                        old_amf_ue->suci, old_amf_ue->ran_ue->ran_ue_ngap_id,
+                ogs_warn("[%s]    RAN_UE_NGAP_ID[%lld] AMF_UE_NGAP_ID[%lld]",
+                        old_amf_ue->suci,
+                        (long long)old_amf_ue->ran_ue->ran_ue_ngap_id,
                         (long long)old_amf_ue->ran_ue->amf_ue_ngap_id);
                 ran_ue_remove(old_amf_ue->ran_ue);
             }
@@ -2148,8 +2253,10 @@ void amf_sess_remove(amf_sess_t *sess)
                 ogs_list_count(&sess->sbi.xact_list));
     ogs_sbi_object_free(&sess->sbi);
 
-    if (sess->sm_context_ref)
-        ogs_free(sess->sm_context_ref);
+    CLEAR_SESSION_CONTEXT(sess);
+
+    if (sess->sm_context.client)
+        ogs_sbi_client_remove(sess->sm_context.client);
 
     if (sess->payload_container)
         ogs_pkbuf_free(sess->payload_container);
@@ -2751,7 +2858,7 @@ bool amf_update_allowed_nssai(amf_ue_t *amf_ue)
                         s_nssai[amf_ue->rejected_nssai.num_of_s_nssai];
             bool ta_supported = false;
 
-
+            ogs_assert(amf_ue->num_of_slice);
             slice = ogs_slice_find_by_s_nssai(
                     amf_ue->slice, amf_ue->num_of_slice,
                     (ogs_s_nssai_t *)requested);

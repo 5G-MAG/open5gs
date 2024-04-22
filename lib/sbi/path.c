@@ -313,6 +313,11 @@ int ogs_sbi_discover_and_send(ogs_sbi_xact_t *xact)
         ogs_free(fqdn);
         ogs_freeaddrinfo(addr);
         ogs_freeaddrinfo(addr6);
+
+        if (!client) {
+            ogs_fatal("No Client : [%s]", request->h.uri);
+            ogs_assert_if_reached();
+        }
     }
 
     if (scp_client) {
@@ -420,6 +425,33 @@ int ogs_sbi_discover_and_send(ogs_sbi_xact_t *xact)
                                 ogs_plmn_id_hexdump(
                                     &discovery_option->tai.plmn_id),
                                 discovery_option->tai.tac.v);
+            }
+
+            if (discovery_option && discovery_option->target_guami) {
+                bool rc = false;
+                char *v = ogs_sbi_discovery_option_build_guami(discovery_option);
+                ogs_expect(v);
+
+                if (v) {
+                    char *encoded = ogs_sbi_url_encode(v);
+                    ogs_expect(encoded);
+
+                    if (encoded) {
+                        ogs_sbi_header_set(request->http.headers,
+                                OGS_SBI_CUSTOM_DISCOVERY_GUAMI, encoded);
+                        ogs_free(encoded);
+
+                        rc = true;
+                    }
+                    ogs_free(v);
+                }
+
+                if (rc == false)
+                    ogs_error("build failed: guami[PLMN_ID:%06x,AMF_ID:%x]",
+                                ogs_plmn_id_hexdump(
+                                    &discovery_option->target_guami->plmn_id),
+                                ogs_amf_id_hexdump(
+                                    &discovery_option->target_guami->amf_id));
             }
 
             if (discovery_option &&

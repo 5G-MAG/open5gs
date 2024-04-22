@@ -118,6 +118,16 @@ uint8_t mme_s6a_handle_ula(
             return OGS_NAS_EMM_CAUSE_PROTOCOL_ERROR_UNSPECIFIED;
         }
     } else if (mme_ue->nas_eps.type == MME_EPS_TYPE_TAU_REQUEST) {
+        if (!SESSION_CONTEXT_IS_AVAILABLE(mme_ue)) {
+            ogs_warn("No PDN Connection : UE[%s]", mme_ue->imsi_bcd);
+            return OGS_NAS_EMM_CAUSE_UE_IDENTITY_CANNOT_BE_DERIVED_BY_THE_NETWORK;
+        }
+
+        if (!ACTIVE_EPS_BEARERS_IS_AVAIABLE(mme_ue)) {
+            ogs_warn("No active EPS bearers : IMSI[%s]", mme_ue->imsi_bcd);
+            return OGS_NAS_EMM_CAUSE_NO_EPS_BEARER_CONTEXT_ACTIVATED;
+        }
+
         r = nas_eps_send_tau_accept(mme_ue,
                 S1AP_ProcedureCode_id_InitialContextSetup);
         ogs_expect(r == OGS_OK);
@@ -143,6 +153,7 @@ uint8_t mme_s6a_handle_pua(
     if (s6a_message->result_code != ER_DIAMETER_SUCCESS) {
         ogs_error("Purge UE failed for IMSI[%s] [%d]", mme_ue->imsi_bcd,
             s6a_message->result_code);
+        MME_UE_CHECK(OGS_LOG_ERROR, mme_ue);
         mme_ue_remove(mme_ue);
         return OGS_ERROR;
     }
@@ -150,6 +161,7 @@ uint8_t mme_s6a_handle_pua(
     if (pua_message->pua_flags & OGS_DIAM_S6A_PUA_FLAGS_FREEZE_MTMSI)
         ogs_debug("Freeze M-TMSI requested but not implemented.");
 
+    MME_UE_CHECK(OGS_LOG_DEBUG, mme_ue);
     mme_ue_remove(mme_ue);
 
     return OGS_OK;
@@ -224,6 +236,7 @@ void mme_s6a_handle_clr(mme_ue_t *mme_ue, ogs_diam_s6a_message_t *s6a_message)
      */
     if (OGS_FSM_CHECK(&mme_ue->sm, emm_state_de_registered)) {
         ogs_warn("UE has already been de-registered");
+        MME_UE_CHECK(OGS_LOG_ERROR, mme_ue);
         mme_ue_remove(mme_ue);
         return;
     }

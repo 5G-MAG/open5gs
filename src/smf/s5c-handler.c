@@ -50,6 +50,14 @@ static void pfcp_sess_timeout(ogs_pfcp_xact_t *xact, void *data)
     }
 }
 
+static ogs_inline uint32_t get_sender_f_teid(
+        smf_sess_t *sess, ogs_gtp2_sender_f_teid_t *sender_f_teid)
+{
+    return sess ? sess->sgw_s5c_teid :
+                sender_f_teid && sender_f_teid->teid_presence == true ?
+                    sender_f_teid->teid : 0;
+}
+
 void smf_s5c_handle_echo_request(
         ogs_gtp_xact_t *xact, ogs_gtp2_echo_request_t *req)
 {
@@ -281,7 +289,8 @@ uint8_t smf_s5c_handle_create_session_request(
     /* Control Plane(DL) : SGW-S5C */
     sgw_s5c_teid = req->sender_f_teid_for_control_plane.data;
     ogs_assert(sgw_s5c_teid);
-    sess->sgw_s5c_teid = be32toh(sgw_s5c_teid->teid);
+    /* sess->sgw_s5c_teid has already been updated in SMF-SM */
+    ogs_assert(sess->sgw_s5c_teid == be32toh(sgw_s5c_teid->teid));
     rv = ogs_gtp2_f_teid_to_ip(sgw_s5c_teid, &sess->sgw_s5c_ip);
     ogs_assert(rv == OGS_OK);
 
@@ -378,6 +387,12 @@ uint8_t smf_s5c_handle_create_session_request(
                 &req->protocol_configuration_options);
     }
 
+    /* APCO */
+    if (req->additional_protocol_configuration_options.presence) {
+        OGS_TLV_STORE_DATA(&sess->gtp.ue_apco,
+                &req->additional_protocol_configuration_options);
+    }
+
     /* Set User Location Information */
     if (req->user_location_information.presence) {
         OGS_TLV_STORE_DATA(&sess->gtp.user_location_information,
@@ -452,6 +467,8 @@ uint8_t smf_s5c_handle_delete_session_request(
         OGS_TLV_CLEAR_DATA(&sess->gtp.ue_pco);
     }
 
+    /* APCO not present in Session deletion procedure, hence no need to clear it here. */
+
     if (req->extended_protocol_configuration_options.presence) {
         OGS_TLV_STORE_DATA(&sess->gtp.ue_epco,
                 &req->extended_protocol_configuration_options);
@@ -471,7 +488,8 @@ uint8_t smf_s5c_handle_delete_session_request(
 
 void smf_s5c_handle_modify_bearer_request(
         smf_sess_t *sess, ogs_gtp_xact_t *gtp_xact,
-        ogs_pkbuf_t *gtpbuf, ogs_gtp2_modify_bearer_request_t *req)
+        ogs_pkbuf_t *gtpbuf, ogs_gtp2_modify_bearer_request_t *req,
+        ogs_gtp2_sender_f_teid_t *sender_f_teid)
 {
     int rv, i;
     uint8_t cause_value = 0;
@@ -484,6 +502,7 @@ void smf_s5c_handle_modify_bearer_request(
 
     ogs_assert(gtp_xact);
     ogs_assert(req);
+    ogs_assert(sender_f_teid);
 
     /************************
      * Check Session Context
@@ -496,7 +515,8 @@ void smf_s5c_handle_modify_bearer_request(
     }
 
     if (cause_value != OGS_GTP2_CAUSE_REQUEST_ACCEPTED) {
-        ogs_gtp2_send_error_message(gtp_xact, sess ? sess->sgw_s5c_teid : 0,
+        ogs_gtp2_send_error_message(
+                gtp_xact, get_sender_f_teid(sess, sender_f_teid),
                 OGS_GTP2_MODIFY_BEARER_RESPONSE_TYPE, cause_value);
         return;
     }
@@ -1124,7 +1144,8 @@ static int reconfigure_packet_filter(smf_pf_t *pf, ogs_gtp2_tft_t *tft, int i)
 
 void smf_s5c_handle_bearer_resource_command(
         smf_sess_t *sess, ogs_gtp_xact_t *xact,
-        ogs_gtp2_bearer_resource_command_t *cmd)
+        ogs_gtp2_bearer_resource_command_t *cmd,
+        ogs_gtp2_sender_f_teid_t *sender_f_teid)
 {
     int rv;
     uint8_t cause_value = 0;
@@ -1145,6 +1166,7 @@ void smf_s5c_handle_bearer_resource_command(
 
     ogs_assert(xact);
     ogs_assert(cmd);
+    ogs_assert(sender_f_teid);
 
     ogs_debug("Bearer Resource Command");
 
@@ -1178,7 +1200,8 @@ void smf_s5c_handle_bearer_resource_command(
     }
 
     if (cause_value != OGS_GTP2_CAUSE_REQUEST_ACCEPTED) {
-        ogs_gtp2_send_error_message(xact, sess ? sess->sgw_s5c_teid : 0,
+        ogs_gtp2_send_error_message(
+                xact, get_sender_f_teid(sess, sender_f_teid),
                 OGS_GTP2_BEARER_RESOURCE_FAILURE_INDICATION_TYPE, cause_value);
         return;
     }
@@ -1203,7 +1226,8 @@ void smf_s5c_handle_bearer_resource_command(
     }
 
     if (cause_value != OGS_GTP2_CAUSE_REQUEST_ACCEPTED) {
-        ogs_gtp2_send_error_message(xact, sess ? sess->sgw_s5c_teid : 0,
+        ogs_gtp2_send_error_message(
+                xact, get_sender_f_teid(sess, sender_f_teid),
                 OGS_GTP2_BEARER_RESOURCE_FAILURE_INDICATION_TYPE, cause_value);
         return;
     }
@@ -1233,7 +1257,7 @@ void smf_s5c_handle_bearer_resource_command(
             if (pf) {
                 if (reconfigure_packet_filter(pf, &tft, i) < 0) {
                     ogs_gtp2_send_error_message(
-                        xact, sess ? sess->sgw_s5c_teid : 0,
+                        xact, get_sender_f_teid(sess, sender_f_teid),
                         OGS_GTP2_BEARER_RESOURCE_FAILURE_INDICATION_TYPE,
                         OGS_GTP2_CAUSE_SEMANTIC_ERRORS_IN_PACKET_FILTER);
                     return;
@@ -1242,7 +1266,7 @@ void smf_s5c_handle_bearer_resource_command(
  * Refer to lib/ipfw/ogs-ipfw.h
  * Issue #338
  *
- * <DOWNLINK>
+ * <DOWNLINK/BI-DIRECTIONAL>
  * TFT : Local <UE_IP> <UE_PORT> REMOTE <P-CSCF_RTP_IP> <P-CSCF_RTP_PORT>
  * -->
  * RULE : Source <P-CSCF_RTP_IP> <P-CSCF_RTP_PORT> Destination <UE_IP> <UE_PORT>
@@ -1260,7 +1284,7 @@ void smf_s5c_handle_bearer_resource_command(
 /*
  * Issue #338
  *
- * <DOWNLINK>
+ * <DOWNLINK/BI-DIRECTIONAL>
  * RULE : Source <P-CSCF_RTP_IP> <P-CSCF_RTP_PORT> Destination <UE_IP> <UE_PORT>
  * -->
  * GX : permit out from <P-CSCF_RTP_IP> <P-CSCF_RTP_PORT> to <UE_IP> <UE_PORT>
@@ -1302,7 +1326,7 @@ void smf_s5c_handle_bearer_resource_command(
 
             if (reconfigure_packet_filter(pf, &tft, i) < 0) {
                 ogs_gtp2_send_error_message(
-                    xact, sess ? sess->sgw_s5c_teid : 0,
+                    xact, get_sender_f_teid(sess, sender_f_teid),
                     OGS_GTP2_BEARER_RESOURCE_FAILURE_INDICATION_TYPE,
                     OGS_GTP2_CAUSE_SEMANTIC_ERRORS_IN_PACKET_FILTER);
                 return;
@@ -1311,7 +1335,7 @@ void smf_s5c_handle_bearer_resource_command(
  * Refer to lib/ipfw/ogs-ipfw.h
  * Issue #338
  *
- * <DOWNLINK>
+ * <DOWNLINK/BI-DIRECTIONAL>
  * TFT : Local <UE_IP> <UE_PORT> REMOTE <P-CSCF_RTP_IP> <P-CSCF_RTP_PORT>
  * -->
  * RULE : Source <P-CSCF_RTP_IP> <P-CSCF_RTP_PORT> Destination <UE_IP> <UE_PORT>
@@ -1330,7 +1354,7 @@ void smf_s5c_handle_bearer_resource_command(
 /*
  * Issue #338
  *
- * <DOWNLINK>
+ * <DOWNLINK/BI-DIRECTIONAL>
  * RULE : Source <P-CSCF_RTP_IP> <P-CSCF_RTP_PORT> Destination <UE_IP> <UE_PORT>
  * -->
  * GX : permit out from <P-CSCF_RTP_IP> <P-CSCF_RTP_PORT> to <UE_IP> <UE_PORT>
@@ -1388,7 +1412,8 @@ void smf_s5c_handle_bearer_resource_command(
 
     if (tft_update == 0 && tft_delete == 0 && qos_update == 0) {
         /* No modification */
-        ogs_gtp2_send_error_message(xact, sess ? sess->sgw_s5c_teid : 0,
+        ogs_gtp2_send_error_message(
+                xact, get_sender_f_teid(sess, sender_f_teid),
                 OGS_GTP2_BEARER_RESOURCE_FAILURE_INDICATION_TYPE,
                 OGS_GTP2_CAUSE_SERVICE_NOT_SUPPORTED);
         return;

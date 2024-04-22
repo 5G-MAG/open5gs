@@ -222,8 +222,11 @@ static void sess_5gc_timeout(ogs_pfcp_xact_t *xact, void *data)
     ogs_assert(xact);
     ogs_assert(data);
 
-    sess = data;
-    ogs_assert(sess);
+    sess = smf_sess_cycle(data);
+    if (!sess) {
+        ogs_warn("Session has already been removed");
+        return;
+    }
     smf_ue = sess->smf_ue;
     ogs_assert(smf_ue);
 
@@ -280,7 +283,8 @@ static void sess_5gc_timeout(ogs_pfcp_xact_t *xact, void *data)
             ogs_assert(stream);
             ogs_assert(true ==
                 ogs_sbi_server_send_error(stream,
-                    OGS_SBI_HTTP_STATUS_GATEWAY_TIMEOUT, NULL, strerror, NULL));
+                    OGS_SBI_HTTP_STATUS_GATEWAY_TIMEOUT, NULL, strerror,
+                    NULL, NULL));
         } else {
             ogs_fatal("Unknown trigger [%d]", trigger);
             ogs_assert_if_reached();
@@ -288,7 +292,21 @@ static void sess_5gc_timeout(ogs_pfcp_xact_t *xact, void *data)
 
         ogs_free(strerror);
 
-        smf_sess_remove(sess);
+        /* We mustn't remove sess here. Removing a session may delete PFCP xact
+           timers and we must not delete any timers from within a timer
+           callback. Instead, we shall emit a new event to trigger session
+           removal from pfcp-sm state machine. */
+        e = smf_event_new(SMF_EVT_N4_TIMER);
+        ogs_assert(e);
+        e->sess = sess;
+        e->h.timer_id = SMF_TIMER_PFCP_NO_DELETION_RESPONSE;
+        e->pfcp_node = sess->pfcp_node;
+
+        rv = ogs_queue_push(ogs_app()->queue, e);
+        if (rv != OGS_OK) {
+            ogs_error("ogs_queue_push() failed:%d", (int)rv);
+            ogs_event_free(e);
+        }
         break;
     default:
         ogs_error("Not implemented [type:%d]", type);

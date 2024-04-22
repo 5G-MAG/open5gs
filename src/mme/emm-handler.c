@@ -54,16 +54,16 @@ int emm_handle_attach_request(mme_ue_t *mme_ue,
 
     char imsi_bcd[OGS_MAX_IMSI_BCD_LEN+1];
 
-    MME_UE_LIST_CHECK;
-
     ogs_assert(mme_ue);
+    MME_UE_CHECK(OGS_LOG_DEBUG, mme_ue);
+
     enb_ue = enb_ue_cycle(mme_ue->enb_ue);
     ogs_assert(enb_ue);
 
     ogs_assert(esm_message_container);
     if (!esm_message_container->length) {
         ogs_error("No ESM Message Container");
-        r = nas_eps_send_attach_reject(mme_ue,
+        r = nas_eps_send_attach_reject(mme_ue->enb_ue, mme_ue,
                 OGS_NAS_EMM_CAUSE_SEMANTICALLY_INCORRECT_MESSAGE,
                 OGS_NAS_ESM_CAUSE_PROTOCOL_ERROR_UNSPECIFIED);
         ogs_expect(r == OGS_OK);
@@ -143,7 +143,7 @@ int emm_handle_attach_request(mme_ue_t *mme_ue,
         /* Send Attach Reject */
         ogs_warn("Cannot find Served TAI[PLMN_ID:%06x,TAC:%d]",
             ogs_plmn_id_hexdump(&mme_ue->tai.plmn_id), mme_ue->tai.tac);
-        r = nas_eps_send_attach_reject(mme_ue,
+        r = nas_eps_send_attach_reject(mme_ue->enb_ue, mme_ue,
                 OGS_NAS_EMM_CAUSE_TRACKING_AREA_NOT_ALLOWED,
                 OGS_NAS_ESM_CAUSE_PROTOCOL_ERROR_UNSPECIFIED);
         ogs_expect(r == OGS_OK);
@@ -187,7 +187,7 @@ int emm_handle_attach_request(mme_ue_t *mme_ue,
             "but Integrity[0x%x] cannot be bypassed with EIA0",
             mme_selected_enc_algorithm(mme_ue),
             mme_selected_int_algorithm(mme_ue));
-        r = nas_eps_send_attach_reject(mme_ue,
+        r = nas_eps_send_attach_reject(mme_ue->enb_ue, mme_ue,
                 OGS_NAS_EMM_CAUSE_UE_SECURITY_CAPABILITIES_MISMATCH,
                 OGS_NAS_ESM_CAUSE_PROTOCOL_ERROR_UNSPECIFIED);
         ogs_expect(r == OGS_OK);
@@ -210,7 +210,7 @@ int emm_handle_attach_request(mme_ue_t *mme_ue,
         emm_cause = emm_cause_from_access_control(mme_ue);
         if (emm_cause != OGS_NAS_EMM_CAUSE_REQUEST_ACCEPTED) {
             ogs_error("Rejected by PLMN-ID access control");
-            r = nas_eps_send_attach_reject(mme_ue,
+            r = nas_eps_send_attach_reject(mme_ue->enb_ue, mme_ue,
                     emm_cause, OGS_NAS_ESM_CAUSE_PROTOCOL_ERROR_UNSPECIFIED);
             ogs_expect(r == OGS_OK);
             ogs_assert(r != OGS_ERROR);
@@ -270,9 +270,9 @@ int emm_handle_attach_complete(
     struct tm gmt, local;
 
     ogs_assert(mme_ue);
+    MME_UE_CHECK(OGS_LOG_DEBUG, mme_ue);
 
     ogs_info("    IMSI[%s]", mme_ue->imsi_bcd);
-    MME_UE_LIST_CHECK;
 
     ogs_gettimeofday(&tv);
     ogs_gmtime(tv.tv_sec, &gmt);
@@ -358,7 +358,7 @@ int emm_handle_attach_complete(
         return OGS_ERROR;
     }
 
-    r = nas_eps_send_to_downlink_nas_transport(mme_ue, emmbuf);
+    r = nas_eps_send_to_downlink_nas_transport(mme_ue->enb_ue, emmbuf);
     ogs_expect(r == OGS_OK);
     ogs_assert(r != OGS_ERROR);
 
@@ -391,7 +391,7 @@ int emm_handle_identity_response(
             ogs_error("mobile_identity length (%d != %d)",
                     (int)sizeof(ogs_nas_mobile_identity_imsi_t),
                     mobile_identity->length);
-            r = nas_eps_send_attach_reject(mme_ue,
+            r = nas_eps_send_attach_reject(mme_ue->enb_ue, mme_ue,
                     OGS_NAS_EMM_CAUSE_SEMANTICALLY_INCORRECT_MESSAGE,
                     OGS_NAS_ESM_CAUSE_PROTOCOL_ERROR_UNSPECIFIED);
             ogs_expect(r == OGS_OK);
@@ -404,7 +404,7 @@ int emm_handle_identity_response(
         emm_cause = emm_cause_from_access_control(mme_ue);
         if (emm_cause != OGS_NAS_EMM_CAUSE_REQUEST_ACCEPTED) {
             ogs_error("Rejected by PLMN-ID access control");
-            r = nas_eps_send_attach_reject(mme_ue,
+            r = nas_eps_send_attach_reject(mme_ue->enb_ue, mme_ue,
                     emm_cause, OGS_NAS_ESM_CAUSE_PROTOCOL_ERROR_UNSPECIFIED);
             ogs_expect(r == OGS_OK);
             ogs_assert(r != OGS_ERROR);
@@ -417,7 +417,7 @@ int emm_handle_identity_response(
 
         if (mme_ue->imsi_len != OGS_MAX_IMSI_LEN) {
             ogs_error("Invalid IMSI LEN[%d]", mme_ue->imsi_len);
-            r = nas_eps_send_attach_reject(mme_ue,
+            r = nas_eps_send_attach_reject(mme_ue->enb_ue, mme_ue,
                     OGS_NAS_EMM_CAUSE_SEMANTICALLY_INCORRECT_MESSAGE,
                     OGS_NAS_ESM_CAUSE_PROTOCOL_ERROR_UNSPECIFIED);
             ogs_expect(r == OGS_OK);
@@ -656,8 +656,8 @@ int emm_handle_tau_request(mme_ue_t *mme_ue,
         /* Send TAU reject */
         ogs_warn("Cannot find Served TAI[PLMN_ID:%06x,TAC:%d]",
             ogs_plmn_id_hexdump(&mme_ue->tai.plmn_id), mme_ue->tai.tac);
-        r = nas_eps_send_tau_reject(
-                mme_ue, OGS_NAS_EMM_CAUSE_TRACKING_AREA_NOT_ALLOWED);
+        r = nas_eps_send_tau_reject(mme_ue->enb_ue, mme_ue,
+                OGS_NAS_EMM_CAUSE_TRACKING_AREA_NOT_ALLOWED);
         ogs_expect(r == OGS_OK);
         ogs_assert(r != OGS_ERROR);
         return OGS_ERROR;
@@ -793,8 +793,8 @@ int emm_handle_extended_service_request(mme_ue_t *mme_ue,
         /* Send TAU reject */
         ogs_warn("Cannot find Served TAI[PLMN_ID:%06x,TAC:%d]",
             ogs_plmn_id_hexdump(&mme_ue->tai.plmn_id), mme_ue->tai.tac);
-        r = nas_eps_send_tau_reject(
-                mme_ue, OGS_NAS_EMM_CAUSE_TRACKING_AREA_NOT_ALLOWED);
+        r = nas_eps_send_tau_reject(mme_ue->enb_ue, mme_ue,
+                OGS_NAS_EMM_CAUSE_TRACKING_AREA_NOT_ALLOWED);
         ogs_expect(r == OGS_OK);
         ogs_assert(r != OGS_ERROR);
         return OGS_ERROR;
@@ -823,7 +823,7 @@ int emm_handle_security_mode_complete(mme_ue_t *mme_ue,
     ogs_nas_mobile_identity_t *imeisv = &security_mode_complete->imeisv;
 
     ogs_assert(mme_ue);
-    MME_UE_LIST_CHECK;
+    MME_UE_CHECK(OGS_LOG_DEBUG, mme_ue);
 
     if (security_mode_complete->presencemask &
         OGS_NAS_EPS_SECURITY_MODE_COMMAND_IMEISV_REQUEST_PRESENT) {

@@ -203,6 +203,8 @@ int mme_gtp_open(void)
     }
 
     OGS_SETUP_GTPC_SERVER;
+    ogs_assert(ogs_gtp_self()->gtpc_sock || ogs_gtp_self()->gtpc_sock6);
+    ogs_assert(ogs_gtp_self()->gtpc_addr || ogs_gtp_self()->gtpc_addr6);
 
     mme_self()->pgw_addr = mme_pgw_addr_find_by_apn_enb(
             &mme_self()->pgw_list, AF_INET, NULL);
@@ -347,6 +349,7 @@ int mme_gtp_send_delete_session_request(
     }
     xact->delete_action = action;
     xact->local_teid = mme_ue->gn.mme_gn_teid;
+    ogs_debug("delete_session_request - xact:%p, sess:%p", xact, sess);
 
     rv = ogs_gtp_xact_commit(xact);
     ogs_expect(rv == OGS_OK);
@@ -364,6 +367,7 @@ void mme_gtp_send_delete_all_sessions(mme_ue_t *mme_ue, int action)
     ogs_assert(sgw_ue);
     ogs_assert(action);
 
+    MME_UE_CHECK(OGS_LOG_DEBUG, mme_ue);
     ogs_list_for_each_safe(&mme_ue->sess_list, next_sess, sess) {
         if (MME_HAVE_SGW_S1U_PATH(sess)) {
             mme_gtp_send_delete_session_request(sgw_ue, sess, action);

@@ -48,6 +48,8 @@ static ogs_thread_mutex_t sess_state_mutex;
 
 static int decode_granted_service_unit(
         ogs_diam_gy_service_unit_t *su, struct avp *avpch1, int *perror);
+static int decode_final_unit_indication(
+        ogs_diam_gy_final_unit_t *fu, struct avp *avpch1, int *perror);
 static void smf_gy_cca_cb(void *data, struct msg **msg);
 
 static __inline__ struct sess_state *new_state(os0_t sid)
@@ -198,7 +200,7 @@ static void fill_qos_information(smf_sess_t *sess, struct avp *parent_avp)
     union avp_value val;
     struct avp *avpch1, *avpch2, *avpch3;
 
-    ret = fd_msg_avp_new(ogs_diam_gx_qos_information, 0, &avpch1);
+    ret = fd_msg_avp_new(ogs_diam_gy_qos_information, 0, &avpch1);
     ogs_assert(ret == 0);
 
     /* QoS-Class-Identifier */
@@ -325,41 +327,27 @@ static void fill_multiple_services_credit_control_ccr(smf_sess_t *sess,
     /* QoS-Information */
     fill_qos_information(sess, avp);
 
-    /* 3GPP-RAT-Type, TS 29.061 16.4.7.2 21 */
-    /* GGSN: TS 29.060 7.7.50, PGW: TS 29.274 8.17 */
-    ret = fd_msg_avp_new(ogs_diam_gy_3gpp_rat_type, 0, &avpch1);
-    ogs_assert(ret == 0);
-    val.os.data = (uint8_t*)&sess->gtp_rat_type;
-    val.os.len = 1;
-    ret = fd_msg_avp_setvalue (avpch1, &val);
-    ogs_assert(ret == 0);
-    ret = fd_msg_avp_add (avp, MSG_BRW_LAST_CHILD, avpch1);
-    ogs_assert(ret == 0);
-
     /* Multiple Services AVP add to req: */
     ret = fd_msg_avp_add(req, MSG_BRW_LAST_CHILD, avp);
     ogs_assert(ret == 0);
 }
 
-/* TS 32.299 7.2.192 Service-Information AVP for CCR */
-static void fill_service_information_ccr(smf_sess_t *sess,
-                                         uint32_t cc_request_type, struct msg *req)
+/* TS 32.299 7.2.158 PS-Information AVP for CCR */
+static void fill_ps_information(smf_sess_t *sess, uint32_t cc_request_type,
+                                struct avp *avp)
 {
 
     int ret;
     union avp_value val;
-    struct avp *avp;
     struct avp *avpch1, *avpch2, *avpch3;
     struct sockaddr_in sin;
     struct sockaddr_in6 sin6;
     char buf[OGS_PLMNIDSTRLEN];
     char digit;
 
-    /* Service-Information, TS 32.299 sec 7.2.192 */
-    ret = fd_msg_avp_new(ogs_diam_gy_service_information, 0, &avp);
-
     /* PS-Information, TS 32.299 sec 7.2.158 */
     ret = fd_msg_avp_new(ogs_diam_gy_ps_information, 0, &avpch1);
+    ogs_assert(ret == 0);
 
     /* 3GPP-Charging-Id, 3GPP TS 29.061 16.4.7.2 2 */
     ret = fd_msg_avp_new(ogs_diam_gy_3gpp_charging_id, 0, &avpch2);
@@ -556,6 +544,17 @@ static void fill_service_information_ccr(smf_sess_t *sess,
     /* 3GPP-User-Location-Info, 3GPP TS 29.061 16.4.7.2 22 */
     smf_fd_msg_avp_add_3gpp_uli(sess, (struct msg *)avpch1);
 
+    /* 3GPP-RAT-Type, TS 29.061 16.4.7.2 21 */
+    /* GGSN: TS 29.060 7.7.50, PGW: TS 29.274 8.17 */
+    ret = fd_msg_avp_new(ogs_diam_gy_3gpp_rat_type, 0, &avpch2);
+    ogs_assert(ret == 0);
+    val.os.data = (uint8_t*)&sess->gtp_rat_type;
+    val.os.len = 1;
+    ret = fd_msg_avp_setvalue(avpch2, &val);
+    ogs_assert(ret == 0);
+    ret = fd_msg_avp_add(avpch1, MSG_BRW_LAST_CHILD, avpch2);
+    ogs_assert(ret == 0);
+
     if (sess->smf_ue->imeisv_len > 0) {
         /* User-Equipment-Info, 3GPP TS 32.299 7.1.17 */
         ret = fd_msg_avp_new(ogs_diam_gy_user_equipment_info, 0, &avpch2);
@@ -585,9 +584,25 @@ static void fill_service_information_ccr(smf_sess_t *sess,
         ogs_assert(ret == 0);
     }
 
-    /* PS-Information AVP add to req: */
+    /* PS-Information AVP add to parent AVP (Service-Information): */
     ret = fd_msg_avp_add (avp, MSG_BRW_LAST_CHILD, avpch1);
     ogs_assert(ret == 0);
+}
+
+/* TS 32.299 7.2.192 Service-Information AVP for CCR */
+static void fill_service_information_ccr(smf_sess_t *sess,
+                                         uint32_t cc_request_type, struct msg *req)
+{
+
+    int ret;
+    struct avp *avp;
+
+    /* Service-Information, TS 32.299 sec 7.2.192 */
+    ret = fd_msg_avp_new(ogs_diam_gy_service_information, 0, &avp);
+    ogs_assert(ret == 0);
+
+    /* PS-Information, TS 32.299 sec 7.2.158 */
+    fill_ps_information(sess, cc_request_type, avp);
 
     /* Service-Information AVP add to req: */
     ret = fd_msg_avp_add(req, MSG_BRW_LAST_CHILD, avp);
@@ -612,7 +627,6 @@ void smf_gy_send_ccr(smf_sess_t *sess, void *xact,
     const char *service_context_id = "32251@3gpp.org";
     uint32_t timestamp, req_slot;
 
-    ogs_assert(xact);
     ogs_assert(sess);
 
     ogs_assert(sess->ipv4 || sess->ipv6);
@@ -1004,6 +1018,9 @@ static void smf_gy_cca_cb(void *data, struct msg **msg)
     /* Set Credit Control Command */
     gy_message->cmd_code = OGS_DIAM_GY_CMD_CODE_CREDIT_CONTROL;
 
+    /* Initialize some values: */
+    gy_message->cca.result_code = ER_DIAMETER_SUCCESS;
+
     /* Value of Result Code */
     ret = fd_msg_search_avp(*msg, ogs_diam_result_code, &avp);
     ogs_assert(ret == 0);
@@ -1115,6 +1132,10 @@ static void smf_gy_cca_cb(void *data, struct msg **msg)
                 ret = fd_msg_avp_hdr(avpch1, &hdr);
                 ogs_assert(ret == 0);
                 switch (hdr->avp_code) {
+                case AC_RESULT_CODE:
+                    gy_message->cca.result_code = hdr->avp_value->u32;
+                    gy_message->cca.err = &gy_message->cca.result_code;
+                    break;
                 case OGS_DIAM_GY_AVP_CODE_GRANTED_SERVICE_UNIT:
                     rv = decode_granted_service_unit(
                             &gy_message->cca.granted, avpch1, &error);
@@ -1129,6 +1150,11 @@ static void smf_gy_cca_cb(void *data, struct msg **msg)
                     break;
                 case OGS_DIAM_GY_AVP_CODE_VOLUME_QUOTA_THRESHOLD:
                     gy_message->cca.volume_threshold = hdr->avp_value->u32;
+                    break;
+                case OGS_DIAM_GY_AVP_CODE_FINAL_UNIT_INDICATION:
+                    rv = decode_final_unit_indication(
+                            &gy_message->cca.final, avpch1, &error);
+                    ogs_assert(rv == OGS_OK);
                     break;
                 default:
                     ogs_warn("Not supported(%d)", hdr->avp_code);
@@ -1433,6 +1459,45 @@ static int decode_granted_service_unit(
             su->cc_output_octets_present = true;
             su->cc_output_octets = hdr->avp_value->u64;
             break;
+        default:
+            ogs_error("Not implemented(%d)", hdr->avp_code);
+            break;
+        }
+        fd_msg_browse(avpch2, MSG_BRW_NEXT, &avpch2, NULL);
+    }
+
+    if (perror)
+        *perror = error;
+
+    return OGS_OK;
+}
+
+static int decode_final_unit_indication(
+        ogs_diam_gy_final_unit_t *fu, struct avp *avpch1, int *perror)
+{
+    int ret = 0, error = 0;
+    struct avp *avpch2;
+    struct avp_hdr *hdr;
+
+    ogs_assert(fu);
+    ogs_assert(avpch1);
+    memset(fu, 0, sizeof(*fu));
+
+    ret = fd_msg_browse(avpch1, MSG_BRW_FIRST_CHILD, &avpch2, NULL);
+    ogs_assert(ret == 0);
+    while (avpch2) {
+        ret = fd_msg_avp_hdr(avpch2, &hdr);
+        ogs_assert(ret == 0);
+        switch (hdr->avp_code) {
+        case OGS_DIAM_GY_AVP_CODE_FINAL_UNIT_ACTION:
+            fu->cc_final_action_present = true;
+            fu->cc_final_action = hdr->avp_value->i32;
+            break;
+        /* TODO:
+        case OGS_DIAM_GY_AVP_CODE_REDIRECT_SERVER:
+        case OGS_DIAM_GY_AVP_CODE_FILTER_ID:
+        case OGS_DIAM_GY_AVP_CODE_RESTRICTION_FILTER_RULE:
+        */
         default:
             ogs_error("Not implemented(%d)", hdr->avp_code);
             break;

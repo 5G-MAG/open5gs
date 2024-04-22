@@ -404,7 +404,6 @@ void s1ap_handle_initial_ue_message(mme_enb_t *enb, ogs_s1ap_message_t *message)
     ogs_assert(InitialUEMessage);
 
     ogs_info("InitialUEMessage");
-    MME_UE_LIST_CHECK;
 
     for (i = 0; i < InitialUEMessage->protocolIEs.list.count; i++) {
         ie = InitialUEMessage->protocolIEs.list.array[i];
@@ -486,6 +485,7 @@ void s1ap_handle_initial_ue_message(mme_enb_t *enb, ogs_s1ap_message_t *message)
                 ogs_info("Unknown UE by S_TMSI[G:%d,C:%d,M_TMSI:0x%x]",
                         nas_guti.mme_gid, nas_guti.mme_code, nas_guti.m_tmsi);
             } else {
+                MME_UE_CHECK(OGS_LOG_DEBUG, mme_ue);
                 ogs_info("    S_TMSI[G:%d,C:%d,M_TMSI:0x%x] IMSI:[%s]",
                         mme_ue->current.guti.mme_gid,
                         mme_ue->current.guti.mme_code,
@@ -524,13 +524,15 @@ void s1ap_handle_initial_ue_message(mme_enb_t *enb, ogs_s1ap_message_t *message)
     } else {
         ogs_error("Known UE ENB_UE_S1AP_ID[%d] [%p:%p]",
                 (int)*ENB_UE_S1AP_ID, enb_ue, enb_ue->mme_ue);
-        if (enb_ue->mme_ue)
+        if (enb_ue->mme_ue) {
+            MME_UE_CHECK(OGS_LOG_DEBUG, enb_ue->mme_ue);
             ogs_error("    S_TMSI[G:%d,C:%d,M_TMSI:0x%x] IMSI:[%s]",
                 enb_ue->mme_ue->current.guti.mme_gid,
                 enb_ue->mme_ue->current.guti.mme_code,
                 enb_ue->mme_ue->current.guti.m_tmsi,
                 MME_UE_HAVE_IMSI(enb_ue->mme_ue)
                 ? enb_ue->mme_ue->imsi_bcd : "Unknown");
+        }
     }
 
     if (!NAS_PDU) {
@@ -584,10 +586,8 @@ void s1ap_handle_initial_ue_message(mme_enb_t *enb, ogs_s1ap_message_t *message)
         enb_ue->enb_ue_s1ap_id, enb_ue->mme_ue_s1ap_id,
         enb_ue->saved.tai.tac, enb_ue->saved.e_cgi.cell_id);
 
-    r = s1ap_send_to_nas(enb_ue,
-            S1AP_ProcedureCode_id_initialUEMessage, NAS_PDU);
-    ogs_expect(r == OGS_OK);
-    ogs_assert(r != OGS_ERROR);
+    ogs_expect(OGS_OK == s1ap_send_to_nas(
+                enb_ue, S1AP_ProcedureCode_id_initialUEMessage, NAS_PDU));
 }
 
 void s1ap_handle_uplink_nas_transport(
@@ -625,7 +625,6 @@ void s1ap_handle_uplink_nas_transport(
     ogs_assert(UplinkNASTransport);
 
     ogs_debug("UplinkNASTransport");
-    MME_UE_LIST_CHECK;
 
     for (i = 0; i < UplinkNASTransport->protocolIEs.list.count; i++) {
         ie = UplinkNASTransport->protocolIEs.list.array[i];
@@ -768,6 +767,7 @@ void s1ap_handle_uplink_nas_transport(
     if (enb_ue->mme_ue) {
         mme_ue_t *mme_ue = enb_ue->mme_ue;
 
+        MME_UE_CHECK(OGS_LOG_DEBUG, enb_ue->mme_ue);
         memcpy(&mme_ue->tai, &enb_ue->saved.tai, sizeof(ogs_eps_tai_t));
         memcpy(&mme_ue->e_cgi, &enb_ue->saved.e_cgi, sizeof(ogs_e_cgi_t));
         mme_ue->ue_location_timestamp = ogs_time_now();
@@ -775,10 +775,8 @@ void s1ap_handle_uplink_nas_transport(
         ogs_error("No UE Context in UplinkNASTransport");
     }
 
-    r = s1ap_send_to_nas(enb_ue,
-            S1AP_ProcedureCode_id_uplinkNASTransport, NAS_PDU);
-    ogs_expect(r == OGS_OK);
-    ogs_assert(r != OGS_ERROR);
+    ogs_expect(OGS_OK == s1ap_send_to_nas(
+                enb_ue, S1AP_ProcedureCode_id_uplinkNASTransport, NAS_PDU));
 }
 
 void s1ap_handle_ue_capability_info_indication(
@@ -808,7 +806,6 @@ void s1ap_handle_ue_capability_info_indication(
     ogs_assert(UECapabilityInfoIndication);
 
     ogs_debug("UECapabilityInfoIndication");
-    MME_UE_LIST_CHECK;
 
     for (i = 0; i < UECapabilityInfoIndication->protocolIEs.list.count; i++) {
         ie = UECapabilityInfoIndication->protocolIEs.list.array[i];
@@ -874,6 +871,7 @@ void s1ap_handle_ue_capability_info_indication(
 
     if (enb_ue->mme_ue) {
         ogs_assert(UERadioCapability);
+        MME_UE_CHECK(OGS_LOG_DEBUG, enb_ue->mme_ue);
         OGS_ASN_STORE_DATA(&enb_ue->mme_ue->ueRadioCapability,
                 UERadioCapability);
     }
@@ -907,7 +905,6 @@ void s1ap_handle_initial_context_setup_response(
     ogs_assert(InitialContextSetupResponse);
 
     ogs_debug("InitialContextSetupResponse");
-    MME_UE_LIST_CHECK;
 
     for (i = 0; i < InitialContextSetupResponse->protocolIEs.list.count; i++) {
         ie = InitialContextSetupResponse->protocolIEs.list.array[i];
@@ -978,6 +975,7 @@ void s1ap_handle_initial_context_setup_response(
         return;
     }
 
+    MME_UE_CHECK(OGS_LOG_DEBUG, mme_ue);
     if (E_RABSetupListCtxtSURes) {
         int uli_presence = 0;
 
@@ -1846,11 +1844,11 @@ void s1ap_handle_ue_context_release_action(enb_ue_t *enb_ue)
         return;
     }
 
-    mme_ue = enb_ue->mme_ue;
-
     ogs_info("UE Context Release [Action:%d]", enb_ue->ue_ctx_rel_action);
     ogs_info("    ENB_UE_S1AP_ID[%d] MME_UE_S1AP_ID[%d]",
             enb_ue->enb_ue_s1ap_id, enb_ue->mme_ue_s1ap_id);
+
+    mme_ue = mme_ue_cycle(enb_ue->mme_ue);
     if (mme_ue) {
         ogs_info("    IMSI[%s]", mme_ue->imsi_bcd);
 
@@ -1946,11 +1944,8 @@ void s1ap_handle_ue_context_release_action(enb_ue_t *enb_ue)
             return;
         }
 
-        if (mme_ue->location_updated_but_not_canceled_yet == true) {
-            mme_s6a_send_pur(mme_ue);
-        } else {
-            mme_ue_remove(mme_ue);
-        }
+        MME_UE_CHECK(OGS_LOG_DEBUG, mme_ue);
+        mme_ue_remove(mme_ue);
         break;
     case S1AP_UE_CTX_REL_S1_HANDOVER_COMPLETE:
         ogs_debug("    Action: S1 handover complete");
@@ -2065,7 +2060,6 @@ void s1ap_handle_e_rab_modification_indication(
     ogs_assert(E_RABModificationIndication);
 
     ogs_info("E_RABModificationIndication");
-    MME_UE_LIST_CHECK;
 
     for (i = 0; i < E_RABModificationIndication->protocolIEs.list.count; i++) {
         ie = E_RABModificationIndication->protocolIEs.list.array[i];
@@ -2145,6 +2139,7 @@ void s1ap_handle_e_rab_modification_indication(
         return;
     }
 
+    MME_UE_CHECK(OGS_LOG_DEBUG, mme_ue);
     ogs_list_init(&mme_ue->bearer_to_modify_list);
 
     for (i = 0; i < E_RABToBeModifiedListBearerModInd->list.count; i++) {

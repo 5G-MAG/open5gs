@@ -242,12 +242,6 @@ OpenAPI_nf_profile_t *ogs_nnrf_nfm_build_nf_profile(
         return NULL;
     }
 
-    if (service_map == true) {
-        NFProfile->nf_service_list = NFServiceList;
-    } else {
-        NFProfile->nf_services = NFServiceList;
-    }
-
     ogs_list_for_each(&nf_instance->nf_service_list, nf_service) {
         OpenAPI_nf_service_t *NFService = NULL;
 
@@ -289,6 +283,16 @@ OpenAPI_nf_profile_t *ogs_nnrf_nfm_build_nf_profile(
             OpenAPI_list_add(NFServiceList, NFService);
         }
     }
+
+    if (NFServiceList->count) {
+        if (service_map == true) {
+            NFProfile->nf_service_list = NFServiceList;
+        } else {
+            NFProfile->nf_services = NFServiceList;
+        }
+    }
+    else
+        OpenAPI_list_free(NFServiceList);
 
     InfoList = OpenAPI_list_create();
     ogs_assert(InfoList);
@@ -1708,11 +1712,7 @@ ogs_sbi_request_t *ogs_nnrf_nfm_build_status_update(
 
     memset(&message, 0, sizeof(message));
     message.h.method = (char *)OGS_SBI_HTTP_METHOD_PATCH;
-    message.h.service.name = (char *)OGS_SBI_SERVICE_NAME_NNRF_NFM;
-    message.h.api.version = (char *)OGS_SBI_API_V1;
-    message.h.resource.component[0] =
-        (char *)OGS_SBI_RESOURCE_NAME_SUBSCRIPTIONS;
-    message.h.resource.component[1] = subscription_data->id;
+    message.h.uri = subscription_data->resource_uri;
 
     message.http.content_type = (char *)OGS_SBI_CONTENT_PATCH_TYPE;
 
@@ -1767,11 +1767,7 @@ ogs_sbi_request_t *ogs_nnrf_nfm_build_status_unsubscribe(
 
     memset(&message, 0, sizeof(message));
     message.h.method = (char *)OGS_SBI_HTTP_METHOD_DELETE;
-    message.h.service.name = (char *)OGS_SBI_SERVICE_NAME_NNRF_NFM;
-    message.h.api.version = (char *)OGS_SBI_API_V1;
-    message.h.resource.component[0] =
-        (char *)OGS_SBI_RESOURCE_NAME_SUBSCRIPTIONS;
-    message.h.resource.component[1] = subscription_data->id;
+    message.h.uri = subscription_data->resource_uri;
 
     message.http.custom.callback =
         (char *)OGS_SBI_CALLBACK_NNRF_NFMANAGEMENT_NF_STATUS_NOTIFY;

@@ -229,7 +229,11 @@ int gsm_handle_pdu_session_modification_request(
         int num_of_rule = 0;
 
         num_of_rule = ogs_nas_parse_qos_rules(qos_rule, requested_qos_rules);
-        ogs_assert(num_of_rule > 0);
+        if (!num_of_rule) {
+            ogs_error("[%s:%d] Invalid modification request",
+                    smf_ue->supi, sess->psi);
+            goto cleanup;
+        }
 
         for (i = 0; i < num_of_rule; i++) {
             qos_flow = smf_qos_flow_find_by_qfi(
@@ -261,7 +265,7 @@ int gsm_handle_pdu_session_modification_request(
              * Refer to lib/ipfw/ogs-ipfw.h
              * Issue #338
              *
-             * <DOWNLINK>
+             * <DOWNLINK/BI-DIRECTIONAL>
              * TFT : Local <UE_IP> <UE_PORT> REMOTE <P-CSCF_RTP_IP> <P-CSCF_RTP_PORT>
              * -->
              * RULE : Source <P-CSCF_RTP_IP> <P-CSCF_RTP_PORT> Destination <UE_IP> <UE_PORT>
@@ -280,7 +284,7 @@ int gsm_handle_pdu_session_modification_request(
             /*
              * Issue #338
              *
-             * <DOWNLINK>
+             * <DOWNLINK/BI-DIRECTIONAL>
              * RULE : Source <P-CSCF_RTP_IP> <P-CSCF_RTP_PORT> Destination <UE_IP> <UE_PORT>
              * -->
              * GX : permit out from <P-CSCF_RTP_IP> <P-CSCF_RTP_PORT> to <UE_IP> <UE_PORT>
@@ -336,7 +340,7 @@ int gsm_handle_pdu_session_modification_request(
          * Refer to lib/ipfw/ogs-ipfw.h
          * Issue #338
          *
-         * <DOWNLINK>
+         * <DOWNLINK/BI-DIRECTIONAL>
          * TFT : Local <UE_IP> <UE_PORT> REMOTE <P-CSCF_RTP_IP> <P-CSCF_RTP_PORT>
          * -->
          * RULE : Source <P-CSCF_RTP_IP> <P-CSCF_RTP_PORT> Destination <UE_IP> <UE_PORT>
@@ -355,7 +359,7 @@ int gsm_handle_pdu_session_modification_request(
         /*
          * Issue #338
          *
-         * <DOWNLINK>
+         * <DOWNLINK/BI-DIRECTIONAL>
          * RULE : Source <P-CSCF_RTP_IP> <P-CSCF_RTP_PORT> Destination <UE_IP> <UE_PORT>
          * -->
          * GX : permit out from <P-CSCF_RTP_IP> <P-CSCF_RTP_PORT> to <UE_IP> <UE_PORT>
@@ -430,7 +434,11 @@ int gsm_handle_pdu_session_modification_request(
 
         num_of_description = ogs_nas_parse_qos_flow_descriptions(
                 qos_flow_description, requested_qos_flow_descriptions);
-        ogs_assert(num_of_description > 0);
+        if (!num_of_description) {
+            ogs_error("[%s:%d] Invalid modification request",
+                    smf_ue->supi, sess->psi);
+            goto cleanup;
+        }
 
         for (i = 0; i < num_of_description; i++) {
             qos_flow = smf_qos_flow_find_by_qfi(
@@ -478,16 +486,7 @@ int gsm_handle_pdu_session_modification_request(
         ogs_error("[%s:%d] Invalid modification request [modify:%d]",
                 smf_ue->supi, sess->psi,
                 ogs_list_count(&sess->qos_flow_to_modify_list));
-
-        n1smbuf = gsm_build_pdu_session_modification_reject(sess,
-            OGS_5GSM_CAUSE_INVALID_MANDATORY_INFORMATION);
-        ogs_assert(n1smbuf);
-
-        smf_sbi_send_sm_context_update_error_n1_n2_message(
-                stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
-                n1smbuf, OpenAPI_n2_sm_info_type_NULL, NULL);
-
-        return OGS_ERROR;
+        goto cleanup;
     }
 
     if (pfcp_flags & OGS_PFCP_MODIFY_REMOVE) {
@@ -522,4 +521,15 @@ int gsm_handle_pdu_session_modification_request(
                 OGS_PFCP_MODIFY_UE_REQUESTED|pfcp_flags, 0));
 
     return OGS_OK;
+
+cleanup:
+    n1smbuf = gsm_build_pdu_session_modification_reject(sess,
+        OGS_5GSM_CAUSE_INVALID_MANDATORY_INFORMATION);
+    ogs_assert(n1smbuf);
+
+    smf_sbi_send_sm_context_update_error_n1_n2_message(
+            stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            n1smbuf, OpenAPI_n2_sm_info_type_NULL, NULL);
+
+    return OGS_ERROR;
 }

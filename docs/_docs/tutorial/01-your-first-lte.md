@@ -229,7 +229,7 @@ K : 82E9053A1882085FF2C020359938DAE9
 OPc : BFD5771AAF4F6728E9BC6EF2C2533BDB  
 ```
 
-Connect to `http://localhost:3000` and login with **admin** account.
+Connect to `http://localhost:9999` and login with **admin** account.
 
 > Username : admin  
 > Password : 1423
@@ -334,7 +334,7 @@ Change back to the srsRAN source directory and copy the main config example as w
 ```bash
 $ cp srsenb/enb.conf.example srsenb/enb.conf
 $ cp srsenb/rr.conf.example srsenb/rr.conf
-$ cp srsenb/drb.conf.example srsenb/drb.conf
+$ cp srsenb/rb.conf.example srsenb/rb.conf
 $ cp srsenb/sib.conf.example srsenb/sib.conf
 ```
 

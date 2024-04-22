@@ -207,6 +207,7 @@ int s1ap_send_to_nas(enb_ue_t *enb_ue,
     default:
         ogs_error("Not implemented(security header type:0x%x)",
                 sh->security_header_type);
+        enb_ue_remove(enb_ue);
         return OGS_ERROR;
     }
 
@@ -214,12 +215,42 @@ int s1ap_send_to_nas(enb_ue_t *enb_ue,
         if (nas_eps_security_decode(enb_ue->mme_ue,
                 security_header_type, nasbuf) != OGS_OK) {
             ogs_error("nas_eps_security_decode failed()");
+            enb_ue_remove(enb_ue);
             return OGS_ERROR;
         }
     }
 
     h = (ogs_nas_emm_header_t *)nasbuf->data;
     ogs_assert(h);
+
+    if (procedureCode == S1AP_ProcedureCode_id_initialUEMessage) {
+        if (h->protocol_discriminator != OGS_NAS_PROTOCOL_DISCRIMINATOR_EMM) {
+
+            ogs_error("Invalid protocol_discriminator [%d]",
+                    h->protocol_discriminator);
+
+            ogs_pkbuf_free(nasbuf);
+            enb_ue_remove(enb_ue);
+
+            return OGS_ERROR;
+        }
+
+        if (h->security_header_type !=
+                OGS_NAS_SECURITY_HEADER_FOR_SERVICE_REQUEST_MESSAGE &&
+            h->message_type != OGS_NAS_EPS_ATTACH_REQUEST &&
+            h->message_type != OGS_NAS_EPS_TRACKING_AREA_UPDATE_REQUEST &&
+            h->message_type != OGS_NAS_EPS_EXTENDED_SERVICE_REQUEST &&
+            h->message_type != OGS_NAS_EPS_DETACH_REQUEST) {
+
+            ogs_error("Invalid EMM message type [%d]", h->message_type);
+
+            ogs_pkbuf_free(nasbuf);
+            enb_ue_remove(enb_ue);
+
+            return OGS_ERROR;
+        }
+    }
+
     if (h->protocol_discriminator == OGS_NAS_PROTOCOL_DISCRIMINATOR_EMM) {
         int rv;
         e = mme_event_new(MME_EVENT_EMM_MESSAGE);
@@ -255,7 +286,10 @@ int s1ap_send_to_nas(enb_ue_t *enb_ue,
     } else {
         ogs_error("Unknown/Unimplemented NAS Protocol discriminator 0x%02x",
                   h->protocol_discriminator);
+
         ogs_pkbuf_free(nasbuf);
+        enb_ue_remove(enb_ue);
+
         return OGS_ERROR;
     }
 }
@@ -731,7 +765,43 @@ int s1ap_send_handover_request(
         return OGS_NOTFOUND;
     }
 
-    ogs_assert(source_ue->target_ue == NULL);
+    target_ue = enb_ue_cycle(source_ue->target_ue);
+    if (target_ue) {
+    /*
+     * Issue #3014
+     *
+     * 1. HandoverRequired
+     * 2. HandoverRequest
+     * 3. HandoverFailure
+     * 4. UEContextReleaseCommand
+     * 5. HandoverPreparationFailure
+     *
+     * If UEContextReleaseComplete is not received,
+     * the Source-UE will have the Target-UE.
+     *
+     * 6. HandoverRequired
+     *
+     * There may be cases where the Source UE has a Target UE
+     * from a previous HandoverRequired process. In this case,
+     * it is recommended to force the deletion of the Target UE information
+     * when receiving a new HandoverRequired.
+     *
+     * 7. HandoverRequest
+     * 8. HandoverFailure
+     * 9. UEContextReleaseCommand
+     * 10. UEContextReleaseComplete
+     * 11. HandoverPreparationFailure
+     *
+     * ... Crashed ...
+     */
+        ogs_warn("DELETE the previously used TARGET in SOURCE");
+        ogs_warn("    Source : ENB_UE_S1AP_ID[%d] MME_UE_S1AP_ID[%d]",
+                source_ue->enb_ue_s1ap_id, source_ue->mme_ue_s1ap_id);
+        ogs_warn("    Target : ENB_UE_S1AP_ID[%d] MME_UE_S1AP_ID[%d]",
+                target_ue->enb_ue_s1ap_id, target_ue->mme_ue_s1ap_id);
+        enb_ue_source_deassociate_target(target_ue);
+        enb_ue_remove(target_ue);
+    }
 
     target_ue = enb_ue_add(target_enb, INVALID_UE_S1AP_ID);
     if (target_ue == NULL) {

@@ -286,6 +286,7 @@ typedef struct ogs_sbi_subscription_data_s {
     OpenAPI_nf_type_e req_nf_type;          /* reqNfType */
     OpenAPI_nf_status_e nf_status;
     char *notification_uri;
+    char *resource_uri;
 
     struct {
         OpenAPI_nf_type_e nf_type;          /* nfType */
@@ -295,7 +296,7 @@ typedef struct ogs_sbi_subscription_data_s {
     uint64_t requester_features;
     uint64_t nrf_supported_features;
 
-    void *client;                           /* only used in SERVER */
+    void *client;
 } ogs_sbi_subscription_data_t;
 
 typedef struct ogs_sbi_smf_info_s {
@@ -341,8 +342,8 @@ typedef struct ogs_sbi_sepp_info_s {
 } ogs_sbi_sepp_info_t;
 
 typedef struct ogs_sbi_amf_info_s {
-    int amf_set_id;
-    int amf_region_id;
+    uint8_t amf_set_id;
+    uint16_t amf_region_id;
 
     int num_of_guami;
     ogs_guami_t guami[OGS_MAX_NUM_OF_SERVED_GUAMI];
@@ -437,6 +438,8 @@ void ogs_sbi_nf_info_remove_all(ogs_list_t *list);
 ogs_sbi_nf_info_t *ogs_sbi_nf_info_find(
         ogs_list_t *list, OpenAPI_nf_type_e nf_type);
 
+bool ogs_sbi_check_amf_info_guami(
+        ogs_sbi_amf_info_t *amf_info, ogs_guami_t *guami);
 bool ogs_sbi_check_smf_info_slice(
         ogs_sbi_smf_info_t *smf_info, ogs_s_nssai_t *s_nssai, char *dnn);
 bool ogs_sbi_check_smf_info_tai(
@@ -513,6 +516,8 @@ void ogs_sbi_subscription_spec_remove(
 void ogs_sbi_subscription_spec_remove_all(void);
 
 ogs_sbi_subscription_data_t *ogs_sbi_subscription_data_add(void);
+void ogs_sbi_subscription_data_set_resource_uri(
+        ogs_sbi_subscription_data_t *subscription_data, char *resource_uri);
 void ogs_sbi_subscription_data_set_id(
         ogs_sbi_subscription_data_t *subscription_data, char *id);
 void ogs_sbi_subscription_data_remove(

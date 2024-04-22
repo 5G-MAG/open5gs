@@ -56,6 +56,13 @@ int amf_nsmf_pdusession_handle_create_sm_context(
         ogs_sbi_message_t message;
         ogs_sbi_header_t header;
 
+        bool rc;
+        ogs_sbi_client_t *client = NULL;
+        OpenAPI_uri_scheme_e scheme = OpenAPI_uri_scheme_NULL;
+        char *fqdn = NULL;
+        uint16_t fqdn_port = 0;
+        ogs_sockaddr_t *addr = NULL, *addr6 = NULL;
+
         if (!recvmsg->http.location) {
             ogs_error("[%d:%d] No http.location", sess->psi, sess->pti);
             r = nas_5gs_send_back_gsm_message(ran_ue, sess,
@@ -97,6 +104,55 @@ int amf_nsmf_pdusession_handle_create_sm_context(
             return OGS_ERROR;
         }
 
+        rc = ogs_sbi_getaddr_from_uri(
+                &scheme, &fqdn, &fqdn_port, &addr, &addr6, header.uri);
+        if (rc == false || scheme == OpenAPI_uri_scheme_NULL) {
+            ogs_error("[%s:%d] Invalid URI [%s]",
+                    amf_ue->supi, sess->psi, header.uri);
+
+            ogs_sbi_header_free(&header);
+            r = nas_5gs_send_back_gsm_message(ran_ue, sess,
+                    OGS_5GMM_CAUSE_PAYLOAD_WAS_NOT_FORWARDED,
+                    AMF_NAS_BACKOFF_TIME);
+            ogs_expect(r == OGS_OK);
+            ogs_assert(r != OGS_ERROR);
+
+            return OGS_ERROR;
+        }
+
+        client = ogs_sbi_client_find(scheme, fqdn, fqdn_port, addr, addr6);
+        if (!client) {
+            ogs_debug("[%s:%d] ogs_sbi_client_add()", amf_ue->supi, sess->psi);
+            client = ogs_sbi_client_add(scheme, fqdn, fqdn_port, addr, addr6);
+            if (!client) {
+                ogs_error("[%s:%d] ogs_sbi_client_add() failed",
+                        amf_ue->supi, sess->psi);
+
+                ogs_sbi_header_free(&header);
+                r = nas_5gs_send_back_gsm_message(ran_ue, sess,
+                        OGS_5GMM_CAUSE_PAYLOAD_WAS_NOT_FORWARDED,
+                        AMF_NAS_BACKOFF_TIME);
+                ogs_expect(r == OGS_OK);
+                ogs_assert(r != OGS_ERROR);
+
+                ogs_free(fqdn);
+                ogs_freeaddrinfo(addr);
+                ogs_freeaddrinfo(addr6);
+
+                return OGS_ERROR;
+            }
+        }
+        OGS_SBI_SETUP_CLIENT(&sess->sm_context, client);
+
+        ogs_free(fqdn);
+        ogs_freeaddrinfo(addr);
+        ogs_freeaddrinfo(addr6);
+
+        STORE_SESSION_CONTEXT(
+                sess, header.uri, message.h.resource.component[1]);
+
+        ogs_sbi_header_free(&header);
+
         if (sess->pdu_session_establishment_accept) {
             /*
              * [1-SERVER] /namf-comm/v1/ue-contexts/{supi}/n1-n2-messages
@@ -117,7 +173,6 @@ int amf_nsmf_pdusession_handle_create_sm_context(
                 ogs_error("[%d:%d] nas_5gs_send_to_gnb() failed",
                         sess->psi, sess->pti);
 
-                ogs_sbi_header_free(&header);
                 r = nas_5gs_send_back_gsm_message(ran_ue, sess,
                         OGS_5GMM_CAUSE_PAYLOAD_WAS_NOT_FORWARDED,
                         AMF_NAS_BACKOFF_TIME);
@@ -127,13 +182,6 @@ int amf_nsmf_pdusession_handle_create_sm_context(
                 return OGS_ERROR;
             }
         }
-
-        if (sess->sm_context_ref)
-            ogs_free(sess->sm_context_ref);
-        sess->sm_context_ref = ogs_strdup(message.h.resource.component[1]);
-        ogs_assert(sess->sm_context_ref);
-
-        ogs_sbi_header_free(&header);
 
     } else {
         OpenAPI_sm_context_create_error_t *SmContextCreateError = NULL;
@@ -635,7 +683,7 @@ int amf_nsmf_pdusession_handle_update_sm_context(
                     r = amf_sess_sbi_discover_and_send(
                             OGS_SBI_SERVICE_TYPE_NSMF_PDUSESSION, NULL,
                             amf_nsmf_pdusession_build_create_sm_context,
-                            sess, AMF_CREATE_SM_CONTEXT_NO_STATE, NULL);
+                            ran_ue, sess, AMF_CREATE_SM_CONTEXT_NO_STATE, NULL);
                     ogs_expect(r == OGS_OK);
                     ogs_assert(r != OGS_ERROR);
                 } else {
@@ -1056,8 +1104,21 @@ int amf_nsmf_pdusession_handle_release_sm_context(amf_sess_t *sess, int state)
         ogs_error("[%s:%d] Do not remove Session due to Reactivation-requested",
                 amf_ue->supi, sess->psi);
 
-        /* Initialize the context instead of using amf_sess_remove() */
-
+        /*
+         * Issue #2917
+         *
+         * These are variables that need to be initialized
+         * when a PDU session release command with a Reactivation Request
+         * and a PDU session release complete are sent at the same time.
+         *
+         * It is important to note that XXX_gsm_type, which is initialized now,
+         * has a different initialization location than
+         * pdu_session_release_complete_received/
+         * pdu_session_resource_release_response_received
+         *
+         * XXX_received is initialized in the ESTABLISHMENT phase,
+         * but XXX_gsm_type must be initialized in the RELEASE phase.
+         */
         sess->old_gsm_type = 0;
         sess->current_gsm_type = 0;
 
@@ -1068,7 +1129,7 @@ int amf_nsmf_pdusession_handle_release_sm_context(amf_sess_t *sess, int state)
     } else {
         ogs_info("[%s:%d] Release SM Context [state:%d]",
                 amf_ue->supi, sess->psi, state);
-        amf_sess_remove(sess);
+        AMF_SESS_CLEAR(sess);
     }
 
     if (state == AMF_RELEASE_SM_CONTEXT_REGISTRATION_ACCEPT) {

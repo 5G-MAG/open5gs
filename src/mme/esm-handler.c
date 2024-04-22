@@ -36,13 +36,12 @@ int esm_handle_pdn_connectivity_request(mme_bearer_t *bearer,
     mme_sess_t *sess = NULL;
     uint8_t security_protected_required = 0;
 
-    MME_UE_LIST_CHECK;
-
     ogs_assert(bearer);
     sess = bearer->sess;
     ogs_assert(sess);
     mme_ue = sess->mme_ue;
     ogs_assert(mme_ue);
+    MME_UE_CHECK(OGS_LOG_DEBUG, mme_ue);
 
     ogs_assert(req);
 
@@ -182,10 +181,9 @@ int esm_handle_information_response(mme_sess_t *sess,
     ogs_assert(sess);
     mme_ue = sess->mme_ue;
     ogs_assert(mme_ue);
+    MME_UE_CHECK(OGS_LOG_DEBUG, mme_ue);
 
     ogs_assert(rsp);
-
-    MME_UE_LIST_CHECK;
 
     if (rsp->presencemask &
             OGS_NAS_EPS_ESM_INFORMATION_RESPONSE_ACCESS_POINT_NAME_PRESENT) {
@@ -238,13 +236,17 @@ int esm_handle_information_response(mme_sess_t *sess,
             mme_csmap_t *csmap = mme_csmap_find_by_tai(&mme_ue->tai);
             mme_ue->csmap = csmap;
 
-            if (csmap) {
-                ogs_assert(OGS_OK ==
-                    sgsap_send_location_update_request(mme_ue));
-            } else {
+            if (!csmap ||
+                mme_ue->network_access_mode ==
+                    OGS_NETWORK_ACCESS_MODE_ONLY_PACKET ||
+                mme_ue->nas_eps.attach.value ==
+                    OGS_NAS_ATTACH_TYPE_EPS_ATTACH) {
                 r = nas_eps_send_attach_accept(mme_ue);
                 ogs_expect(r == OGS_OK);
                 ogs_assert(r != OGS_ERROR);
+            } else {
+                ogs_assert(OGS_OK ==
+                    sgsap_send_location_update_request(mme_ue));
             }
         } else {
             ogs_assert(OGS_OK ==
