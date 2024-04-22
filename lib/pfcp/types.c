@@ -796,6 +796,7 @@ int16_t ogs_pfcp_build_mbs_session_identifier(ogs_tlv_octet_t *octet,
     return octet->len;
 }
 
+// TODO (borieher): Fix MBS Session Id parsing
 int16_t ogs_pfcp_parse_mbs_session_identifier(
         ogs_pfcp_mbs_session_identifier_t *mbs_session_identifier, ogs_tlv_octet_t *octet)
 {
@@ -810,6 +811,7 @@ int16_t ogs_pfcp_parse_mbs_session_identifier(
     size += sizeof(mbs_session_identifier->octet5);
 
     if (mbs_session_identifier->tmgif) {
+        // TODO (borieher): Verify this is working as intended
         mbs_session_identifier->tmgi.mbs_service_id[0] = ((uintptr_t)octet->data >> 16) & 0xff;
         mbs_session_identifier->tmgi.mbs_service_id[1] = ((uintptr_t)octet->data >> 8) & 0xff;
         mbs_session_identifier->tmgi.mbs_service_id[2] = ((uintptr_t)octet->data) & 0xff;

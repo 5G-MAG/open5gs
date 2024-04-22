@@ -190,6 +190,15 @@ typedef struct ogs_pfcp_pdr_s {
 
     ogs_list_t              rule_list;      /* Rule List */
 
+    /* PDI IP Multicast Addressing Info grouped IE */
+    struct {
+        ogs_pfcp_ip_multicast_address_t ip_multicast_address;
+        int                             ip_multicast_address_len;
+        ogs_pfcp_source_ip_address_t    source_ip_address;
+        int                             source_ip_address_len;
+    } ip_multicast_addressing_info;
+    int                     ip_multicast_addressing_info_len;
+
     /* Related Context */
     ogs_pfcp_sess_t         *sess;
     void                    *gnode;         /* For CP-Function */

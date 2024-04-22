@@ -275,6 +275,14 @@ bool ogs_pfcp_up_handle_pdr(
 
             buffering = true;
 
+        } else if (far->apply_action & OGS_PFCP_APPLY_ACTION_FSSM) {
+            ogs_gtp2_header_desc_t sendhdr;
+
+            /* Forward packet */
+            memset(&sendhdr, 0, sizeof(sendhdr));
+            sendhdr.type = type;
+
+            ogs_pfcp_send_g_pdu(pdr, &sendhdr, sendbuf);
         } else {
             ogs_error("Not implemented = %d", far->apply_action);
             ogs_pkbuf_free(sendbuf);
@@ -646,6 +654,33 @@ ogs_pfcp_pdr_t *ogs_pfcp_handle_create_pdr(ogs_pfcp_sess_t *sess,
         ogs_pfcp_pdr_associate_qer(pdr, qer);
     }
 
+    // IP Multicast Addressing Info in PDI IE
+    if (message->pdi.ip_multicast_addressing_info.presence) {
+        if (message->pdi.ip_multicast_addressing_info.ip_multicast_address.presence) {
+            pdr->ip_multicast_addressing_info.ip_multicast_address_len =
+            ogs_min(message->pdi.ip_multicast_addressing_info.ip_multicast_address.len,
+                    sizeof(pdr->ip_multicast_addressing_info.ip_multicast_address));
+
+            memcpy(&pdr->ip_multicast_addressing_info.ip_multicast_address,
+                message->pdi.ip_multicast_addressing_info.ip_multicast_address.data,
+                pdr->ip_multicast_addressing_info.ip_multicast_address_len);
+        }
+
+        if (message->pdi.ip_multicast_addressing_info.source_ip_address.presence) {
+            pdr->ip_multicast_addressing_info.source_ip_address_len =
+            ogs_min(message->pdi.ip_multicast_addressing_info.source_ip_address.len,
+                sizeof(pdr->ip_multicast_addressing_info.source_ip_address));
+
+            memcpy(&pdr->ip_multicast_addressing_info.source_ip_address,
+                message->pdi.ip_multicast_addressing_info.source_ip_address.data,
+                pdr->ip_multicast_addressing_info.source_ip_address_len);
+        }
+
+        pdr->ip_multicast_addressing_info_len =
+            pdr->ip_multicast_addressing_info.ip_multicast_address_len +
+            pdr->ip_multicast_addressing_info.source_ip_address_len;
+    }
+
     return pdr;
 }
 
@@ -976,6 +1011,28 @@ ogs_pfcp_far_t *ogs_pfcp_handle_create_far(ogs_pfcp_sess_t *sess,
         if (message->forwarding_parameters.outer_header_creation.presence) {
             ogs_pfcp_tlv_outer_header_creation_t *outer_header_creation =
                 &message->forwarding_parameters.outer_header_creation;
+
+            ogs_assert(outer_header_creation->data);
+            ogs_assert(outer_header_creation->len);
+
+            memcpy(&far->outer_header_creation, outer_header_creation->data,
+                    ogs_min(sizeof(far->outer_header_creation),
+                            outer_header_creation->len));
+            far->outer_header_creation.teid =
+                    be32toh(far->outer_header_creation.teid);
+        }
+    }
+
+    if (message->mbs_multicast_parameters.presence) {
+        // TODO (borieher): Keep adding the optional and conditional IEs
+        if (message->mbs_multicast_parameters.destination_interface.presence) {
+            far->dst_if =
+                message->mbs_multicast_parameters.destination_interface.u8;
+        }
+
+        if (message->mbs_multicast_parameters.outer_header_creation.presence) {
+            ogs_pfcp_tlv_outer_header_creation_t *outer_header_creation =
+                &message->mbs_multicast_parameters.outer_header_creation;
 
             ogs_assert(outer_header_creation->data);
             ogs_assert(outer_header_creation->len);

@@ -435,6 +435,27 @@ void ogs_pfcp_build_create_pdr(
         message->qer_id.presence = 1;
         message->qer_id.u32 = pdr->qer->id;
     }
+
+    // IP Multicast Addressing Info in PDI IE
+    if (pdr->ip_multicast_addressing_info_len) {
+        message->pdi.ip_multicast_addressing_info.presence = 1;
+
+        if (pdr->ip_multicast_addressing_info.ip_multicast_address_len) {
+            message->pdi.ip_multicast_addressing_info.ip_multicast_address.presence = 1;
+            message->pdi.ip_multicast_addressing_info.ip_multicast_address.data =
+                    &pdr->ip_multicast_addressing_info.ip_multicast_address;
+            message->pdi.ip_multicast_addressing_info.ip_multicast_address.len =
+                    pdr->ip_multicast_addressing_info.ip_multicast_address_len;
+        }
+
+        if (pdr->ip_multicast_addressing_info.source_ip_address_len) {
+            message->pdi.ip_multicast_addressing_info.source_ip_address.presence = 1;
+            message->pdi.ip_multicast_addressing_info.source_ip_address.data =
+                    &pdr->ip_multicast_addressing_info.source_ip_address;
+            message->pdi.ip_multicast_addressing_info.source_ip_address.len =
+                    pdr->ip_multicast_addressing_info.source_ip_address_len;
+        }
+    }
 }
 
 bool ogs_pfcp_build_created_pdr(
@@ -580,6 +601,32 @@ void ogs_pfcp_build_create_far(
         ogs_assert(sess->bar);
         message->bar_id.presence = 1;
         message->bar_id.u8 = sess->bar->id;
+    } else if (far->apply_action & OGS_PFCP_APPLY_ACTION_FSSM) {
+        // TODO (borieher): Keep adding the optional and conditional IEs
+        message->mbs_multicast_parameters.presence = 1;
+
+        // destination_interface (M)
+        message->mbs_multicast_parameters.destination_interface.presence = 1;
+        message->mbs_multicast_parameters.destination_interface.u8 = far->dst_if;
+
+        // network_instance (O)
+
+        // outer_header_creation (M)
+        if (far->outer_header_creation_len) {
+            memcpy(&farbuf[i].outer_header_creation,
+                    &far->outer_header_creation, far->outer_header_creation_len);
+
+            message->mbs_multicast_parameters.outer_header_creation.presence = 1;
+            message->mbs_multicast_parameters.outer_header_creation.data =
+                &farbuf[i].outer_header_creation;
+            message->mbs_multicast_parameters.outer_header_creation.len =
+                far->outer_header_creation_len;
+        }
+
+        // transport_level_marking (C) if UP needs DSCP marking
+
+        // destination_interface_type (O)
+
     }
 }
 
