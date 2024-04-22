@@ -105,6 +105,7 @@ static void _gtpv1_tun_recv_common_cb(
     ogs_pkbuf_t *recvbuf = NULL;
 
     upf_sess_t *sess = NULL;
+    upf_mbs_sess_t *mbs_sess = NULL;
     ogs_pfcp_pdr_t *pdr = NULL;
     ogs_pfcp_pdr_t *fallback_pdr = NULL;
     ogs_pfcp_far_t *far = NULL;
@@ -151,7 +152,7 @@ static void _gtpv1_tun_recv_common_cb(
         if (replybuf) {
             if (ogs_tun_write(fd, replybuf) != OGS_OK)
                 ogs_warn("ogs_tun_write() for reply failed");
-            
+
             ogs_pkbuf_free(replybuf);
             goto cleanup;
         }
@@ -163,11 +164,22 @@ static void _gtpv1_tun_recv_common_cb(
         ogs_pkbuf_pull(recvbuf, ETHER_HDR_LEN);
     }
 
-    sess = upf_sess_find_by_ue_ip_address(recvbuf);
-    if (!sess)
-        goto cleanup;
+    mbs_sess = upf_mbs_sess_find_by_ssm(recvbuf);
 
-    ogs_list_for_each(&sess->pfcp.pdr_list, pdr) {
+    // NOTE (borieher): Just a way to verify that is a real upf_sess_t. Temporary workaround
+    if (!mbs_sess->ll_ssm.dest_ip_addr.addr) {
+        sess = upf_sess_find_by_ue_ip_address(recvbuf);
+        if (sess == NULL)
+            goto cleanup;
+    }
+
+    ogs_list_t *pdr_list;
+    if (sess != NULL)
+        pdr_list = &sess->pfcp.pdr_list;
+    else if (mbs_sess != NULL)
+        pdr_list = &mbs_sess->pfcp.pdr_list;
+
+    ogs_list_for_each(pdr_list, pdr) {
         far = pdr->far;
         ogs_assert(far);
 
