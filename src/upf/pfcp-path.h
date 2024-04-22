@@ -41,6 +41,10 @@ int upf_pfcp_send_session_deletion_response(ogs_pfcp_xact_t *xact,
 int upf_pfcp_send_session_report_request(
         upf_sess_t *sess, ogs_pfcp_user_plane_report_t *report);
 
+int upf_pfcp_n4mb_send_session_establishment_response(
+        ogs_pfcp_xact_t *xact, upf_mbs_sess_t *mbs_sess,
+        ogs_pfcp_pdr_t *created_pdr[], int num_of_created_pdr);
+
 #ifdef __cplusplus
 }
 #endif

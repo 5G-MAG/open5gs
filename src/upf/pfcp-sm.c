@@ -24,6 +24,7 @@
 
 #include "pfcp-path.h"
 #include "n4-handler.h"
+#include "n4mb-handler.h"
 
 static void pfcp_restoration(ogs_pfcp_node_t *node);
 static void node_timeout(ogs_pfcp_xact_t *xact, void *data);
@@ -168,6 +169,7 @@ void upf_pfcp_state_associated(ogs_fsm_t *s, upf_event_t *e)
 
     ogs_sockaddr_t *addr = NULL;
     upf_sess_t *sess = NULL;
+    upf_mbs_sess_t *mbs_sess = NULL;
 
     ogs_assert(s);
     ogs_assert(e);
@@ -281,6 +283,16 @@ void upf_pfcp_state_associated(ogs_fsm_t *s, upf_event_t *e)
                     &message->pfcp_association_setup_response);
             break;
         case OGS_PFCP_SESSION_ESTABLISHMENT_REQUEST_TYPE:
+            // TODO (borieher): Find a better way to differentiate the messages
+            if (message->pfcp_session_establishment_request.mbs_session_n4mb_control_information.presence) {
+                mbs_sess = upf_mbs_sess_add_by_message(message);
+                if (mbs_sess)
+                    OGS_SETUP_PFCP_NODE(mbs_sess, node);
+                upf_n4mb_handle_session_establishment_request(
+                    mbs_sess, xact, &message->pfcp_session_establishment_request);
+                break;
+            }
+
             sess = upf_sess_add_by_message(message);
             if (sess)
                 OGS_SETUP_PFCP_NODE(sess, node);

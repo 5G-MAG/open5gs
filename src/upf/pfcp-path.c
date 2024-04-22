@@ -21,6 +21,7 @@
 
 #include "pfcp-path.h"
 #include "n4-build.h"
+#include "n4mb-build.h"
 
 static void pfcp_node_fsm_init(ogs_pfcp_node_t *node, bool try_to_assoicate)
 {
@@ -320,6 +321,39 @@ int upf_pfcp_send_session_report_request(
         return OGS_ERROR;
     }
 
+
+    rv = ogs_pfcp_xact_commit(xact);
+    ogs_expect(rv == OGS_OK);
+
+    return rv;
+}
+
+int upf_pfcp_n4mb_send_session_establishment_response(
+        ogs_pfcp_xact_t *xact, upf_mbs_sess_t *mbs_sess,
+        ogs_pfcp_pdr_t *created_pdr[], int num_of_created_pdr)
+{
+    int rv;
+    ogs_pkbuf_t *n4mbbuf = NULL;
+    ogs_pfcp_header_t h;
+
+    ogs_assert(xact);
+
+    memset(&h, 0, sizeof(ogs_pfcp_header_t));
+    h.type = OGS_PFCP_SESSION_ESTABLISHMENT_RESPONSE_TYPE;
+    h.seid = mbs_sess->smf_n4mb_f_seid.seid;
+
+    n4mbbuf = upf_n4mb_build_session_establishment_response(
+            h.type, mbs_sess, created_pdr, num_of_created_pdr);
+    if (!n4mbbuf) {
+        ogs_error("upf_n4mb_build_session_establishment_response() failed");
+        return OGS_ERROR;
+    }
+
+    rv = ogs_pfcp_xact_update_tx(xact, &h, n4mbbuf);
+    if (rv != OGS_OK) {
+        ogs_error("ogs_pfcp_xact_update_tx() failed");
+        return OGS_ERROR;
+    }
 
     rv = ogs_pfcp_xact_commit(xact);
     ogs_expect(rv == OGS_OK);
