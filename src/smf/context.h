@@ -444,18 +444,32 @@ typedef struct smf_mbs_sess_s {
     ogs_mbs_session_id_t mbs_session_id;
     // expiration_time is stored in TMGI
     ogs_tmgi_t *tmgi;
+    ogs_ssm_t *ssm;
     char *service_type;
 
     // Multicast specific
     char *state;
 
+    ogs_pfcp_sess_t pfcp;   /* PFCP session context */
+
+    ogs_pool_id_t *smf_n4mb_seid_node; /* A node of SMF-N4mb-SEID */
+    uint64_t smf_n4mb_seid; /* SMF N4mb SEID is derived from NODE */
+    uint64_t upf_n4mb_seid; /* UPF N4mb SEID is received from Peer */
+
+    uint32_t c_teid; /* C-TEID */
+
+    ogs_sockaddr_t *upf_n3mb_addr; /* UPF N3mb IPv4 */
+    ogs_sockaddr_t *upf_n3mb_addr6; /* UPF N3mb IPv6 */
+
+    ogs_ssm_t ll_ssm; /* lower layer SSM N3mb IPv4/IPv6 */
+
+    ogs_pfcp_node_t *pfcp_node;
+
+    char *dnn;
+
+    /* S_NSSAI */
+    ogs_s_nssai_t s_nssai;
 } smf_mbs_sess_t;
-
-// NOTE (borieher): Not defined in the specs, limited to 20 for now
-#define OGS_MAX_NUM_OF_TMGI 20
-
-// NOTE (borieher): Not defined in the specs, limited to OGS_MAX_NUM_OF_TMGI
-#define OGS_MAX_NUM_OF_MBS_SESSIONS OGS_MAX_NUM_OF_TMGI
 
 // NOTE (borieher): Not defined in the specs, default to 2 extra hours
 #define OGS_DEFAULT_EXPIRATION_TIME_VALIDITY 7200
@@ -576,6 +590,10 @@ ogs_tmgi_t *smf_tmgi_find_by_tmgi(ogs_tmgi_t *tmgi_to_find);
 smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, ogs_ssm_t *ssm, char *service_type);
 void smf_mbs_sess_release(smf_mbs_sess_t *smf_mbs_sess);
 smf_mbs_sess_t *smf_mbs_sess_find_by_mbs_session_ref(char *mbs_session_ref);
+
+smf_mbs_sess_t *smf_mbs_sess_find_by_seid(uint64_t seid);
+void smf_mbs_sess_select_upf(smf_mbs_sess_t *mbs_sess);
+void smf_mbs_sess_create_mbs_data_forwarding(smf_mbs_sess_t *mbs_sess);
 
 #ifdef __cplusplus
 }

@@ -3313,10 +3313,22 @@ static smf_mbs_sess_t *smf_mbs_sess_add(void)
     smf_mbs_sess->mbs_session_ref = ogs_msprintf("%d", smf_mbs_sess->index);
     ogs_assert(smf_mbs_sess->mbs_session_ref);
 
+    // PFCP initialization
+    ogs_pfcp_pool_init(&smf_mbs_sess->pfcp);
+
+    // Set SEID
+    ogs_pool_alloc(&smf_n4_seid_pool, &smf_mbs_sess->smf_n4mb_seid_node);
+    ogs_assert(smf_mbs_sess->smf_n4mb_seid_node);
+
+    smf_mbs_sess->smf_n4mb_seid = *(smf_mbs_sess->smf_n4mb_seid_node);
+
+    ogs_hash_set(self.smf_n4_seid_hash, &smf_mbs_sess->smf_n4mb_seid,
+        sizeof(smf_mbs_sess->smf_n4mb_seid), smf_mbs_sess);
+
     ogs_list_add(&self.smf_mbs_sess_list, smf_mbs_sess);
 
     ogs_info("[Added] Number of MBS Sessions in SMF is now %d",
-                ogs_list_count(&self.smf_mbs_sess_list));
+            ogs_list_count(&self.smf_mbs_sess_list));
 
     return smf_mbs_sess;
 }
@@ -3326,6 +3338,7 @@ static void smf_mbs_sess_remove(smf_mbs_sess_t *smf_mbs_sess)
     ogs_assert(smf_mbs_sess);
 
     ogs_list_remove(&self.smf_mbs_sess_list, smf_mbs_sess);
+    ogs_pfcp_sess_clear(&smf_mbs_sess->pfcp);
 
     if (smf_mbs_sess->mbs_session_ref)
         ogs_free(smf_mbs_sess->mbs_session_ref);
@@ -3338,16 +3351,33 @@ static void smf_mbs_sess_remove(smf_mbs_sess_t *smf_mbs_sess)
 
     // TMGI is allocated/freed separately
 
+    if (smf_mbs_sess->ssm)
+        ogs_free(smf_mbs_sess->ssm);
+
     if (smf_mbs_sess->mbs_session_id.is_ssm)
         ogs_free(smf_mbs_sess->mbs_session_id.ssm);
 
     if (smf_mbs_sess->mbs_session_id.nid)
         ogs_free(smf_mbs_sess->mbs_session_id.nid);
 
+    if (smf_mbs_sess->upf_n3mb_addr)
+        ogs_freeaddrinfo(smf_mbs_sess->upf_n3mb_addr);
+
+    if (smf_mbs_sess->upf_n3mb_addr6)
+        ogs_freeaddrinfo(smf_mbs_sess->upf_n3mb_addr6);
+
+    ogs_hash_set(self.smf_n4_seid_hash, &smf_mbs_sess->smf_n4mb_seid,
+            sizeof(smf_mbs_sess->smf_n4mb_seid), NULL);
+
+    // PFCP finalization
+    ogs_pfcp_pool_final(&smf_mbs_sess->pfcp);
+
+    ogs_pool_free(&smf_n4_seid_pool, smf_mbs_sess->smf_n4mb_seid_node);
+
     ogs_pool_free(&smf_mbs_sess_pool, smf_mbs_sess);
 
     ogs_info("[Removed] Number of MBS Sessions in SMF is now %d",
-                ogs_list_count(&self.smf_mbs_sess_list));
+            ogs_list_count(&self.smf_mbs_sess_list));
 }
 
 static void smf_mbs_sess_remove_all(void)
@@ -3377,10 +3407,15 @@ smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, ogs_ssm_t *ssm, char *serv
     if (ogs_strcasecmp(smf_mbs_sess->service_type, "BROADCAST") == 0) {
         smf_mbs_sess->mbs_session_id.tmgi = tmgi;
         smf_mbs_sess->mbs_session_id.is_tmgi = 1;
+
+        if (ssm)
+            smf_mbs_sess->ssm = ssm;
     } else if (ogs_strcasecmp(smf_mbs_sess->service_type, "MULTICAST") == 0) {
-        if (ssm != NULL) {
+        if (ssm) {
             smf_mbs_sess->mbs_session_id.ssm = ssm;
             smf_mbs_sess->mbs_session_id.is_ssm = 1;
+
+            smf_mbs_sess->ssm = ssm;
         } else {
             smf_mbs_sess->mbs_session_id.tmgi = tmgi;
             smf_mbs_sess->mbs_session_id.is_tmgi = 1;
@@ -3405,4 +3440,120 @@ smf_mbs_sess_t *smf_mbs_sess_find_by_mbs_session_ref(char *mbs_session_ref)
 void smf_mbs_sess_release(smf_mbs_sess_t *smf_mbs_sess)
 {
     smf_mbs_sess_remove(smf_mbs_sess);
+}
+
+smf_mbs_sess_t *smf_mbs_sess_find_by_seid(uint64_t seid)
+{
+    return ogs_hash_get(self.smf_n4_seid_hash, &seid, sizeof(seid));
+}
+
+// TODO (borieher): Select UPF based on MBS parameters
+void smf_mbs_sess_select_upf(smf_mbs_sess_t *mbs_sess)
+{
+    ogs_assert(mbs_sess);
+
+    /*
+     * When used for the first time, if last node is set,
+     * the search is performed from the first UPF in a round-robin manner.
+     */
+    if (ogs_pfcp_self()->pfcp_node == NULL)
+        ogs_pfcp_self()->pfcp_node =
+            ogs_list_last(&ogs_pfcp_self()->pfcp_peer_list);
+
+    /* setup GTP session with selected UPF */
+    ogs_assert(ogs_pfcp_self()->pfcp_node);
+    OGS_SETUP_PFCP_NODE(mbs_sess, ogs_pfcp_self()->pfcp_node);
+}
+
+void smf_mbs_sess_create_mbs_data_forwarding(smf_mbs_sess_t *mbs_sess)
+{
+    ogs_pfcp_pdr_t *dl_pdr = NULL;
+    ogs_pfcp_far_t *dl_far = NULL;
+
+    ogs_assert(mbs_sess);
+
+    smf_mbs_sess_select_upf(mbs_sess);
+
+    // Check the selected UPF is associated with SMF
+    ogs_assert(mbs_sess->pfcp_node);
+    if (!OGS_FSM_CHECK(&mbs_sess->pfcp_node->sm, smf_pfcp_state_associated)) {
+        ogs_error("No existing PFCP association");
+    }
+
+    // Add the UPF N3mb address to the MBS Session
+    if (mbs_sess->pfcp_node->addr.ogs_sa_family == AF_INET)
+        ogs_assert(OGS_OK ==
+            ogs_copyaddrinfo(
+                &mbs_sess->upf_n3mb_addr, &mbs_sess->pfcp_node->addr));
+    else if (mbs_sess->pfcp_node->addr.ogs_sa_family == AF_INET6)
+        ogs_assert(OGS_OK ==
+            ogs_copyaddrinfo(
+                &mbs_sess->upf_n3mb_addr6, &mbs_sess->pfcp_node->addr));
+    else
+        ogs_assert_if_reached();
+
+    // Creating downlink PDR and FAR
+    /* DL PDR */
+    dl_pdr = ogs_pfcp_pdr_add(&mbs_sess->pfcp);
+    ogs_assert(dl_pdr);
+    dl_pdr->src_if = OGS_PFCP_INTERFACE_CORE;
+
+    // For the PDR in MBS
+    if (mbs_sess->ssm) {
+        // TODO (borieher): Add support for IP ranges
+        // SSM from the AF
+        if (mbs_sess->ssm->dest_ip_addr.ipv4) {
+            dl_pdr->ip_multicast_addressing_info.ip_multicast_address.octet5 = 0;
+            dl_pdr->ip_multicast_addressing_info.ip_multicast_address.v4 = 1;
+            dl_pdr->ip_multicast_addressing_info.ip_multicast_address.s_ipv4_addr = mbs_sess->ssm->dest_ip_addr.addr;
+            dl_pdr->ip_multicast_addressing_info.ip_multicast_address_len =
+                sizeof(dl_pdr->ip_multicast_addressing_info.ip_multicast_address.octet5) +
+                sizeof(dl_pdr->ip_multicast_addressing_info.ip_multicast_address.s_ipv4_addr);
+        } else if (mbs_sess->ssm->dest_ip_addr.ipv6) {
+            dl_pdr->ip_multicast_addressing_info.ip_multicast_address.octet5 = 0;
+            dl_pdr->ip_multicast_addressing_info.ip_multicast_address.v6 = 1;
+            memcpy(dl_pdr->ip_multicast_addressing_info.ip_multicast_address.s_ipv6_addr,
+                mbs_sess->ssm->dest_ip_addr.addr6, OGS_IPV6_LEN);
+            dl_pdr->ip_multicast_addressing_info.ip_multicast_address_len =
+                sizeof(dl_pdr->ip_multicast_addressing_info.ip_multicast_address.octet5) +
+                sizeof(dl_pdr->ip_multicast_addressing_info.ip_multicast_address.s_ipv6_addr);
+        }
+
+        // AF source IP address
+        if (mbs_sess->ssm->src_ip_addr.ipv4) {
+            dl_pdr->ip_multicast_addressing_info.source_ip_address.octet5 = 0;
+            dl_pdr->ip_multicast_addressing_info.source_ip_address.v4 = 1;
+            dl_pdr->ip_multicast_addressing_info.source_ip_address.ipv4_addr = mbs_sess->ssm->src_ip_addr.addr;
+            dl_pdr->ip_multicast_addressing_info.source_ip_address_len =
+                sizeof(dl_pdr->ip_multicast_addressing_info.source_ip_address.octet5) +
+                sizeof(dl_pdr->ip_multicast_addressing_info.source_ip_address.ipv4_addr);
+        } else if(mbs_sess->ssm->src_ip_addr.ipv6) {
+            dl_pdr->ip_multicast_addressing_info.source_ip_address.octet5 = 0;
+            dl_pdr->ip_multicast_addressing_info.source_ip_address.v6 = 1;
+            memcpy(dl_pdr->ip_multicast_addressing_info.source_ip_address.ipv6_addr,
+                mbs_sess->ssm->src_ip_addr.addr6, OGS_IPV6_LEN);
+            dl_pdr->ip_multicast_addressing_info.source_ip_address_len =
+                sizeof(dl_pdr->ip_multicast_addressing_info.source_ip_address.octet5) +
+                sizeof(dl_pdr->ip_multicast_addressing_info.source_ip_address.ipv6_addr);
+        }
+
+        dl_pdr->ip_multicast_addressing_info_len = dl_pdr->ip_multicast_addressing_info.ip_multicast_address_len +
+            dl_pdr->ip_multicast_addressing_info.source_ip_address_len;
+    }
+
+    /* FAR */
+    dl_far = ogs_pfcp_far_add(&mbs_sess->pfcp);
+    ogs_assert(dl_far);
+    dl_far->dst_if = OGS_PFCP_INTERFACE_ACCESS;
+    ogs_pfcp_pdr_associate_far(dl_pdr, dl_far);
+
+    // NOTE (borieher): This flag should be DROP if PLLSSM is set?
+    dl_far->apply_action = OGS_PFCP_APPLY_ACTION_FSSM;
+    //dl_far->apply_action = OGS_PFCP_APPLY_ACTION_DROP;
+
+    // NOTE (borieher): When using PLLSSM the MB-UPF selects the lower layer SSM and the C-TEID
+    memset(&dl_far->outer_header_creation, 0, sizeof(ogs_pfcp_outer_header_creation_t));
+    dl_far->outer_header_creation.gtpu4 = 1;
+    dl_far->outer_header_creation.ssm_c_teid = 1;
+    dl_far->outer_header_creation_len = 6;
 }

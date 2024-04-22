@@ -42,6 +42,7 @@ typedef struct smf_gtp_node_s smf_gtp_node_t;
 typedef struct ogs_nas_5gs_message_s ogs_nas_5gs_message_t;
 typedef struct NGAP_NGAP_PDU ogs_ngap_message_t;
 typedef long NGAP_ProcedureCode_t;
+typedef struct smf_mbs_sess_s smf_mbs_sess_t;
 
 typedef enum {
     SMF_EVT_BASE = OGS_MAX_NUM_OF_PROTO_EVENT,
@@ -100,6 +101,7 @@ typedef struct smf_event_s {
     } nas;
 
     smf_sess_t *sess;
+    smf_mbs_sess_t *mbs_sess;
 } smf_event_t;
 
 OGS_STATIC_ASSERT(OGS_EVENT_SIZE >= sizeof(smf_event_t));
