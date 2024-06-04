@@ -190,8 +190,9 @@ ogs_sbi_request_t *amf_nsmf_pdusession_build_create_sm_context(
         goto end;
     }
 
-    pcf_nf_instance = amf_ue->sbi.service_type_array[
-        OGS_SBI_SERVICE_TYPE_NPCF_AM_POLICY_CONTROL].nf_instance;
+    pcf_nf_instance = OGS_SBI_GET_NF_INSTANCE(
+            amf_ue->sbi.service_type_array[
+            OGS_SBI_SERVICE_TYPE_NPCF_AM_POLICY_CONTROL]);
     if (!pcf_nf_instance) {
         ogs_error("No pcf_nf_instance");
         goto end;

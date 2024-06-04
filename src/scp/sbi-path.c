@@ -233,6 +233,9 @@ static int request_handler(ogs_sbi_request_t *request, void *data)
         } else if (!strcasecmp(key, OGS_SBI_CUSTOM_DISCOVERY_TAI)) {
             if (val)
                 ogs_sbi_discovery_option_parse_tai(discovery_option, val);
+        } else if (!strcasecmp(key, OGS_SBI_CUSTOM_DISCOVERY_GUAMI)) {
+            if (val)
+                ogs_sbi_discovery_option_parse_guami(discovery_option, val);
         } else if (!strcasecmp(key, OGS_SBI_CUSTOM_DISCOVERY_TARGET_PLMN_LIST)) {
             if (val)
                 discovery_option->num_of_target_plmn_list =
@@ -283,9 +286,10 @@ static int request_handler(ogs_sbi_request_t *request, void *data)
                     client = ogs_sbi_client_find_by_service_type(
                                 nf_instance, service_type);
                     if (!client) {
-                        ogs_error("[%s:%s] Cannot find client [%s:%s]",
-                                OpenAPI_nf_type_ToString(nf_instance->nf_type),
+                        ogs_error("[%s] Cannot find client "
+                                "[type:%s target_nf_type:%s service_name:%s]",
                                 nf_instance->id,
+                                OpenAPI_nf_type_ToString(nf_instance->nf_type),
                                 OpenAPI_nf_type_ToString(target_nf_type),
                                 ogs_sbi_service_type_to_name(service_type));
                     }

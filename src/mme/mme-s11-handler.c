@@ -59,6 +59,94 @@ static uint8_t esm_cause_from_gtp(uint8_t gtp_cause)
     return OGS_NAS_ESM_CAUSE_NETWORK_FAILURE;
 }
 
+static void gtp_remote_holding_timeout(ogs_gtp_xact_t *xact, void *data)
+{
+    char buf[OGS_ADDRSTRLEN];
+    mme_bearer_t *bearer = data;
+    uint8_t type;
+
+    ogs_assert(xact);
+    bearer = mme_bearer_cycle(bearer);
+    ogs_assert(bearer);
+
+    type = xact->seq[xact->step-1].type;
+
+    ogs_warn("[%d] %s HOLDING TIMEOUT "
+            "for step %d type %d peer [%s]:%d",
+            xact->xid,
+            xact->org == OGS_GTP_LOCAL_ORIGINATOR ? "LOCAL " : "REMOTE",
+            xact->step, type,
+            OGS_ADDR(&xact->gnode->addr, buf),
+            OGS_PORT(&xact->gnode->addr));
+
+    /*
+     * Issues #3240
+     *
+     * SMF->SGW-C->MME: First Update Bearer Request
+     * MME->UE:         First Modify EPS bearer context request
+     * SMF->SGW-C->MME: Second Update Bearer Request
+     * MME->UE:         Second Modify EPS bearer context request
+     * UE->MME:         First Modify EPS bearer context accept
+     * MME->SGW-C->SMF: First Update Bearer Response
+     * UE->MME:         Second Modify EPS bearer context accept
+     * MME->SGW-C->SMF: Second Update Bearer Response
+     */
+    switch (type) {
+    case OGS_GTP2_UPDATE_BEARER_REQUEST_TYPE:
+        /*
+         * In this case, a timeout occurs while waiting
+         * for Modify EPS bearer context accept from UE.
+         *
+         * If the UE does not send a Modify EPS bearer context accept,
+         * the MME fails to send an Update Bearer Response.
+         *
+         * Therefore, we need to delete the Transaction Node
+         * that was managed by the Bearer Context from the List.
+         */
+        if (ogs_list_exists(
+                    &bearer->update.xact_list,
+                    &xact->to_update_node) == true) {
+            ogs_list_remove(&bearer->update.xact_list, &xact->to_update_node);
+        } else {
+            ogs_error("[%d] %s HAVE ALREADY BEEN REMOVED "
+                    "for step %d type %d peer [%s]:%d",
+                    xact->xid,
+                    xact->org == OGS_GTP_LOCAL_ORIGINATOR ? "LOCAL " : "REMOTE",
+                    xact->step, type,
+                    OGS_ADDR(&xact->gnode->addr, buf),
+                    OGS_PORT(&xact->gnode->addr));
+        }
+        break;
+    case OGS_GTP2_UPDATE_BEARER_RESPONSE_TYPE:
+        /*
+         * The following is the case where the UE sends
+         * Modify EPS bearer context accept to the MME.
+         *
+         * In this case, the MME sends Update Bearer Response
+         * to SGW-C and deletes the Transaction Node.
+         *
+         * Therefore, there is no need to delete the Transaction Node
+         * from the list managed by the Bearer Context here.
+         */
+        if (ogs_list_exists(
+                    &bearer->update.xact_list,
+                    &xact->to_update_node) == true) {
+            ogs_error("[%d] %s SHOULD HAVE REMOVED "
+                    "for step %d type %d peer [%s]:%d",
+                    xact->xid,
+                    xact->org == OGS_GTP_LOCAL_ORIGINATOR ? "LOCAL " : "REMOTE",
+                    xact->step, type,
+                    OGS_ADDR(&xact->gnode->addr, buf),
+                    OGS_PORT(&xact->gnode->addr));
+        }
+        break;
+    default:
+        ogs_fatal("Unknown type[%d]", type);
+        ogs_assert_if_reached();
+        break;
+    }
+}
+
 void mme_s11_handle_echo_request(
         ogs_gtp_xact_t *xact, ogs_gtp2_echo_request_t *req)
 {
@@ -181,38 +269,21 @@ void mme_s11_handle_create_session_response(
         cause_value = OGS_GTP2_CAUSE_CONDITIONAL_IE_MISSING;
     }
 
-    if (create_action == OGS_GTP_CREATE_IN_PATH_SWITCH_REQUEST) {
-
-        /* No need S5C TEID in PathSwitchRequest */
-
-    } else {
-
+    switch (create_action) {
+    case OGS_GTP_CREATE_IN_PATH_SWITCH_REQUEST:
+        /* No need for PAA or S5C TEID in PathSwitchRequest */
+        break;
+    case OGS_GTP_CREATE_IN_TRACKING_AREA_UPDATE:
+        /* No need for PAA or S5C TEID in 2G->4G mobility, it was already provided by SGSN peer */
+        break;
+    default:
         if (rsp->pgw_s5_s8__s2a_s2b_f_teid_for_pmip_based_interface_or_for_gtp_based_control_plane_interface.presence == 0) {
             ogs_error("[%s] No S5C TEID [Cause:%d]",
                     mme_ue->imsi_bcd, session_cause);
             cause_value = OGS_GTP2_CAUSE_CONDITIONAL_IE_MISSING;
         }
 
-    }
-
-    if (create_action == OGS_GTP_CREATE_IN_PATH_SWITCH_REQUEST) {
-
-        /* No need S5C TEID in PathSwitchRequest */
-
-    } else {
-
-        if (rsp->pdn_address_allocation.presence) {
-            ogs_paa_t paa;
-
-            memcpy(&paa, rsp->pdn_address_allocation.data,
-                    rsp->pdn_address_allocation.len);
-
-            if (!OGS_PDU_SESSION_TYPE_IS_VALID(paa.session_type)) {
-                ogs_error("[%s] Unknown PDN Type [Session:%u, Cause:%d]",
-                        mme_ue->imsi_bcd, paa.session_type, session_cause);
-                cause_value = OGS_GTP2_CAUSE_MANDATORY_IE_INCORRECT;
-            }
-        } else {
+        if (rsp->pdn_address_allocation.presence == 0) {
             ogs_error("[%s] No PDN Address Allocation [Cause:%d]",
                     mme_ue->imsi_bcd, session_cause);
             cause_value = OGS_GTP2_CAUSE_CONDITIONAL_IE_MISSING;
@@ -384,11 +455,24 @@ void mme_s11_handle_create_session_response(
 
     /* PDN Addresss Allocation */
     if (rsp->pdn_address_allocation.presence) {
-        memcpy(&session->paa, rsp->pdn_address_allocation.data,
+        memcpy(&sess->paa, rsp->pdn_address_allocation.data,
                 rsp->pdn_address_allocation.len);
-        session->session_type = session->paa.session_type;
-        ogs_assert(OGS_OK ==
-                ogs_paa_to_ip(&session->paa, &session->ue_ip));
+        /*
+         * Issue #3209
+         *
+         * The Session-Type in the Subscriber DB should not be changed
+         * in case the UE can change the PDN-Type for the APN.
+         * (e.g IPv4v6 -> IPv4 -> IPv4v6)
+         *
+         * For resolving this problem,
+         * session->session_type and session->ue_ip should not be modified.
+         *
+         * Therefore, the code below will be deleted.
+         */
+#if 0 /* WILL BE DELETED */
+        session->session_type = sess->paa.session_type;
+        ogs_assert(OGS_OK == ogs_paa_to_ip(&sess->paa, &session->ue_ip));
+#endif
     }
 
     /* ePCO */
@@ -432,14 +516,10 @@ void mme_s11_handle_create_session_response(
                 OGS_NETWORK_ACCESS_MODE_ONLY_PACKET ||
             mme_ue->nas_eps.attach.value ==
                 OGS_NAS_ATTACH_TYPE_EPS_ATTACH) {
-            ogs_assert(OGS_PDU_SESSION_TYPE_IS_VALID(
-                        session->paa.session_type));
             r = nas_eps_send_attach_accept(mme_ue);
             ogs_expect(r == OGS_OK);
             ogs_assert(r != OGS_ERROR);
         } else {
-            ogs_assert(OGS_PDU_SESSION_TYPE_IS_VALID(
-                        session->paa.session_type));
             ogs_assert(OGS_OK == sgsap_send_location_update_request(mme_ue));
         }
 
@@ -447,7 +527,6 @@ void mme_s11_handle_create_session_response(
         /* 3GPP TS 23.401 D.3.6 step 13, 14: */
         mme_s6a_send_ulr(mme_ue->enb_ue, mme_ue);
     } else if (create_action == OGS_GTP_CREATE_IN_UPLINK_NAS_TRANSPORT) {
-        ogs_assert(OGS_PDU_SESSION_TYPE_IS_VALID(session->paa.session_type));
         r = nas_eps_send_activate_default_bearer_context_request(
                 bearer, create_action);
         ogs_expect(r == OGS_OK);
@@ -1054,13 +1133,31 @@ void mme_s11_handle_update_bearer_request(
     }
 
     /*
-     * Save Transaction. It will be handled after EMM-attached
+     * Issues #3240
      *
-     * You should not remove OLD bearer->xact.
-     * If GTP-xact Holding timer is expired,
-     * OLD bearer->xact memory will be automatically removed.
+     * SMF->SGW-C->MME: First Update Bearer Request
+     * MME->UE:         First Modify EPS bearer context request
+     * SMF->SGW-C->MME: Second Update Bearer Request
+     * MME->UE:         Second Modify EPS bearer context request
+     * UE->MME:         First Modify EPS bearer context accept
+     * MME->SGW-C->SMF: First Update Bearer Response
+     * UE->MME:         Second Modify EPS bearer context accept
+     * MME->SGW-C->SMF: Second Update Bearer Response
+     *
+     * If the UE does not send a Modify EPS bearer context accept,
+     * the MME cannot send an Update Bearer Response to the SGW-C.
+     *
+     * In this case, REMOTE holding timeout occurs, and a callback function
+     * is registered as follows to free memory.
+     *
+     * Also, as shown above, multiple Update Bearer Request/Response can occur,
+     * so we manage the Transaction Node as a list within the Bearer Context.
      */
-    bearer->update.xact = xact;
+
+    xact->cb = gtp_remote_holding_timeout;
+    xact->data = bearer;
+
+    ogs_list_add(&bearer->update.xact_list, &xact->to_update_node);
 
     if (req->bearer_contexts.bearer_level_qos.presence == 1) {
         /* Bearer QoS */

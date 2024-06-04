@@ -207,7 +207,15 @@ uint8_t smf_s5c_handle_create_session_request(
     if (sess->gtp_rat_type == OGS_GTP2_RAT_TYPE_EUTRAN) {
         /* User Location Inforation is mandatory only for E-UTRAN */
         ogs_assert(req->user_location_information.presence);
-        ogs_gtp2_parse_uli(&uli, &req->user_location_information);
+        if (req->user_location_information.presence == 0) {
+            ogs_error("No User Location Information(ULI)");
+            return OGS_GTP2_CAUSE_MANDATORY_IE_MISSING;
+        }
+        decoded = ogs_gtp2_parse_uli(&uli, &req->user_location_information);
+        if (req->user_location_information.len != decoded) {
+            ogs_error("Invalid User Location Information(ULI)");
+            return OGS_GTP2_CAUSE_MANDATORY_IE_INCORRECT;
+        }
         memcpy(&sess->e_tai, &uli.tai, sizeof(sess->e_tai));
         memcpy(&sess->e_cgi, &uli.e_cgi, sizeof(sess->e_cgi));
 
@@ -410,16 +418,15 @@ uint8_t smf_s5c_handle_create_session_request(
 
     /* Set MSISDN */
     if (req->msisdn.presence && req->msisdn.len && req->msisdn.data) {
-        smf_ue->msisdn_len = req->msisdn.len;
-        memcpy(smf_ue->msisdn, req->msisdn.data,
-                ogs_min(smf_ue->msisdn_len, OGS_MAX_MSISDN_LEN));
+        smf_ue->msisdn_len = ogs_min(req->msisdn.len, OGS_MAX_MSISDN_LEN);
+        memcpy(smf_ue->msisdn, req->msisdn.data, smf_ue->msisdn_len);
         ogs_buffer_to_bcd(smf_ue->msisdn,
                 smf_ue->msisdn_len, smf_ue->msisdn_bcd);
     }
 
     /* Set IMEI(SV) */
     if (req->me_identity.presence && req->me_identity.len > 0) {
-        smf_ue->imeisv_len = req->me_identity.len;
+        smf_ue->imeisv_len = ogs_min(req->me_identity.len, OGS_MAX_IMEISV_LEN);
         memcpy(smf_ue->imeisv,
             (uint8_t*)req->me_identity.data, smf_ue->imeisv_len);
         ogs_buffer_to_bcd(

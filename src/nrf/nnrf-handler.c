@@ -835,12 +835,12 @@ bool nrf_nnrf_handle_nf_discover(
                             &discovery_option->tai.plmn_id),
                         discovery_option->tai.tac.v);
         }
-        if (discovery_option->target_guami) {
+        if (discovery_option->guami_presence) {
             ogs_debug("guami[PLMN_ID:%06x,AMF_ID:%x]",
                         ogs_plmn_id_hexdump(
-                            &discovery_option->target_guami->plmn_id),
+                            &discovery_option->guami.plmn_id),
                         ogs_amf_id_hexdump(
-                            &discovery_option->target_guami->amf_id));
+                            &discovery_option->guami.amf_id));
         }
         if (discovery_option->num_of_target_plmn_list) {
             for (i = 0; i < discovery_option->num_of_target_plmn_list; i++)
@@ -1176,12 +1176,12 @@ static void handle_nf_discover_search_result(
              * is not executed later in nrf_context_final().
              */
 
-            ogs_info("[%s:%s] (NF-discover) NF registered",
+            ogs_info("[%s] (NF-discover) NF registered [type:%s]",
                     NFProfile->nf_instance_id,
                     OpenAPI_nf_type_ToString(NFProfile->nf_type));
         } else {
 
-            ogs_warn("[%s:%s] (NF-discover) NF has already been added",
+            ogs_warn("[%s] (NF-discover) NF has already been added [type:%s]",
                     NFProfile->nf_instance_id,
                     OpenAPI_nf_type_ToString(NFProfile->nf_type));
         }
@@ -1199,7 +1199,7 @@ static void handle_nf_discover_search_result(
                 break;
             }
 
-            ogs_info("[%s:%s] (NF-discover) NF Profile updated",
+            ogs_info("[%s] (NF-discover) NF Profile updated [type:%s]",
                         nf_instance->id,
                         OpenAPI_nf_type_ToString(nf_instance->nf_type));
         }
