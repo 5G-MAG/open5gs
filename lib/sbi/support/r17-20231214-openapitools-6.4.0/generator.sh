@@ -6,6 +6,7 @@
 
 openapi_generator_cli="openapi-generator-cli"
 
+$openapi_generator_cli generate -i ./modified/TS29518_Namf_MBSBroadcast.yaml -c ./openapi-generator/config.yaml -g c -o ../../openapi || exit 1
 $openapi_generator_cli generate -i ./modified/TS29532_Nmbsmf_MBSSession.yaml -c ./openapi-generator/config.yaml -g c -o ../../openapi || exit 1
 $openapi_generator_cli generate -i ./modified/TS29532_Nmbsmf_TMGI.yaml -c ./openapi-generator/config.yaml -g c -o ../../openapi || exit 1
 $openapi_generator_cli generate -i ./modified/TS29573_N32_Handshake.yaml -c ./openapi-generator/config.yaml -g c -o ../../openapi || exit 1
