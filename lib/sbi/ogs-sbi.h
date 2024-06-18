@@ -90,6 +90,8 @@
 #include "model/tmgi_allocated.h"
 #include "model/create_req_data.h"
 #include "model/create_rsp_data.h"
+#include "model/context_create_req_data.h"
+#include "model/context_create_rsp_data.h"
 
 #include "custom/links.h"
 

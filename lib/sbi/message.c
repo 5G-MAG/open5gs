@@ -206,6 +206,8 @@ void ogs_sbi_message_free(ogs_sbi_message_t *message)
         OpenAPI_tmgi_allocate_free(message->TmgiAllocate);
     if (message->CreateReqData)
         OpenAPI_create_req_data_free(message->CreateReqData);
+    if (message->ContextCreateReqData)
+        OpenAPI_context_create_req_data_free(message->ContextCreateReqData);
 
     /* HTTP Part */
     for (i = 0; i < message->num_of_part; i++) {
@@ -1425,6 +1427,14 @@ static char *build_json(ogs_sbi_message_t *message)
         item = OpenAPI_create_rsp_data_convertToJSON(
                 message->CreateRspData);
         ogs_assert(item);
+    } else if (message->ContextCreateReqData) {
+        item = OpenAPI_context_create_req_data_convertToJSON(
+                message->ContextCreateReqData);
+        ogs_assert(item);
+    } else if (message->ContextCreateRspData) {
+        item = OpenAPI_context_create_rsp_data_convertToJSON(
+                message->ContextCreateRspData);
+        ogs_assert(item);
     }
 
     if (item) {
@@ -2587,6 +2597,42 @@ static int parse_json(ogs_sbi_message_t *message,
                         message->CreateReqData =
                             OpenAPI_create_req_data_parseFromJSON(item);
                         if (!message->CreateReqData) {
+                            rv = OGS_ERROR;
+                            ogs_error("JSON parse error");
+                        }
+                    }
+                    break;
+
+                DEFAULT
+                    rv = OGS_ERROR;
+                    ogs_error("Unknown method [%s]", message->h.method);
+                END
+                break;
+
+            DEFAULT
+                rv = OGS_ERROR;
+                ogs_error("Unknown resource name [%s]",
+                        message->h.resource.component[0]);
+            END
+            break;
+
+        CASE(OGS_SBI_SERVICE_NAME_NAMF_MBS_BC)
+            SWITCH(message->h.resource.component[0])
+            CASE(OGS_SBI_RESOURCE_NAME_MBS_CONTEXTS)
+                SWITCH(message->h.method)
+                CASE(OGS_SBI_HTTP_METHOD_POST)
+                    if (message->res_status == 0) {
+                        message->ContextCreateReqData =
+                            OpenAPI_context_create_req_data_parseFromJSON(item);
+                        if (!message->ContextCreateReqData) {
+                            rv = OGS_ERROR;
+                            ogs_error("JSON parse error");
+                        }
+                    } else if (message->res_status ==
+                            OGS_SBI_HTTP_STATUS_CREATED) {
+                        message->ContextCreateRspData =
+                            OpenAPI_context_create_rsp_data_parseFromJSON(item);
+                        if (!message->ContextCreateRspData) {
                             rv = OGS_ERROR;
                             ogs_error("JSON parse error");
                         }

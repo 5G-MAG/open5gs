@@ -1389,6 +1389,10 @@ libsbi_openapi_sources = files('''
     model/tunnel_address.c
     model/ingress_tun_addr_info.c
     model/broadcast_delivery_status.c
+    model/context_create_req_data.c
+    model/n2_mbs_sm_info.c
+    model/context_create_rsp_data.c
+    model/operation_status.c
 '''.split())
 
 libsbi_openapi_inc = include_directories('.')

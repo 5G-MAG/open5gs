@@ -149,6 +149,7 @@ extern "C" {
 
 #define OGS_SBI_RESOURCE_NAME_TMGI                  "tmgi"
 #define OGS_SBI_RESOURCE_NAME_MBS_SESSIONS          "mbs-sessions"
+#define OGS_SBI_RESOURCE_NAME_MBS_CONTEXTS          "mbs-contexts"
 
 #define OGS_SBI_PATCH_PATH_NF_STATUS                "/nfStatus"
 #define OGS_SBI_PATCH_PATH_LOAD                     "/load"
@@ -561,6 +562,8 @@ typedef struct ogs_sbi_message_s {
     OpenAPI_tmgi_allocated_t *TmgiAllocated;
     OpenAPI_create_req_data_t *CreateReqData;
     OpenAPI_create_rsp_data_t *CreateRspData;
+    OpenAPI_context_create_req_data_t *ContextCreateReqData;
+    OpenAPI_context_create_rsp_data_t *ContextCreateRspData;
 
     ogs_sbi_links_t *links;
 
