@@ -1799,3 +1799,20 @@ static void amf_namf_comm_decode_ue_session_context_list(
         ogs_sbi_header_free(&header);
     }
 }
+
+/* Namf_MBSBroadcast Service API */
+
+/*
+ * 3GPP TS 29.518 - Release 17.11.0
+ * 5G System; Access and Mobility Management Services; Stage 3
+ * Ch. 5.6.2.2 - Namf_MBSBroadcast Service API - MBS Broadcast ContextCreate service operation
+ */
+int amf_namf_handle_mbs_broadcast_context_create(
+        ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg)
+{
+    // TODO (borieher): Implement MBS Broadcast ContextCreate service operation
+
+    ogs_warn("MBS Broadcast ContextCreate request received");
+
+    return OGS_OK;
+}

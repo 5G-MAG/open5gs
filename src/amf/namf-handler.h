@@ -39,6 +39,12 @@ int amf_namf_comm_handle_ue_context_transfer_request(
 int amf_namf_comm_handle_ue_context_transfer_response(
         ogs_sbi_message_t *recvmsg, amf_ue_t *amf_ue);
 
+/* Namf_MBSBroadcast Service API */
+
+/* Namf_MBSBroadcast Service - MBS Broadcast ContextCreate service operation */
+int amf_namf_handle_mbs_broadcast_context_create(
+        ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg);
+
 #ifdef __cplusplus
 }
 #endif
