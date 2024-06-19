@@ -546,7 +546,7 @@ bool smf_nmbsmf_handle_mbs_session_create(
 
     // Adding the mbsSessionRef in the headers for the created resource
     memset(&header, 0, sizeof(header));
-    header.service.name = (char *) OGS_SBI_SERVICE_NAME_NMBSMF_MBS_SESSIONS;
+    header.service.name = (char *) OGS_SBI_SERVICE_NAME_NMBSMF_MBS_SESSION;
     header.api.version = (char *) OGS_SBI_API_V1;
     header.resource.component[0] =
         (char *) OGS_SBI_RESOURCE_NAME_MBS_SESSIONS;

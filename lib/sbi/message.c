@@ -2588,7 +2588,7 @@ static int parse_json(ogs_sbi_message_t *message,
             END
             break;
 
-        CASE(OGS_SBI_SERVICE_NAME_NMBSMF_MBS_SESSIONS)
+        CASE(OGS_SBI_SERVICE_NAME_NMBSMF_MBS_SESSION)
             SWITCH(message->h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_MBS_SESSIONS)
                 SWITCH(message->h.method)

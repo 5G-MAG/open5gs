@@ -159,7 +159,7 @@ typedef enum {
 #define OGS_SBI_SERVICE_NAME_N32C_HANDSHAKE "n32c-handshake"
 
 #define OGS_SBI_SERVICE_NAME_NMBSMF_TMGI "nmbsmf-tmgi"
-#define OGS_SBI_SERVICE_NAME_NMBSMF_MBS_SESSIONS "nmbsmf-mbssession"
+#define OGS_SBI_SERVICE_NAME_NMBSMF_MBS_SESSION "nmbsmf-mbssession"
 #define OGS_SBI_SERVICE_NAME_NAMF_MBS_BC "namf-mbs-bc"
 
 #define OGS_SBI_SERVICE_NAME_NAMF_CALLBACK "namf-callback"

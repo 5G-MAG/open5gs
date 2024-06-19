@@ -685,7 +685,7 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
             END
             break;
 
-        CASE(OGS_SBI_SERVICE_NAME_NMBSMF_MBS_SESSIONS)
+        CASE(OGS_SBI_SERVICE_NAME_NMBSMF_MBS_SESSION)
             SWITCH(sbi_message.h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_MBS_SESSIONS)
                 SWITCH(sbi_message.h.method)
