@@ -532,26 +532,3 @@ bool smf_sbi_send_sm_context_status_notify(smf_sess_t *sess)
 
     return rc;
 }
-
-// Adding this to specify cause in problem_details
-bool smf_sbi_send_nmbsmf_error(
-        ogs_sbi_stream_t *stream, int status,
-        const char *title, const char *detail, const char *cause)
-{
-    OpenAPI_problem_details_t problemDetails;
-
-    ogs_assert(stream);
-
-    memset(&problemDetails, 0, sizeof(problemDetails));
-
-    problemDetails.title = (char *) title;
-    problemDetails.status = status;
-    problemDetails.detail = (char *) detail;
-
-    if (cause)
-        problemDetails.cause = (char *) cause;
-
-    ogs_sbi_server_send_problem(stream, &problemDetails);
-
-    return true;
-}

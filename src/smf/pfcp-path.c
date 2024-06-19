@@ -926,8 +926,8 @@ static void mbs_sess_5gc_timeout(ogs_pfcp_xact_t *xact, void *data)
 
         ogs_error("%s", strerror);
         if (stream) {
-            smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_GATEWAY_TIMEOUT,
-                "Gateway Timeout", strerror, NULL);
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_GATEWAY_TIMEOUT,
+                NULL, "Gateway Timeout", strerror, NULL);
         }
         ogs_free(strerror);
         break;
@@ -954,8 +954,8 @@ static void mbs_sess_5gc_timeout(ogs_pfcp_xact_t *xact, void *data)
 
             ogs_assert(stream);
             ogs_assert(true ==
-                smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_GATEWAY_TIMEOUT,
-                    "Gateway Timeout", strerror, NULL));
+                ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_GATEWAY_TIMEOUT,
+                    NULL, "Gateway Timeout", strerror, NULL));
         } else {
             ogs_fatal("Unknown trigger [%d]", trigger);
             ogs_assert_if_reached();

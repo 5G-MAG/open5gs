@@ -65,8 +65,8 @@ bool smf_nmbsmf_handle_tmgi_allocate(
         ogs_error("TMGI Allocate: No TmgiAllocate");
         // Extracted from the OpenAPI spec, not the 3GPP TS
         // TmgiAllocate must be present, send error (400)
-        smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
-            "Bad Request", "Requested TMGI Allocate failed, no TmgiAllocate", NULL);
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            message, "Bad Request", "Requested TMGI Allocate failed, no TmgiAllocate",  NULL);
         rv = OGS_ERROR;
         goto cleanup;
     }
@@ -74,9 +74,8 @@ bool smf_nmbsmf_handle_tmgi_allocate(
     if (!TmgiAllocate->tmgi_number && !TmgiAllocate->tmgi_list) {
         ogs_error("TMGI Allocate: tmgi_number and tmgi_list not present");
         // tmgi_number or tmgi_list should be present, send error (403 + MANDATORY_IE_INCORRECT)
-        smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
-            "Mandatory IE incorrect",
-            "Requested TMGI Allocate failed, no [tmgiNumber] nor [tmgiList] present",
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
+            message, "Mandatory IE incorrect", "Requested TMGI Allocate failed, no [tmgiNumber] nor [tmgiList] present",
             NMBSMF_TMGI_MANDATORY_IE_INCORRECT);
         rv = OGS_ERROR;
         goto cleanup;
@@ -95,9 +94,8 @@ bool smf_nmbsmf_handle_tmgi_allocate(
             if (!tmgi_found) {
                 ogs_error("TMGI Allocate: refresh error, TMGI not present");
                 // TMGI not found, send error (404 + UNKNOWN_TMGI)
-                smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_NOT_FOUND,
-                    "Unknown TMGI",
-                    "Requested TMGI Allocate (refresh) failed, TMGI expired or cannot be found",
+                ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_NOT_FOUND,
+                    message, "Unknown TMGI", "Requested TMGI Allocate (refresh) failed, TMGI expired or cannot be found",
                     NMBSMF_TMGI_UNKNOWN_TMGI);
                 rv = OGS_ERROR;
                 goto cleanup;
@@ -115,17 +113,16 @@ bool smf_nmbsmf_handle_tmgi_allocate(
                 ogs_error("TMGI Allocate: Cannot allocate %d TMGIs", TmgiAllocate->tmgi_number);
                 // Custom error handling, not the 3GPP TS
                 // Avoid reaching the maximum number of TMGI, send error (403)
-                smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
-                    "Forbidden", "Cannot allocate [tmgiNumber] of TMGIs", NULL);
+                ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
+                    message, "Forbidden", "Cannot allocate [tmgiNumber] of TMGIs", NULL);
                 rv = OGS_ERROR;
                 goto cleanup;
             }
         } else {
             ogs_error("TMGI Allocate: allocate error, incorrect number in tmgi_number");
             // tmgi_number needs to be between 1 and 255, send error (403 + MANDATORY_IE_INCORRECT)
-            smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
-                "Mandatory IE incorrect",
-                "Requested TMGI Allocate failed, incorrect number in [tmgiNumber]",
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
+                message, "Mandatory IE incorrect", "Requested TMGI Allocate failed, incorrect number in [tmgiNumber]",
                 NMBSMF_TMGI_MANDATORY_IE_INCORRECT);
             rv = OGS_ERROR;
             goto cleanup;
@@ -230,8 +227,8 @@ bool smf_nmbsmf_handle_tmgi_deallocate(
         // Extracted from the OpenAPI spec, not the 3GPP TS
         // tmgi_list not present, send error (400)
         ogs_error("TMGI Deallocate: No tmgi_list");
-        smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
-            "Bad Request", "Requested TMGI Deallocate failed, no tmgi-list", NULL);
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            message, "Bad Request", "Requested TMGI Deallocate failed, no tmgi-list", NULL);
         return false;
     }
 
@@ -247,9 +244,8 @@ bool smf_nmbsmf_handle_tmgi_deallocate(
         if (!tmgi_found) {
             ogs_error("TMGI Deallocate: deallocate error, TMGI not present");
             // TMGI not found, send error (404 + UNKNOWN_TMGI)
-            smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_NOT_FOUND,
-                "Unknown TMGI",
-                "Requested TMGI Deallocate failed, TMGI expired or cannot be found",
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_NOT_FOUND,
+                message, "Unknown TMGI", "Requested TMGI Deallocate failed, TMGI expired or cannot be found",
                 NMBSMF_TMGI_UNKNOWN_TMGI);
             return false;
         }
@@ -337,8 +333,8 @@ bool smf_nmbsmf_handle_mbs_session_create(
         ogs_error("MBS Session Create: No CreateReqData");
         // Extracted from the OpenAPI spec, not the 3GPP TS
         // CreateReqData must be present, send error (400)
-        smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
-            "Bad Request", "Requested MBS Session Create failed, no CreateReqData", NULL);
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            message, "Bad Request", "Requested MBS Session Create failed, no CreateReqData", NULL);
         rv = OGS_ERROR;
         goto cleanup;
     }
@@ -346,9 +342,8 @@ bool smf_nmbsmf_handle_mbs_session_create(
     if (!CreateReqData->mbs_session->service_type) {
         ogs_error("MBS Session Create: service_type not present");
         // service_type should be present, send error (400 + ERROR_INPUT_PARAMETERS)
-        smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
-            "Error input parameters",
-            "MBS Session Create failed, no [serviceType] present",
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            message, "Error input parameters", "MBS Session Create failed, no [serviceType] present",
             NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
         rv = OGS_ERROR;
         goto cleanup;
@@ -361,9 +356,8 @@ bool smf_nmbsmf_handle_mbs_session_create(
         ogs_error("MBS Session Create: service_type should be MULTICAST or BROADCAST");
         // Custom error handling, not the 3GPP TS
         // service_type should be MULTICAST or BROADCAST, send error (400 + ERROR_INPUT_PARAMETERS)
-        smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
-            "Error input parameters",
-            "MBS Session Create failed, [serviceType] should be MULTICAST or BROADCAST",
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            message, "Error input parameters", "MBS Session Create failed, [serviceType] should be MULTICAST or BROADCAST",
             NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
         rv = OGS_ERROR;
         goto cleanup;
@@ -375,9 +369,8 @@ bool smf_nmbsmf_handle_mbs_session_create(
         ogs_error("MBS Session Create: mbs_session_id or tmgi_alloc_req not present");
         // Custom error handling, not the 3GPP TS
         // mbs_session_id or tmgi_alloc_req should be present, send error (400 + ERROR_INPUT_PARAMETERS)
-        smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
-            "Error input parameters",
-            "MBS Session Create failed, no [mbsSessionId] nor [tmgiAllocReq] present",
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            message, "Error input parameters", "MBS Session Create failed, no [mbsSessionId] nor [tmgiAllocReq] present",
             NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
         rv = OGS_ERROR;
         goto cleanup;
@@ -398,9 +391,8 @@ bool smf_nmbsmf_handle_mbs_session_create(
                     ogs_error("MBS Session Create: SSM as mbs_session_id and tmgi_alloc_req but service_type is not MULTICAST");
                     // Custom error handling, not the 3GPP TS
                     // SSM as mbs_session_id and tmgi_alloc_req should not be present if service_type is not MULTICAST, send error (400 + ERROR_INPUT_PARAMETERS)
-                    smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
-                        "Error input parameters",
-                        "MBS Session Create failed, SSM as [mbsSessionId] and [tmgiAllocReq] both present but service_type is not MULTICAST",
+                    ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                        message, "Error input parameters", "MBS Session Create failed, SSM as [mbsSessionId] and [tmgiAllocReq] both present but service_type is not MULTICAST",
                         NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
                     rv = OGS_ERROR;
                     goto cleanup;
@@ -409,9 +401,8 @@ bool smf_nmbsmf_handle_mbs_session_create(
                 ogs_error("MBS Session Create: TMGI as mbs_session_id and tmgi_alloc_req both present");
                 // Custom error handling, not the 3GPP TS
                 // TMGI as mbs_session_id and tmgi_alloc_req should not be present at the same time, send error (400 + ERROR_INPUT_PARAMETERS)
-                smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
-                    "Error input parameters",
-                    "MBS Session Create failed, TMGI as [mbsSessionId] and [tmgiAllocReq] both present",
+                ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                    message, "Error input parameters", "MBS Session Create failed, TMGI as [mbsSessionId] and [tmgiAllocReq] both present",
                     NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
                 rv = OGS_ERROR;
                 goto cleanup;
@@ -423,8 +414,8 @@ bool smf_nmbsmf_handle_mbs_session_create(
             ogs_error("MBS Session Create: Cannot allocate TMGI");
             // Custom error handling, not the 3GPP TS
             // Avoid reaching the maximum number of TMGI, send error (403)
-            smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
-                "Forbidden", "Cannot allocate TMGIs", NULL);
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
+                message, "Forbidden", "Cannot allocate TMGIs", NULL);
             rv = OGS_ERROR;
             goto cleanup;
         }
@@ -453,9 +444,8 @@ bool smf_nmbsmf_handle_mbs_session_create(
                     } else {
                         // Custom error handling, not the 3GPP TS
                         // No TMGI provided, send error (400 + ERROR_INPUT_PARAMETERS)
-                        smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
-                            "Error input parameters",
-                            "MBS Session Create failed, no TMGI provided",
+                        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                            message, "Error input parameters", "MBS Session Create failed, no TMGI provided",
                             NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
                         rv = OGS_ERROR;
                         goto cleanup;
@@ -465,9 +455,8 @@ bool smf_nmbsmf_handle_mbs_session_create(
                     ogs_error("MBS Session Create: SSM as mbs_session_id but service-type is not MULTICAST");
                     // Custom error handling, not the 3GPP TS
                     // SSM as mbs_session_id is only for MULTICAST service_type, send error (400 + ERROR_INPUT_PARAMETERS)
-                    smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
-                        "Error input parameters",
-                        "MBS Session Create failed, SSM as [mbsSessionId] but [serviceType] is not MULTICAST",
+                    ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                        message, "Error input parameters", "MBS Session Create failed, SSM as [mbsSessionId] but [serviceType] is not MULTICAST",
                         NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
                     rv = OGS_ERROR;
                     goto cleanup;
@@ -477,9 +466,8 @@ bool smf_nmbsmf_handle_mbs_session_create(
             // Error checking, TMGI not found
             if (!tmgi) {
                 // TMGI not found, send error (404 + UNKNOWN_TMGI)
-                smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_NOT_FOUND,
-                    "Unknown TMGI",
-                    "Requested MBS Session Create failed, TMGI provided expired or cannot be found",
+                ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_NOT_FOUND,
+                    message, "Unknown TMGI", "Requested MBS Session Create failed, TMGI provided expired or cannot be found",
                     NMBSMF_MBSSESSION_UNKNOWN_TMGI);
                 rv = OGS_ERROR;
                 goto cleanup;

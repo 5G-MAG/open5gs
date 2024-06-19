@@ -697,8 +697,8 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
                     if (!sbi_message.h.resource.component[1]) {
                         ogs_error("No mbsSessionRef [%s]",
                                 sbi_message.h.resource.component[1]);
-                        smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
-                            "Bad Request", "No mbsSessionRef", NULL);
+                        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                            &sbi_message, "Bad Request", "No mbsSessionRef", NULL);
                         break;
                     }
 
@@ -707,8 +707,8 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
 
                     if (!mbs_sess) {
                         ogs_warn("Not found [%s]", sbi_message.h.uri);
-                        smf_sbi_send_nmbsmf_error(stream, OGS_SBI_HTTP_STATUS_NOT_FOUND,
-                            "Not Found", "Unknown MBS Session", NMBSMF_MBSESSION_UNKNOWN_MBS_SESSION);
+                        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_NOT_FOUND,
+                            &sbi_message, "Not Found", "Unknown MBS Session", NMBSMF_MBSESSION_UNKNOWN_MBS_SESSION);
                         break;
                     }
 
