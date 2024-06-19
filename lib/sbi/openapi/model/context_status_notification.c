@@ -33,7 +33,7 @@ OpenAPI_context_status_notification_t *OpenAPI_context_status_notification_creat
     int area_session_id,
     OpenAPI_list_t *n2_mbs_sm_info_list,
     OpenAPI_list_t *operation_events,
-    OpenAPI_operation_status_t *operation_status,
+    OpenAPI_operation_status_e operation_status,
     OpenAPI_context_status_notification_released_ind_e released_ind
 )
 {
@@ -75,10 +75,6 @@ void OpenAPI_context_status_notification_free(OpenAPI_context_status_notificatio
         }
         OpenAPI_list_free(context_status_notification->operation_events);
         context_status_notification->operation_events = NULL;
-    }
-    if (context_status_notification->operation_status) {
-        OpenAPI_operation_status_free(context_status_notification->operation_status);
-        context_status_notification->operation_status = NULL;
     }
     ogs_free(context_status_notification);
 }
@@ -148,14 +144,8 @@ cJSON *OpenAPI_context_status_notification_convertToJSON(OpenAPI_context_status_
     }
     }
 
-    if (context_status_notification->operation_status) {
-    cJSON *operation_status_local_JSON = OpenAPI_operation_status_convertToJSON(context_status_notification->operation_status);
-    if (operation_status_local_JSON == NULL) {
-        ogs_error("OpenAPI_context_status_notification_convertToJSON() failed [operation_status]");
-        goto end;
-    }
-    cJSON_AddItemToObject(item, "operationStatus", operation_status_local_JSON);
-    if (item->child == NULL) {
+    if (context_status_notification->operation_status != OpenAPI_operation_status_NULL) {
+    if (cJSON_AddStringToObject(item, "operationStatus", OpenAPI_operation_status_ToString(context_status_notification->operation_status)) == NULL) {
         ogs_error("OpenAPI_context_status_notification_convertToJSON() failed [operation_status]");
         goto end;
     }
@@ -184,7 +174,7 @@ OpenAPI_context_status_notification_t *OpenAPI_context_status_notification_parse
     cJSON *operation_events = NULL;
     OpenAPI_list_t *operation_eventsList = NULL;
     cJSON *operation_status = NULL;
-    OpenAPI_operation_status_t *operation_status_local_nonprim = NULL;
+    OpenAPI_operation_status_e operation_statusVariable = 0;
     cJSON *released_ind = NULL;
     OpenAPI_context_status_notification_released_ind_e released_indVariable = 0;
     mbs_session_id = cJSON_GetObjectItemCaseSensitive(context_status_notificationJSON, "mbsSessionId");
@@ -256,11 +246,11 @@ OpenAPI_context_status_notification_t *OpenAPI_context_status_notification_parse
 
     operation_status = cJSON_GetObjectItemCaseSensitive(context_status_notificationJSON, "operationStatus");
     if (operation_status) {
-    operation_status_local_nonprim = OpenAPI_operation_status_parseFromJSON(operation_status);
-    if (!operation_status_local_nonprim) {
-        ogs_error("OpenAPI_operation_status_parseFromJSON failed [operation_status]");
+    if (!cJSON_IsString(operation_status)) {
+        ogs_error("OpenAPI_context_status_notification_parseFromJSON() failed [operation_status]");
         goto end;
     }
+    operation_statusVariable = OpenAPI_operation_status_FromString(operation_status->valuestring);
     }
 
     released_ind = cJSON_GetObjectItemCaseSensitive(context_status_notificationJSON, "releasedInd");
@@ -278,7 +268,7 @@ OpenAPI_context_status_notification_t *OpenAPI_context_status_notification_parse
         area_session_id ? area_session_id->valuedouble : 0,
         n2_mbs_sm_info_list ? n2_mbs_sm_info_listList : NULL,
         operation_events ? operation_eventsList : NULL,
-        operation_status ? operation_status_local_nonprim : NULL,
+        operation_status ? operation_statusVariable : 0,
         released_ind ? released_indVariable : 0
     );
 
@@ -301,10 +291,6 @@ end:
         }
         OpenAPI_list_free(operation_eventsList);
         operation_eventsList = NULL;
-    }
-    if (operation_status_local_nonprim) {
-        OpenAPI_operation_status_free(operation_status_local_nonprim);
-        operation_status_local_nonprim = NULL;
     }
     return NULL;
 }

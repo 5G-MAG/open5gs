@@ -24,13 +24,13 @@ typedef struct OpenAPI_context_create_rsp_data_s OpenAPI_context_create_rsp_data
 typedef struct OpenAPI_context_create_rsp_data_s {
     struct OpenAPI_mbs_session_id_s *mbs_session_id;
     OpenAPI_list_t *n2_mbs_sm_info_list;
-    struct OpenAPI_operation_status_s *operation_status;
+    OpenAPI_operation_status_e operation_status;
 } OpenAPI_context_create_rsp_data_t;
 
 OpenAPI_context_create_rsp_data_t *OpenAPI_context_create_rsp_data_create(
     OpenAPI_mbs_session_id_t *mbs_session_id,
     OpenAPI_list_t *n2_mbs_sm_info_list,
-    OpenAPI_operation_status_t *operation_status
+    OpenAPI_operation_status_e operation_status
 );
 void OpenAPI_context_create_rsp_data_free(OpenAPI_context_create_rsp_data_t *context_create_rsp_data);
 OpenAPI_context_create_rsp_data_t *OpenAPI_context_create_rsp_data_parseFromJSON(cJSON *context_create_rsp_dataJSON);

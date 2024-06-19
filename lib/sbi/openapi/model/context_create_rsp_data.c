@@ -7,7 +7,7 @@
 OpenAPI_context_create_rsp_data_t *OpenAPI_context_create_rsp_data_create(
     OpenAPI_mbs_session_id_t *mbs_session_id,
     OpenAPI_list_t *n2_mbs_sm_info_list,
-    OpenAPI_operation_status_t *operation_status
+    OpenAPI_operation_status_e operation_status
 )
 {
     OpenAPI_context_create_rsp_data_t *context_create_rsp_data_local_var = ogs_malloc(sizeof(OpenAPI_context_create_rsp_data_t));
@@ -37,10 +37,6 @@ void OpenAPI_context_create_rsp_data_free(OpenAPI_context_create_rsp_data_t *con
         }
         OpenAPI_list_free(context_create_rsp_data->n2_mbs_sm_info_list);
         context_create_rsp_data->n2_mbs_sm_info_list = NULL;
-    }
-    if (context_create_rsp_data->operation_status) {
-        OpenAPI_operation_status_free(context_create_rsp_data->operation_status);
-        context_create_rsp_data->operation_status = NULL;
     }
     ogs_free(context_create_rsp_data);
 }
@@ -87,14 +83,8 @@ cJSON *OpenAPI_context_create_rsp_data_convertToJSON(OpenAPI_context_create_rsp_
     }
     }
 
-    if (context_create_rsp_data->operation_status) {
-    cJSON *operation_status_local_JSON = OpenAPI_operation_status_convertToJSON(context_create_rsp_data->operation_status);
-    if (operation_status_local_JSON == NULL) {
-        ogs_error("OpenAPI_context_create_rsp_data_convertToJSON() failed [operation_status]");
-        goto end;
-    }
-    cJSON_AddItemToObject(item, "operationStatus", operation_status_local_JSON);
-    if (item->child == NULL) {
+    if (context_create_rsp_data->operation_status != OpenAPI_operation_status_NULL) {
+    if (cJSON_AddStringToObject(item, "operationStatus", OpenAPI_operation_status_ToString(context_create_rsp_data->operation_status)) == NULL) {
         ogs_error("OpenAPI_context_create_rsp_data_convertToJSON() failed [operation_status]");
         goto end;
     }
@@ -113,7 +103,7 @@ OpenAPI_context_create_rsp_data_t *OpenAPI_context_create_rsp_data_parseFromJSON
     cJSON *n2_mbs_sm_info_list = NULL;
     OpenAPI_list_t *n2_mbs_sm_info_listList = NULL;
     cJSON *operation_status = NULL;
-    OpenAPI_operation_status_t *operation_status_local_nonprim = NULL;
+    OpenAPI_operation_status_e operation_statusVariable = 0;
     mbs_session_id = cJSON_GetObjectItemCaseSensitive(context_create_rsp_dataJSON, "mbsSessionId");
     if (!mbs_session_id) {
         ogs_error("OpenAPI_context_create_rsp_data_parseFromJSON() failed [mbs_session_id]");
@@ -151,17 +141,17 @@ OpenAPI_context_create_rsp_data_t *OpenAPI_context_create_rsp_data_parseFromJSON
 
     operation_status = cJSON_GetObjectItemCaseSensitive(context_create_rsp_dataJSON, "operationStatus");
     if (operation_status) {
-    operation_status_local_nonprim = OpenAPI_operation_status_parseFromJSON(operation_status);
-    if (!operation_status_local_nonprim) {
-        ogs_error("OpenAPI_operation_status_parseFromJSON failed [operation_status]");
+    if (!cJSON_IsString(operation_status)) {
+        ogs_error("OpenAPI_context_create_rsp_data_parseFromJSON() failed [operation_status]");
         goto end;
     }
+    operation_statusVariable = OpenAPI_operation_status_FromString(operation_status->valuestring);
     }
 
     context_create_rsp_data_local_var = OpenAPI_context_create_rsp_data_create (
         mbs_session_id_local_nonprim,
         n2_mbs_sm_info_list ? n2_mbs_sm_info_listList : NULL,
-        operation_status ? operation_status_local_nonprim : NULL
+        operation_status ? operation_statusVariable : 0
     );
 
     return context_create_rsp_data_local_var;
@@ -176,10 +166,6 @@ end:
         }
         OpenAPI_list_free(n2_mbs_sm_info_listList);
         n2_mbs_sm_info_listList = NULL;
-    }
-    if (operation_status_local_nonprim) {
-        OpenAPI_operation_status_free(operation_status_local_nonprim);
-        operation_status_local_nonprim = NULL;
     }
     return NULL;
 }

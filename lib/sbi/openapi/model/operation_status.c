@@ -4,84 +4,27 @@
 #include <stdio.h>
 #include "operation_status.h"
 
-OpenAPI_operation_status_t *OpenAPI_operation_status_create(
-)
+char* OpenAPI_operation_status_ToString(OpenAPI_operation_status_e operation_status)
 {
-    OpenAPI_operation_status_t *operation_status_local_var = ogs_malloc(sizeof(OpenAPI_operation_status_t));
-    ogs_assert(operation_status_local_var);
-
-
-    return operation_status_local_var;
+    const char *operation_statusArray[] =  { "NULL", "MBS_SESSION_START_COMPLETE", "MBS_SESSION_START_INCOMPLETE", "MBS_SESSION_UPDATE_COMPLETE", "MBS_SESSION_UPDATE_INCOMPLETE" };
+    size_t sizeofArray = sizeof(operation_statusArray) / sizeof(operation_statusArray[0]);
+    if (operation_status < sizeofArray)
+        return (char *)operation_statusArray[operation_status];
+    else
+        return (char *)"Unknown";
 }
 
-void OpenAPI_operation_status_free(OpenAPI_operation_status_t *operation_status)
+OpenAPI_operation_status_e OpenAPI_operation_status_FromString(char* operation_status)
 {
-    OpenAPI_lnode_t *node = NULL;
-
-    if (NULL == operation_status) {
-        return;
+    int stringToReturn = 0;
+    const char *operation_statusArray[] =  { "NULL", "MBS_SESSION_START_COMPLETE", "MBS_SESSION_START_INCOMPLETE", "MBS_SESSION_UPDATE_COMPLETE", "MBS_SESSION_UPDATE_INCOMPLETE" };
+    size_t sizeofArray = sizeof(operation_statusArray) / sizeof(operation_statusArray[0]);
+    while (stringToReturn < sizeofArray) {
+        if (strcmp(operation_status, operation_statusArray[stringToReturn]) == 0) {
+            return stringToReturn;
+        }
+        stringToReturn++;
     }
-    ogs_free(operation_status);
-}
-
-cJSON *OpenAPI_operation_status_convertToJSON(OpenAPI_operation_status_t *operation_status)
-{
-    cJSON *item = NULL;
-    OpenAPI_lnode_t *node = NULL;
-
-    if (operation_status == NULL) {
-        ogs_error("OpenAPI_operation_status_convertToJSON() failed [OperationStatus]");
-        return NULL;
-    }
-
-    item = cJSON_CreateObject();
-end:
-    return item;
-}
-
-OpenAPI_operation_status_t *OpenAPI_operation_status_parseFromJSON(cJSON *operation_statusJSON)
-{
-    OpenAPI_operation_status_t *operation_status_local_var = NULL;
-    OpenAPI_lnode_t *node = NULL;
-    operation_status_local_var = OpenAPI_operation_status_create (
-    );
-
-    return operation_status_local_var;
-end:
-    return NULL;
-}
-
-OpenAPI_operation_status_t *OpenAPI_operation_status_copy(OpenAPI_operation_status_t *dst, OpenAPI_operation_status_t *src)
-{
-    cJSON *item = NULL;
-    char *content = NULL;
-
-    ogs_assert(src);
-    item = OpenAPI_operation_status_convertToJSON(src);
-    if (!item) {
-        ogs_error("OpenAPI_operation_status_convertToJSON() failed");
-        return NULL;
-    }
-
-    content = cJSON_Print(item);
-    cJSON_Delete(item);
-
-    if (!content) {
-        ogs_error("cJSON_Print() failed");
-        return NULL;
-    }
-
-    item = cJSON_Parse(content);
-    ogs_free(content);
-    if (!item) {
-        ogs_error("cJSON_Parse() failed");
-        return NULL;
-    }
-
-    OpenAPI_operation_status_free(dst);
-    dst = OpenAPI_operation_status_parseFromJSON(item);
-    cJSON_Delete(item);
-
-    return dst;
+    return 0;
 }
 

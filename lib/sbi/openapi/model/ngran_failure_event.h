@@ -22,12 +22,12 @@ extern "C" {
 typedef struct OpenAPI_ngran_failure_event_s OpenAPI_ngran_failure_event_t;
 typedef struct OpenAPI_ngran_failure_event_s {
     struct OpenAPI_global_ran_node_id_s *ngran_id;
-    struct OpenAPI_ngran_failure_indication_s *ngran_failure_indication;
+    OpenAPI_ngran_failure_indication_e ngran_failure_indication;
 } OpenAPI_ngran_failure_event_t;
 
 OpenAPI_ngran_failure_event_t *OpenAPI_ngran_failure_event_create(
     OpenAPI_global_ran_node_id_t *ngran_id,
-    OpenAPI_ngran_failure_indication_t *ngran_failure_indication
+    OpenAPI_ngran_failure_indication_e ngran_failure_indication
 );
 void OpenAPI_ngran_failure_event_free(OpenAPI_ngran_failure_event_t *ngran_failure_event);
 OpenAPI_ngran_failure_event_t *OpenAPI_ngran_failure_event_parseFromJSON(cJSON *ngran_failure_eventJSON);

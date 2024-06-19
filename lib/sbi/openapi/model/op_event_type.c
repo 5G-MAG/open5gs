@@ -4,84 +4,27 @@
 #include <stdio.h>
 #include "op_event_type.h"
 
-OpenAPI_op_event_type_t *OpenAPI_op_event_type_create(
-)
+char* OpenAPI_op_event_type_ToString(OpenAPI_op_event_type_e op_event_type)
 {
-    OpenAPI_op_event_type_t *op_event_type_local_var = ogs_malloc(sizeof(OpenAPI_op_event_type_t));
-    ogs_assert(op_event_type_local_var);
-
-
-    return op_event_type_local_var;
+    const char *op_event_typeArray[] =  { "NULL", "AMF_CHANGE", "NG_RAN_EVENT" };
+    size_t sizeofArray = sizeof(op_event_typeArray) / sizeof(op_event_typeArray[0]);
+    if (op_event_type < sizeofArray)
+        return (char *)op_event_typeArray[op_event_type];
+    else
+        return (char *)"Unknown";
 }
 
-void OpenAPI_op_event_type_free(OpenAPI_op_event_type_t *op_event_type)
+OpenAPI_op_event_type_e OpenAPI_op_event_type_FromString(char* op_event_type)
 {
-    OpenAPI_lnode_t *node = NULL;
-
-    if (NULL == op_event_type) {
-        return;
+    int stringToReturn = 0;
+    const char *op_event_typeArray[] =  { "NULL", "AMF_CHANGE", "NG_RAN_EVENT" };
+    size_t sizeofArray = sizeof(op_event_typeArray) / sizeof(op_event_typeArray[0]);
+    while (stringToReturn < sizeofArray) {
+        if (strcmp(op_event_type, op_event_typeArray[stringToReturn]) == 0) {
+            return stringToReturn;
+        }
+        stringToReturn++;
     }
-    ogs_free(op_event_type);
-}
-
-cJSON *OpenAPI_op_event_type_convertToJSON(OpenAPI_op_event_type_t *op_event_type)
-{
-    cJSON *item = NULL;
-    OpenAPI_lnode_t *node = NULL;
-
-    if (op_event_type == NULL) {
-        ogs_error("OpenAPI_op_event_type_convertToJSON() failed [OpEventType]");
-        return NULL;
-    }
-
-    item = cJSON_CreateObject();
-end:
-    return item;
-}
-
-OpenAPI_op_event_type_t *OpenAPI_op_event_type_parseFromJSON(cJSON *op_event_typeJSON)
-{
-    OpenAPI_op_event_type_t *op_event_type_local_var = NULL;
-    OpenAPI_lnode_t *node = NULL;
-    op_event_type_local_var = OpenAPI_op_event_type_create (
-    );
-
-    return op_event_type_local_var;
-end:
-    return NULL;
-}
-
-OpenAPI_op_event_type_t *OpenAPI_op_event_type_copy(OpenAPI_op_event_type_t *dst, OpenAPI_op_event_type_t *src)
-{
-    cJSON *item = NULL;
-    char *content = NULL;
-
-    ogs_assert(src);
-    item = OpenAPI_op_event_type_convertToJSON(src);
-    if (!item) {
-        ogs_error("OpenAPI_op_event_type_convertToJSON() failed");
-        return NULL;
-    }
-
-    content = cJSON_Print(item);
-    cJSON_Delete(item);
-
-    if (!content) {
-        ogs_error("cJSON_Print() failed");
-        return NULL;
-    }
-
-    item = cJSON_Parse(content);
-    ogs_free(content);
-    if (!item) {
-        ogs_error("cJSON_Parse() failed");
-        return NULL;
-    }
-
-    OpenAPI_op_event_type_free(dst);
-    dst = OpenAPI_op_event_type_parseFromJSON(item);
-    cJSON_Delete(item);
-
-    return dst;
+    return 0;
 }
 

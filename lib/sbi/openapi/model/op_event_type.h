@@ -1,7 +1,7 @@
 /*
  * op_event_type.h
  *
- * Operation Event Type.
+ * 
  */
 
 #ifndef _OpenAPI_op_event_type_H_
@@ -12,22 +12,16 @@
 #include "../include/list.h"
 #include "../include/keyValuePair.h"
 #include "../include/binary.h"
-#include "op_event_type_any_of.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-typedef struct OpenAPI_op_event_type_s OpenAPI_op_event_type_t;
-typedef struct OpenAPI_op_event_type_s {
-} OpenAPI_op_event_type_t;
+typedef enum { OpenAPI_op_event_type_NULL = 0, OpenAPI_op_event_type_AMF_CHANGE, OpenAPI_op_event_type_NG_RAN_EVENT } OpenAPI_op_event_type_e;
 
-OpenAPI_op_event_type_t *OpenAPI_op_event_type_create(
-);
-void OpenAPI_op_event_type_free(OpenAPI_op_event_type_t *op_event_type);
-OpenAPI_op_event_type_t *OpenAPI_op_event_type_parseFromJSON(cJSON *op_event_typeJSON);
-cJSON *OpenAPI_op_event_type_convertToJSON(OpenAPI_op_event_type_t *op_event_type);
-OpenAPI_op_event_type_t *OpenAPI_op_event_type_copy(OpenAPI_op_event_type_t *dst, OpenAPI_op_event_type_t *src);
+char* OpenAPI_op_event_type_ToString(OpenAPI_op_event_type_e op_event_type);
+
+OpenAPI_op_event_type_e OpenAPI_op_event_type_FromString(char* op_event_type);
 
 #ifdef __cplusplus
 }

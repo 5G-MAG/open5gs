@@ -1,7 +1,7 @@
 /*
  * ngran_failure_indication.h
  *
- * Indicates a NG-RAN failure event.
+ * 
  */
 
 #ifndef _OpenAPI_ngran_failure_indication_H_
@@ -12,22 +12,16 @@
 #include "../include/list.h"
 #include "../include/keyValuePair.h"
 #include "../include/binary.h"
-#include "ngran_failure_indication_any_of.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-typedef struct OpenAPI_ngran_failure_indication_s OpenAPI_ngran_failure_indication_t;
-typedef struct OpenAPI_ngran_failure_indication_s {
-} OpenAPI_ngran_failure_indication_t;
+typedef enum { OpenAPI_ngran_failure_indication_NULL = 0, OpenAPI_ngran_failure_indication_NG_RAN_RESTART_OR_START, OpenAPI_ngran_failure_indication_NG_RAN_FAILURE_WITHOUT_RESTART, OpenAPI_ngran_failure_indication_NG_RAN_NOT_REACHABLE, OpenAPI_ngran_failure_indication_NG_RAN_REQUIRED_RELEASE } OpenAPI_ngran_failure_indication_e;
 
-OpenAPI_ngran_failure_indication_t *OpenAPI_ngran_failure_indication_create(
-);
-void OpenAPI_ngran_failure_indication_free(OpenAPI_ngran_failure_indication_t *ngran_failure_indication);
-OpenAPI_ngran_failure_indication_t *OpenAPI_ngran_failure_indication_parseFromJSON(cJSON *ngran_failure_indicationJSON);
-cJSON *OpenAPI_ngran_failure_indication_convertToJSON(OpenAPI_ngran_failure_indication_t *ngran_failure_indication);
-OpenAPI_ngran_failure_indication_t *OpenAPI_ngran_failure_indication_copy(OpenAPI_ngran_failure_indication_t *dst, OpenAPI_ngran_failure_indication_t *src);
+char* OpenAPI_ngran_failure_indication_ToString(OpenAPI_ngran_failure_indication_e ngran_failure_indication);
+
+OpenAPI_ngran_failure_indication_e OpenAPI_ngran_failure_indication_FromString(char* ngran_failure_indication);
 
 #ifdef __cplusplus
 }

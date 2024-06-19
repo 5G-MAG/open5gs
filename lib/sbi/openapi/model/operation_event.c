@@ -5,7 +5,7 @@
 #include "operation_event.h"
 
 OpenAPI_operation_event_t *OpenAPI_operation_event_create(
-    OpenAPI_op_event_type_t *op_event_type,
+    OpenAPI_op_event_type_e op_event_type,
     char *amf_id,
     OpenAPI_list_t *ngran_failure_event_list
 )
@@ -26,10 +26,6 @@ void OpenAPI_operation_event_free(OpenAPI_operation_event_t *operation_event)
 
     if (NULL == operation_event) {
         return;
-    }
-    if (operation_event->op_event_type) {
-        OpenAPI_op_event_type_free(operation_event->op_event_type);
-        operation_event->op_event_type = NULL;
     }
     if (operation_event->amf_id) {
         ogs_free(operation_event->amf_id);
@@ -56,17 +52,11 @@ cJSON *OpenAPI_operation_event_convertToJSON(OpenAPI_operation_event_t *operatio
     }
 
     item = cJSON_CreateObject();
-    if (!operation_event->op_event_type) {
+    if (operation_event->op_event_type == OpenAPI_op_event_type_NULL) {
         ogs_error("OpenAPI_operation_event_convertToJSON() failed [op_event_type]");
         return NULL;
     }
-    cJSON *op_event_type_local_JSON = OpenAPI_op_event_type_convertToJSON(operation_event->op_event_type);
-    if (op_event_type_local_JSON == NULL) {
-        ogs_error("OpenAPI_operation_event_convertToJSON() failed [op_event_type]");
-        goto end;
-    }
-    cJSON_AddItemToObject(item, "opEventType", op_event_type_local_JSON);
-    if (item->child == NULL) {
+    if (cJSON_AddStringToObject(item, "opEventType", OpenAPI_op_event_type_ToString(operation_event->op_event_type)) == NULL) {
         ogs_error("OpenAPI_operation_event_convertToJSON() failed [op_event_type]");
         goto end;
     }
@@ -103,7 +93,7 @@ OpenAPI_operation_event_t *OpenAPI_operation_event_parseFromJSON(cJSON *operatio
     OpenAPI_operation_event_t *operation_event_local_var = NULL;
     OpenAPI_lnode_t *node = NULL;
     cJSON *op_event_type = NULL;
-    OpenAPI_op_event_type_t *op_event_type_local_nonprim = NULL;
+    OpenAPI_op_event_type_e op_event_typeVariable = 0;
     cJSON *amf_id = NULL;
     cJSON *ngran_failure_event_list = NULL;
     OpenAPI_list_t *ngran_failure_event_listList = NULL;
@@ -112,11 +102,11 @@ OpenAPI_operation_event_t *OpenAPI_operation_event_parseFromJSON(cJSON *operatio
         ogs_error("OpenAPI_operation_event_parseFromJSON() failed [op_event_type]");
         goto end;
     }
-    op_event_type_local_nonprim = OpenAPI_op_event_type_parseFromJSON(op_event_type);
-    if (!op_event_type_local_nonprim) {
-        ogs_error("OpenAPI_op_event_type_parseFromJSON failed [op_event_type]");
+    if (!cJSON_IsString(op_event_type)) {
+        ogs_error("OpenAPI_operation_event_parseFromJSON() failed [op_event_type]");
         goto end;
     }
+    op_event_typeVariable = OpenAPI_op_event_type_FromString(op_event_type->valuestring);
 
     amf_id = cJSON_GetObjectItemCaseSensitive(operation_eventJSON, "amfId");
     if (amf_id) {
@@ -151,17 +141,13 @@ OpenAPI_operation_event_t *OpenAPI_operation_event_parseFromJSON(cJSON *operatio
     }
 
     operation_event_local_var = OpenAPI_operation_event_create (
-        op_event_type_local_nonprim,
+        op_event_typeVariable,
         amf_id && !cJSON_IsNull(amf_id) ? ogs_strdup(amf_id->valuestring) : NULL,
         ngran_failure_event_list ? ngran_failure_event_listList : NULL
     );
 
     return operation_event_local_var;
 end:
-    if (op_event_type_local_nonprim) {
-        OpenAPI_op_event_type_free(op_event_type_local_nonprim);
-        op_event_type_local_nonprim = NULL;
-    }
     if (ngran_failure_event_listList) {
         OpenAPI_list_for_each(ngran_failure_event_listList, node) {
             OpenAPI_ngran_failure_event_free(node->data);

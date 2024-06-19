@@ -21,13 +21,13 @@ extern "C" {
 
 typedef struct OpenAPI_operation_event_s OpenAPI_operation_event_t;
 typedef struct OpenAPI_operation_event_s {
-    struct OpenAPI_op_event_type_s *op_event_type;
+    OpenAPI_op_event_type_e op_event_type;
     char *amf_id;
     OpenAPI_list_t *ngran_failure_event_list;
 } OpenAPI_operation_event_t;
 
 OpenAPI_operation_event_t *OpenAPI_operation_event_create(
-    OpenAPI_op_event_type_t *op_event_type,
+    OpenAPI_op_event_type_e op_event_type,
     char *amf_id,
     OpenAPI_list_t *ngran_failure_event_list
 );

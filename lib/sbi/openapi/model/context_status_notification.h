@@ -33,7 +33,7 @@ typedef struct OpenAPI_context_status_notification_s {
     int area_session_id;
     OpenAPI_list_t *n2_mbs_sm_info_list;
     OpenAPI_list_t *operation_events;
-    struct OpenAPI_operation_status_s *operation_status;
+    OpenAPI_operation_status_e operation_status;
     OpenAPI_context_status_notification_released_ind_e released_ind;
 } OpenAPI_context_status_notification_t;
 
@@ -43,7 +43,7 @@ OpenAPI_context_status_notification_t *OpenAPI_context_status_notification_creat
     int area_session_id,
     OpenAPI_list_t *n2_mbs_sm_info_list,
     OpenAPI_list_t *operation_events,
-    OpenAPI_operation_status_t *operation_status,
+    OpenAPI_operation_status_e operation_status,
     OpenAPI_context_status_notification_released_ind_e released_ind
 );
 void OpenAPI_context_status_notification_free(OpenAPI_context_status_notification_t *context_status_notification);
