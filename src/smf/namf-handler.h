@@ -32,6 +32,11 @@ bool smf_namf_comm_handle_n1_n2_message_transfer(
 bool smf_namf_comm_handle_n1_n2_message_transfer_failure_notify(
         ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg);
 
+/* Namf_MBSBroadcast Service API */
+
+bool smf_namf_handle_mbs_broadcast_context_create_response(
+        ogs_sbi_message_t *recvmsg);
+
 #ifdef __cplusplus
 }
 #endif

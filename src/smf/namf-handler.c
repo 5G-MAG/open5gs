@@ -246,3 +246,20 @@ bool smf_namf_comm_handle_n1_n2_message_transfer_failure_notify(
     ogs_assert(true == ogs_sbi_send_http_status_no_content(stream));
     return true;
 }
+
+/* Namf_MBSBroadcast Service API */
+
+bool smf_namf_handle_mbs_broadcast_context_create_response(
+        ogs_sbi_message_t *recvmsg)
+{
+    // TODO (borieher): Handle MBS Broadcast ContextCreate response
+    ogs_warn("Handling MBS Broadcast ContextCreate response");
+
+    int rv = OGS_OK;
+
+cleanup:
+    if (rv == OGS_OK)
+        return true;
+    else
+        return false;
+}

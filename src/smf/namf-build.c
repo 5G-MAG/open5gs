@@ -188,3 +188,16 @@ ogs_sbi_request_t *smf_namf_callback_build_sm_context_status(
 
     return request;
 }
+
+/* Namf_MBSBroadcast Service API */
+
+ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_create_request(
+        smf_mbs_sess_t *mbs_sess, void *data)
+{
+    // TODO (borieher): Build MBS Broadcast ContextCreate request
+    ogs_warn("Building MBS Broadcast ContextCreate request");
+
+    ogs_sbi_request_t *request = NULL;
+
+    return request;
+}
