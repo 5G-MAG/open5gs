@@ -555,3 +555,178 @@ ogs_pkbuf_t *ngap_build_handover_command_transfer(smf_sess_t *sess)
 
     return ogs_asn_encode(&asn_DEF_NGAP_HandoverCommandTransfer, &message);
 }
+
+ogs_pkbuf_t *ngap_build_mbs_session_setup_or_modification_request_transfer(smf_mbs_sess_t *mbs_sess)
+{
+    /*
+    maxnoofMBSQoSFlows - Maximum no. of QoS Flows allowed within one MBS session. Value is 64.
+    maxnoofMBSFSAs - Maximum no. of FSA IDs for one MBS session. Value is 64.
+    */
+
+    ogs_uint24_t mbs_session_FSA_id;
+
+    NGAP_MBSSessionSetupOrModRequestTransfer_t message;
+
+    NGAP_MBSSessionSetupOrModRequestTransferIEs_t *ie = NULL;
+
+    // MBS Session TNL Information 5GC
+    NGAP_MBS_SessionTNLInfo5GC_t *mBS_SessionTNLInfo5GC = NULL;
+
+    // Broadcast service is location dependent
+    NGAP_MBS_SessionTNLInfo5GCList_t *mBS_SessionTNLInfo5GCList = NULL;
+
+    NGAP_MBS_SessionTNLInfo5GCItem_t *mBS_SessionTNLInfo5GCItem = NULL;
+
+    NGAP_MBS_AreaSessionID_t *mBS_AreaSessionID = NULL;
+
+    NGAP_SharedNGU_MulticastTNLInformation_t *sharedNGU_MulticastTNLInformation = NULL;
+    NGAP_TransportLayerAddress_t *iP_MulticastAddress = NULL;
+	NGAP_TransportLayerAddress_t *iP_SourceAddress = NULL;
+    NGAP_GTP_TEID_t *gTP_TEID = NULL;
+
+    // MBS QoS Flows To Be Setup or Modified List
+    NGAP_MBS_QoSFlowsToBeSetupList_t *mBS_QoSFlowsToBeSetupList;
+
+    NGAP_MBS_QoSFlowsToBeSetupItem_t *mBS_QoSFlowsToBeSetupItem;
+
+    NGAP_QosFlowIdentifier_t *mBS_QoSFlowIdentifier = NULL;
+	NGAP_QosFlowLevelQosParameters_t *mBS_QoSFlowLevelQoSParameters = NULL;
+
+    NGAP_QosCharacteristics_t *qoSCharacteristics = NULL;
+    NGAP_NonDynamic5QIDescriptor_t *nonDynamic5QIDescriptor = NULL;
+    NGAP_FiveQI_t *fiveQI = NULL;
+
+    NGAP_AllocationAndRetentionPriority_t *allocationAndRetentionPriority = NULL;
+    NGAP_PriorityLevelARP_t *priorityLevelARP = NULL;
+	NGAP_Pre_emptionCapability_t *pre_emptionCapability = NULL;
+	NGAP_Pre_emptionVulnerability_t *pre_emptionVulnerability = NULL;
+
+    // MBS Session FSA ID List (MBS Frequency Selection Area Identity)
+    NGAP_MBS_SessionFSAIDList_t *mBS_SessionFSAIDList = NULL;
+    NGAP_MBS_SessionFSAID_t *mBS_SessionFSAID = NULL;
+
+    ogs_assert(mbs_sess);
+
+    ogs_debug("MBSSessionSetupOrModRequestTransfer");
+    memset(&message, 0, sizeof(NGAP_MBSSessionSetupOrModRequestTransfer_t));
+
+    // MBS Session TNL Information 5GC - 9.3.2.15 (O)
+    ie = CALLOC(1, sizeof(NGAP_MBSSessionSetupOrModRequestTransferIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(&message.protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_MBS_SessionTNLInfo5GC;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present = NGAP_MBSSessionSetupOrModRequestTransferIEs__value_PR_MBS_SessionTNLInfo5GC;
+
+    mBS_SessionTNLInfo5GC = &ie->value.choice.MBS_SessionTNLInfo5GC;
+
+    mBS_SessionTNLInfo5GCList = CALLOC(1, sizeof(NGAP_MBS_SessionTNLInfo5GCList_t));
+    ogs_assert(mBS_SessionTNLInfo5GCList);
+
+    mBS_SessionTNLInfo5GC->present = NGAP_MBS_SessionTNLInfo5GC_PR_locationdependent;
+    mBS_SessionTNLInfo5GC->choice.locationdependent = mBS_SessionTNLInfo5GCList;
+
+    mBS_SessionTNLInfo5GCItem = CALLOC(1, sizeof(NGAP_MBS_SessionTNLInfo5GCItem_t));
+    ogs_assert(mBS_SessionTNLInfo5GCItem);
+    ASN_SEQUENCE_ADD(mBS_SessionTNLInfo5GCList, mBS_SessionTNLInfo5GCItem);
+
+    // MBS Area Session ID - 9.3.1.207 (M)
+    mBS_AreaSessionID = &mBS_SessionTNLInfo5GCItem->mBS_AreaSessionID;
+    // TODO (borieher): Fill the MBS Area Session ID without hardcoded values
+    *mBS_AreaSessionID = 13;
+
+    // Shared NG-U Multicast TNL Information - 9.3.2.16 (M)
+    sharedNGU_MulticastTNLInformation = &mBS_SessionTNLInfo5GCItem->sharedNGU_MulticastTNLInformation;
+
+    // Transport Layer Address - 9.3.2.4 (M)
+    // TODO (borieher): Fix this
+    iP_MulticastAddress = &sharedNGU_MulticastTNLInformation->iP_MulticastAddress;
+    ogs_asn_ip_to_BIT_STRING(&mbs_sess->ll_ssm.dest_ip_addr, iP_MulticastAddress);
+
+    // Transport Layer Address - 9.3.2.4 (M)
+    // TODO (borieher): Or this
+    iP_SourceAddress = &sharedNGU_MulticastTNLInformation->iP_SourceAddress;
+    ogs_asn_ip_to_BIT_STRING(&mbs_sess->ll_ssm.src_ip_addr, iP_SourceAddress);
+
+    // GTP-TEID - 9.3.2.5 (M)
+    gTP_TEID = &sharedNGU_MulticastTNLInformation->gTP_TEID;
+    ogs_asn_uint32_to_OCTET_STRING(mbs_sess->c_teid, gTP_TEID);
+
+    // MBS QoS Flows To Be Setup List - 9.3.1.236 (M)
+    ie = CALLOC(1, sizeof(NGAP_MBSSessionSetupOrModRequestTransferIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(&message.protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_MBS_QoSFlowsToBeSetupList;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present = NGAP_MBSSessionSetupOrModRequestTransferIEs__value_PR_MBS_QoSFlowsToBeSetupList;
+
+    mBS_QoSFlowsToBeSetupList = &ie->value.choice.MBS_QoSFlowsToBeSetupList;
+
+    mBS_QoSFlowsToBeSetupItem = CALLOC(1, sizeof(NGAP_MBS_QoSFlowsToBeSetupItem_t));
+    ogs_assert(mBS_QoSFlowsToBeSetupItem);
+    ASN_SEQUENCE_ADD(mBS_QoSFlowsToBeSetupList, mBS_QoSFlowsToBeSetupItem);
+
+    // QoS Flow Identifier - 9.3.1.51 (M)
+    mBS_QoSFlowIdentifier = &mBS_QoSFlowsToBeSetupItem->mBSqosFlowIdentifier;
+    // TODO (borieher): Fill the MBS QoS Flow Identifier without hardcoded values
+    *mBS_QoSFlowIdentifier = 13;
+
+    // Non Dynamic 5QI Descriptor - 9.3.1.28 (M)
+    nonDynamic5QIDescriptor = CALLOC(1, sizeof(NGAP_NonDynamic5QIDescriptor_t));
+    ogs_assert(nonDynamic5QIDescriptor);
+
+    // 5QI - INTEGER (M)
+    fiveQI = &nonDynamic5QIDescriptor->fiveQI;
+    // TODO (borieher): Fill the 5QI without hardcoded values
+    *fiveQI = 9;
+
+    // QoS Flow Level QoS Parameters - 9.3.1.12 (M)
+    mBS_QoSFlowLevelQoSParameters = &mBS_QoSFlowsToBeSetupItem->mBSqosFlowLevelQosParameters;
+
+    qoSCharacteristics = &mBS_QoSFlowLevelQoSParameters->qosCharacteristics;
+    qoSCharacteristics->present = NGAP_QosCharacteristics_PR_nonDynamic5QI;
+    qoSCharacteristics->choice.nonDynamic5QI = nonDynamic5QIDescriptor;
+
+    // Allocation and Retention Priority - 9.3.1.19 (M)
+    allocationAndRetentionPriority = &mBS_QoSFlowLevelQoSParameters->allocationAndRetentionPriority;
+
+    // Priority Level - INTEGER (M)
+    priorityLevelARP = &allocationAndRetentionPriority->priorityLevelARP;
+    // TODO (borieher): Fill the Priority Level ARP without hardcoded values
+    *priorityLevelARP = 13;
+
+    // Pre-emption Capability - ENUMERATED (M)
+    pre_emptionCapability = &allocationAndRetentionPriority->pre_emptionCapability;
+    // TODO (borieher): Fill the Pre-emption Capability without hardcoded values
+    *pre_emptionCapability = NGAP_Pre_emptionCapability_shall_not_trigger_pre_emption;
+
+    // Pre-emption Vulnerability - ENUMERATED (M)
+    pre_emptionVulnerability = &allocationAndRetentionPriority->pre_emptionVulnerability;
+    // TODO (borieher): Fill the Pre-emption Vulnerability without hardcoded values
+    *pre_emptionVulnerability = NGAP_Pre_emptionVulnerability_not_pre_emptable;
+
+    // MBS Frequency Selection Area Identity - OCTET STRING (SIZE(3)) (M)
+    ie = CALLOC(1, sizeof(NGAP_MBSSessionSetupOrModRequestTransferIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(&message.protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_MBS_SessionFSAIDList;
+    ie->criticality = NGAP_Criticality_ignore;
+    ie->value.present = NGAP_MBSSessionSetupOrModRequestTransferIEs__value_PR_MBS_SessionFSAIDList;
+
+    mBS_SessionFSAIDList = &ie->value.choice.MBS_SessionFSAIDList;
+
+    mBS_SessionFSAID = CALLOC(1, sizeof(NGAP_MBS_SessionFSAID_t));
+    ogs_assert(mBS_SessionFSAID);
+    ASN_SEQUENCE_ADD(mBS_SessionFSAIDList, mBS_SessionFSAID);
+
+    // MBS Frequency Selection Area Identity - OCTET STRING (M)
+    // TODO (borieher): Fill MBS Frequency Selection Area Identity without hardcoded values
+    mbs_session_FSA_id = ogs_uint24_from_string(ogs_strdup("13"));
+    ogs_asn_uint24_to_OCTET_STRING(mbs_session_FSA_id, mBS_SessionFSAID);
+
+    return ogs_asn_encode(
+            &asn_DEF_NGAP_MBSSessionSetupOrModRequestTransfer, &message);
+}

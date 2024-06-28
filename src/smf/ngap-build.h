@@ -41,6 +41,9 @@ ogs_pkbuf_t *ngap_build_path_switch_request_ack_transfer(smf_sess_t *sess);
 
 ogs_pkbuf_t *ngap_build_handover_command_transfer(smf_sess_t *sess);
 
+ogs_pkbuf_t *ngap_build_mbs_session_setup_or_modification_request_transfer(
+        smf_mbs_sess_t *mbs_sess);
+
 #ifdef __cplusplus
 }
 #endif
