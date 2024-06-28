@@ -41,6 +41,12 @@ int amf_namf_comm_handle_ue_context_transfer_response(
 
 /* Namf_MBSBroadcast Service API */
 
+/* Application error codes */
+// TODO (borieher): Add the error codes from:
+// The common application errors defined in the Table 5.2.7.2-1 in 3GPP TS 29.500
+
+/* MBS Broadcast API constants */
+
 /* Namf_MBSBroadcast Service - MBS Broadcast ContextCreate service operation */
 int amf_namf_handle_mbs_broadcast_context_create(
         ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg);

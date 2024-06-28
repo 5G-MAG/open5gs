@@ -29,6 +29,8 @@ static OGS_POOL(amf_ue_pool, amf_ue_t);
 static OGS_POOL(ran_ue_pool, ran_ue_t);
 static OGS_POOL(amf_sess_pool, amf_sess_t);
 
+static OGS_POOL(amf_mbs_context_pool, amf_mbs_context_t);
+
 static OGS_POOL(m_tmsi_pool, amf_m_tmsi_t);
 
 static int context_initialized = 0;
@@ -41,6 +43,9 @@ static void stats_remove_ran_ue(void);
 static void stats_add_amf_session(void);
 static void stats_remove_amf_session(void);
 static bool amf_namf_comm_parse_guti(ogs_nas_5gs_guti_t *guti, char *ue_context_id);
+
+static void amf_mbs_context_remove(amf_mbs_context_t *amf_mbs_context);
+static void amf_mbs_context_remove_all(void);
 
 void amf_context_init(void)
 {
@@ -66,6 +71,10 @@ void amf_context_init(void)
     /* Increase size of TMSI pool (#1827) */
     ogs_pool_init(&m_tmsi_pool, ogs_global_conf()->max.ue*2);
     ogs_pool_random_id_generate(&m_tmsi_pool);
+
+    ogs_pool_init(&amf_mbs_context_pool, OGS_MAX_NUM_OF_MBS_SESSIONS);
+    ogs_list_init(&self.amf_mbs_context_list);
+
 #if 0 /* For debugging : Verify whether there are duplicates of M_TMSI. */
     ogs_pool_assert_if_has_duplicate(&m_tmsi_pool);
 #endif
@@ -93,6 +102,7 @@ void amf_context_final(void)
 
     amf_gnb_remove_all();
     amf_ue_remove_all();
+    amf_mbs_context_remove_all();
 
     ogs_assert(self.gnb_addr_hash);
     ogs_hash_destroy(self.gnb_addr_hash);
@@ -111,6 +121,7 @@ void amf_context_final(void)
     ogs_pool_final(&amf_ue_pool);
     ogs_pool_final(&ran_ue_pool);
     ogs_pool_final(&amf_gnb_pool);
+    ogs_pool_final(&amf_mbs_context_pool);
 
     context_initialized = 0;
 }
@@ -2983,4 +2994,67 @@ bool amf_ue_is_rat_restricted(amf_ue_t *amf_ue)
         }
     }
     return false;
+}
+
+static amf_mbs_context_t *amf_mbs_context_add(void)
+{
+    amf_mbs_context_t *amf_mbs_context = NULL;
+
+    ogs_pool_alloc(&amf_mbs_context_pool, &amf_mbs_context);
+    if (!amf_mbs_context) {
+        ogs_error("Maximum number of MBS Contexts[%d] reached",
+                    OGS_MAX_NUM_OF_MBS_SESSIONS);
+        return NULL;
+    }
+    memset(amf_mbs_context, 0, sizeof *amf_mbs_context);
+
+    amf_mbs_context->index = ogs_pool_index(&amf_mbs_context_pool, amf_mbs_context);
+    ogs_assert(amf_mbs_context->index > 0 && amf_mbs_context->index <= OGS_MAX_NUM_OF_MBS_SESSIONS);
+
+    // Set mbsContextRef
+    amf_mbs_context->mbs_context_ref = ogs_msprintf("%d", amf_mbs_context->index);
+    ogs_assert(amf_mbs_context->mbs_context_ref);
+
+    ogs_list_add(&self.amf_mbs_context_list, amf_mbs_context);
+
+    ogs_info("[Added] Number of MBS Contexts in AMF is now %d",
+            ogs_list_count(&self.amf_mbs_context_list));
+
+    return amf_mbs_context;
+}
+
+static void amf_mbs_context_remove(amf_mbs_context_t *amf_mbs_context)
+{
+    ogs_assert(amf_mbs_context);
+
+    ogs_list_remove(&self.amf_mbs_context_list, amf_mbs_context);
+
+    ogs_pool_free(&amf_mbs_context_pool, amf_mbs_context);
+
+    ogs_info("[Removed] Number of MBS Contexts in AMF is now %d",
+            ogs_list_count(&self.amf_mbs_context_list));
+}
+
+static void amf_mbs_context_remove_all(void)
+{
+    amf_mbs_context_t *amf_mbs_context = NULL, *next = NULL;
+
+    ogs_list_for_each_safe(&self.amf_mbs_context_list, next, amf_mbs_context)
+        amf_mbs_context_remove(amf_mbs_context);
+}
+
+amf_mbs_context_t *amf_mbs_context_create(ogs_tmgi_t *tmgi)
+{
+    amf_mbs_context_t *amf_mbs_context = NULL;
+
+    ogs_assert(tmgi);
+
+    if ((amf_mbs_context = amf_mbs_context_add()) == NULL) {
+        ogs_error("amf_mbs_context_create() failed");
+        return NULL;
+    }
+
+    amf_mbs_context->tmgi = *tmgi;
+
+    return amf_mbs_context;
 }

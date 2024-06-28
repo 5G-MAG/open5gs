@@ -1810,9 +1810,179 @@ static void amf_namf_comm_decode_ue_session_context_list(
 int amf_namf_handle_mbs_broadcast_context_create(
         ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg)
 {
-    // TODO (borieher): Implement MBS Broadcast ContextCreate service operation
+    // TODO (borieher): Not handling the 307 Temporary Redirect and 308 Permanent Redirect errors for now
+    ogs_debug("MBS Broadcast ContextCreate request received");
 
-    ogs_warn("MBS Broadcast ContextCreate request received");
+    OpenAPI_context_create_req_data_t *ContextCreateReqData = NULL;
 
-    return OGS_OK;
+    OpenAPI_ref_to_binary_data_t *n2_mbs_sm_info = NULL;
+    ogs_pkbuf_t *n2mbssmbuf = NULL;
+    ogs_pkbuf_t *n2msgreq = NULL;
+    amf_gnb_t *gnb = NULL;
+
+    OpenAPI_context_create_rsp_data_t *ContextCreateRspData = NULL;
+    amf_mbs_context_t *mbs_context = NULL;
+    ogs_tmgi_t tmgi;
+    OpenAPI_tmgi_t *tmgi_copy = NULL;
+    OpenAPI_mbs_session_id_t *mbs_session_id_copy = NULL;
+
+    ogs_sbi_message_t sendmsg;
+    ogs_sbi_server_t *server = NULL;
+    ogs_sbi_header_t header;
+    ogs_sbi_response_t *response = NULL;
+
+    ogs_assert(stream);
+    ogs_assert(recvmsg);
+
+    int rv = OGS_OK;
+    int gnb_rv = OGS_OK;
+
+    ContextCreateReqData = recvmsg->ContextCreateReqData;
+
+    if (!ContextCreateReqData) {
+        ogs_error("MBS Broadcast ContextCreate: No ContextCreateReqData");
+        // Extracted from the OpenAPI spec, not the 3GPP TS
+        // ContextCreateReqData must be present, send error (400)
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request", "Requested MBS Broadcast ContextCreate failed, no ContextCreateReqData", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    n2_mbs_sm_info = ContextCreateReqData->n2_mbs_sm_info->ngap_data;
+
+    if (!n2_mbs_sm_info || !n2_mbs_sm_info->content_id) {
+        ogs_error("MBS Broadcast ContextCreate: n2_mbs_sm_info not present");
+        // Extracted from the OpenAPI spec, not the 3GPP TS
+        // n2_mbs_sm_info must be present, send error (400)
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request", "Requested MBS Broadcast ContextCreate failed, no n2MbsSmInfo", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    // Grab the N2 MBS SM info from the multipart message
+    // This contains the MBS Session Setup or Modification Request Transfer IE
+    n2mbssmbuf = ogs_sbi_find_part_by_content_id(recvmsg, n2_mbs_sm_info->content_id);
+
+    if(!n2mbssmbuf) {
+        ogs_error("MBS Broadcast ContextCreate: n2mbssmbuf not found in the multipart message");
+        // n2mbssmbuf not found in the multipart message, send error (400)
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request", "Requested MBS Broadcast ContextCreate failed, N2 MBS SM info not found in the multipart message", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    if(!ContextCreateReqData->mbs_session_id) {
+        ogs_error("MBS Broadcast ContextCreate: mbs_session_id not present");
+        // mbs_session_id must be present, send error (400)
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request", "Requested MBS Broadcast ContextCreate failed, no mbsSessionId", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    if(!ContextCreateReqData->notify_uri) {
+        ogs_error("MBS Broadcast ContextCreate: notify_uri not present");
+        // notify_uri must be present, send error (400)
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request", "Requested MBS Broadcast ContextCreate failed, no notifyUri", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    if(!ContextCreateReqData->snssai) {
+        ogs_error("MBS Broadcast ContextCreate: snssai not present");
+        // snssai must be present, send error (400)
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request", "Requested MBS Broadcast ContextCreate failed, no snssai", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    if(!ContextCreateReqData->mbs_service_area && !ContextCreateReqData->mbs_service_area_info_list) {
+        ogs_error("MBS Broadcast ContextCreate: mbs_service_area or mbs_service_area_info_list not present");
+        // mbs_service_area or mbs_service_area_info_list should be present, send error (400)
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request",
+            "Requested MBS Broadcast ContextCreate failed, no [mbsServiceArea] nor [mbsServiceAreaInfoList] present", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    // NGAP BROADCAST SESSION SETUP REQUEST message with MBS Session Setup or Modification Request Transfer IE
+    n2msgreq = ngap_build_broadcast_session_setup_request(mbs_context, n2mbssmbuf);
+
+    // Careful! this sends the message to all the gNBs connected to the AMF
+    ogs_list_for_each(&amf_self()->gnb_list, gnb) {
+        ogs_debug("Sending N2 MBS SM info to gNB %i", gnb->gnb_id);
+        gnb_rv = ngap_send_to_gnb(gnb, n2msgreq, NGAP_NON_UE_SIGNALLING);
+        if (gnb_rv != OGS_OK) {
+            ogs_error("ngap_send_to_gnb() failed");
+            break;
+        } else {
+            ogs_debug("Sent to gnb [%i]", gnb->gnb_id);
+        }
+    }
+
+    // TODO (borieher): Start timer to wait for reception?
+    //ogs_timer_start(mbs_context->gnb_timer,
+    //    amf_timer_cfg(AMF_TIMER_X)->duration);
+
+    // TODO (borieher): Receive the message from the gNBs
+    // On the first gNB response, send the 201 Created to the consumer NF
+    // Where do I find the gNB response?
+
+    // NOTE (borieher): Doing this here to avoid having to delete the mbs_context if the gNB response fails
+    // TODO (borieher): Continue storing all the identifiers received
+    ogs_sbi_parse_tmgi(&tmgi, ContextCreateReqData->mbs_session_id->tmgi);
+    mbs_context = amf_mbs_context_create(&tmgi);
+
+    /*********************************************************************
+     * Send OGS_SBI_HTTP_STATUS_CREATED (/namf-mbs-bc/v1/mbs-contexts) to the consumer NF
+     *********************************************************************/
+
+    // Needed so I can free ContextCreateReqData and ContextCreateRspData separately
+    tmgi_copy = OpenAPI_tmgi_copy(tmgi_copy, ContextCreateReqData->mbs_session_id->tmgi);
+    mbs_session_id_copy = OpenAPI_mbs_session_id_copy(mbs_session_id_copy, ContextCreateReqData->mbs_session_id);
+
+    // NOTE (borieher): The n2_mbs_info_list contains the gNBs response?
+    ContextCreateRspData = OpenAPI_context_create_rsp_data_create(mbs_session_id_copy, NULL, OpenAPI_operation_status_NULL);
+
+    memset(&sendmsg, 0, sizeof(sendmsg));
+
+    server = ogs_sbi_server_from_stream(stream);
+    ogs_assert(server);
+
+    // Adding the mbsContextRef in the headers for the created resource
+    memset(&header, 0, sizeof(header));
+    header.service.name = (char *) OGS_SBI_SERVICE_NAME_NAMF_MBS_BC;
+    header.api.version = (char *) OGS_SBI_API_V1;
+    header.resource.component[0] =
+        (char *) OGS_SBI_RESOURCE_NAME_MBS_CONTEXTS;
+    header.resource.component[1] = mbs_context->mbs_context_ref;
+
+    sendmsg.http.location = ogs_sbi_server_uri(server, &header);
+    ogs_assert(sendmsg.http.location);
+
+    sendmsg.ContextCreateRspData = ContextCreateRspData;
+
+    response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_CREATED);
+
+    ogs_assert(response);
+
+    ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+
+cleanup:
+    if (ContextCreateRspData)
+        OpenAPI_context_create_rsp_data_free(ContextCreateRspData);
+
+    if (sendmsg.http.location)
+        ogs_free(sendmsg.http.location);
+
+    if (rv == OGS_OK)
+        return true;
+    else
+        return false;
 }

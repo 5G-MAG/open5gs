@@ -122,6 +122,8 @@ typedef struct amf_context_s {
         } t3502, t3512;
     } time;
 
+    ogs_list_t      amf_mbs_context_list;
+
 } amf_context_t;
 
 typedef struct amf_gnb_s {
@@ -798,6 +800,17 @@ typedef struct amf_sess_s {
 
 } amf_sess_t;
 
+typedef struct amf_mbs_context_s {
+    ogs_lnode_t lnode;      /* A node of list_t */
+
+    uint32_t index;         /* An index of this node */
+    char *mbs_context_ref;  /* mbsContextRef */
+
+    ogs_tmgi_t tmgi; /* Only TMGI is needed */
+    char *service_type; /* To differenciate between BROADCAST and MULTICAST sessions */
+
+} amf_mbs_context_t;
+
 void amf_context_init(void);
 void amf_context_final(void);
 amf_context_t *amf_self(void);
@@ -970,6 +983,8 @@ void amf_clear_subscribed_info(amf_ue_t *amf_ue);
 bool amf_update_allowed_nssai(amf_ue_t *amf_ue);
 bool amf_ue_is_rat_restricted(amf_ue_t *amf_ue);
 int amf_instance_get_load(void);
+
+amf_mbs_context_t *amf_mbs_context_create(ogs_tmgi_t *tmgi);
 
 #ifdef __cplusplus
 }
