@@ -21,11 +21,16 @@
 #include "context.h"
 #include "n4mb-handler.h"
 
+// NOTE (borieher): Needed for the SBI request
+#include "sbi-path.h"
+
 uint8_t smf_n4mb_handle_session_establishment_response(
         smf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
         ogs_pfcp_session_establishment_response_t *rsp)
 {
     int i;
+    // TODO (borieher): Just a place to test the request
+    int r;
 
     uint8_t cause_value = OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
     uint8_t offending_ie_value = 0;
@@ -144,6 +149,15 @@ uint8_t smf_n4mb_handle_session_establishment_response(
             }
         }
     }
+
+    // TODO (borieher): Remove this after testing
+    r = smf_sbi_old_discover_and_send(
+    OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC, NULL,
+    smf_namf_build_mbs_broadcast_context_create_request,
+    mbs_sess, NULL, 0, (char *) OGS_SBI_RESOURCE_NAME_MBS_CONTEXTS);
+
+    ogs_expect(r == OGS_OK);
+    ogs_assert(r != OGS_ERROR);
 
     return OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
 }
