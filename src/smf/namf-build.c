@@ -195,9 +195,93 @@ ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_create_request(
         smf_mbs_sess_t *mbs_sess, void *data)
 {
     // TODO (borieher): Build MBS Broadcast ContextCreate request
-    ogs_warn("Building MBS Broadcast ContextCreate request");
+    ogs_debug("Building MBS Broadcast ContextCreate request");
 
+    ogs_sbi_message_t message;
     ogs_sbi_request_t *request = NULL;
+
+    OpenAPI_context_create_req_data_t *ContextCreateReqData = NULL;
+
+    char *mcc, *mnc;
+    OpenAPI_plmn_id_t *plmn_id = NULL;
+    OpenAPI_tmgi_t *tmgi = NULL;
+    OpenAPI_mbs_session_id_t *mbs_session_id = NULL;
+
+    // Fill mbsServiceArea (skipping mbsServiceAreaInfoList)
+    OpenAPI_plmn_id_t *plmn_id_copy = NULL;
+    OpenAPI_tai_t *tai_list_item = NULL;
+    OpenAPI_list_t *tai_list = NULL;
+    OpenAPI_mbs_service_area_t *mbs_service_area = NULL;
+
+    OpenAPI_n2_mbs_sm_info_t *n2_mbs_sm_info = NULL;
+    OpenAPI_ref_to_binary_data_t *ngap_data = NULL;
+
+    char *notify_uri = NULL;
+
+    OpenAPI_snssai_t *snssai = NULL;
+
+    ogs_assert(mbs_sess);
+
+    memset(&message, 0, sizeof(message));
+    message.h.method = (char *) OGS_SBI_HTTP_METHOD_POST;
+    message.h.service.name = (char *) OGS_SBI_SERVICE_NAME_NAMF_MBS_BC;
+    message.h.api.version = (char *) OGS_SBI_API_V1;
+    message.h.resource.component[0] = (char *) OGS_SBI_RESOURCE_NAME_MBS_CONTEXTS;
+
+    memset(&ContextCreateReqData, 0, sizeof(ContextCreateReqData));
+
+    // mbsSessionId
+    mcc = ogs_plmn_id_mcc_string(&mbs_sess->tmgi->plmn_id);
+    mnc = ogs_plmn_id_mnc_string(&mbs_sess->tmgi->plmn_id);
+    plmn_id = OpenAPI_plmn_id_create(ogs_strdup(mcc), ogs_strdup(mnc));
+
+    tmgi = OpenAPI_tmgi_create(mbs_sess->tmgi->mbs_service_id, plmn_id);
+
+    // TODO (borieher): Fill NID when present
+    mbs_session_id = OpenAPI_mbs_session_id_create(tmgi, NULL, NULL);
+
+    // mbsServiceArea
+    tai_list = OpenAPI_list_create();
+    plmn_id_copy = OpenAPI_plmn_id_copy(plmn_id_copy, plmn_id);
+    // TODO (borieher): Do not hardcode TAC here and fill NID when present
+    tai_list_item = OpenAPI_tai_create(plmn_id_copy, ogs_strdup("200"), NULL);
+
+    OpenAPI_list_add(tai_list, tai_list_item);
+
+    mbs_service_area = OpenAPI_mbs_service_area_create(NULL, tai_list);
+
+    // n2MbsSmInfo
+    ngap_data = OpenAPI_ref_to_binary_data_create((char *) OGS_SBI_CONTENT_NGAP_SM_ID);
+    n2_mbs_sm_info = OpenAPI_n2_mbs_sm_info_create(OpenAPI_ngap_ie_type_MBS_SES_REQ, ngap_data);
+
+    // notifyUri
+    // TODO (borieher): Fill the notifyUri without hardcoded values
+    notify_uri = ogs_strdup("blablabla");
+
+    // snssai
+    // TODO (borieher): Fill the SNSSAI without hardcoded values
+    snssai = OpenAPI_snssai_create(1, ogs_strdup("13"));
+
+    ContextCreateReqData = OpenAPI_context_create_req_data_create(mbs_session_id, NULL,
+        mbs_service_area, n2_mbs_sm_info, notify_uri, NULL, 0, snssai, NULL, NULL);
+
+    message.ContextCreateReqData = ContextCreateReqData;
+
+    // TODO (borieher): Fill the N2 message with MBS Session Setup or Modification Request Transfer IE
+    message.part[message.num_of_part].pkbuf = ngap_build_mbs_session_setup_or_modification_request_transfer(mbs_sess);
+    if (message.part[message.num_of_part].pkbuf) {
+        message.part[message.num_of_part].content_id = (char *) OGS_SBI_CONTENT_NGAP_SM_ID;
+        message.part[message.num_of_part].content_type = (char *) OGS_SBI_CONTENT_NGAP_TYPE;
+        message.num_of_part++;
+    }
+
+    message.http.accept = (char *) (OGS_SBI_CONTENT_JSON_TYPE ","
+        OGS_SBI_CONTENT_NGAP_TYPE "," OGS_SBI_CONTENT_PROBLEM_TYPE);
+
+    request = ogs_sbi_build_request(&message);
+    ogs_expect(request);
+
+    // NOTE (borieher): There is no cleanup code in the request bulding function?
 
     return request;
 }
