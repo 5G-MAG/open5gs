@@ -103,6 +103,13 @@ void smf_sbi_send_sm_context_update_error(
 
 bool smf_sbi_send_sm_context_status_notify(smf_sess_t *sess);
 
+// NOTE (borieher): Temporary workaround
+int smf_sbi_old_discover_and_send(
+        ogs_sbi_service_type_e service_type,
+        ogs_sbi_discovery_option_t *discovery_option,
+        ogs_sbi_request_t *(*build)(smf_mbs_sess_t *mbs_sess, void *data),
+        smf_mbs_sess_t *mbs_sess, ogs_sbi_stream_t *stream, int state, void *data);
+
 #ifdef __cplusplus
 }
 #endif

@@ -532,3 +532,52 @@ bool smf_sbi_send_sm_context_status_notify(smf_sess_t *sess)
 
     return rc;
 }
+
+// NOTE (borieher): Temporary workaround
+int smf_sbi_old_discover_and_send(
+        ogs_sbi_service_type_e service_type,
+        ogs_sbi_discovery_option_t *discovery_option,
+        ogs_sbi_request_t *(*build)(smf_mbs_sess_t *mbs_sess, void *data),
+        smf_mbs_sess_t *mbs_sess, ogs_sbi_stream_t *stream, int state, void *data)
+{
+    int r;
+    ogs_sbi_xact_t *xact = NULL;
+    OpenAPI_nf_type_e target_nf_type = OpenAPI_nf_type_NULL;
+
+    ogs_assert(service_type);
+    target_nf_type = ogs_sbi_service_type_to_nf_type(service_type);
+    ogs_assert(target_nf_type);
+    ogs_assert(mbs_sess);
+    ogs_assert(build);
+
+    xact = ogs_sbi_xact_add(
+            &mbs_sess->sbi, service_type, discovery_option,
+            (ogs_sbi_build_f)build, mbs_sess, data);
+    if (!xact) {
+        ogs_error("smf_sbi_old_discover_and_send() failed");
+        if (stream)
+            ogs_assert(true ==
+                ogs_sbi_server_send_error(stream,
+                    OGS_SBI_HTTP_STATUS_GATEWAY_TIMEOUT, NULL,
+                    "Cannot discover", NULL, NULL));
+        return OGS_ERROR;
+    }
+
+    xact->state = state;
+    xact->assoc_stream = stream;
+
+    r = ogs_sbi_discover_and_send(xact);
+    if (r != OGS_OK) {
+        ogs_error("smf_sbi_old_discover_and_send() failed");
+        ogs_sbi_xact_remove(xact);
+
+        if (stream)
+            ogs_assert(true ==
+                ogs_sbi_server_send_error(stream,
+                    OGS_SBI_HTTP_STATUS_GATEWAY_TIMEOUT, NULL,
+                    "Cannot discover", NULL, NULL));
+        return r;
+    }
+
+    return OGS_OK;
+}
