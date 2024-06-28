@@ -131,7 +131,6 @@ bool smf_nmbsmf_handle_tmgi_allocate(
 
     expiration_time = smf_tmgi_gen_expiration_time(OGS_DEFAULT_EXPIRATION_TIME_VALIDITY);
 
-    // Include a list, even if its empty
     tmgi_list = OpenAPI_list_create();
 
     // Perform the TMGI refresh operation for TmgiAllocate->tmgi_list
@@ -149,6 +148,7 @@ bool smf_nmbsmf_handle_tmgi_allocate(
                 ogs_free(tmgi_found->expiration_time);
                 tmgi_found->expiration_time = ogs_strdup(expiration_time);
             }
+            // TODO (borieher): Add the refreshed TMGIs to the tmgi_list
         }
     }
 
@@ -541,6 +541,7 @@ bool smf_nmbsmf_handle_mbs_session_create(
     header.resource.component[1] = mbs_sess->mbs_session_ref;
 
     sendmsg.http.location = ogs_sbi_server_uri(server, &header);
+    ogs_assert(sendmsg.http.location);
 
     sendmsg.CreateRspData = CreateRspData;
 
