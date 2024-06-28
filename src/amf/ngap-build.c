@@ -2748,3 +2748,171 @@ ogs_pkbuf_t *ngap_build_downlink_ran_status_transfer(
 
     return ogs_ngap_encode(&pdu);
 }
+
+ogs_pkbuf_t *ngap_build_broadcast_session_setup_request(amf_mbs_context_t *mbs_context, ogs_pkbuf_t *pkbuf)
+{
+    /*
+    maxnoofMBSServiceAreaInformation - Maximum no. of MBS Service Area Information elements in the MBS
+        Service Area Information Location Dependent List IE. Value is 256.
+    */
+
+    NGAP_NGAP_PDU_t pdu;
+    NGAP_InitiatingMessage_t *initiatingMessage = NULL;
+    NGAP_BroadcastSessionSetupRequest_t *BroadcastSessionSetupRequest = NULL;
+
+    NGAP_BroadcastSessionSetupRequestIEs_t *ie = NULL;
+
+    // MBS Session ID
+    NGAP_MBS_SessionID_t *mBS_SessionID = NULL;
+
+    // S-NSSAI
+    NGAP_S_NSSAI_t *s_NSSAI = NULL;
+    // TODO (borieher): Remove this, after using it
+    NGAP_SD_t *sD = NULL;
+
+    // MBS Service Area
+    NGAP_MBS_ServiceArea_t *mBS_ServiceArea = NULL;
+    NGAP_MBS_ServiceAreaInformationList_t *mBS_ServiceAreaInformationList = NULL;
+    NGAP_MBS_ServiceAreaInformationItem_t *mBS_ServiceAreaInformationItem = NULL;
+    // MBS Area Session ID
+    NGAP_MBS_AreaSessionID_t *mBS_AreaSessionID = NULL;
+    // MBS Service Area Information
+    NGAP_MBS_ServiceAreaInformation_t *mBS_ServiceAreaInformation = NULL;
+    NGAP_MBS_ServiceAreaTAIList_t *mBS_ServiceAreaTAIList = NULL;
+    // TAI
+    NGAP_TAI_t *tAI = NULL;
+
+    // MBS Session Setup Request Transfer
+    OCTET_STRING_t *oCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer = NULL;
+
+    ogs_assert(pkbuf);
+
+    ogs_warn("BROADCAST SESSION SETUP REQUEST");
+
+    memset(&pdu, 0, sizeof (NGAP_NGAP_PDU_t));
+    pdu.present = NGAP_NGAP_PDU_PR_initiatingMessage;
+    pdu.choice.initiatingMessage = CALLOC(1, sizeof(NGAP_InitiatingMessage_t));
+
+    // BROADCAST SESSION SETUP REQUEST
+    initiatingMessage = pdu.choice.initiatingMessage;
+    initiatingMessage->procedureCode = NGAP_ProcedureCode_id_BroadcastSessionSetup;
+    initiatingMessage->criticality = NGAP_Criticality_reject;
+    initiatingMessage->value.present = NGAP_InitiatingMessage__value_PR_BroadcastSessionSetupRequest;
+
+    BroadcastSessionSetupRequest = &initiatingMessage->value.choice.BroadcastSessionSetupRequest;
+
+    // MBS Session ID - 9.3.1.206 (M)
+    ie = CALLOC(1, sizeof(NGAP_BroadcastSessionSetupRequestIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(&BroadcastSessionSetupRequest->protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_MBS_SessionID;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present = NGAP_BroadcastSessionSetupRequestIEs__value_PR_MBS_SessionID;
+
+    mBS_SessionID = &ie->value.choice.MBS_SessionID;
+
+    ogs_tmgi_t tmgi;
+    tmgi.mbs_service_id = ogs_strdup("a1b2c3");
+    ogs_plmn_id_build(&tmgi.plmn_id, atoi("001"), atoi("01"), strlen("01"));
+
+    // TODO (borieher): Fix this to work this way, removing the hardcoded constants
+    //ogs_ngap_5gs_tmgi_to_ASN(&mbs_context->tmgi, &mBS_SessionID->tMGI);
+    ogs_ngap_5gs_tmgi_to_ASN(&tmgi, &mBS_SessionID->tMGI);
+
+    // S-NSSAI - 9.3.1.24 (M)
+    ie = CALLOC(1, sizeof(NGAP_BroadcastSessionSetupRequestIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(&BroadcastSessionSetupRequest->protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_S_NSSAI;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present = NGAP_BroadcastSessionSetupRequestIEs__value_PR_S_NSSAI;
+
+    s_NSSAI = &ie->value.choice.S_NSSAI;
+
+    // TODO (borieher): Get S-NSSAI from the amf_context -> self, fix this
+    //ogs_asn_uint8_to_OCTET_STRING(amf_self()->plmn_support[0].s_nssai[0].sst, &s_NSSAI->sST);
+    //ogs_asn_uint24_to_OCTET_STRING(amf_self()->plmn_support[0].s_nssai[0].sd, s_NSSAI->sD);
+
+    uint8_t sst = 1;
+    ogs_asn_uint8_to_OCTET_STRING(sst, &s_NSSAI->sST);
+
+    sD = CALLOC(1, sizeof(NGAP_SD_t));
+    ogs_assert(sD);
+    s_NSSAI->sD = sD;
+
+    ogs_uint24_t sd = ogs_uint24_from_string(ogs_strdup("33"));
+    ogs_asn_uint24_to_OCTET_STRING(sd, s_NSSAI->sD);
+
+    // MBS Service Area - 9.3.1.208 (M)
+    ie = CALLOC(1, sizeof(NGAP_BroadcastSessionSetupRequestIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(&BroadcastSessionSetupRequest->protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_MBS_ServiceArea;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present = NGAP_BroadcastSessionSetupRequestIEs__value_PR_MBS_ServiceArea;
+
+    mBS_ServiceArea = &ie->value.choice.MBS_ServiceArea;
+
+    mBS_ServiceAreaInformationList = CALLOC(1, sizeof(NGAP_MBS_ServiceAreaInformationList_t));
+    ogs_assert(mBS_ServiceAreaInformationList);
+
+    // Broadcast service is location dependent
+    mBS_ServiceArea->present = NGAP_MBS_ServiceArea_PR_locationdependent;
+    mBS_ServiceArea->choice.locationdependent = mBS_ServiceAreaInformationList;
+
+    mBS_ServiceAreaInformationItem = CALLOC(1, sizeof(NGAP_MBS_ServiceAreaInformationItem_t));
+    ogs_assert(mBS_ServiceAreaInformationItem);
+    ASN_SEQUENCE_ADD(mBS_ServiceAreaInformationList, mBS_ServiceAreaInformationItem);
+
+    // MBS Area Session ID - 9.3.1.207 (M)
+    mBS_AreaSessionID = &mBS_ServiceAreaInformationItem->mBS_AreaSessionID;
+    // TODO (borieher): Fill the MBS Area Session ID without hardcoded values
+    *mBS_AreaSessionID = 13;
+
+    // MBS Service Area Information - 9.3.1.209 (M)
+    mBS_ServiceAreaInformation = &mBS_ServiceAreaInformationItem->mBS_ServiceAreaInformation;
+    // TODO (borieher): Fill it
+
+    mBS_ServiceAreaTAIList = CALLOC(1, sizeof(NGAP_MBS_ServiceAreaTAIList_t));
+    ogs_assert(mBS_ServiceAreaTAIList);
+    mBS_ServiceAreaInformation->mBS_ServiceAreaTAIList = mBS_ServiceAreaTAIList;
+
+    // TAI - 9.3.3.11 (M)
+    tAI = CALLOC(1, sizeof(NGAP_TAI_t));
+    ogs_assert(tAI);
+    ASN_SEQUENCE_ADD(mBS_ServiceAreaTAIList, tAI);
+
+    // TODO (borieher): Grab PLMN and TAI from amf_context -> served_tai
+    // tai.plmn_id
+    // tai.tac
+
+    // PLMN Identity - 9.3.3.5 (M)
+    // TAC - 9.3.3.10 (M)
+    ogs_5gs_tai_t tai;
+    ogs_plmn_id_build(&tai.plmn_id, ogs_plmn_id_mcc(&amf_self()->plmn_support[0].plmn_id),
+        ogs_plmn_id_mnc(&amf_self()->plmn_support[0].plmn_id), ogs_plmn_id_mnc_len(&amf_self()->plmn_support[0].plmn_id));
+    // TODO (borieher): Fill the TAC without hardcoded values
+    tai.tac = ogs_uint24_from_string(ogs_strdup("1"));
+
+    ogs_ngap_5gs_tai_to_ASN(&tai, tAI);
+
+    // MBS Session Setup Request Transfer - OCTET STRING (SIZE(3)) (M)
+    ie = CALLOC(1, sizeof(NGAP_BroadcastSessionSetupRequestIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(&BroadcastSessionSetupRequest->protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_MBSSessionSetupRequestTransfer;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present = NGAP_BroadcastSessionSetupRequestIEs__value_PR_OCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer_;
+
+    oCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer = &ie->value.choice.OCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer_;
+    oCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer->buf = CALLOC(pkbuf->len, sizeof(uint8_t));
+    oCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer->size = pkbuf->len;
+
+    memcpy(oCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer->buf, pkbuf->data, pkbuf->len);
+
+    return ogs_ngap_encode(&pdu);
+}

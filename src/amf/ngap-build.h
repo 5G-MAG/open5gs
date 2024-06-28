@@ -74,6 +74,9 @@ ogs_pkbuf_t *ngap_build_downlink_ran_status_transfer(
     ran_ue_t *target_ue,
     NGAP_RANStatusTransfer_TransparentContainer_t *transfer);
 
+ogs_pkbuf_t *ngap_build_broadcast_session_setup_request(
+    amf_mbs_context_t *mbs_context, ogs_pkbuf_t *pkbuf);
+
 #ifdef __cplusplus
 }
 #endif
