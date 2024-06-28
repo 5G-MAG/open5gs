@@ -157,3 +157,26 @@ void ogs_ngap_ASN_to_5gs_tai(NGAP_TAI_t *tAI, ogs_5gs_tai_t *tai)
     memcpy(&tai->plmn_id, tAI->pLMNIdentity.buf, OGS_PLMN_ID_LEN);
     ogs_asn_OCTET_STRING_to_uint24(&tAI->tAC, &tai->tac);
 }
+
+// TODO (borieher): Needs checking
+void ogs_ngap_5gs_tmgi_to_ASN(ogs_tmgi_t *tmgi, NGAP_TMGI_t *tMGI)
+{
+    ogs_assert(tmgi);
+    ogs_assert(tMGI);
+
+    OCTET_STRING_t *octet_string = NULL;
+
+    octet_string = (OCTET_STRING_t *) tMGI;
+    octet_string->size = 6;
+    octet_string->buf = CALLOC(octet_string->size, sizeof(uint8_t));
+
+    // Encode the MBS Service ID
+    octet_string->buf[0] = (tmgi->mbs_service_id[0] & 0x0F) << 4 | (tmgi->mbs_service_id[1] & 0x0F);
+    octet_string->buf[1] = (tmgi->mbs_service_id[2] & 0x0F) << 4 | (tmgi->mbs_service_id[3] & 0x0F);
+    octet_string->buf[2] = (tmgi->mbs_service_id[4] & 0x0F) << 4 | (tmgi->mbs_service_id[5] & 0x0F);
+
+    // Encode PLMN ID
+    octet_string->buf[3] = (tmgi->plmn_id.mcc1) << 4 | (tmgi->plmn_id.mcc2);
+    octet_string->buf[4] = (tmgi->plmn_id.mcc3) << 4 | (tmgi->plmn_id.mnc1);
+    octet_string->buf[5] = (tmgi->plmn_id.mnc2) << 4 | (tmgi->plmn_id.mnc3);
+}

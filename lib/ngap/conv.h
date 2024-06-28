@@ -51,6 +51,8 @@ void ogs_ngap_ASN_to_nr_cgi(NGAP_NR_CGI_t *nR_CGI, ogs_nr_cgi_t *cgi);
 void ogs_ngap_5gs_tai_to_ASN(ogs_5gs_tai_t *tai, NGAP_TAI_t *tAI);
 void ogs_ngap_ASN_to_5gs_tai(NGAP_TAI_t *tAI, ogs_5gs_tai_t *tai);
 
+void ogs_ngap_5gs_tmgi_to_ASN(ogs_tmgi_t *tmgi, NGAP_TMGI_t *tMGI);
+
 #ifdef __cplusplus
 }
 #endif
