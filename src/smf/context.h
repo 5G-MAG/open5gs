@@ -474,6 +474,8 @@ typedef struct smf_sess_s {
 } smf_sess_t;
 
 typedef struct smf_mbs_sess_s {
+    ogs_sbi_object_t sbi;
+
     ogs_lnode_t lnode;      /* A node of list_t */
 
     uint32_t index;         /* An index of this node */
