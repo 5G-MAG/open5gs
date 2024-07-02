@@ -18,7 +18,7 @@
 project('open5gs', 'c', 'cpp',
     version : '2.6.4',
     license : 'AGPL-3.0-or-later',
-    meson_version : '>= 0.43.0',
+    meson_version : '>= 0.58.0',
     default_options : [
         'warning_level=1',
         'c_std=gnu89',
