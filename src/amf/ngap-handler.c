@@ -4796,3 +4796,15 @@ void ngap_handle_error_indication(amf_gnb_t *gnb, ogs_ngap_message_t *message)
                 Cause->present, (int)Cause->choice.radioNetwork);
     }
 }
+
+void ngap_handle_broadcast_session_setup_response(
+        amf_gnb_t *gnb, ogs_ngap_message_t *message)
+{
+    ogs_assert(gnb);
+    ogs_assert(gnb->sctp.sock);
+
+    ogs_assert(message);
+
+    // TODO (borieher): Handle BROADCAST SESSION SETUP RESPONSE
+    ogs_warn("BROADCAST SESSION SETUP RESPONSE");
+}

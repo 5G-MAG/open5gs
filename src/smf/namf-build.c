@@ -194,7 +194,6 @@ ogs_sbi_request_t *smf_namf_callback_build_sm_context_status(
 ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_create_request(
         smf_mbs_sess_t *mbs_sess, void *data)
 {
-    // TODO (borieher): Build MBS Broadcast ContextCreate request
     ogs_debug("Building MBS Broadcast ContextCreate request");
 
     ogs_sbi_message_t message;
@@ -233,7 +232,7 @@ ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_create_request(
     // mbsSessionId
     mcc = ogs_plmn_id_mcc_string(&mbs_sess->tmgi->plmn_id);
     mnc = ogs_plmn_id_mnc_string(&mbs_sess->tmgi->plmn_id);
-    plmn_id = OpenAPI_plmn_id_create(ogs_strdup(mcc), ogs_strdup(mnc));
+    plmn_id = OpenAPI_plmn_id_create(mcc, mnc);
 
     tmgi = OpenAPI_tmgi_create(mbs_sess->tmgi->mbs_service_id, plmn_id);
 
@@ -281,7 +280,10 @@ ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_create_request(
     request = ogs_sbi_build_request(&message);
     ogs_expect(request);
 
-    // NOTE (borieher): There is no cleanup code in the request bulding function?
+cleanup:
+    // TODO (borieher): Continue freeing resources
+    if (ContextCreateReqData)
+        OpenAPI_context_create_req_data_free(ContextCreateReqData);
 
     return request;
 }

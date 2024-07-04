@@ -84,6 +84,9 @@ void ngap_handle_ng_reset(
 void ngap_handle_error_indication(
         amf_gnb_t *gnb, ogs_ngap_message_t *message);
 
+void ngap_handle_broadcast_session_setup_response(
+        amf_gnb_t *gnb, ogs_ngap_message_t *message);
+
 #ifdef __cplusplus
 }
 #endif

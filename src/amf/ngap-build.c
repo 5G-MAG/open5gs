@@ -2787,7 +2787,7 @@ ogs_pkbuf_t *ngap_build_broadcast_session_setup_request(amf_mbs_context_t *mbs_c
 
     ogs_assert(pkbuf);
 
-    ogs_warn("BROADCAST SESSION SETUP REQUEST");
+    ogs_debug("BROADCAST SESSION SETUP REQUEST");
 
     memset(&pdu, 0, sizeof (NGAP_NGAP_PDU_t));
     pdu.present = NGAP_NGAP_PDU_PR_initiatingMessage;
