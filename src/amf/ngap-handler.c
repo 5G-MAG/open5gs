@@ -4800,11 +4800,21 @@ void ngap_handle_error_indication(amf_gnb_t *gnb, ogs_ngap_message_t *message)
 void ngap_handle_broadcast_session_setup_response(
         amf_gnb_t *gnb, ogs_ngap_message_t *message)
 {
+    NGAP_SuccessfulOutcome_t *successfulOutcome = NULL;
+    NGAP_BroadcastSessionSetupResponse_t *BroadcastSessionSetupResponse = NULL;
+
     ogs_assert(gnb);
     ogs_assert(gnb->sctp.sock);
 
     ogs_assert(message);
+    successfulOutcome = message->choice.successfulOutcome;
+    ogs_assert(successfulOutcome);
 
-    // TODO (borieher): Handle BROADCAST SESSION SETUP RESPONSE
+    BroadcastSessionSetupResponse =
+    &successfulOutcome->value.choice.BroadcastSessionSetupResponse;
+    ogs_assert(BroadcastSessionSetupResponse);
+
     ogs_warn("BROADCAST SESSION SETUP RESPONSE");
+
+    // TODO (borieher): Parse NGAP IEs
 }
