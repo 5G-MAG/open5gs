@@ -57,6 +57,8 @@ bool smf_nmbsmf_handle_tmgi_allocate(
     // TODO (borieher): How to get NID?
     char *nid = NULL;
 
+    memset(&sendmsg, 0, sizeof(sendmsg));
+
     int rv = OGS_OK;
 
     TmgiAllocate = message->TmgiAllocate;
@@ -168,8 +170,6 @@ bool smf_nmbsmf_handle_tmgi_allocate(
      * Send HTTP_STATUS_OK (/nmbsmf-tmgi/v1/tmgi) to the consumer NF
      *********************************************************************/
 
-    memset(&sendmsg, 0, sizeof(sendmsg));
-
     sendmsg.TmgiAllocated = TmgiAllocated;
 
     response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_OK);
@@ -221,6 +221,8 @@ bool smf_nmbsmf_handle_tmgi_deallocate(
     ogs_assert(stream);
     ogs_assert(message);
 
+    memset(&sendmsg, 0, sizeof(sendmsg));
+
     tmgi_list = message->param.tmgi_list;
 
     if (!tmgi_list) {
@@ -268,8 +270,6 @@ bool smf_nmbsmf_handle_tmgi_deallocate(
     /*********************************************************************
      * Send HTTP_STATUS_NO_CONTENT (/nmbsmf-tmgi/v1/tmgi) to the consumer NF
      *********************************************************************/
-
-    memset(&sendmsg, 0, sizeof(sendmsg));
 
     response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
 
@@ -324,6 +324,9 @@ bool smf_nmbsmf_handle_mbs_session_create(
     // TODO (borieher): How to get NID?
     char *nid = NULL;
     char *service_type = NULL;
+
+    memset(&sendmsg, 0, sizeof(sendmsg));
+    memset(&header, 0, sizeof(header));
 
     int rv = OGS_OK;
 
@@ -527,13 +530,10 @@ bool smf_nmbsmf_handle_mbs_session_create(
      * Send OGS_SBI_HTTP_STATUS_CREATED (/nmbsmf-mbssession/v1/mbs-sessions) to the consumer NF
      *********************************************************************/
 
-    memset(&sendmsg, 0, sizeof(sendmsg));
-
     server = ogs_sbi_server_from_stream(stream);
     ogs_assert(server);
 
     // Adding the mbsSessionRef in the headers for the created resource
-    memset(&header, 0, sizeof(header));
     header.service.name = (char *) OGS_SBI_SERVICE_NAME_NMBSMF_MBS_SESSION;
     header.api.version = (char *) OGS_SBI_API_V1;
     header.resource.component[0] =
