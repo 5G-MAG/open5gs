@@ -940,6 +940,7 @@ int smf_pfcp_send_session_report_response(
 
 static void mbs_sess_5gc_timeout(ogs_pfcp_xact_t *xact, void *data)
 {
+    ogs_pool_id_t mbs_sess_id = OGS_INVALID_POOL_ID;
     smf_mbs_sess_t *mbs_sess = NULL;
     ogs_sbi_stream_t *stream = NULL;
     uint8_t type;
@@ -951,11 +952,20 @@ static void mbs_sess_5gc_timeout(ogs_pfcp_xact_t *xact, void *data)
     ogs_assert(xact);
     ogs_assert(data);
 
-    mbs_sess = data;
-    ogs_assert(mbs_sess);
+    if (xact->assoc_stream_id >= OGS_MIN_POOL_ID &&
+            xact->assoc_stream_id <= OGS_MAX_POOL_ID)
+        stream = ogs_sbi_stream_find_by_id(xact->assoc_stream_id);
 
-    stream = xact->assoc_stream;
     type = xact->seq[0].type;
+
+    mbs_sess_id = OGS_POINTER_TO_UINT(data);
+    ogs_assert(mbs_sess_id >= OGS_MIN_POOL_ID && mbs_sess_id <= OGS_MAX_POOL_ID);
+
+    mbs_sess = smf_mbs_sess_find_by_id(mbs_sess_id);
+    if (!mbs_sess) {
+        ogs_error("MBS Session has already been removed [%d]", type);
+        return;
+    }
 
     switch (type) {
     case OGS_PFCP_SESSION_ESTABLISHMENT_REQUEST_TYPE:
@@ -963,7 +973,7 @@ static void mbs_sess_5gc_timeout(ogs_pfcp_xact_t *xact, void *data)
 
         e = smf_event_new(SMF_EVT_N4_TIMER);
         ogs_assert(e);
-        e->mbs_sess = mbs_sess;
+        e->mbs_sess_id = mbs_sess->id;
         e->h.timer_id = SMF_TIMER_PFCP_NO_ESTABLISHMENT_RESPONSE;
         e->pfcp_node = mbs_sess->pfcp_node;
 

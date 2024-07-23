@@ -480,6 +480,7 @@ typedef struct smf_sess_s {
 
 typedef struct smf_mbs_sess_s {
     ogs_sbi_object_t sbi;
+    ogs_pool_id_t id;
 
     ogs_lnode_t lnode;      /* A node of list_t */
 
@@ -636,8 +637,9 @@ ogs_tmgi_t *smf_tmgi_find_by_tmgi(ogs_tmgi_t *tmgi_to_find);
 
 smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, ogs_ssm_t *ssm, char *service_type);
 void smf_mbs_sess_release(smf_mbs_sess_t *smf_mbs_sess);
-smf_mbs_sess_t *smf_mbs_sess_find_by_mbs_session_ref(char *mbs_session_ref);
 
+smf_mbs_sess_t *smf_mbs_sess_find_by_id(ogs_pool_id_t id);
+smf_mbs_sess_t *smf_mbs_sess_find_by_mbs_session_ref(char *mbs_session_ref);
 smf_mbs_sess_t *smf_mbs_sess_find_by_seid(uint64_t seid);
 void smf_mbs_sess_select_upf(smf_mbs_sess_t *mbs_sess);
 void smf_mbs_sess_create_mbs_data_forwarding(smf_mbs_sess_t *mbs_sess);

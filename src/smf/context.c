@@ -3342,7 +3342,7 @@ static smf_mbs_sess_t *smf_mbs_sess_add(void)
 {
     smf_mbs_sess_t *smf_mbs_sess = NULL;
 
-    ogs_pool_alloc(&smf_mbs_sess_pool, &smf_mbs_sess);
+    ogs_pool_id_calloc(&smf_mbs_sess_pool, &smf_mbs_sess);
     if (!smf_mbs_sess) {
         ogs_error("Maximum number of MBS Sessions[%d] reached",
                     OGS_MAX_NUM_OF_MBS_SESSIONS);
@@ -3418,7 +3418,7 @@ static void smf_mbs_sess_remove(smf_mbs_sess_t *smf_mbs_sess)
 
     ogs_pool_free(&smf_n4_seid_pool, smf_mbs_sess->smf_n4mb_seid_node);
 
-    ogs_pool_free(&smf_mbs_sess_pool, smf_mbs_sess);
+    ogs_pool_id_free(&smf_mbs_sess_pool, smf_mbs_sess);
 
     ogs_info("[Removed] Number of MBS Sessions in SMF is now %d",
             ogs_list_count(&self.smf_mbs_sess_list));
@@ -3473,6 +3473,11 @@ smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, ogs_ssm_t *ssm, char *serv
 static smf_mbs_sess_t *smf_mbs_sess_find(uint32_t index)
 {
     return ogs_pool_find(&smf_mbs_sess_pool, index);
+}
+
+smf_mbs_sess_t *smf_mbs_sess_find_by_id(ogs_pool_id_t id)
+{
+    return ogs_pool_find_by_id(&smf_mbs_sess_pool, id);
 }
 
 smf_mbs_sess_t *smf_mbs_sess_find_by_mbs_session_ref(char *mbs_session_ref)

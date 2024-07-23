@@ -1032,14 +1032,16 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
             break;
 
         CASE(OGS_SBI_SERVICE_NAME_NAMF_MBS_BC)
-            sbi_xact = e->h.sbi.data;
-            ogs_assert(sbi_xact);
+            sbi_xact_id = OGS_POINTER_TO_UINT(e->h.sbi.data);
+            ogs_assert(sbi_xact_id >= OGS_MIN_POOL_ID &&
+                    sbi_xact_id <= OGS_MAX_POOL_ID);
 
-            sbi_xact = ogs_sbi_xact_cycle(sbi_xact);
+            sbi_xact = ogs_sbi_xact_find_by_id(sbi_xact_id);
             if (!sbi_xact) {
                 /* CLIENT_WAIT timer could remove SBI transaction
                  * before receiving SBI message */
-                ogs_error("SBI transaction has already been removed");
+                ogs_error("SBI transaction has already been removed [%d]",
+                        sbi_xact_id);
                 break;
             }
 
