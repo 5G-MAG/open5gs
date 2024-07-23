@@ -26,7 +26,7 @@ struct sess_state {
     smf_sess_t *sess;
     os0_t       s6b_sid;             /* S6B Session-Id */
 
-    ogs_gtp_xact_t *xact;
+    ogs_pool_id_t xact_id;
 
     struct timespec ts; /* Time of sending the message */
 };
@@ -64,6 +64,11 @@ static __inline__ struct sess_state *new_state(os0_t sid)
 
 static void state_cleanup(struct sess_state *sess_data, os0_t sid, void *opaque)
 {
+    if (!sess_data) {
+        ogs_error("No session state");
+        return;
+    }
+
     if (sess_data->s6b_sid)
         ogs_free(sess_data->s6b_sid);
 
@@ -102,7 +107,7 @@ void smf_s6b_send_aar(smf_sess_t *sess, ogs_gtp_xact_t *xact)
 
     ogs_assert(xact);
     ogs_assert(sess);
-    smf_ue = sess->smf_ue;
+    smf_ue = smf_ue_find_by_id(sess->smf_ue_id);
     ogs_assert(smf_ue);
 
     ogs_debug("[AA-Request]");
@@ -165,7 +170,7 @@ void smf_s6b_send_aar(smf_sess_t *sess, ogs_gtp_xact_t *xact)
 
     /* Update session state */
     sess_data->sess = sess;
-    sess_data->xact = xact;
+    sess_data->xact_id = xact ? xact->id : OGS_INVALID_POOL_ID;
 
     /* Set Origin-Host & Origin-Realm */
     ret = fd_msg_add_origin(req, 0);
@@ -346,7 +351,6 @@ static void smf_s6b_aaa_cb(void *data, struct msg **msg)
     int new;
 
     smf_sess_t *sess = NULL;
-    ogs_gtp_xact_t *xact = NULL;
     smf_event_t *e = NULL;
     ogs_diam_s6b_message_t *s6b_message = NULL;
 
@@ -371,8 +375,6 @@ static void smf_s6b_aaa_cb(void *data, struct msg **msg)
 
     sess = sess_data->sess;
     ogs_assert(sess);
-    xact = sess_data->xact;
-    ogs_assert(xact);
 
     s6b_message = ogs_calloc(1, sizeof(ogs_diam_s6b_message_t));
     ogs_assert(s6b_message);
@@ -442,8 +444,8 @@ static void smf_s6b_aaa_cb(void *data, struct msg **msg)
     if (error && s6b_message->result_code == ER_DIAMETER_SUCCESS)
             s6b_message->result_code = error;
 
-    e->sess = sess;
-    e->gtp_xact = xact;
+    e->sess_id = sess->id;
+    e->gtp_xact_id = sess_data->xact_id;
     e->s6b_message = s6b_message;
     ret = ogs_queue_push(ogs_app()->queue, e);
     if (ret != OGS_OK) {
@@ -516,9 +518,8 @@ void smf_s6b_send_str(smf_sess_t *sess, ogs_gtp_xact_t *xact, uint32_t cause)
     smf_ue_t *smf_ue = NULL;
     char *user_name = NULL;
 
-    //ogs_assert(xact);
     ogs_assert(sess);
-    smf_ue = sess->smf_ue;
+    smf_ue = smf_ue_find_by_id(sess->smf_ue_id);
     ogs_assert(smf_ue);
 
     ogs_debug("[Session-Termination-Request]");
@@ -557,7 +558,7 @@ void smf_s6b_send_str(smf_sess_t *sess, ogs_gtp_xact_t *xact, uint32_t cause)
 
     /* Update session state */
     sess_data->sess = sess;
-    sess_data->xact = xact;
+    sess_data->xact_id = xact ? xact->id : OGS_INVALID_POOL_ID;
 
     /* Set Origin-Host & Origin-Realm */
     ret = fd_msg_add_origin(req, 0);
@@ -666,6 +667,7 @@ static void smf_s6b_sta_cb(void *data, struct msg **msg)
     ogs_debug("    Retrieve its data: [%s]", sess_data->s6b_sid);
 
     sess = sess_data->sess;
+    ogs_assert(sess);
 
     s6b_message = ogs_calloc(1, sizeof(ogs_diam_s6b_message_t));
     ogs_assert(s6b_message);
@@ -736,7 +738,7 @@ static void smf_s6b_sta_cb(void *data, struct msg **msg)
         e = smf_event_new(SMF_EVT_S6B_MESSAGE);
         ogs_assert(e);
 
-        e->sess = sess;
+        e->sess_id = sess->id;
         e->s6b_message = s6b_message;
         rv = ogs_queue_push(ogs_app()->queue, e);
         if (rv != OGS_OK) {

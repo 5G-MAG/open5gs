@@ -34,8 +34,8 @@ static int mme_s6a_subscription_data_from_avp(struct avp *avp,
     mme_ue_t *mme_ue, uint32_t *subdatamask);
 
 struct sess_state {
-    mme_ue_t *mme_ue;
-    enb_ue_t *enb_ue;
+    ogs_pool_id_t mme_ue_id;
+    ogs_pool_id_t enb_ue_id;
     struct timespec ts; /* Time of sending the message */
 };
 
@@ -45,6 +45,11 @@ static void mme_s6a_pua_cb(void *data, struct msg **msg);
 
 static void state_cleanup(struct sess_state *sess_data, os0_t sid, void *opaque)
 {
+    if (!sess_data) {
+        ogs_error("No session state");
+        return;
+    }
+
     ogs_free(sess_data);
 }
 
@@ -678,12 +683,12 @@ void mme_s6a_send_air(enb_ue_t *enb_ue, mme_ue_t *mme_ue,
 
     uint8_t resync[OGS_AUTS_LEN + OGS_RAND_LEN];
 
-    if (!mme_ue_cycle(mme_ue)) {
+    if (!mme_ue) {
         ogs_error("UE(mme-ue) context has already been removed");
         return;
     }
 
-    if (!enb_ue_cycle(enb_ue)) {
+    if (!enb_ue) {
         ogs_error("S1 context has already been removed");
         return;
     }
@@ -697,8 +702,8 @@ void mme_s6a_send_air(enb_ue_t *enb_ue, mme_ue_t *mme_ue,
     sess_data = ogs_calloc(1, sizeof (*sess_data));
     ogs_assert(sess_data);
 
-    sess_data->mme_ue = mme_ue;
-    sess_data->enb_ue = enb_ue;
+    sess_data->mme_ue_id = mme_ue->id;
+    sess_data->enb_ue_id = enb_ue->id;
 
     /* Create the request */
     ret = fd_msg_new(ogs_diam_s6a_cmd_air, MSGFL_ALLOC_ETEID, &req);
@@ -870,10 +875,18 @@ static void mme_s6a_aia_cb(void *data, struct msg **msg)
         return;
     }
 
-    mme_ue = sess_data->mme_ue;
-    ogs_assert(mme_ue);
-    enb_ue = sess_data->enb_ue;
-    ogs_assert(enb_ue);
+    mme_ue = mme_ue_find_by_id(sess_data->mme_ue_id);
+    if (!mme_ue) {
+        ogs_error("MME-UE Context has already been removed [%d]",
+                sess_data->mme_ue_id);
+        return;
+    }
+    enb_ue = enb_ue_find_by_id(sess_data->enb_ue_id);
+    if (!enb_ue) {
+        ogs_error("[%s] ENB-S1 Context has already been removed [%d]",
+                mme_ue->imsi_bcd, sess_data->enb_ue_id);
+        return;
+    }
 
     /* Set Authentication-Information Command */
     s6a_message = ogs_calloc(1, sizeof(ogs_diam_s6a_message_t));
@@ -1033,8 +1046,8 @@ out:
         int rv;
         e = mme_event_new(MME_EVENT_S6A_MESSAGE);
         ogs_assert(e);
-        e->mme_ue = mme_ue;
-        e->enb_ue = enb_ue;
+        e->mme_ue_id = mme_ue->id;
+        e->enb_ue_id = enb_ue->id;
         e->s6a_message = s6a_message;
         rv = ogs_queue_push(ogs_app()->queue, e);
         if (rv != OGS_OK) {
@@ -1102,12 +1115,12 @@ void mme_s6a_send_ulr(enb_ue_t *enb_ue, mme_ue_t *mme_ue)
     struct session *session = NULL;
     ogs_nas_plmn_id_t nas_plmn_id;
 
-    if (!mme_ue_cycle(mme_ue)) {
+    if (!mme_ue) {
         ogs_error("UE(mme-ue) context has already been removed");
         return;
     }
 
-    if (!enb_ue_cycle(enb_ue)) {
+    if (!enb_ue) {
         ogs_error("S1 context has already been removed");
         return;
     }
@@ -1117,8 +1130,8 @@ void mme_s6a_send_ulr(enb_ue_t *enb_ue, mme_ue_t *mme_ue)
     /* Create the random value to store with the session */
     sess_data = ogs_calloc(1, sizeof(*sess_data));
     ogs_assert(sess_data);
-    sess_data->mme_ue = mme_ue;
-    sess_data->enb_ue = enb_ue;
+    sess_data->mme_ue_id = mme_ue->id;
+    sess_data->enb_ue_id = enb_ue->id;
 
     /* Create the request */
     ret = fd_msg_new(ogs_diam_s6a_cmd_ulr, MSGFL_ALLOC_ETEID, &req);
@@ -1307,10 +1320,18 @@ static void mme_s6a_ula_cb(void *data, struct msg **msg)
         return;
     }
 
-    mme_ue = sess_data->mme_ue;
-    ogs_assert(mme_ue);
-    enb_ue = sess_data->enb_ue;
-    ogs_assert(enb_ue);
+    mme_ue = mme_ue_find_by_id(sess_data->mme_ue_id);
+    if (!mme_ue) {
+        ogs_error("MME-UE Context has already been removed [%d]",
+                sess_data->mme_ue_id);
+        return;
+    }
+    enb_ue = enb_ue_find_by_id(sess_data->enb_ue_id);
+    if (!enb_ue) {
+        ogs_error("[%s] ENB-S1 Context has already been removed [%d]",
+                mme_ue->imsi_bcd, sess_data->enb_ue_id);
+        return;
+    }
 
     /* Set Update-Location Command */
     s6a_message = ogs_calloc(1, sizeof(ogs_diam_s6a_message_t));
@@ -1451,8 +1472,8 @@ static void mme_s6a_ula_cb(void *data, struct msg **msg)
         int rv;
         e = mme_event_new(MME_EVENT_S6A_MESSAGE);
         ogs_assert(e);
-        e->mme_ue = mme_ue;
-        e->enb_ue = enb_ue;
+        e->mme_ue_id = mme_ue->id;
+        e->enb_ue_id = enb_ue->id;
         e->s6a_message = s6a_message;
         rv = ogs_queue_push(ogs_app()->queue, e);
         if (rv != OGS_OK) {
@@ -1524,12 +1545,12 @@ void mme_s6a_send_pur(enb_ue_t *enb_ue, mme_ue_t *mme_ue)
     struct sess_state *sess_data = NULL, *svg;
     struct session *session = NULL;
 
-    if (!mme_ue_cycle(mme_ue)) {
+    if (!mme_ue) {
         ogs_error("UE(mme-ue) context has already been removed");
         return;
     }
 
-    if (!enb_ue_cycle(enb_ue)) {
+    if (!enb_ue) {
         ogs_error("S1 context has already been removed");
         return;
     }
@@ -1539,8 +1560,8 @@ void mme_s6a_send_pur(enb_ue_t *enb_ue, mme_ue_t *mme_ue)
     /* Create the random value to store with the session */
     sess_data = ogs_calloc(1, sizeof(*sess_data));
     ogs_assert(sess_data);
-    sess_data->mme_ue = mme_ue;
-    sess_data->enb_ue = enb_ue;
+    sess_data->mme_ue_id = mme_ue->id;
+    sess_data->enb_ue_id = enb_ue->id;
 
     /* Create the request */
     ret = fd_msg_new(ogs_diam_s6a_cmd_pur, MSGFL_ALLOC_ETEID, &req);
@@ -1664,10 +1685,18 @@ static void mme_s6a_pua_cb(void *data, struct msg **msg)
         return;
     }
 
-    mme_ue = sess_data->mme_ue;
-    ogs_assert(mme_ue);
-    enb_ue = sess_data->enb_ue;
-    ogs_assert(enb_ue);
+    mme_ue = mme_ue_find_by_id(sess_data->mme_ue_id);
+    if (!mme_ue) {
+        ogs_error("MME-UE Context has already been removed [%d]",
+                sess_data->mme_ue_id);
+        return;
+    }
+    enb_ue = enb_ue_find_by_id(sess_data->enb_ue_id);
+    if (!enb_ue) {
+        ogs_error("[%s] ENB-S1 Context has already been removed [%d]",
+                mme_ue->imsi_bcd, sess_data->enb_ue_id);
+        return;
+    }
 
     /* Set Purge-UE Command */
     s6a_message = ogs_calloc(1, sizeof(ogs_diam_s6a_message_t));
@@ -1764,8 +1793,8 @@ static void mme_s6a_pua_cb(void *data, struct msg **msg)
         int rv;
         e = mme_event_new(MME_EVENT_S6A_MESSAGE);
         ogs_assert(e);
-        e->mme_ue = mme_ue;
-        e->enb_ue = enb_ue;
+        e->mme_ue_id = mme_ue->id;
+        e->enb_ue_id = enb_ue->id;
         e->s6a_message = s6a_message;
         rv = ogs_queue_push(ogs_app()->queue, e);
         if (rv != OGS_OK) {
@@ -1922,7 +1951,7 @@ static int mme_ogs_diam_s6a_clr_cb( struct msg **msg, struct avp *avp,
 
     e = mme_event_new(MME_EVENT_S6A_MESSAGE);
     ogs_assert(e);
-    e->mme_ue = mme_ue;
+    e->mme_ue_id = mme_ue->id;
     e->s6a_message = s6a_message;
     rv = ogs_queue_push(ogs_app()->queue, e);
     if (rv != OGS_OK) {
@@ -2213,7 +2242,7 @@ static int mme_ogs_diam_s6a_idr_cb( struct msg **msg, struct avp *avp,
     int rv;
     e = mme_event_new(MME_EVENT_S6A_MESSAGE);
     ogs_assert(e);
-    e->mme_ue = mme_ue;
+    e->mme_ue_id = mme_ue->id;
     e->s6a_message = s6a_message;
     rv = ogs_queue_push(ogs_app()->queue, e);
     if (rv != OGS_OK) {
