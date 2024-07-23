@@ -250,7 +250,7 @@ ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_create_request(
     mbs_service_area = OpenAPI_mbs_service_area_create(NULL, tai_list);
 
     // n2MbsSmInfo
-    ngap_data = OpenAPI_ref_to_binary_data_create((char *) OGS_SBI_CONTENT_NGAP_SM_ID);
+    ngap_data = OpenAPI_ref_to_binary_data_create(ogs_strdup((char *) OGS_SBI_CONTENT_NGAP_SM_ID));
     n2_mbs_sm_info = OpenAPI_n2_mbs_sm_info_create(OpenAPI_ngap_ie_type_MBS_SES_REQ, ngap_data);
 
     // notifyUri
@@ -281,7 +281,6 @@ ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_create_request(
     ogs_expect(request);
 
 cleanup:
-    // TODO (borieher): Continue freeing resources
     if (ContextCreateReqData)
         OpenAPI_context_create_req_data_free(ContextCreateReqData);
 
