@@ -52,7 +52,7 @@ typedef struct ogs_rbtree_s {
 static ogs_inline void ogs_rbtree_link_node(
         void *rb_node, ogs_rbnode_t *parent, ogs_rbnode_t **rb_link)
 {
-    ogs_rbnode_t *node = rb_node;
+    ogs_rbnode_t *node = (ogs_rbnode_t*)rb_node;
     node->parent = parent;
     node->left = node->right = NULL;
     node->color = OGS_RBTREE_RED;
@@ -76,7 +76,7 @@ static ogs_inline void *ogs_rbtree_min(const ogs_rbnode_t *rb_node)
 
 static ogs_inline void *ogs_rbtree_max(const void *rb_node)
 {
-    const ogs_rbnode_t *node = rb_node;
+    const ogs_rbnode_t *node = (const ogs_rbnode_t*)rb_node;
     ogs_assert(node);
 
     while (node->right)
@@ -91,12 +91,12 @@ void *ogs_rbtree_last(const ogs_rbtree_t *tree);
 void *ogs_rbtree_prev(const void *node);
 
 #define ogs_rbtree_for_each(tree, node) \
-    for (node = ogs_rbtree_first(tree); \
-        (node); node = ogs_rbtree_next(node))
+    for (node = (typeof(node))ogs_rbtree_first(tree); \
+        (node); node = (typeof(node))ogs_rbtree_next(node))
 
 #define ogs_rbtree_reverse_for_each(tree, node) \
-    for (node = ogs_rbtree_last(tree); \
-        (node); node = ogs_rbtree_prev(node))
+    for (node = (typeof(node))ogs_rbtree_last(tree); \
+        (node); node = (typeof(node))ogs_rbtree_prev(node))
 
 static ogs_inline bool ogs_rbtree_empty(const ogs_rbtree_t *tree)
 {

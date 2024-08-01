@@ -150,6 +150,17 @@ ogs_hash_index_t *ogs_hash_first(ogs_hash_t *ht)
     return ogs_hash_next(hi);
 }
 
+ogs_hash_index_t *ogs_hash_index_make(const ogs_hash_t *ht)
+{
+    ogs_hash_index_t *hi;
+
+    ogs_assert(ht);
+
+    hi = ogs_calloc(1, sizeof(*hi));
+    hi->ht = ht;
+    return hi;
+}
+
 void ogs_hash_this(ogs_hash_index_t *hi,
         const void **key, int *klen, void **val)
 {

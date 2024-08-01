@@ -25,7 +25,9 @@
 
 #if defined(__GNUC__)
 #pragma GCC diagnostic push
+#ifndef __cplusplus
 #pragma GCC diagnostic ignored "-Wstrict-prototypes"
+#endif
 #endif
 
 #define OGS_SBI_DISABLE_NETWORK_SERVICE_REQUEST_WHILE_ACTIVATING 1
