@@ -1147,6 +1147,12 @@ void ogs_sbi_nf_service_clear(ogs_sbi_nf_service_t *nf_service)
     nf_service->num_of_addr = 0;
 
     nf_service->num_of_allowed_nf_type = 0;
+
+    if (nf_service->supported_features)
+    {
+        ogs_free(nf_service->supported_features);
+        nf_service->supported_features = NULL;
+    }
 }
 
 void ogs_sbi_nf_service_remove(ogs_sbi_nf_service_t *nf_service)
