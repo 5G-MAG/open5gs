@@ -41,6 +41,8 @@ static OGS_POOL(ogs_pfcp_rule_pool, ogs_pfcp_rule_t);
 static OGS_POOL(ogs_pfcp_dev_pool, ogs_pfcp_dev_t);
 static OGS_POOL(ogs_pfcp_subnet_pool, ogs_pfcp_subnet_t);
 
+static OGS_POOL(ogs_pfcp_llssm_pool, ogs_ssm_t);
+
 void ogs_pfcp_context_init(void)
 {
     int i;
@@ -84,6 +86,8 @@ void ogs_pfcp_context_init(void)
     ogs_pool_init(&ogs_pfcp_dev_pool, OGS_MAX_NUM_OF_DEV);
     ogs_pool_init(&ogs_pfcp_subnet_pool, OGS_MAX_NUM_OF_SUBNET);
 
+    ogs_pool_init(&ogs_pfcp_llssm_pool, OGS_MAX_NUM_OF_MBS_SESSIONS);
+
     self.object_teid_hash = ogs_hash_make();
     ogs_assert(self.object_teid_hash);
     self.far_f_teid_hash = ogs_hash_make();
@@ -105,8 +109,13 @@ void ogs_pfcp_context_final(void)
     ogs_assert(self.far_teid_hash);
     ogs_hash_destroy(self.far_teid_hash);
 
+    ogs_pfcp_llssm_remove_all();
+
     ogs_pfcp_dev_remove_all();
     ogs_pfcp_subnet_remove_all();
+
+    ogs_pool_final(&ogs_pfcp_llssm_pool);
+    ogs_list_init(&self.llssm_list);
 
     ogs_pool_final(&ogs_pfcp_dev_pool);
     ogs_pool_final(&ogs_pfcp_subnet_pool);
@@ -2304,4 +2313,53 @@ void ogs_pfcp_pool_final(ogs_pfcp_sess_t *sess)
     ogs_pool_destroy(&sess->urr_id_pool);
     ogs_pool_destroy(&sess->qer_id_pool);
     ogs_pool_destroy(&sess->bar_id_pool);
+}
+
+// TODO (borieher): Add support for IPv6 too
+ogs_ssm_t *ogs_pfcp_llssm_add(void)
+{
+    ogs_ssm_t *ll_ssm = NULL;
+    int offset = 0;
+
+    ogs_pool_alloc(&ogs_pfcp_llssm_pool, &ll_ssm);
+    if (!ll_ssm) {
+        ogs_error("LL-SSM: No resources available");
+        return NULL;
+    }
+
+    memset(ll_ssm, 0, sizeof *ll_ssm);
+
+    offset = ogs_list_count(&self.llssm_list);
+
+    // N3mb address:
+    ogs_ipv4_from_string(&ll_ssm->dest_ip_addr.addr, "239.0.0.4");
+    ll_ssm->dest_ip_addr.addr += htobe32(offset);
+    ll_ssm->dest_ip_addr.ipv4 = 1;
+    ll_ssm->dest_ip_addr.len = OGS_IPV4_LEN;
+
+    // UPF address:
+    ll_ssm->src_ip_addr.addr = htobe32(3232249605);
+    ll_ssm->src_ip_addr.ipv4 = 1;
+    ll_ssm->src_ip_addr.len = OGS_IPV4_LEN;
+
+    ogs_list_add(&self.llssm_list, ll_ssm);
+
+    return ll_ssm;
+}
+
+void ogs_pfcp_llssm_remove(ogs_ssm_t *ll_ssm)
+{
+    ogs_assert(ll_ssm);
+
+    ogs_list_remove(&self.llssm_list, ll_ssm);
+
+    ogs_pool_free(&ogs_pfcp_llssm_pool, ll_ssm);
+}
+
+void ogs_pfcp_llssm_remove_all(void)
+{
+    ogs_ssm_t *ll_ssm = NULL, *next_ll_ssm = NULL;
+
+    ogs_list_for_each_safe(&self.llssm_list, next_ll_ssm, ll_ssm)
+        ogs_pfcp_llssm_remove(ll_ssm);
 }

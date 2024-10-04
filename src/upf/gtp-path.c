@@ -167,7 +167,7 @@ static void _gtpv1_tun_recv_common_cb(
     mbs_sess = upf_mbs_sess_find_by_ssm(recvbuf);
 
     // NOTE (borieher): Just a way to verify that is a real upf_sess_t. Temporary workaround
-    if (mbs_sess && (mbs_sess->ll_ssm.dest_ip_addr.ipv4 == 1 || mbs_sess->ll_ssm.dest_ip_addr.ipv6 == 1)) {
+    if (mbs_sess && (mbs_sess->ll_ssm->dest_ip_addr.ipv4 == 1 || mbs_sess->ll_ssm->dest_ip_addr.ipv6 == 1)) {
         ogs_debug("MBS type sess");
     } else {
         sess = upf_sess_find_by_ue_ip_address(recvbuf);
@@ -202,7 +202,8 @@ static void _gtpv1_tun_recv_common_cb(
             far->outer_header_creation.udp4 == 0 &&
             far->outer_header_creation.udp6 == 0 &&
             far->outer_header_creation.gtpu4 == 0 &&
-            far->outer_header_creation.gtpu6 == 0)
+            far->outer_header_creation.gtpu6 == 0 &&
+            far->outer_header_creation.ssm_c_teid == 0)
             continue;
 
         /* Check if Rule List in PDR */

@@ -127,6 +127,10 @@ void upf_n4mb_handle_session_establishment_request(
         if (pdr->f_teid_len)
             ogs_pfcp_object_teid_hash_set(
                     OGS_PFCP_OBJ_SESS_TYPE, pdr, NULL);
+
+        // Setup C-TEID
+        if (pdr->teid)
+            mbs_sess->c_teid = pdr->teid;
     }
 
     // TODO (borieher): Handle the reception of MBS Session N4mb Control Information IE
@@ -150,11 +154,11 @@ void upf_n4mb_handle_session_establishment_request(
 
     /* Setup GTP Node */
     ogs_list_for_each(&mbs_sess->pfcp.far_list, far) {
-        if (mbs_sess->ll_ssm.dest_ip_addr.ipv4) {
-            far->outer_header_creation.addr = mbs_sess->ll_ssm.dest_ip_addr.addr;
+        if (mbs_sess->ll_ssm->dest_ip_addr.ipv4) {
+            far->outer_header_creation.addr = mbs_sess->ll_ssm->dest_ip_addr.addr;
             far->outer_header_creation_len += OGS_IPV4_LEN;
-        } else if (mbs_sess->ll_ssm.dest_ip_addr.ipv6) {
-            memcpy(&far->outer_header_creation.addr6, mbs_sess->ll_ssm.dest_ip_addr.addr6, OGS_IPV6_LEN);
+        } else if (mbs_sess->ll_ssm->dest_ip_addr.ipv6) {
+            memcpy(&far->outer_header_creation.addr6, mbs_sess->ll_ssm->dest_ip_addr.addr6, OGS_IPV6_LEN);
             far->outer_header_creation_len += OGS_IPV6_LEN;
         }
 

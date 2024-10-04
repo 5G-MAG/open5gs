@@ -69,6 +69,8 @@ typedef struct ogs_pfcp_context_s {
     ogs_list_t      dev_list;       /* Tun Device List */
     ogs_list_t      subnet_list;    /* UE Subnet List */
 
+    ogs_list_t      llssm_list;    /* Lower Layer SSM List (N3mb) */
+
     ogs_hash_t      *object_teid_hash; /* hash table for PFCP OBJ(TEID) */
     ogs_hash_t      *far_f_teid_hash;  /* hash table for FAR(TEID+ADDR) */
     ogs_hash_t      *far_teid_hash; /* hash table for FAR(TEID) */
@@ -508,6 +510,10 @@ ogs_pfcp_subnet_t *ogs_pfcp_find_subnet_by_dnn(int family, const char *dnn);
 
 void ogs_pfcp_pool_init(ogs_pfcp_sess_t *sess);
 void ogs_pfcp_pool_final(ogs_pfcp_sess_t *sess);
+
+ogs_ssm_t *ogs_pfcp_llssm_add(void);
+void ogs_pfcp_llssm_remove(ogs_ssm_t *ll_ssm);
+void ogs_pfcp_llssm_remove_all(void);
 
 #ifdef __cplusplus
 }

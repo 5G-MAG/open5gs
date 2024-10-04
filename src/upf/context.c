@@ -941,6 +941,7 @@ static void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess)
     ogs_assert(upf_mbs_sess);
 
     ogs_list_remove(&self.upf_mbs_sess_list, upf_mbs_sess);
+    ogs_pfcp_llssm_remove(upf_mbs_sess->ll_ssm);
     ogs_pfcp_sess_clear(&upf_mbs_sess->pfcp);
 
     ogs_hash_set(self.upf_n4_seid_hash, &upf_mbs_sess->upf_n4mb_seid,
@@ -1045,21 +1046,9 @@ void upf_mbs_sess_set_ssm(upf_mbs_sess_t *mbs_sess)
     }
 }
 
-// TODO (borieher): Modify this to allocate a real address
-void upf_mbs_sess_set_llssm_and_c_teid(upf_mbs_sess_t *mbs_sess)
+void upf_mbs_sess_set_llssm(upf_mbs_sess_t *mbs_sess)
 {
     ogs_assert(mbs_sess);
 
-    // N3mb address: 239.0.0.4
-    mbs_sess->ll_ssm.dest_ip_addr.ipv4 = 1;
-    mbs_sess->ll_ssm.dest_ip_addr.addr = htobe32(4009754628);
-    mbs_sess->ll_ssm.dest_ip_addr.len = OGS_IPV4_LEN;
-
-    // Source address (MB-UPF): 192.168.55.5
-    mbs_sess->ll_ssm.src_ip_addr.ipv4 = 1;
-    mbs_sess->ll_ssm.src_ip_addr.addr = htobe32(3232249605);
-    mbs_sess->ll_ssm.src_ip_addr.len = OGS_IPV4_LEN;
-
-    // C-TEID: 33
-    mbs_sess->c_teid = 33;
+    mbs_sess->ll_ssm = ogs_pfcp_llssm_add();
 }

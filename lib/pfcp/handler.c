@@ -1052,7 +1052,9 @@ ogs_pfcp_far_t *ogs_pfcp_handle_create_far(ogs_pfcp_sess_t *sess,
             memcpy(&far->outer_header_creation, outer_header_creation->data,
                     ogs_min(sizeof(far->outer_header_creation),
                             outer_header_creation->len));
-            far->outer_header_creation.teid =
+
+            if (far->outer_header_creation.teid)
+                far->outer_header_creation.teid =
                     be32toh(far->outer_header_creation.teid);
         }
     }

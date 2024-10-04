@@ -76,7 +76,7 @@ ogs_pkbuf_t *upf_n4mb_build_session_establishment_response(uint8_t type,
     /* MBS Session N4mb Information */
     // TODO (borieher): Should I check the outer_header_creation_description low_layer_ssm_and_c_teid flag too?
     if (mbs_sess->mbs_flags.provide_lower_layer_ssm) {
-        upf_mbs_sess_set_llssm_and_c_teid(mbs_sess);
+        upf_mbs_sess_set_llssm(mbs_sess);
 
         rsp->mbs_session_n4mb_information.presence = 1;
         rsp->mbs_session_n4mb_information.multicast_transport_information.presence = 1;
@@ -90,28 +90,28 @@ ogs_pkbuf_t *upf_n4mb_build_session_establishment_response(uint8_t type,
 
         multicast_transport_information_len += 5;
 
-        if (mbs_sess->ll_ssm.dest_ip_addr.ipv4) {
+        if (mbs_sess->ll_ssm->dest_ip_addr.ipv4) {
             multicast_transport_information.ip_multicast_distribution_address.address_type = 0;
             multicast_transport_information.ip_multicast_distribution_address.address_length = OGS_IPV4_LEN;
-            multicast_transport_information.ip_multicast_distribution_address.ipv4_addr = mbs_sess->ll_ssm.dest_ip_addr.addr;
+            multicast_transport_information.ip_multicast_distribution_address.ipv4_addr = mbs_sess->ll_ssm->dest_ip_addr.addr;
             multicast_transport_information_len += 5;
-        } else if (mbs_sess->ll_ssm.dest_ip_addr.ipv6) {
+        } else if (mbs_sess->ll_ssm->dest_ip_addr.ipv6) {
             multicast_transport_information.ip_multicast_distribution_address.address_type = 1;
             multicast_transport_information.ip_multicast_distribution_address.address_length = OGS_IPV6_LEN;
-            memcpy(&multicast_transport_information.ip_multicast_distribution_address.ipv6_addr, mbs_sess->ll_ssm.dest_ip_addr.addr6,
+            memcpy(&multicast_transport_information.ip_multicast_distribution_address.ipv6_addr, mbs_sess->ll_ssm->dest_ip_addr.addr6,
                 OGS_IPV6_LEN);
             multicast_transport_information_len += 17;
         }
 
-        if (mbs_sess->ll_ssm.src_ip_addr.ipv4) {
+        if (mbs_sess->ll_ssm->src_ip_addr.ipv4) {
             multicast_transport_information.ip_source_address.address_type = 0;
             multicast_transport_information.ip_source_address.address_length = OGS_IPV4_LEN;
-            multicast_transport_information.ip_source_address.ipv4_addr = mbs_sess->ll_ssm.src_ip_addr.addr;
+            multicast_transport_information.ip_source_address.ipv4_addr = mbs_sess->ll_ssm->src_ip_addr.addr;
             multicast_transport_information_len += 5;
-        } else if (mbs_sess->ll_ssm.src_ip_addr.ipv6) {
+        } else if (mbs_sess->ll_ssm->src_ip_addr.ipv6) {
             multicast_transport_information.ip_source_address.address_type = 1;
             multicast_transport_information.ip_source_address.address_length = OGS_IPV6_LEN;
-            memcpy(&multicast_transport_information.ip_source_address.ipv6_addr, mbs_sess->ll_ssm.src_ip_addr.addr6,
+            memcpy(&multicast_transport_information.ip_source_address.ipv6_addr, mbs_sess->ll_ssm->src_ip_addr.addr6,
                 OGS_IPV6_LEN);
             multicast_transport_information_len += 17;
         }

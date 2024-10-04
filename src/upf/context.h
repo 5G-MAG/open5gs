@@ -148,7 +148,7 @@ typedef struct upf_mbs_sess_s {
     uint32_t c_teid; /* C-TEID */
 
     ogs_ssm_t ssm;        /* AF SSM N6mb IPv4/IPv6 */
-    ogs_ssm_t ll_ssm;     /* lower layer SSM N3mb IPv4/IPv6 */
+    ogs_ssm_t *ll_ssm;     /* lower layer SSM N3mb IPv4/IPv6 */
 
     ogs_pfcp_node_t *pfcp_node;
 
@@ -191,7 +191,7 @@ upf_mbs_sess_t *upf_mbs_sess_add_by_message(ogs_pfcp_message_t *message);
 upf_mbs_sess_t *upf_mbs_sess_find_by_ipv4(uint32_t addr);
 upf_mbs_sess_t *upf_mbs_sess_find_by_ipv6(uint32_t *addr6);
 void upf_mbs_sess_set_ssm(upf_mbs_sess_t *mbs_sess);
-void upf_mbs_sess_set_llssm_and_c_teid(upf_mbs_sess_t *mbs_sess);
+void upf_mbs_sess_set_llssm(upf_mbs_sess_t *mbs_sess);
 
 #ifdef __cplusplus
 }

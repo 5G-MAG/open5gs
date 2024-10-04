@@ -462,7 +462,8 @@ void ogs_pfcp_outer_header_creation_to_ip(
         memcpy(ip->addr6, outer_header_creation->both.addr6, OGS_IPV6_LEN);
     } else if (outer_header_creation->gtpu4 ||
                 outer_header_creation->ip4 ||
-                outer_header_creation->udp4) {
+                outer_header_creation->udp4 ||
+                outer_header_creation->ssm_c_teid) {
         ip->ipv4 = 1;
         ip->len = OGS_IPV4_LEN;
         ip->addr = outer_header_creation->addr;

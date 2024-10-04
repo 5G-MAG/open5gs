@@ -987,6 +987,7 @@ typedef struct ogs_tmgi_s {
  * 3GPP TS 23.247 Ch. 6.5.3 - Source Specific IP Multicast Address
  */
 typedef struct ogs_ssm_s {
+    ogs_lnode_t lnode;      /* A node of list_t */
     ogs_ip_t src_ip_addr;
     ogs_ip_t dest_ip_addr;
 } ogs_ssm_t;
