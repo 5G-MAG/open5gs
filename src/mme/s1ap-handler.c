@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019 by Sukchan Lee <acetcom@gmail.com>
+ * Copyright (C) 2019-2024 by Sukchan Lee <acetcom@gmail.com>
  *
  * This file is part of Open5GS.
  *
@@ -1073,7 +1073,8 @@ void s1ap_handle_initial_context_setup_response(
 
         if (ogs_list_count(&mme_ue->bearer_to_modify_list)) {
             ogs_assert(OGS_OK ==
-                mme_gtp_send_modify_bearer_request(mme_ue, uli_presence, 0));
+                mme_gtp_send_modify_bearer_request(
+                    enb_ue, mme_ue, uli_presence, 0));
         }
     }
 
@@ -1596,7 +1597,8 @@ void s1ap_handle_e_rab_setup_response(
                     ogs_list_add(&mme_ue->bearer_to_modify_list,
                                     &bearer->to_modify_node);
                     ogs_assert(OGS_OK ==
-                        mme_gtp_send_modify_bearer_request(mme_ue, 0, 0));
+                        mme_gtp_send_modify_bearer_request(
+                            enb_ue, mme_ue, 0, 0));
                 } else {
                     ogs_assert(OGS_OK ==
                         mme_gtp_send_create_bearer_response(
@@ -1758,8 +1760,12 @@ void s1ap_handle_ue_context_release_request(
         ogs_warn("NAS-Cause[%d]", (int)Cause->choice.nas);
         break;
     default:
-        ogs_warn("Invalid cause group[%d]", Cause->present);
-        break;
+        ogs_error("Invalid cause group[%d]", Cause->present);
+        r = s1ap_send_error_indication(enb, MME_UE_S1AP_ID, ENB_UE_S1AP_ID,
+                S1AP_Cause_PR_protocol, S1AP_CauseProtocol_semantic_error);
+        ogs_expect(r == OGS_OK);
+        ogs_assert(r != OGS_ERROR);
+        return;
     }
 
     enb_ue->relcause.group = Cause->present;
@@ -1978,7 +1984,7 @@ void s1ap_handle_ue_context_release_action(enb_ue_t *enb_ue)
         if (mme_ue_have_indirect_tunnel(mme_ue) == true) {
             ogs_assert(OGS_OK ==
                 mme_gtp_send_delete_indirect_data_forwarding_tunnel_request(
-                    mme_ue, OGS_GTP_DELETE_INDIRECT_HANDOVER_COMPLETE));
+                    enb_ue, mme_ue, OGS_GTP_DELETE_INDIRECT_HANDOVER_COMPLETE));
         } else {
             ogs_warn("Check your eNodeB");
             ogs_warn("  No INDIRECT TUNNEL");
@@ -1999,7 +2005,7 @@ void s1ap_handle_ue_context_release_action(enb_ue_t *enb_ue)
         if (mme_ue_have_indirect_tunnel(mme_ue) == true) {
             ogs_assert(OGS_OK ==
                 mme_gtp_send_delete_indirect_data_forwarding_tunnel_request(
-                    mme_ue, OGS_GTP_DELETE_INDIRECT_HANDOVER_CANCEL));
+                    enb_ue, mme_ue, OGS_GTP_DELETE_INDIRECT_HANDOVER_CANCEL));
         } else {
             ogs_warn("Check your eNodeB");
             ogs_warn("  No INDIRECT TUNNEL");
@@ -2225,7 +2231,7 @@ void s1ap_handle_e_rab_modification_indication(
 
     if (ogs_list_count(&mme_ue->bearer_to_modify_list)) {
         ogs_assert(OGS_OK == mme_gtp_send_modify_bearer_request(
-                    mme_ue, 0, OGS_GTP_MODIFY_IN_E_RAB_MODIFICATION));
+                    enb_ue, mme_ue, 0, OGS_GTP_MODIFY_IN_E_RAB_MODIFICATION));
     }
 }
 
@@ -2267,6 +2273,10 @@ void s1ap_handle_enb_direct_information_transfer(
             break;
         }
     }
+
+    /* Clang scan-build SA: NULL pointer dereference: Inter_SystemInformationTransferType=NULL if above
+     * protocolIEs.list.count=0 in loop. */
+    ogs_assert(Inter_SystemInformationTransferType);
 
     RIMTransfer = Inter_SystemInformationTransferType->choice.rIMTransfer;
 
@@ -2661,7 +2671,7 @@ void s1ap_handle_path_switch_request(
     if (relocation == SGW_WITHOUT_RELOCATION) {
         if (ogs_list_count(&mme_ue->bearer_to_modify_list)) {
             ogs_assert(OGS_OK == mme_gtp_send_modify_bearer_request(
-                        mme_ue, 1, OGS_GTP_MODIFY_IN_PATH_SWITCH_REQUEST));
+                    enb_ue, mme_ue, 1, OGS_GTP_MODIFY_IN_PATH_SWITCH_REQUEST));
         }
     } else if (relocation == SGW_WITH_RELOCATION) {
         mme_sess_t *sess = NULL;
@@ -2672,7 +2682,7 @@ void s1ap_handle_path_switch_request(
 
             ogs_assert(OGS_OK ==
                 mme_gtp_send_create_session_request(
-                    sess, OGS_GTP_CREATE_IN_PATH_SWITCH_REQUEST));
+                    enb_ue, sess, OGS_GTP_CREATE_IN_PATH_SWITCH_REQUEST));
         }
     } else if (relocation == SGW_HAS_ALREADY_BEEN_RELOCATED) {
         ogs_error("SGW has already been relocated");
@@ -3232,8 +3242,8 @@ void s1ap_handle_handover_request_ack(
 
     if (mme_ue_have_indirect_tunnel(mme_ue) == true) {
         ogs_assert(OGS_OK ==
-            mme_gtp_send_create_indirect_data_forwarding_tunnel_request(mme_ue)\
-        );
+            mme_gtp_send_create_indirect_data_forwarding_tunnel_request(
+                source_ue, mme_ue));
     } else {
         r = s1ap_send_handover_command(source_ue);
         ogs_expect(r == OGS_OK);
@@ -3789,7 +3799,8 @@ void s1ap_handle_handover_notification(
     }
 
     if (ogs_list_count(&mme_ue->bearer_to_modify_list)) {
-        ogs_assert(OGS_OK == mme_gtp_send_modify_bearer_request(mme_ue, 1, 0));
+        ogs_assert(OGS_OK == mme_gtp_send_modify_bearer_request(
+                    target_ue, mme_ue, 1, 0));
     }
 }
 
@@ -3945,7 +3956,7 @@ void s1ap_handle_s1_reset(
             mme_ue = mme_ue_find_by_id(enb_ue->mme_ue_id);
             if (mme_ue) {
                 ogs_assert(OGS_OK ==
-                    mme_gtp_send_release_access_bearers_request(mme_ue,
+                    mme_gtp_send_release_access_bearers_request(enb_ue, mme_ue,
                         OGS_GTP_RELEASE_S1_CONTEXT_REMOVE_BY_RESET_PARTIAL));
             } else {
                 enb_ue_remove(enb_ue);

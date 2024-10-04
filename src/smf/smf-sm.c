@@ -28,6 +28,7 @@
 #include "gy-handler.h"
 #include "nnrf-handler.h"
 #include "namf-handler.h"
+#include "nsmf-handler.h"
 #include "npcf-handler.h"
 #include "nmbsmf-handler.h"
 
@@ -212,7 +213,6 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
         case OGS_GTP2_UPDATE_BEARER_RESPONSE_TYPE:
             if (!gtp2_message.h.teid_presence) ogs_error("No TEID");
             if (!sess) {
-                /* Don't have to send NACK the message */
                 ogs_error("No Session");
                 rv = ogs_gtp_xact_commit(gtp_xact);
                 ogs_expect(rv == OGS_OK);
@@ -224,7 +224,6 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
         case OGS_GTP2_DELETE_BEARER_RESPONSE_TYPE:
             if (!gtp2_message.h.teid_presence) ogs_error("No TEID");
             if (!sess) {
-                /* Don't have to send NACK the message */
                 ogs_error("No Session");
                 rv = ogs_gtp_xact_commit(gtp_xact);
                 ogs_expect(rv == OGS_OK);
@@ -661,6 +660,10 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
                             "Invalid resource name",
                             sbi_message.h.resource.component[0], NULL));
                 END
+                break;
+            CASE(OGS_SBI_RESOURCE_NAME_SDMSUBSCRIPTION_NOTIFY)
+                smf_nsmf_callback_handle_sdm_data_change_notify(
+                        stream, &sbi_message);
                 break;
             DEFAULT
                 ogs_error("Invalid resource name [%s]",

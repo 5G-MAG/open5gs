@@ -45,6 +45,14 @@ typedef struct amf_ue_s amf_ue_t;
 
 typedef uint32_t amf_m_tmsi_t;
 
+typedef enum {
+    UE_CONTEXT_INITIAL_STATE = 0,
+    UE_CONTEXT_TRANSFER_OLD_AMF_STATE,
+    UE_CONTEXT_TRANSFER_NEW_AMF_STATE,
+    REGISTRATION_STATUS_UPDATE_OLD_AMF_STATE,
+    REGISTRATION_STATUS_UPDATE_NEW_AMF_STATE,
+} amf_ue_context_transfer_state_t;
+
 typedef struct amf_context_s {
     /* Served GUAMI */
     int num_of_served_guami;
@@ -219,6 +227,12 @@ struct ran_ue_s {
         uint16_t    activated; /* Activated PSI Mask */
     } psimask;
 
+    /* UEContextReleaseRequest or InitialContextSetupFailure */
+    struct {
+        NGAP_Cause_PR group;
+        long cause;
+    } deactivation;
+
     /* Related Context */
     ogs_pool_id_t   gnb_id;
     ogs_pool_id_t   amf_ue_id;
@@ -255,6 +269,8 @@ struct amf_ue_s {
     /* UE identity */
 #define AMF_UE_HAVE_SUCI(__aMF) \
     ((__aMF) && ((__aMF)->suci))
+#define AMF_UE_HAVE_SUPI(__aMF) \
+    ((__aMF) && ((__aMF)->supi))
     char            *suci; /* TS33.501 : SUCI */
     char            *supi; /* TS33.501 : SUPI */
     ogs_nas_5gs_mobile_identity_suci_t nas_mobile_identity_suci;
@@ -276,7 +292,10 @@ struct amf_ue_s {
         ogs_nas_5gs_guti_t guti;
     } current, next;
 
+    /* UE context transfer and Registration status update */
     ogs_nas_5gs_guti_t old_guti;
+    amf_ue_context_transfer_state_t amf_ue_context_transfer_state;
+    OpenAPI_list_t *to_release_session_list;
 
     /* UE Info */
     ogs_guami_t     *guami;
@@ -515,12 +534,6 @@ struct amf_ue_s {
 
     /* UE Radio Capability */
     OCTET_STRING_t  ueRadioCapability;
-
-    /* UEContextReleaseRequest or InitialContextSetupFailure */
-    struct {
-        NGAP_Cause_PR group;
-        long cause;
-    } deactivation;
 
     /* Handover Info */
     struct {
@@ -1009,6 +1022,7 @@ void amf_clear_subscribed_info(amf_ue_t *amf_ue);
 bool amf_update_allowed_nssai(amf_ue_t *amf_ue);
 bool amf_ue_is_rat_restricted(amf_ue_t *amf_ue);
 int amf_instance_get_load(void);
+void amf_ue_save_to_release_session_list(amf_ue_t *amf_ue);
 
 amf_mbs_context_t *amf_mbs_context_create(ogs_tmgi_t *tmgi);
 
