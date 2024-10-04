@@ -3602,7 +3602,7 @@ void smf_mbs_sess_create_mbs_data_forwarding(smf_mbs_sess_t *mbs_sess)
 
     // NOTE (borieher): When using PLLSSM the MB-UPF selects the lower layer SSM and the C-TEID
     memset(&dl_far->outer_header_creation, 0, sizeof(ogs_pfcp_outer_header_creation_t));
-    dl_far->outer_header_creation.gtpu4 = 1;
+    //dl_far->outer_header_creation.gtpu4 = 1;
     dl_far->outer_header_creation.ssm_c_teid = 1;
     dl_far->outer_header_creation_len = 6;
 }
