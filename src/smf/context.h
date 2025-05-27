@@ -546,6 +546,10 @@ typedef struct smf_mbs_sess_s {
 
     /* S_NSSAI */
     ogs_s_nssai_t s_nssai;
+
+    /* MBS UDP Tunnel */
+    bool ingress_tun_addr_req;
+    ogs_sockaddr_t *ingress_tun_addr;
 } smf_mbs_sess_t;
 
 // NOTE (borieher): Not defined in the specs, default to 2 extra hours

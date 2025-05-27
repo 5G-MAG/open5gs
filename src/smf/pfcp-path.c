@@ -1037,7 +1037,7 @@ static void mbs_sess_5gc_timeout(ogs_pfcp_xact_t *xact, void *data)
 }
 
 int smf_5gc_pfcp_n4mb_send_session_establishment_request(
-        smf_mbs_sess_t *mbs_sess, uint64_t flags)
+        smf_mbs_sess_t *mbs_sess, uint64_t flags, ogs_sbi_stream_t *stream)
 {
     int rv;
     ogs_pkbuf_t *n4mbbuf = NULL;
@@ -1054,6 +1054,7 @@ int smf_5gc_pfcp_n4mb_send_session_establishment_request(
 
     xact->local_seid = mbs_sess->smf_n4mb_seid;
     xact->create_flags = flags;
+    xact->assoc_stream_id = ogs_sbi_id_from_stream(stream);
 
     memset(&h, 0, sizeof(ogs_pfcp_header_t));
     h.type = OGS_PFCP_SESSION_ESTABLISHMENT_REQUEST_TYPE;

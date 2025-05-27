@@ -475,3 +475,48 @@ void ogs_pfcp_outer_header_creation_to_ip(
         memcpy(ip->addr6, outer_header_creation->addr6, OGS_IPV6_LEN);
     }
 }
+
+int ogs_pfcp_sockaddr_to_local_ingress_tunnel(const ogs_sockaddr_t *addr,
+    ogs_pfcp_local_ingress_tunnel_t *local_ingress_tunnel, int *len)
+{
+    ogs_assert(local_ingress_tunnel);
+    ogs_assert(len);
+
+    memset(local_ingress_tunnel, 0, sizeof(*local_ingress_tunnel));
+
+    *len = sizeof(local_ingress_tunnel->flags); /* just flags, for now */
+    if (addr->ogs_sa_family == AF_INET) {
+        local_ingress_tunnel->ipv4 = 1;
+        local_ingress_tunnel->addr = addr->sin.sin_addr.s_addr;
+        local_ingress_tunnel->port = addr->sin.sin_port;
+        *len = sizeof(local_ingress_tunnel->flags) +
+               sizeof(local_ingress_tunnel->port) +
+               sizeof(local_ingress_tunnel->addr);
+    } else if (addr->ogs_sa_family == AF_INET6) {
+        local_ingress_tunnel->ipv6 = 1;
+        memcpy(&local_ingress_tunnel->addr6, &addr->sin6.sin6_addr,
+                sizeof(local_ingress_tunnel->addr6));
+        local_ingress_tunnel->port = addr->sin6.sin6_port;
+        *len = sizeof(local_ingress_tunnel->flags) +
+               sizeof(local_ingress_tunnel->port) +
+               sizeof(local_ingress_tunnel->addr6);
+    } else {
+        ogs_error("PFCP Local Ingress Tunnel only understands IPv4 or IPv6 addresses");
+        return OGS_ERROR;
+    }
+    return OGS_OK;
+}
+
+int ogs_pfcp_proto_choice_to_local_ingress_tunnel(bool ipv4, bool ipv6,
+    ogs_pfcp_local_ingress_tunnel_t *local_ingress_tunnel, int *len)
+{
+    ogs_assert(local_ingress_tunnel);
+    ogs_assert(len);
+
+    local_ingress_tunnel->choose = 1;
+    local_ingress_tunnel->ipv4 = ipv4?1:0;
+    local_ingress_tunnel->ipv6 = ipv6?1:0;
+    *len = sizeof(local_ingress_tunnel->flags);
+
+    return OGS_OK;
+}
