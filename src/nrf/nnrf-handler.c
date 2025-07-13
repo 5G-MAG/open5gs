@@ -894,7 +894,8 @@ bool nrf_nnrf_handle_nf_discover(
         if (NF_INSTANCE_EXCLUDED_FROM_DISCOVERY(nf_instance))
             continue;
 
-        if (nf_instance->nf_type != recvmsg->param.target_nf_type)
+        if (nf_instance->nf_type != recvmsg->param.target_nf_type &&
+            !ogs_sbi_nf_instance_is_collocated_nf_type(nf_instance, ogs_collocated_nf_type_from_nf_type(recvmsg->param.target_nf_type)))
             continue;
 
         if (ogs_sbi_nf_instance_is_allowed_nf_type(

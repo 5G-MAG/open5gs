@@ -100,6 +100,11 @@ typedef struct ogs_sbi_context_s {
     const char *service_name[OGS_SBI_MAX_NUM_OF_SERVICE_TYPE];
 } ogs_sbi_context_t;
 
+typedef struct ogs_collocated_nf_instance_s {
+    ogs_lnode_t lnode;
+    OpenAPI_collocated_nf_instance_t collocated_nf_instance; /* CollocatedNfInstance for list in ogs_nf_instance_t */
+} ogs_collocated_nf_instance_t;
+
 typedef struct ogs_sbi_nf_instance_s {
     ogs_lnode_t lnode;
 
@@ -171,6 +176,7 @@ typedef struct ogs_sbi_nf_instance_s {
 
     ogs_list_t nf_service_list;
     ogs_list_t nf_info_list;
+    ogs_list_t collocated_nf_list;
 
 #define NF_INSTANCE_CLIENT(__nFInstance) \
     ((__nFInstance) ? ((__nFInstance)->client) : NULL)
@@ -398,6 +404,10 @@ ogs_sbi_client_t *ogs_sbi_context_parse_client_config(
 
 bool ogs_sbi_nf_service_is_available(const char *name);
 
+OpenAPI_collocated_nf_type_e ogs_collocated_nf_type_from_nf_type(OpenAPI_nf_type_e);
+OpenAPI_nf_type_e ogs_nf_type_from_collocated_nf_type(OpenAPI_collocated_nf_type_e);
+ogs_collocated_nf_instance_t *ogs_collocated_nf_instance_create(const char *id, OpenAPI_collocated_nf_type_e nf_type);
+
 ogs_sbi_nf_instance_t *ogs_sbi_nf_instance_add(void);
 void ogs_sbi_nf_instance_set_id(ogs_sbi_nf_instance_t *nf_instance, char *id);
 void ogs_sbi_nf_instance_set_type(
@@ -406,8 +416,12 @@ void ogs_sbi_nf_instance_set_status(
         ogs_sbi_nf_instance_t *nf_instance, OpenAPI_nf_status_e nf_status);
 void ogs_sbi_nf_instance_add_allowed_nf_type(
         ogs_sbi_nf_instance_t *nf_instance, OpenAPI_nf_type_e allowed_nf_type);
+void ogs_sbi_nf_instance_add_collocated_nf_type(
+        ogs_sbi_nf_instance_t *nf_instance, OpenAPI_collocated_nf_type_e collocated_nf_type);
 bool ogs_sbi_nf_instance_is_allowed_nf_type(
         ogs_sbi_nf_instance_t *nf_instance, OpenAPI_nf_type_e allowed_nf_type);
+bool ogs_sbi_nf_instance_is_collocated_nf_type(
+        ogs_sbi_nf_instance_t *nf_instance, OpenAPI_collocated_nf_type_e collocated_nf_type);
 void ogs_sbi_nf_instance_clear(ogs_sbi_nf_instance_t *nf_instance);
 void ogs_sbi_nf_instance_remove(ogs_sbi_nf_instance_t *nf_instance);
 void ogs_sbi_nf_instance_remove_all(void);
