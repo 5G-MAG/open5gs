@@ -2646,6 +2646,13 @@ static int parse_json(ogs_sbi_message_t *message,
                             rv = OGS_ERROR;
                             ogs_error("JSON parse error");
                         }
+                    } else {
+			message->CreateRspData =
+                            OpenAPI_create_rsp_data_parseFromJSON(item);
+                        if (!message->CreateRspData) {
+                            rv = OGS_ERROR;
+                            ogs_error("JSON parse error");
+                        }
                     }
                     break;
 
