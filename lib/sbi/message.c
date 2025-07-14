@@ -210,6 +210,8 @@ void ogs_sbi_message_free(ogs_sbi_message_t *message)
         OpenAPI_tmgi_allocate_free(message->TmgiAllocate);
     if (message->CreateReqData)
         OpenAPI_create_req_data_free(message->CreateReqData);
+    if (message->CreateRspData)
+        OpenAPI_create_rsp_data_free(message->CreateRspData);
     if (message->ContextCreateReqData)
         OpenAPI_context_create_req_data_free(message->ContextCreateReqData);
 
