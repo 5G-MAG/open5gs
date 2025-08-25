@@ -2765,8 +2765,11 @@ ogs_pkbuf_t *ngap_build_broadcast_session_setup_request(amf_mbs_context_t *mbs_c
     // MBS Service Area Information
     NGAP_MBS_ServiceAreaInformation_t *mBS_ServiceAreaInformation = NULL;
     NGAP_MBS_ServiceAreaTAIList_t *mBS_ServiceAreaTAIList = NULL;
+    NGAP_MBS_ServiceAreaCellList_t *mBS_ServiceAreaCellList = NULL;
     // TAI
     NGAP_TAI_t *tAI = NULL;
+    // NR-CGI
+    NGAP_NR_CGI_t *nR_CGI = NULL;
 
     // MBS Session Setup Request Transfer
     OCTET_STRING_t *oCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer = NULL;
@@ -2884,6 +2887,26 @@ ogs_pkbuf_t *ngap_build_broadcast_session_setup_request(amf_mbs_context_t *mbs_c
     tai.tac = ogs_uint24_from_string(ogs_strdup("1"));
 
     ogs_ngap_5gs_tai_to_ASN(&tai, tAI);
+
+    mBS_ServiceAreaCellList = CALLOC(1, sizeof(NGAP_MBS_ServiceAreaCellList_t));
+    ogs_assert(mBS_ServiceAreaCellList);
+    mBS_ServiceAreaInformation->mBS_ServiceAreaCellList = mBS_ServiceAreaCellList;
+
+    // NR-CGI - 9.3.1.7 (M)
+    nR_CGI = CALLOC(1, sizeof(NGAP_NR_CGI_t));
+    ogs_assert(nR_CGI);
+    ASN_SEQUENCE_ADD(mBS_ServiceAreaCellList, nR_CGI);
+
+    // PLMN Identity - 9.3.3.5 (M)
+    // NR Cell Identity (M)
+    ogs_nr_cgi_t nr_cgi;
+    ogs_plmn_id_build(&nr_cgi.plmn_id, ogs_plmn_id_mcc(&amf_self()->plmn_support[0].plmn_id),
+        ogs_plmn_id_mnc(&amf_self()->plmn_support[0].plmn_id), ogs_plmn_id_mnc_len(&amf_self()->plmn_support[0].plmn_id));
+    nr_cgi.cell_id = 73588229257;
+
+    ogs_ngap_nr_cgi_to_ASN(&nr_cgi, nR_CGI);
+
+    // TODO (borieher): Fill the NR-CGI without hardcoded values
 
     // MBS Session Setup Request Transfer - OCTET STRING (SIZE(3)) (M)
     ie = CALLOC(1, sizeof(NGAP_BroadcastSessionSetupRequestIEs_t));
