@@ -407,6 +407,7 @@ bool ogs_sbi_nf_service_is_available(const char *name);
 OpenAPI_collocated_nf_type_e ogs_collocated_nf_type_from_nf_type(OpenAPI_nf_type_e);
 OpenAPI_nf_type_e ogs_nf_type_from_collocated_nf_type(OpenAPI_collocated_nf_type_e);
 ogs_collocated_nf_instance_t *ogs_collocated_nf_instance_create(const char *id, OpenAPI_collocated_nf_type_e nf_type);
+void ogs_collocated_nf_instance_free(ogs_collocated_nf_instance_t *collocated_nf_instance);
 
 ogs_sbi_nf_instance_t *ogs_sbi_nf_instance_add(void);
 void ogs_sbi_nf_instance_set_id(ogs_sbi_nf_instance_t *nf_instance, char *id);

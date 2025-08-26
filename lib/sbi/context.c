@@ -1133,6 +1133,13 @@ ogs_collocated_nf_instance_t *ogs_collocated_nf_instance_create(const char *nf_i
     return nfi;
 }
 
+void ogs_collocated_nf_instance_free(ogs_collocated_nf_instance_t *nfi)
+{
+    if (!nfi) return;
+    if (nfi->collocated_nf_instance.nf_instance_id) ogs_free(nfi->collocated_nf_instance.nf_instance_id);
+    ogs_free(nfi);
+}
+
 ogs_sbi_nf_instance_t *ogs_sbi_nf_instance_add(void)
 {
     ogs_sbi_nf_instance_t *nf_instance = NULL;
@@ -1267,6 +1274,12 @@ void ogs_sbi_nf_instance_clear(ogs_sbi_nf_instance_t *nf_instance)
             ogs_freeaddrinfo(nf_instance->ipv6[i]);
     }
     nf_instance->num_of_ipv6 = 0;
+
+    ogs_collocated_nf_instance_t *next, *node;
+    ogs_list_for_each_safe(&nf_instance->collocated_nf_list, next, node) {
+	ogs_list_remove(&nf_instance->collocated_nf_list, node);
+	ogs_collocated_nf_instance_free(node);
+    }
 
     nf_instance->num_of_allowed_nf_type = 0;
 }
