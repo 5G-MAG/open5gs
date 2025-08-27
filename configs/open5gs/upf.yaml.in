@@ -27,6 +27,30 @@ upf:
     server:
       - address: 127.0.0.7
         port: 9090
+  mbs:
+    udptunnel:
+       address: 127.0.0.7
+# UDP tunnel for MBS uses ephemeral ports
+#      port: 0
+#
+# UDP tunnel for MBS has single fixed port (example 12345) (Useful for testing only)
+#      port: 12345
+#
+# UDP tunnel for MBS has port range (example 32700 to 32800 inclusive)
+#      port:
+#         start: 32700
+#         end:   32800
+#
+# UDP tunnel for MBS has specific port numbers in the pool
+#      port:
+#         - 1001
+#         - 1003
+#         - 1004
+#         - 1005
+#
+# Note that if any port specified is 0 then ephemeral ports will be used
+#
+       port: 0
 
 ################################################################################
 # PFCP Server

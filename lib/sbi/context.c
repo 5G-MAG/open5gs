@@ -1081,6 +1081,65 @@ bool ogs_sbi_nf_service_is_available(const char *name)
     return false;
 }
 
+OpenAPI_collocated_nf_type_e ogs_collocated_nf_type_from_nf_type(OpenAPI_nf_type_e nf_type)
+{
+    switch (nf_type) {
+    case OpenAPI_nf_type_MB_SMF:
+        return OpenAPI_collocated_nf_type_MB_SMF;
+    case OpenAPI_nf_type_MB_UPF:
+        return OpenAPI_collocated_nf_type_MB_UPF;
+    case OpenAPI_nf_type_SMF:
+	return OpenAPI_collocated_nf_type_SMF;
+    case OpenAPI_nf_type_UPF:
+        return OpenAPI_collocated_nf_type_UPF;
+    default:
+    }
+    return OpenAPI_collocated_nf_type_NULL;
+}
+
+OpenAPI_nf_type_e ogs_nf_type_from_collocated_nf_type(OpenAPI_collocated_nf_type_e nf_type)
+{
+    switch (nf_type) {
+    case OpenAPI_collocated_nf_type_MB_SMF:
+        return OpenAPI_nf_type_MB_SMF;
+    case OpenAPI_collocated_nf_type_MB_UPF:
+        return OpenAPI_nf_type_MB_UPF;
+    case OpenAPI_collocated_nf_type_SMF:
+        return OpenAPI_nf_type_SMF;
+    case OpenAPI_collocated_nf_type_UPF:
+        return OpenAPI_nf_type_UPF;
+    default:
+    }
+    return OpenAPI_nf_type_NULL;
+}
+
+ogs_collocated_nf_instance_t *ogs_collocated_nf_instance_create(const char *nf_id, OpenAPI_collocated_nf_type_e nf_type)
+{
+    ogs_uuid_t uuid;
+    char id[OGS_UUID_FORMATTED_LENGTH + 1];
+
+    ogs_assert(nf_type);
+
+    if (!nf_id) {
+        ogs_uuid_get(&uuid);
+        ogs_uuid_format(id, &uuid);
+        nf_id = id;
+    }
+
+    ogs_collocated_nf_instance_t *nfi = ogs_calloc(1, sizeof(*nfi));
+    nfi->collocated_nf_instance.nf_instance_id = ogs_strdup(nf_id);
+    nfi->collocated_nf_instance.nf_type = nf_type;
+
+    return nfi;
+}
+
+void ogs_collocated_nf_instance_free(ogs_collocated_nf_instance_t *nfi)
+{
+    if (!nfi) return;
+    if (nfi->collocated_nf_instance.nf_instance_id) ogs_free(nfi->collocated_nf_instance.nf_instance_id);
+    ogs_free(nfi);
+}
+
 ogs_sbi_nf_instance_t *ogs_sbi_nf_instance_add(void)
 {
     ogs_sbi_nf_instance_t *nf_instance = NULL;
@@ -1146,6 +1205,17 @@ void ogs_sbi_nf_instance_add_allowed_nf_type(
     }
 }
 
+void ogs_sbi_nf_instance_add_collocated_nf_type(
+        ogs_sbi_nf_instance_t *nf_instance,
+        OpenAPI_collocated_nf_type_e collocated_nf_type)
+{
+    ogs_assert(nf_instance);
+    ogs_assert(collocated_nf_type);
+
+    ogs_list_add(&nf_instance->collocated_nf_list,
+            ogs_collocated_nf_instance_create(NULL, collocated_nf_type));
+}
+
 bool ogs_sbi_nf_instance_is_allowed_nf_type(
         ogs_sbi_nf_instance_t *nf_instance, OpenAPI_nf_type_e allowed_nf_type)
 {
@@ -1166,6 +1236,20 @@ bool ogs_sbi_nf_instance_is_allowed_nf_type(
     ogs_error("Not allowed nf-type[%s] in nf-instance[%s]",
             OpenAPI_nf_type_ToString(allowed_nf_type),
             OpenAPI_nf_type_ToString(nf_instance->nf_type));
+    return false;
+}
+
+bool ogs_sbi_nf_instance_is_collocated_nf_type(
+        ogs_sbi_nf_instance_t *nf_instance, OpenAPI_collocated_nf_type_e collocated_nf_type)
+{
+    ogs_assert(nf_instance);
+
+    if (!collocated_nf_type) return false;
+
+    ogs_collocated_nf_instance_t *node;
+    ogs_list_for_each(&nf_instance->collocated_nf_list, node) {
+	if (node->collocated_nf_instance.nf_type == collocated_nf_type) return true;
+    }
     return false;
 }
 
@@ -1190,6 +1274,12 @@ void ogs_sbi_nf_instance_clear(ogs_sbi_nf_instance_t *nf_instance)
             ogs_freeaddrinfo(nf_instance->ipv6[i]);
     }
     nf_instance->num_of_ipv6 = 0;
+
+    ogs_collocated_nf_instance_t *next, *node;
+    ogs_list_for_each_safe(&nf_instance->collocated_nf_list, next, node) {
+	ogs_list_remove(&nf_instance->collocated_nf_list, node);
+	ogs_collocated_nf_instance_free(node);
+    }
 
     nf_instance->num_of_allowed_nf_type = 0;
 }
@@ -2122,7 +2212,9 @@ bool ogs_sbi_discovery_param_is_matched(
     if (NF_INSTANCE_EXCLUDED_FROM_DISCOVERY(nf_instance))
         return false;
 
-    if (nf_instance->nf_type != target_nf_type)
+    if (nf_instance->nf_type != target_nf_type &&
+        !ogs_sbi_nf_instance_is_collocated_nf_type(
+		nf_instance, ogs_collocated_nf_type_from_nf_type(target_nf_type)))
         return false;
 
     /*

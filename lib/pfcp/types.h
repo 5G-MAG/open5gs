@@ -1880,6 +1880,43 @@ ED4(uint8_t     spare:5;,
     };
 } __attribute__ ((packed)) ogs_pfcp_mbsn4mbreq_flags_t;
 
+/*
+ * 8.2.209 Local Ingress Tunnel
+ *
+ * The following bits within Octet 5 shall indicate:
+ * - Bit 1 - V4 (Presence of IPv4 address): if this bit is set to "1"
+ *   and the CH bit is not set, then the IPv4 address field shall be present,
+ *   otherwise the IPv4 address field shall not be present.
+ * - Bit 2 - V6 (Presence of IPv6 address): if this bit is set to "1"
+ *   and the CH bit is not set, then the IPv6 address field shall be present,
+ *   otherwise the IPv6 address field shall not be present.
+ * - Bit 3 - CH (CHOOSE): if this bit is set to "1", then the UDP Port,
+ *   IPv4 address and IPv6 address fields shall not be present and the UP
+ *   function shall assign a UDP Port with either an IPv4 or an IPv6 address,
+ *   depending on whether the CP fuction has set the V4 or the V6 bit,
+ *   respectively. This bit shall only be set by the CP function.
+ */
+typedef struct ogs_pfcp_local_ingress_tunnel_s {
+    union {
+        struct {
+            ED4(uint8_t spare:5;,
+                uint8_t choose:1;,
+                uint8_t ipv6:1;,
+                uint8_t ipv4:1;)
+        };
+        uint8_t flags;
+    };
+    uint16_t port;                   /* only when choose==0 */
+    union {
+        uint32_t addr;               /* only when choose==0 && ipv6==0 && ipv4==1 */
+        uint8_t addr6[OGS_IPV6_LEN]; /* only when choose==0 && ipv6==1 && ipv4==0 */
+        struct {                     /* only when choose==0 && ipv6==1 && ipv4==1 */
+            uint32_t addr;
+            uint8_t addr6[OGS_IPV6_LEN];
+        } both;
+    };
+} __attribute__ ((packed)) ogs_pfcp_local_ingress_tunnel_t;
+
 #ifdef __cplusplus
 }
 #endif

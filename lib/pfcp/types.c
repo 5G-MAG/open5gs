@@ -863,14 +863,31 @@ int16_t ogs_pfcp_build_mbs_session_identifier(ogs_tlv_octet_t *octet,
         memcpy((uint8_t *)octet->data + size, &target.tmgi.plmn_id,
             sizeof(target.tmgi.plmn_id));
         size += sizeof(target.tmgi.plmn_id);
+#if 0
+    } else {
+        size += 6;
+#endif
     }
 
     if (target.ssmif) {
         // TODO (borieher): Add SSM
+        ((uint8_t *)octet->data)[size] = target.ssm.ip_multicast_distribution_address.flags;
+        size += 1;
+
+        memcpy((uint8_t *)octet->data + size, target.ssm.ip_multicast_distribution_address.ipv6_addr, target.ssm.ip_multicast_distribution_address.address_length);
+        size += target.ssm.ip_multicast_distribution_address.address_length;
+
+        ((uint8_t *)octet->data)[size] = target.ssm.ip_source_address.flags;
+        size += 1;
+
+        memcpy((uint8_t *)octet->data + size, target.ssm.ip_source_address.ipv6_addr, target.ssm.ip_source_address.address_length);
+        size += target.ssm.ip_source_address.address_length;
     }
 
     if (target.nidif) {
         // TODO (borieher): Add NID
+        memcpy((uint8_t *)octet->data + size, target.nid, sizeof(target.nid));
+	size += sizeof(target.nid);
     }
 
     octet->len = size;
@@ -887,29 +904,52 @@ int16_t ogs_pfcp_parse_mbs_session_identifier(
     ogs_assert(mbs_session_identifier);
     ogs_assert(octet);
 
+    uint8_t *data = (uint8_t*)octet->data;
+    uint32_t data_len = octet->len;
+
     memset(mbs_session_identifier, 0, sizeof(ogs_pfcp_mbs_session_identifier_t));
 
-    mbs_session_identifier->octet5 = ((uint8_t *)octet->data)[size];
+    ogs_assert(size + sizeof(mbs_session_identifier->octet5) <= data_len);
+    mbs_session_identifier->octet5 = data[size];
     size += sizeof(mbs_session_identifier->octet5);
 
     if (mbs_session_identifier->tmgif) {
         // TODO (borieher): Verify this is working as intended
-        mbs_session_identifier->tmgi.mbs_service_id[0] = ((uintptr_t)octet->data >> 16) & 0xff;
-        mbs_session_identifier->tmgi.mbs_service_id[1] = ((uintptr_t)octet->data >> 8) & 0xff;
-        mbs_session_identifier->tmgi.mbs_service_id[2] = ((uintptr_t)octet->data) & 0xff;
+        ogs_assert(size + sizeof(mbs_session_identifier->tmgi.mbs_service_id) <= data_len);
+        memcpy(mbs_session_identifier->tmgi.mbs_service_id, data + size,
+                sizeof(mbs_session_identifier->tmgi.mbs_service_id));
         size += sizeof(mbs_session_identifier->tmgi.mbs_service_id);
 
-        memcpy(&mbs_session_identifier->tmgi.plmn_id, (uint8_t *)octet->data + size,
-        sizeof(mbs_session_identifier->tmgi.plmn_id));
+        ogs_assert(size + sizeof(mbs_session_identifier->tmgi.plmn_id) <= data_len);
+        memcpy(&mbs_session_identifier->tmgi.plmn_id, data + size,
+                sizeof(mbs_session_identifier->tmgi.plmn_id));
         size += sizeof(mbs_session_identifier->tmgi.plmn_id);
+#if 0 /* Commented out as the intention is to omit the field if not indicated by the flag, but the spec shows otherwise */
+    } else {
+        // No TMGI so we skip to octet 12 (TS 29.244 Clause 8.2.206 shows SSM always starts at octet 12)
+        size += 6;
+#endif
     }
 
     if (mbs_session_identifier->ssmif) {
         // TODO (borieher): Add SSM
+        mbs_session_identifier->ssm.ip_multicast_distribution_address.flags = ((uint8_t*)octet->data)[size];
+        size += 1;
+
+        memcpy(mbs_session_identifier->ssm.ip_multicast_distribution_address.ipv6_addr, (uint8_t*)octet->data + size, mbs_session_identifier->ssm.ip_multicast_distribution_address.address_length);
+        size += mbs_session_identifier->ssm.ip_multicast_distribution_address.address_length;
+
+        mbs_session_identifier->ssm.ip_source_address.flags = ((uint8_t*)octet->data)[size];
+        size += 1;
+
+        memcpy(mbs_session_identifier->ssm.ip_source_address.ipv6_addr, (uint8_t*)octet->data + size, mbs_session_identifier->ssm.ip_source_address.address_length);
+        size += mbs_session_identifier->ssm.ip_source_address.address_length;
     }
 
     if (mbs_session_identifier->nidif) {
         // TODO (borieher): Add NID
+        memcpy(mbs_session_identifier->nid, (uint8_t*)octet->data + size, sizeof(mbs_session_identifier->nid));
+        size += sizeof(mbs_session_identifier->nid);
     }
 
     ogs_assert(size == octet->len);

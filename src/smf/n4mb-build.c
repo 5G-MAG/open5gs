@@ -40,6 +40,7 @@ ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
     ogs_pfcp_mbs_session_identifier_t mbs_session_identifier;
     uint8_t mbs_session_identifier_buf[sizeof(ogs_pfcp_mbs_session_identifier_t)];
     ogs_pfcp_mbsn4mbreq_flags_t mbsn4mbreq_flags;
+    ogs_pfcp_local_ingress_tunnel_t local_ingress_tunnel;
 
     ogs_debug("N4mb Session Establishment Request");
 
@@ -117,7 +118,29 @@ ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
         req->s_nssai.data = &mbs_sess->s_nssai;
     }
 
-    // NOTE (borieher): (C), create_traffic_endpoint if UP has PDI optimization
+    // NOTE (borieher): (C), create_traffic_endpoint if UP has PDI optimization or tunnelling requested
+    /* Create "Create Traffic Endpoint" */
+    if (mbs_sess->ingress_tun_addr_req) {
+        /* TODO: (davidjw) allow choice of IPv4 and/or IPv6 */
+	if (ogs_pfcp_proto_choice_to_local_ingress_tunnel(true, false, &local_ingress_tunnel, &len) == OGS_OK) {
+            req->create_traffic_endpoint.presence = 1;
+            req->create_traffic_endpoint.local_ingress_tunnel.presence = 1;
+	    req->create_traffic_endpoint.local_ingress_tunnel.data = &local_ingress_tunnel;
+            req->create_traffic_endpoint.local_ingress_tunnel.len = len;
+            ogs_debug("local_ingress_tunnel.len = %zu, len = %i", sizeof(local_ingress_tunnel)-4, len);
+        } else {
+	    ogs_warn("Couldn't add Local Ingress Tunnel choice to PFCP request");
+        }
+    } else if (mbs_sess->ingress_tun_addr) {
+	if (ogs_pfcp_sockaddr_to_local_ingress_tunnel(mbs_sess->ingress_tun_addr, &local_ingress_tunnel, &len) == OGS_OK) {
+            req->create_traffic_endpoint.presence = 1;
+	    req->create_traffic_endpoint.local_ingress_tunnel.presence = 1;
+            req->create_traffic_endpoint.local_ingress_tunnel.data = &local_ingress_tunnel;
+            req->create_traffic_endpoint.local_ingress_tunnel.len = sizeof(local_ingress_tunnel)/*len*/;
+        } else {
+            ogs_warn("Couldn't add Local Ingress Tunnel address to PFCP request");
+        }
+    }
 
     // NOTE (borieher): (O), user_plane_inactivity_timer
 
@@ -139,9 +162,35 @@ ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
         mbs_session_identifier.tmgi.mnc3 = mbs_sess->mbs_session_id.tmgi->plmn_id.mnc3;
         mbs_session_identifier.tmgi.mnc2 = mbs_sess->mbs_session_id.tmgi->plmn_id.mnc2;
         mbs_session_identifier.tmgi.mnc1 = mbs_sess->mbs_session_id.tmgi->plmn_id.mnc1;
-    } else if (mbs_sess->mbs_session_id.is_ssm) {
+    }
+    if (mbs_sess->mbs_session_id.is_ssm || mbs_sess->ssm) {
+	ogs_ssm_t *ssm = mbs_sess->mbs_session_id.is_ssm?mbs_sess->mbs_session_id.ssm:mbs_sess->ssm;
         mbs_session_identifier.ssmif = 1;
         // TODO (borieher): Build SSM as MBS Session ID
+        if (ssm->dest_ip_addr.ipv4) {
+            mbs_session_identifier.ssm.ip_multicast_distribution_address.address_type = 0; /* IPv4 */
+            mbs_session_identifier.ssm.ip_multicast_distribution_address.address_length =
+                    ssm->dest_ip_addr.len;
+            mbs_session_identifier.ssm.ip_multicast_distribution_address.ipv4_addr =
+                    ssm->dest_ip_addr.addr;
+        } else if (ssm->dest_ip_addr.ipv6) {
+            mbs_session_identifier.ssm.ip_multicast_distribution_address.address_type = 1; /* IPv6 */
+            mbs_session_identifier.ssm.ip_multicast_distribution_address.address_length =
+                    ssm->dest_ip_addr.len;
+            memcpy(mbs_session_identifier.ssm.ip_multicast_distribution_address.ipv6_addr, ssm->dest_ip_addr.addr6, sizeof(mbs_session_identifier.ssm.ip_multicast_distribution_address.ipv6_addr));
+        }
+	if (ssm->src_ip_addr.ipv4) {
+	    mbs_session_identifier.ssm.ip_source_address.address_type = 0; /* IPv4 */
+            mbs_session_identifier.ssm.ip_source_address.address_length =
+                    ssm->src_ip_addr.len;
+            mbs_session_identifier.ssm.ip_source_address.ipv4_addr =
+                    ssm->src_ip_addr.addr;
+        } else if (ssm->src_ip_addr.ipv6) {
+            mbs_session_identifier.ssm.ip_source_address.address_type = 1; /* IPv6 */
+            mbs_session_identifier.ssm.ip_source_address.address_length =
+                    ssm->src_ip_addr.len;
+            memcpy(mbs_session_identifier.ssm.ip_source_address.ipv6_addr, ssm->src_ip_addr.addr6, sizeof(mbs_session_identifier.ssm.ip_source_address.ipv6_addr));
+        }
     }
 
     if (mbs_sess->mbs_session_id.nid) {
@@ -156,17 +205,18 @@ ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
     // MBSN4mbReq flags for MBS Session N4mb Control Information
     memset(&mbsn4mbreq_flags, 0, sizeof(ogs_pfcp_mbsn4mbreq_flags_t));
 
-    // If SSM is present, add JMBSSM flag
-    if (mbs_sess->mbs_session_id.is_ssm || mbs_sess->ssm) {
+    // If we are not using a UDP tunnel and SSM is present, add JMBSSM flag
+    if (!mbs_sess->ingress_tun_addr_req && !mbs_sess->ingress_tun_addr &&
+        (mbs_sess->mbs_session_id.is_ssm || mbs_sess->ssm)) {
         mbsn4mbreq_flags.join_mbs_session_ssm = 1;
     }
 
+    // Always allocate LL-SSM for talking to the RAN (or UPF)
     mbsn4mbreq_flags.provide_lower_layer_ssm = 1;
 
     req->mbs_session_n4mb_control_information.mbsn4mbreq_flags.presence = 1;
     req->mbs_session_n4mb_control_information.mbsn4mbreq_flags.data = &mbsn4mbreq_flags.value;
     req->mbs_session_n4mb_control_information.mbsn4mbreq_flags.len = sizeof(ogs_pfcp_mbsn4mbreq_flags_t);
-
 
     pfcp_message->h.type = OGS_PFCP_SESSION_ESTABLISHMENT_REQUEST_TYPE;
     pkbuf = ogs_pfcp_build_msg(pfcp_message);

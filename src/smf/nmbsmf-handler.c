@@ -301,22 +301,6 @@ bool smf_nmbsmf_handle_mbs_session_create(
     ogs_ssm_t *ssm = NULL;
     smf_mbs_sess_t *mbs_sess = NULL;
 
-    /* TODO (borieher): Move this to a different place after PFCP and the AMF request are done */
-    OpenAPI_create_rsp_data_t *CreateRspData = NULL;
-    OpenAPI_tmgi_t *Tmgi = NULL;
-    OpenAPI_tmgi_t *Tmgi_copy = NULL;
-    OpenAPI_ssm_t * Ssm = NULL;
-    OpenAPI_ssm_t * Ssm_copy = NULL;
-    OpenAPI_mbs_session_id_t *Mbs_session_id = NULL;
-    OpenAPI_mbs_service_type_e Mbs_service_type = OpenAPI_mbs_service_type_NULL;
-    OpenAPI_ext_mbs_session_t *Ext_mbs_session = NULL;
-    /* */
-
-    ogs_sbi_message_t sendmsg;
-    ogs_sbi_server_t *server = NULL;
-    ogs_sbi_header_t header;
-    ogs_sbi_response_t *response = NULL;
-
     ogs_assert(stream);
     ogs_assert(message);
 
@@ -324,9 +308,6 @@ bool smf_nmbsmf_handle_mbs_session_create(
     // TODO (borieher): How to get NID?
     char *nid = NULL;
     char *service_type = NULL;
-
-    memset(&sendmsg, 0, sizeof(sendmsg));
-    memset(&header, 0, sizeof(header));
 
     int rv = OGS_OK;
 
@@ -492,6 +473,8 @@ bool smf_nmbsmf_handle_mbs_session_create(
 
     // MBS Session create
     mbs_sess = smf_mbs_sess_create(tmgi, ssm, service_type);
+    mbs_sess->ingress_tun_addr_req = (CreateReqData->mbs_session->is_ingress_tun_addr_req &&
+                                      CreateReqData->mbs_session->ingress_tun_addr_req != 0);
 
     /*********************************************************************
      * Send PFCP N4mb Session Establishment Request to the UPF
@@ -499,57 +482,7 @@ bool smf_nmbsmf_handle_mbs_session_create(
 
     smf_mbs_sess_create_mbs_data_forwarding(mbs_sess);
 
-    smf_5gc_pfcp_n4mb_send_session_establishment_request(mbs_sess, 0);
-
-    // NOTE (borieher): Currently the response is right after the request, but in the call flow is after the PFCP Session Establishment
-    //                  separate this in request and response
-
-    Tmgi = ogs_sbi_build_tmgi(mbs_sess->tmgi);
-    if (mbs_sess->mbs_session_id.is_tmgi) {
-        Tmgi_copy = OpenAPI_tmgi_copy(Tmgi_copy, Tmgi);
-        Mbs_session_id = OpenAPI_mbs_session_id_create(Tmgi_copy, NULL, mbs_sess->mbs_session_id.nid);
-    }
-
-    if (mbs_sess->mbs_session_id.is_ssm) {
-        Ssm = ogs_sbi_build_ssm(mbs_sess->mbs_session_id.ssm);
-        Ssm_copy = OpenAPI_ssm_copy(Ssm_copy, Ssm);
-        Mbs_session_id = OpenAPI_mbs_session_id_create(NULL, Ssm_copy, nid);
-    }
-
-    Mbs_service_type = OpenAPI_mbs_service_type_FromString(mbs_sess->service_type);
-
-    Ext_mbs_session = OpenAPI_ext_mbs_session_create(Mbs_session_id, NULL, 0, Tmgi, NULL, Mbs_service_type,
-        NULL, 0, NULL, 0, NULL, 0, NULL, Ssm, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-        OpenAPI_mbs_session_activity_status_NULL, NULL, 0, NULL, NULL, NULL, 0);
-
-    CreateRspData = OpenAPI_create_rsp_data_create(Ext_mbs_session, NULL);
-
-    // TODO (borieher): Check the TMGIs in the already created MBS Sessions to avoid collisions
-
-    /*********************************************************************
-     * Send OGS_SBI_HTTP_STATUS_CREATED (/nmbsmf-mbssession/v1/mbs-sessions) to the consumer NF
-     *********************************************************************/
-
-    server = ogs_sbi_server_from_stream(stream);
-    ogs_assert(server);
-
-    // Adding the mbsSessionRef in the headers for the created resource
-    header.service.name = (char *) OGS_SBI_SERVICE_NAME_NMBSMF_MBS_SESSION;
-    header.api.version = (char *) OGS_SBI_API_V1;
-    header.resource.component[0] =
-        (char *) OGS_SBI_RESOURCE_NAME_MBS_SESSIONS;
-    header.resource.component[1] = mbs_sess->mbs_session_ref;
-
-    sendmsg.http.location = ogs_sbi_server_uri(server, &header);
-    ogs_assert(sendmsg.http.location);
-
-    sendmsg.CreateRspData = CreateRspData;
-
-    response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_CREATED);
-
-    ogs_assert(response);
-
-    ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+    smf_5gc_pfcp_n4mb_send_session_establishment_request(mbs_sess, 0, stream);
 
 cleanup:
     if (expiration_time)
@@ -560,12 +493,6 @@ cleanup:
 
     if (service_type)
         ogs_free(service_type);
-
-    if (CreateRspData)
-        OpenAPI_create_rsp_data_free(CreateRspData);
-
-    if (sendmsg.http.location)
-        ogs_free(sendmsg.http.location);
 
     if (rv == OGS_OK)
         return true;
