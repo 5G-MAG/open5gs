@@ -229,9 +229,35 @@ uint8_t smf_n4mb_handle_session_establishment_response(
         OpenAPI_list_add(ingress_tunnel_list, OpenAPI_tunnel_address_create(ipv4_str, ipv6_str, port));
     }
 
-    Ext_mbs_session = OpenAPI_ext_mbs_session_create(Mbs_session_id, false, 0, Tmgi, NULL, Mbs_service_type,
-        false, 0, false, 0, false, 0, ingress_tunnel_list, Ssm, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-        OpenAPI_mbs_session_activity_status_NULL, false, 0, NULL, NULL, false, 0);
+    char *expiration_time = NULL;
+    if (mbs_sess->tmgi) {
+        expiration_time = ogs_strdup(mbs_sess->tmgi->expiration_time);
+    }
+
+    Ext_mbs_session = OpenAPI_ext_mbs_session_create(Mbs_session_id   /* mbs_session_id */,
+                                                     false            /* is_tmgi_alloc_req */, 0 /* tmgi_alloc_req */,
+                                                     Tmgi             /* tmgi */,
+                                                     expiration_time  /* expiration_time */,
+                                                     Mbs_service_type /* service_type */,
+                                                     false            /* is_location_dependent */, 0 /* location_dependent */,
+                                                     false            /* is_area_session_id */, 0 /* area_session_id */,
+                                                     false            /* is_ingress_tun_addr_req */, 0 /* ingress_tun_addr_req */,
+                                                     ingress_tunnel_list /* ingress_tun_addr */,
+                                                     Ssm              /* ssm */,
+                                                     NULL             /* mbs_service_area */,
+                                                     NULL             /* ext_mbs_service_area */,
+                                                     NULL             /* dnn */,
+                                                     NULL             /* snssai */,
+                                                     NULL             /* activation_time */,
+                                                     NULL             /* start_time */,
+                                                     NULL             /* termination_time */,
+                                                     NULL             /* mbs_serv_info */,
+                                                     NULL             /* mbs_session_subsc */,
+                                                     OpenAPI_mbs_session_activity_status_NULL /* activity_status */,
+                                                     false            /* is_any_ue_ind */, 0 /* any_ue_ind */,
+                                                     NULL             /* mbs_fsa_id_list */,
+                                                     NULL             /* mbs_security_context */,
+                                                     false            /* is_contact_pcf_ind */, 0 /* contact_pcf_ind */);
 
     CreateRspData = OpenAPI_create_rsp_data_create(Ext_mbs_session, NULL);
 
