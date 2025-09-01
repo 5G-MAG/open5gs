@@ -117,6 +117,8 @@ void smf_context_init(void)
     ogs_assert(self.ipv6_hash);
     self.n1n2message_hash = ogs_hash_make();
     ogs_assert(self.n1n2message_hash);
+    self.smf_mbs_sess_by_ssm = ogs_hash_make();
+    ogs_assert(self.smf_mbs_sess_by_ssm);
 
     context_initialized = 1;
 }
@@ -142,6 +144,8 @@ void smf_context_final(void)
     ogs_hash_destroy(self.ipv6_hash);
     ogs_assert(self.n1n2message_hash);
     ogs_hash_destroy(self.n1n2message_hash);
+    ogs_assert(self.smf_mbs_sess_by_ssm);
+    ogs_hash_destroy(self.smf_mbs_sess_by_ssm);
 
     ogs_pool_final(&smf_ue_pool);
     ogs_pool_final(&smf_bearer_pool);
@@ -3404,8 +3408,10 @@ static void smf_mbs_sess_remove(smf_mbs_sess_t *smf_mbs_sess)
     if (smf_mbs_sess->ssm)
         ogs_free(smf_mbs_sess->ssm);
 
-    if (smf_mbs_sess->mbs_session_id.is_ssm)
+    if (smf_mbs_sess->mbs_session_id.is_ssm) {
+        ogs_hash_set(self.smf_mbs_sess_by_ssm, ((char*)smf_mbs_sess->mbs_session_id.ssm)+sizeof(ogs_lnode_t), sizeof(*smf_mbs_sess->mbs_session_id.ssm)-sizeof(ogs_lnode_t), NULL);
         ogs_free(smf_mbs_sess->mbs_session_id.ssm);
+    }
 
     if (smf_mbs_sess->mbs_session_id.nid)
         ogs_free(smf_mbs_sess->mbs_session_id.nid);
@@ -3462,6 +3468,14 @@ smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, ogs_ssm_t *ssm, char *serv
             smf_mbs_sess->ssm = ssm;
     } else if (ogs_strcasecmp(smf_mbs_sess->service_type, "MULTICAST") == 0) {
         if (ssm) {
+            /* Make sure unused bits are zero'd */
+            if (!ssm->src_ip_addr.ipv4) memset(&ssm->src_ip_addr.addr, 0, sizeof(ssm->src_ip_addr.addr));
+            if (!ssm->src_ip_addr.ipv6) memset(ssm->src_ip_addr.addr6, 0, sizeof(ssm->src_ip_addr.addr6));
+            ssm->src_ip_addr.reserved = 0;
+            if (!ssm->dest_ip_addr.ipv4) memset(&ssm->dest_ip_addr.addr, 0, sizeof(ssm->dest_ip_addr.addr));
+            if (!ssm->dest_ip_addr.ipv6) memset(ssm->dest_ip_addr.addr6, 0, sizeof(ssm->dest_ip_addr.addr6));
+            ssm->dest_ip_addr.reserved = 0;
+            ogs_hash_set(self.smf_mbs_sess_by_ssm, ((char*)ssm) + sizeof(ogs_lnode_t), sizeof(*ssm)-sizeof(ogs_lnode_t), smf_mbs_sess);
             smf_mbs_sess->mbs_session_id.ssm = ssm;
             smf_mbs_sess->mbs_session_id.is_ssm = 1;
 
@@ -3500,6 +3514,102 @@ void smf_mbs_sess_release(smf_mbs_sess_t *smf_mbs_sess)
 smf_mbs_sess_t *smf_mbs_sess_find_by_seid(uint64_t seid)
 {
     return ogs_hash_get(self.smf_n4_seid_hash, &seid, sizeof(seid));
+}
+
+#if 0
+#define OGS_SSM_MAX_STRING_LENGTH (INET6_ADDRSTRLEN*2 + 4)
+
+static char *ogs_ssm_string(const ogs_ssm_t *ssm, char *buffer)
+{
+    if (!ssm) {
+        strcpy(buffer, "<null>");
+    } else {
+        if (ssm->src_ip_addr.ipv4) {
+            char addr[INET_ADDRSTRLEN];
+            sprintf(buffer, "%s:", inet_ntop(AF_INET, &ssm->src_ip_addr.addr, addr, INET_ADDRSTRLEN));
+        } else if (ssm->src_ip_addr.ipv6) {
+            char addr[INET6_ADDRSTRLEN];
+            sprintf(buffer, "[%s]:", inet_ntop(AF_INET6, ssm->src_ip_addr.addr6, addr, INET6_ADDRSTRLEN));
+        } else {
+            strcpy(buffer, "*:");
+        }
+        char *rest = buffer + strlen(buffer);
+        if (ssm->dest_ip_addr.ipv4) {
+            char addr[INET_ADDRSTRLEN];
+            strcpy(rest, inet_ntop(AF_INET, &ssm->dest_ip_addr.addr, addr, INET_ADDRSTRLEN));
+        } else if (ssm->dest_ip_addr.ipv6) {
+            char addr[INET6_ADDRSTRLEN];
+            strcpy(rest, inet_ntop(AF_INET6, ssm->dest_ip_addr.addr6, addr, INET6_ADDRSTRLEN));
+        } else {
+            strcpy(rest, "*");
+        }
+    }
+    return buffer;
+}
+
+static int _dump_ssm_keys(void *rec, const void *key, int klen, const void *value)
+{
+    const ogs_ssm_t *ssm = (const ogs_ssm_t *)(((const char*)key)-sizeof(ogs_lnode_t));
+    const ogs_ssm_t *ssm2 = (const ogs_ssm_t *)(((const char*)rec)-sizeof(ogs_lnode_t));
+    char buffer[OGS_SSM_MAX_STRING_LENGTH];
+    char buffer2[OGS_SSM_MAX_STRING_LENGTH];
+
+    char *diff = NULL;
+    size_t i;
+    for (i = 0; i < sizeof(ogs_ssm_t) - sizeof(ogs_lnode_t); i++) {
+        if (((char*)rec)[i] != ((const char*)key)[i]) {
+            if (!diff) {
+                diff = ogs_msprintf("differs at bytes: %zu", i);
+            } else {
+                diff = ogs_mstrcatf(diff, ", %zu", i);
+            }
+        }
+    }
+    if (!diff) diff = ogs_strdup("same");
+
+    ogs_debug(" (%p) %s == %s : %s", value, ogs_ssm_string(ssm, buffer), ogs_ssm_string(ssm2, buffer2), diff);
+    ogs_free(diff);
+    return 1;
+}
+#endif
+
+smf_mbs_sess_t *smf_mbs_sess_find_by_ssm(ogs_ssm_t *ssm)
+{
+    if (!ssm) return NULL;
+
+    /* sanitize SSM for comparison */
+    ogs_ssm_t tmp;
+    memset(&tmp, 0, sizeof(tmp));
+    if (ssm->src_ip_addr.ipv4) {
+        tmp.src_ip_addr.ipv4 = 1;
+        tmp.src_ip_addr.addr = ssm->src_ip_addr.addr;
+    }
+    if (ssm->src_ip_addr.ipv6) {
+        tmp.src_ip_addr.ipv6 = 1;
+        memcpy(tmp.src_ip_addr.addr6, ssm->src_ip_addr.addr6, sizeof(tmp.src_ip_addr.addr6));
+    }
+    tmp.src_ip_addr.len = ssm->src_ip_addr.len;
+    if (ssm->dest_ip_addr.ipv4) {
+        tmp.dest_ip_addr.ipv4 = 1;
+        tmp.dest_ip_addr.addr = ssm->dest_ip_addr.addr;
+    }
+    if (ssm->dest_ip_addr.ipv6) {
+        tmp.dest_ip_addr.ipv6 = 1;
+        memcpy(tmp.dest_ip_addr.addr6, ssm->dest_ip_addr.addr6, sizeof(tmp.dest_ip_addr.addr6));
+    }
+    tmp.dest_ip_addr.len = ssm->dest_ip_addr.len;
+
+#if 0
+    char buffer[OGS_SSM_MAX_STRING_LENGTH];
+    ogs_debug("Search for MBS Session with SSM = %s", ogs_ssm_string(&tmp, buffer));
+
+    ogs_hash_do(_dump_ssm_keys, ((char*)&tmp) + sizeof(ogs_lnode_t), self.smf_mbs_sess_by_ssm);
+#endif
+
+    smf_mbs_sess_t *ret = ogs_hash_get(self.smf_mbs_sess_by_ssm, ((char*)&tmp) + sizeof(ogs_lnode_t), sizeof(tmp) - sizeof(ogs_lnode_t));
+    ogs_debug("Found MBS Session %p", ret);
+
+    return ret;
 }
 
 // TODO (borieher): Select UPF based on MBS parameters
