@@ -68,17 +68,17 @@ bool smf_nmbsmf_handle_tmgi_allocate(
         // Extracted from the OpenAPI spec, not the 3GPP TS
         // TmgiAllocate must be present, send error (400)
         ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
-            message, "Bad Request", "Requested TMGI Allocate failed, no TmgiAllocate",  NULL);
+            message, "Bad Request", "Requested TMGI Allocate failed, no TmgiAllocate",  NMBSMF_TMGI_MANDATORY_IE_MISSING);
         rv = OGS_ERROR;
         goto cleanup;
     }
 
     if (!TmgiAllocate->tmgi_number && !TmgiAllocate->tmgi_list) {
-        ogs_error("TMGI Allocate: tmgi_number and tmgi_list not present");
-        // tmgi_number or tmgi_list should be present, send error (403 + MANDATORY_IE_INCORRECT)
-        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
+        ogs_error("TMGI Allocate: no tmgi_number or tmgi_list present");
+        // tmgi_number or tmgi_list should be present, send error (400 + MANDATORY_IE_MISSING)
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
             message, "Mandatory IE incorrect", "Requested TMGI Allocate failed, no [tmgiNumber] nor [tmgiList] present",
-            NMBSMF_TMGI_MANDATORY_IE_INCORRECT);
+            NMBSMF_TMGI_MANDATORY_IE_MISSING);
         rv = OGS_ERROR;
         goto cleanup;
     }
@@ -114,16 +114,16 @@ bool smf_nmbsmf_handle_tmgi_allocate(
             if ((smf_tmgi_count() + TmgiAllocate->tmgi_number) > OGS_MAX_NUM_OF_TMGI) {
                 ogs_error("TMGI Allocate: Cannot allocate %d TMGIs", TmgiAllocate->tmgi_number);
                 // Custom error handling, not the 3GPP TS
-                // Avoid reaching the maximum number of TMGI, send error (403)
-                ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
-                    message, "Forbidden", "Cannot allocate [tmgiNumber] of TMGIs", NULL);
+                // Avoid reaching the maximum number of TMGI, send error (500)
+                ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+                    message, "Forbidden", "Cannot allocate [tmgiNumber] of TMGIs", NMBSMF_TMGI_INSUFFICIENT_RESOURCES);
                 rv = OGS_ERROR;
                 goto cleanup;
             }
         } else {
             ogs_error("TMGI Allocate: allocate error, incorrect number in tmgi_number");
-            // tmgi_number needs to be between 1 and 255, send error (403 + MANDATORY_IE_INCORRECT)
-            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
+            // tmgi_number needs to be between 1 and 255, send error (400 + MANDATORY_IE_INCORRECT)
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
                 message, "Mandatory IE incorrect", "Requested TMGI Allocate failed, incorrect number in [tmgiNumber]",
                 NMBSMF_TMGI_MANDATORY_IE_INCORRECT);
             rv = OGS_ERROR;
@@ -230,7 +230,7 @@ bool smf_nmbsmf_handle_tmgi_deallocate(
         // tmgi_list not present, send error (400)
         ogs_error("TMGI Deallocate: No tmgi_list");
         ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
-            message, "Bad Request", "Requested TMGI Deallocate failed, no tmgi-list", NULL);
+            message, "Bad Request", "Requested TMGI Deallocate failed, no tmgi-list", NMBSMF_TMGI_MANDATORY_IE_MISSING);
         return false;
     }
 
@@ -296,7 +296,6 @@ bool smf_nmbsmf_handle_mbs_session_create(
     OpenAPI_create_req_data_t *CreateReqData = NULL;
 
     ogs_tmgi_t tmgi_received;
-    ogs_ssm_t ssm_received;
     ogs_tmgi_t *tmgi = NULL;
     ogs_ssm_t *ssm = NULL;
     smf_mbs_sess_t *mbs_sess = NULL;
@@ -309,6 +308,8 @@ bool smf_nmbsmf_handle_mbs_session_create(
     char *nid = NULL;
     char *service_type = NULL;
 
+    bool is_multicast_service = false;
+
     int rv = OGS_OK;
 
     CreateReqData = message->CreateReqData;
@@ -316,9 +317,9 @@ bool smf_nmbsmf_handle_mbs_session_create(
     if (!CreateReqData) {
         ogs_error("MBS Session Create: No CreateReqData");
         // Extracted from the OpenAPI spec, not the 3GPP TS
-        // CreateReqData must be present, send error (400)
+        // CreateReqData must be present, send error (400 + MANDATORY_IE_MISSING)
         ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
-            message, "Bad Request", "Requested MBS Session Create failed, no CreateReqData", NULL);
+            message, "Bad Request", "Requested MBS Session Create failed, no CreateReqData", NMBSMF_MBSSESSION_MANDATORY_IE_MISSING);
         rv = OGS_ERROR;
         goto cleanup;
     }
@@ -348,8 +349,7 @@ bool smf_nmbsmf_handle_mbs_session_create(
     }
 
     // Error when mbs_session_id is not provided and tmgi_alloc_req is not provided or set to false
-    if ((!CreateReqData->mbs_session->mbs_session_id && CreateReqData->mbs_session->tmgi_alloc_req <= 0) || \
-            (!CreateReqData->mbs_session->mbs_session_id && !CreateReqData->mbs_session->tmgi_alloc_req)) {
+    if (!CreateReqData->mbs_session->mbs_session_id && (!CreateReqData->mbs_session->is_tmgi_alloc_req || CreateReqData->mbs_session->tmgi_alloc_req == 0)) {
         ogs_error("MBS Session Create: mbs_session_id or tmgi_alloc_req not present");
         // Custom error handling, not the 3GPP TS
         // mbs_session_id or tmgi_alloc_req should be present, send error (400 + ERROR_INPUT_PARAMETERS)
@@ -360,18 +360,32 @@ bool smf_nmbsmf_handle_mbs_session_create(
         goto cleanup;
     }
 
+    // Extract the SSM
+    is_multicast_service = (ogs_strcasecmp(service_type, "MULTICAST") == 0);
+    if (CreateReqData->mbs_session->mbs_session_id && CreateReqData->mbs_session->mbs_session_id->ssm && is_multicast_service) {
+        ssm = ogs_malloc(sizeof(*ssm));
+        ogs_assert(ssm);
+        ogs_sbi_parse_ssm(ssm, CreateReqData->mbs_session->mbs_session_id->ssm);
+    } else if (CreateReqData->mbs_session->ssm) {
+        ssm = ogs_malloc(sizeof(*ssm));
+        ogs_assert(ssm);
+        ogs_sbi_parse_ssm(ssm, CreateReqData->mbs_session->ssm);
+    }
+    if (ssm && is_multicast_service && smf_mbs_sess_find_by_ssm(ssm)) {
+         ogs_error("MBS Session Create: SSM already used");
+         ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
+                        message, "Forbidden", "MBS Session Create failed, SSM in [mbsSessionId] has already been used",
+                        NMBSMF_MBSSESSION_MBS_SESSION_ALREADY_CREATED);
+         rv = OGS_ERROR;
+         goto cleanup;
+    }
+
     // Perform the TMGI allocate operation
-    if (CreateReqData->mbs_session->tmgi_alloc_req > 0) {
+    if (CreateReqData->mbs_session->is_tmgi_alloc_req && CreateReqData->mbs_session->tmgi_alloc_req > 0) {
         if (CreateReqData->mbs_session->mbs_session_id) {
             // For multicast, SSM can be provided as MBS Session ID. But TMGI must be allocated too
             if (CreateReqData->mbs_session->mbs_session_id->ssm) {
-                if (ogs_strcasecmp(service_type, "MULTICAST") == 0) {
-                    // TODO (borieher): Check SSM exists
-                    ogs_sbi_parse_ssm(&ssm_received, CreateReqData->mbs_session->mbs_session_id->ssm);
-                    ssm = ogs_malloc(sizeof(ogs_ssm_t));
-                    memcpy(ssm, &ssm_received, sizeof(ogs_ssm_t));
-                    // Continue with the TMGI allocate
-                } else {
+                if (!is_multicast_service) {
                     ogs_error("MBS Session Create: SSM as mbs_session_id and tmgi_alloc_req but service_type is not MULTICAST");
                     // Custom error handling, not the 3GPP TS
                     // SSM as mbs_session_id and tmgi_alloc_req should not be present if service_type is not MULTICAST, send error (400 + ERROR_INPUT_PARAMETERS)
@@ -381,7 +395,7 @@ bool smf_nmbsmf_handle_mbs_session_create(
                     rv = OGS_ERROR;
                     goto cleanup;
                 }
-            } else {
+            } else if (CreateReqData->mbs_session->mbs_session_id->tmgi) {
                 ogs_error("MBS Session Create: TMGI as mbs_session_id and tmgi_alloc_req both present");
                 // Custom error handling, not the 3GPP TS
                 // TMGI as mbs_session_id and tmgi_alloc_req should not be present at the same time, send error (400 + ERROR_INPUT_PARAMETERS)
@@ -410,21 +424,17 @@ bool smf_nmbsmf_handle_mbs_session_create(
     }
 
     // Grab the provided TMGI as MBS Session ID
-    if (!CreateReqData->mbs_session->tmgi_alloc_req || CreateReqData->mbs_session->tmgi_alloc_req <= 0) {
+    if (!CreateReqData->mbs_session->is_tmgi_alloc_req || CreateReqData->mbs_session->tmgi_alloc_req == 0) {
         if (CreateReqData->mbs_session->mbs_session_id) {
             // When TMGI is already allocated, TMGI must be present either as MBS Session ID or separated
             if (CreateReqData->mbs_session->mbs_session_id->tmgi) {
                 ogs_sbi_parse_tmgi(&tmgi_received, CreateReqData->mbs_session->mbs_session_id->tmgi);
                 tmgi = smf_tmgi_find_by_tmgi(&tmgi_received);
             } else if (CreateReqData->mbs_session->mbs_session_id->ssm) {
-                if (ogs_strcasecmp(service_type, "MULTICAST") == 0) {
+                if (is_multicast_service) {
                     if (CreateReqData->mbs_session->tmgi) {
                         ogs_sbi_parse_tmgi(&tmgi_received, CreateReqData->mbs_session->tmgi);
                         tmgi = smf_tmgi_find_by_tmgi(&tmgi_received);
-                        // TODO (borieher): Check SSM exists
-                        ogs_sbi_parse_ssm(&ssm_received, CreateReqData->mbs_session->mbs_session_id->ssm);
-                        ssm = ogs_malloc(sizeof(ogs_ssm_t));
-                        memcpy(ssm, &ssm_received, sizeof(ogs_ssm_t));
                     } else {
                         // Custom error handling, not the 3GPP TS
                         // No TMGI provided, send error (400 + ERROR_INPUT_PARAMETERS)
@@ -461,18 +471,9 @@ bool smf_nmbsmf_handle_mbs_session_create(
 
     // TODO (borieher): Check provided TMGI is not added to an existing MBS Session
 
-    // Parse the outer SSM field in the request
-    if (CreateReqData->mbs_session->ssm) {
-        // TODO (borieher): Check SSM exists
-        // TODO (borieher): Compare CreateReqData->mbs_session->ssm and CreateReqData->mbs_session->mbs_session_id->ssm
-        ogs_sbi_parse_ssm(&ssm_received, CreateReqData->mbs_session->ssm);
-        if (!ssm)
-            ssm = ogs_malloc(sizeof(ogs_ssm_t));
-        memcpy(ssm, &ssm_received, sizeof(ogs_ssm_t));
-    }
-
     // MBS Session create
     mbs_sess = smf_mbs_sess_create(tmgi, ssm, service_type);
+    ssm = NULL; // ssm passed to mbs_sess
     mbs_sess->ingress_tun_addr_req = (CreateReqData->mbs_session->is_ingress_tun_addr_req &&
                                       CreateReqData->mbs_session->ingress_tun_addr_req != 0);
 
@@ -490,6 +491,9 @@ cleanup:
 
     if (nid)
         ogs_free(nid);
+
+    if (ssm)
+        ogs_free(ssm);
 
     if (service_type)
         ogs_free(service_type);
