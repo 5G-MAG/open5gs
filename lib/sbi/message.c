@@ -1433,6 +1433,10 @@ static char *build_json(ogs_sbi_message_t *message)
         item = OpenAPI_ue_reg_status_update_rsp_data_convertToJSON(
                 message->UeRegStatusUpdateRspData);
         ogs_assert(item);
+    } else if (message->TmgiAllocate) {
+        item = OpenAPI_tmgi_allocate_convertToJSON(
+                message->TmgiAllocate);
+        ogs_assert(item);
     } else if (message->TmgiAllocated) {
         item = OpenAPI_tmgi_allocated_convertToJSON(
                 message->TmgiAllocated);
