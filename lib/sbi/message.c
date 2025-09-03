@@ -683,6 +683,23 @@ ogs_sbi_request_t *ogs_sbi_build_request(ogs_sbi_message_t *message)
         ogs_sbi_header_set(request->http.params,
                 OGS_SBI_PARAM_IPV6PREFIX, message->param.ipv6prefix);
     }
+    if (message->param.tmgi_list) {
+        cJSON *tmgi_list = cJSON_CreateArray();
+        OpenAPI_lnode_t *node;
+
+        OpenAPI_list_for_each(message->param.tmgi_list, node) {
+            OpenAPI_tmgi_t *tmgi = (OpenAPI_tmgi_t*)node->data;
+            if (tmgi) cJSON_AddItemToArray(tmgi_list, OpenAPI_tmgi_convertToJSON(tmgi));
+        }
+
+        if (cJSON_GetArraySize(tmgi_list) > 0) {
+            char *v = cJSON_PrintUnformatted(tmgi_list);
+            ogs_sbi_header_set(request->http.params, OGS_SBI_PARAM_TMGI_LIST, v);
+            ogs_free(v);
+        }
+
+        cJSON_Delete(tmgi_list);
+    }
 
     if (build_content(&request->http, message) == false) {
         ogs_error("build_content() failed");
