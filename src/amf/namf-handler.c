@@ -2062,6 +2062,9 @@ int amf_namf_handle_mbs_broadcast_context_create(
         goto cleanup;
     }
 
+    ogs_sbi_parse_tmgi(&tmgi, ContextCreateReqData->mbs_session_id->tmgi);
+    mbs_context = amf_mbs_context_create(&tmgi);
+
     // NGAP BROADCAST SESSION SETUP REQUEST message with MBS Session Setup or Modification Request Transfer IE
     n2msgreq = ngap_build_broadcast_session_setup_request(mbs_context, n2mbssmbuf);
 
@@ -2084,11 +2087,6 @@ int amf_namf_handle_mbs_broadcast_context_create(
     // TODO (borieher): Receive the message from the gNBs
     // On the first gNB response, send the 201 Created to the consumer NF
     // Where do I find the gNB response?
-
-    // NOTE (borieher): Doing this here to avoid having to delete the mbs_context if the gNB response fails
-    // TODO (borieher): Continue storing all the identifiers received
-    ogs_sbi_parse_tmgi(&tmgi, ContextCreateReqData->mbs_session_id->tmgi);
-    mbs_context = amf_mbs_context_create(&tmgi);
 
     /*********************************************************************
      * Send OGS_SBI_HTTP_STATUS_CREATED (/namf-mbs-bc/v1/mbs-contexts) to the consumer NF
