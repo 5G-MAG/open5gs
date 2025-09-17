@@ -91,6 +91,7 @@ OpenAPI_nf_profile_t *ogs_nnrf_nfm_build_nf_profile(
     OpenAPI_map_t *NFServiceMap = NULL;
     OpenAPI_list_t *InfoList = NULL;
     OpenAPI_map_t *InfoMap = NULL;
+    OpenAPI_list_t *CollocatedNfInstances = NULL;
     int InfoMapKey;
 
     OpenAPI_lnode_t *node = NULL;
@@ -120,6 +121,18 @@ OpenAPI_nf_profile_t *ogs_nnrf_nfm_build_nf_profile(
                 OpenAPI_nf_type_ToString(nf_instance->nf_type),
                 OpenAPI_nf_status_ToString(nf_instance->nf_status),
                 nf_instance->num_of_ipv4, nf_instance->num_of_ipv6);
+
+    if (!ogs_list_empty(&nf_instance->collocated_nf_list)) {
+        ogs_collocated_nf_instance_t *node;
+        CollocatedNfInstances = OpenAPI_list_create();
+        ogs_list_for_each(&nf_instance->collocated_nf_list, node) {
+	    OpenAPI_collocated_nf_instance_t *coll_nf_inst =
+                    OpenAPI_collocated_nf_instance_create(node->collocated_nf_instance.nf_instance_id,
+                            node->collocated_nf_instance.nf_type);
+	    OpenAPI_list_add(CollocatedNfInstances, coll_nf_inst);
+        }
+    }
+    NFProfile->collocated_nf_instances = CollocatedNfInstances;
 
     if (nf_instance->time.heartbeat_interval) {
         NFProfile->is_heart_beat_timer = true;
@@ -406,6 +419,14 @@ void ogs_nnrf_nfm_free_nf_profile(OpenAPI_nf_profile_t *NFProfile)
     if (NFProfile->fqdn)
         ogs_free(NFProfile->fqdn);
 
+#if 0
+    if (NFProfile->collocated_nf_instances) {
+        OpenAPI_list_for_each(NFProfile->collocated_nf_instances, node)
+            OpenAPI_collocated_nf_instance_free((OpenAPI_collocated_nf_instance_t*)node->data);
+        OpenAPI_list_free(NFProfile->collocated_nf_instances);
+    }
+#endif
+
     OpenAPI_list_for_each(NFProfile->ipv4_addresses, node)
         ogs_free(node->data);
     OpenAPI_list_free(NFProfile->ipv4_addresses);
@@ -670,6 +691,9 @@ static OpenAPI_nf_service_t *build_nf_service(
     NFService->is_load = true;
     NFService->load = nf_service->load;
 
+    if (nf_service->supported_features)
+        NFService->supported_features = ogs_strdup(nf_service->supported_features);
+
     return NFService;
 }
 
@@ -708,6 +732,9 @@ static void free_nf_service(OpenAPI_nf_service_t *NFService)
 
     if (NFService->fqdn)
         ogs_free(NFService->fqdn);
+
+    if (NFService->supported_features)
+        ogs_free(NFService->supported_features); 
 
     ogs_free(NFService);
 }

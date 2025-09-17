@@ -67,7 +67,7 @@ uint32_t smf_pfcp_urr_usage_report_trigger2diam_gy_reporting_reason(
             ogs_pfcp_usage_report_trigger_t *rep_trigger);
 
 int smf_5gc_pfcp_n4mb_send_session_establishment_request(
-        smf_mbs_sess_t *mbs_sess, uint64_t flags);
+        smf_mbs_sess_t *mbs_sess, uint64_t flags, ogs_sbi_stream_t *stream);
 
 #ifdef __cplusplus
 }

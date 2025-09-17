@@ -103,14 +103,7 @@ static void _gtpv1_tun_recv_common_cb(
         short when, ogs_socket_t fd, bool has_eth, void *data)
 {
     ogs_pkbuf_t *recvbuf = NULL;
-
-    upf_sess_t *sess = NULL;
     upf_mbs_sess_t *mbs_sess = NULL;
-    ogs_pfcp_pdr_t *pdr = NULL;
-    ogs_pfcp_pdr_t *fallback_pdr = NULL;
-    ogs_pfcp_far_t *far = NULL;
-    ogs_pfcp_user_plane_report_t report;
-    int i;
 
     recvbuf = ogs_tun_read(fd, packet_pool);
     if (!recvbuf) {
@@ -166,13 +159,32 @@ static void _gtpv1_tun_recv_common_cb(
 
     mbs_sess = upf_mbs_sess_find_by_ssm(recvbuf);
 
+    upf_gtpv1_receive_buffer_for_mbs_sess(recvbuf, mbs_sess);
+
+    return;
+
+cleanup:
+    ogs_pkbuf_free(recvbuf);
+}
+
+void upf_gtpv1_receive_buffer_for_mbs_sess(ogs_pkbuf_t *recvbuf, upf_mbs_sess_t *mbs_sess)
+{
+    upf_sess_t *sess = NULL;
+    ogs_pfcp_pdr_t *pdr = NULL;
+    ogs_pfcp_pdr_t *fallback_pdr = NULL;
+    ogs_pfcp_far_t *far = NULL;
+    ogs_pfcp_user_plane_report_t report;
+    int i;
+
     // NOTE (borieher): Just a way to verify that is a real upf_sess_t. Temporary workaround
     if (mbs_sess && (mbs_sess->ll_ssm) && (mbs_sess->ll_ssm->dest_ip_addr.ipv4 == 1 || mbs_sess->ll_ssm->dest_ip_addr.ipv6 == 1)) {
         ogs_debug("MBS type sess");
     } else {
         sess = upf_sess_find_by_ue_ip_address(recvbuf);
-        if (sess == NULL)
-            goto cleanup;
+        if (sess == NULL) {
+            ogs_pkbuf_free(recvbuf);
+            return;
+        }
     }
 
     ogs_list_t *pdr_list;
@@ -221,7 +233,8 @@ static void _gtpv1_tun_recv_common_cb(
         if (ogs_global_conf()->parameter.multicast) {
             upf_gtp_handle_multicast(recvbuf);
         }
-        goto cleanup;
+        ogs_pkbuf_free(recvbuf);
+        return;
     }
 
     /* Increment total & dl octets + pkts */
@@ -261,10 +274,6 @@ static void _gtpv1_tun_recv_common_cb(
      * The ogs_pfcp_up_handle_pdr() function
      * buffers or frees the Packet Buffer(pkbuf) memory.
      */
-    return;
-
-cleanup:
-    ogs_pkbuf_free(recvbuf);
 }
 
 static void _gtpv1_tun_recv_cb(short when, ogs_socket_t fd, void *data)

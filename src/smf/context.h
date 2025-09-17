@@ -90,6 +90,7 @@ typedef struct smf_context_s {
     ogs_hash_t      *ipv6_hash;     /* hash table (IPv6 Address) */
     ogs_hash_t      *smf_n4_seid_hash; /* hash table (SMF-N4-SEID) */
     ogs_hash_t      *n1n2message_hash; /* hash table (N1N2Message Location) */
+    ogs_hash_t	    *smf_mbs_sess_by_ssm; /* hash table of SSM => multicast MBS Session (weak link) */
 
     uint16_t        mtu;            /* MTU to advertise in PCO */
 
@@ -546,6 +547,10 @@ typedef struct smf_mbs_sess_s {
 
     /* S_NSSAI */
     ogs_s_nssai_t s_nssai;
+
+    /* MBS UDP Tunnel */
+    bool ingress_tun_addr_req;
+    ogs_sockaddr_t *ingress_tun_addr;
 } smf_mbs_sess_t;
 
 // NOTE (borieher): Not defined in the specs, default to 2 extra hours
@@ -672,6 +677,7 @@ void smf_mbs_sess_release(smf_mbs_sess_t *smf_mbs_sess);
 smf_mbs_sess_t *smf_mbs_sess_find_by_id(ogs_pool_id_t id);
 smf_mbs_sess_t *smf_mbs_sess_find_by_mbs_session_ref(char *mbs_session_ref);
 smf_mbs_sess_t *smf_mbs_sess_find_by_seid(uint64_t seid);
+smf_mbs_sess_t *smf_mbs_sess_find_by_ssm(ogs_ssm_t *ssm);
 void smf_mbs_sess_select_upf(smf_mbs_sess_t *mbs_sess);
 void smf_mbs_sess_create_mbs_data_forwarding(smf_mbs_sess_t *mbs_sess);
 

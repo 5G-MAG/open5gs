@@ -88,6 +88,13 @@ void ogs_nnrf_nfm_handle_nf_profile(
 
     nf_instance->nf_type = NFProfile->nf_type;
     nf_instance->nf_status = NFProfile->nf_status;
+
+    OpenAPI_list_for_each(NFProfile->collocated_nf_instances, node) {
+	OpenAPI_collocated_nf_instance_t *nfi = (OpenAPI_collocated_nf_instance_t*)node->data;
+        ogs_collocated_nf_instance_t *ogs_nfi = ogs_collocated_nf_instance_create(nfi->nf_instance_id, nfi->nf_type);
+        ogs_list_add(&nf_instance->collocated_nf_list, ogs_nfi);
+    }
+
     if (NFProfile->is_heart_beat_timer == true)
         nf_instance->time.heartbeat_interval = NFProfile->heart_beat_timer;
 
@@ -385,6 +392,10 @@ static void handle_nf_service(
         nf_service->capacity = NFService->capacity;
     if (NFService->is_load == true)
         nf_service->load = NFService->load;
+
+    if (NFService->supported_features)
+       nf_service->supported_features = ogs_strdup(NFService->supported_features);
+
 }
 
 static void handle_smf_info(

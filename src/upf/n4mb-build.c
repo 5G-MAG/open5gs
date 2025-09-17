@@ -33,6 +33,7 @@ ogs_pkbuf_t *upf_n4mb_build_session_establishment_response(uint8_t type,
     ogs_pfcp_node_id_t node_id;
     ogs_pfcp_f_seid_t f_seid;
     ogs_pfcp_multicast_transport_information_t multicast_transport_information;
+    ogs_pfcp_local_ingress_tunnel_t local_ingress_tunnel;
     uint8_t multicast_transport_information_buf[39];
     int multicast_transport_information_len = 0;
     int len = 0;
@@ -71,6 +72,18 @@ ogs_pkbuf_t *upf_n4mb_build_session_establishment_response(uint8_t type,
         bool pdr_presence = ogs_pfcp_build_created_pdr(
                 &rsp->created_pdr[j], i, created_pdr[i]);
         if (pdr_presence == true) j++;
+    }
+
+    /* Created Traffic Endpoint */
+    if (mbs_sess->udp_tunnel) {
+	if (ogs_pfcp_sockaddr_to_local_ingress_tunnel(&mbs_sess->udp_tunnel->local_addr, &local_ingress_tunnel, &len) == OGS_OK) {
+            rsp->created_traffic_endpoint.presence = 1;
+            rsp->created_traffic_endpoint.local_ingress_tunnel.presence = 1;
+	    rsp->created_traffic_endpoint.local_ingress_tunnel.data = &local_ingress_tunnel;
+            rsp->created_traffic_endpoint.local_ingress_tunnel.len = len;
+        } else {
+            ogs_warn("Failed to create PFCP Local Ingress Tunnel address");
+        }
     }
 
     /* MBS Session N4mb Information */

@@ -53,8 +53,8 @@ char *ogs_uint36_to_0string(uint64_t x);
 char *ogs_uint64_to_0string(uint64_t x);
 char *ogs_uint64_to_string(uint64_t x);
 
-ogs_uint24_t ogs_uint24_from_string(char *str);
-uint64_t ogs_uint64_from_string(char *str);
+ogs_uint24_t ogs_uint24_from_string(const char *str);
+uint64_t ogs_uint64_from_string(const char *str);
 
 double *ogs_alloc_double(double value);
 

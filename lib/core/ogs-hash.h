@@ -69,6 +69,7 @@ void *ogs_hash_get_or_set_debug(ogs_hash_t *ht,
 
 ogs_hash_index_t *ogs_hash_first(ogs_hash_t *ht);
 ogs_hash_index_t *ogs_hash_next(ogs_hash_index_t *hi);
+ogs_hash_index_t *ogs_hash_index_make(const ogs_hash_t *ht);
 void ogs_hash_this(ogs_hash_index_t *hi, 
         const void **key, int *klen, void **val);
 

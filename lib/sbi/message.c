@@ -210,6 +210,8 @@ void ogs_sbi_message_free(ogs_sbi_message_t *message)
         OpenAPI_tmgi_allocate_free(message->TmgiAllocate);
     if (message->CreateReqData)
         OpenAPI_create_req_data_free(message->CreateReqData);
+    if (message->CreateRspData)
+        OpenAPI_create_rsp_data_free(message->CreateRspData);
     if (message->ContextCreateReqData)
         OpenAPI_context_create_req_data_free(message->ContextCreateReqData);
 
@@ -680,6 +682,23 @@ ogs_sbi_request_t *ogs_sbi_build_request(ogs_sbi_message_t *message)
     if (message->param.ipv6prefix) {
         ogs_sbi_header_set(request->http.params,
                 OGS_SBI_PARAM_IPV6PREFIX, message->param.ipv6prefix);
+    }
+    if (message->param.tmgi_list) {
+        cJSON *tmgi_list = cJSON_CreateArray();
+        OpenAPI_lnode_t *node;
+
+        OpenAPI_list_for_each(message->param.tmgi_list, node) {
+            OpenAPI_tmgi_t *tmgi = (OpenAPI_tmgi_t*)node->data;
+            if (tmgi) cJSON_AddItemToArray(tmgi_list, OpenAPI_tmgi_convertToJSON(tmgi));
+        }
+
+        if (cJSON_GetArraySize(tmgi_list) > 0) {
+            char *v = cJSON_PrintUnformatted(tmgi_list);
+            ogs_sbi_header_set(request->http.params, OGS_SBI_PARAM_TMGI_LIST, v);
+            ogs_free(v);
+        }
+
+        cJSON_Delete(tmgi_list);
     }
 
     if (build_content(&request->http, message) == false) {
@@ -1430,6 +1449,10 @@ static char *build_json(ogs_sbi_message_t *message)
     } else if (message->UeRegStatusUpdateRspData) {
         item = OpenAPI_ue_reg_status_update_rsp_data_convertToJSON(
                 message->UeRegStatusUpdateRspData);
+        ogs_assert(item);
+    } else if (message->TmgiAllocate) {
+        item = OpenAPI_tmgi_allocate_convertToJSON(
+                message->TmgiAllocate);
         ogs_assert(item);
     } else if (message->TmgiAllocated) {
         item = OpenAPI_tmgi_allocated_convertToJSON(
@@ -2643,6 +2666,13 @@ static int parse_json(ogs_sbi_message_t *message,
                         message->CreateReqData =
                             OpenAPI_create_req_data_parseFromJSON(item);
                         if (!message->CreateReqData) {
+                            rv = OGS_ERROR;
+                            ogs_error("JSON parse error");
+                        }
+                    } else {
+			message->CreateRspData =
+                            OpenAPI_create_rsp_data_parseFromJSON(item);
+                        if (!message->CreateRspData) {
                             rv = OGS_ERROR;
                             ogs_error("JSON parse error");
                         }

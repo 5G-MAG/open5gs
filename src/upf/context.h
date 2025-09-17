@@ -61,6 +61,14 @@ typedef struct upf_context_s {
 
     ogs_list_t sess_list;
     ogs_list_t upf_mbs_sess_list;
+
+    /* MBS UDP Tunnel configuration */
+    ogs_sockaddr_t mbs_udp_tun_base_addr;
+    bool mbs_udp_tun_ephemeral_port;
+    size_t mbs_udp_tun_num_of_ports;
+    uint16_t *mbs_udp_tun_ports;         /* Array of available port numbers when not using ephemeral ports */
+    uint16_t **mbs_udp_tun_ports_free;   /* Array of entries in mbs_udp_tun_ports that are free to use */
+    size_t mbs_udp_tun_ports_next_free;  /* Index of last free port pointer in mbs_udp_tun_ports_free */
 } upf_context_t;
 
 /* trie mapping from IP framed routes to session. */
@@ -153,6 +161,11 @@ typedef struct upf_mbs_sess_s {
     ogs_pfcp_node_t *pfcp_node;
 
     ogs_pfcp_mbsn4mbreq_flags_t mbs_flags;
+
+    ogs_sock_t *udp_tunnel;  /* IP encapsulating UDP listening socket (TS 23.247 Figure 8.2-1) */
+    ogs_poll_t *udp_tunnel_poll;
+    unsigned int udp_tunnel_mtu;
+    ogs_pkbuf_pool_t *udp_tunnel_pkbuf_pool;
 } upf_mbs_sess_t;
 
 void upf_context_init(void);
