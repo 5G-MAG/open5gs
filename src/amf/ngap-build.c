@@ -2801,13 +2801,7 @@ ogs_pkbuf_t *ngap_build_broadcast_session_setup_request(amf_mbs_context_t *mbs_c
 
     mBS_SessionID = &ie->value.choice.MBS_SessionID;
 
-    ogs_tmgi_t tmgi;
-    tmgi.mbs_service_id = ogs_strdup("a1b2c3");
-    ogs_plmn_id_build(&tmgi.plmn_id, atoi("001"), atoi("01"), strlen("01"));
-
-    // TODO (borieher): Fix this to work this way, removing the hardcoded constants
-    //ogs_ngap_5gs_tmgi_to_ASN(&mbs_context->tmgi, &mBS_SessionID->tMGI);
-    ogs_ngap_5gs_tmgi_to_ASN(&tmgi, &mBS_SessionID->tMGI);
+    ogs_ngap_5gs_tmgi_to_ASN(&mbs_context->tmgi, &mBS_SessionID->tMGI);
 
     // S-NSSAI - 9.3.1.24 (M)
     ie = CALLOC(1, sizeof(NGAP_BroadcastSessionSetupRequestIEs_t));

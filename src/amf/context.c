@@ -3127,7 +3127,10 @@ amf_mbs_context_t *amf_mbs_context_create(ogs_tmgi_t *tmgi)
         return NULL;
     }
 
-    amf_mbs_context->tmgi = *tmgi;
+    amf_mbs_context->tmgi.mbs_service_id = tmgi->mbs_service_id;
+    amf_mbs_context->tmgi.plmn_id = tmgi->plmn_id;
+    if (tmgi->expiration_time)
+        amf_mbs_context->tmgi.expiration_time = tmgi->expiration_time;
 
     return amf_mbs_context;
 }
