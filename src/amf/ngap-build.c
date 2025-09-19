@@ -2774,6 +2774,8 @@ ogs_pkbuf_t *ngap_build_broadcast_session_setup_request(amf_mbs_context_t *mbs_c
     // MBS Session Setup Request Transfer
     OCTET_STRING_t *oCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer = NULL;
 
+    amf_gnb_t *gnb = NULL;
+
     ogs_assert(pkbuf);
 
     ogs_debug("BROADCAST SESSION SETUP REQUEST");
@@ -2863,44 +2865,51 @@ ogs_pkbuf_t *ngap_build_broadcast_session_setup_request(amf_mbs_context_t *mbs_c
     ogs_assert(mBS_ServiceAreaTAIList);
     mBS_ServiceAreaInformation->mBS_ServiceAreaTAIList = mBS_ServiceAreaTAIList;
 
-    // TAI - 9.3.3.11 (M)
-    tAI = CALLOC(1, sizeof(NGAP_TAI_t));
-    ogs_assert(tAI);
-    ASN_SEQUENCE_ADD(mBS_ServiceAreaTAIList, tAI);
+    // TODO (borieher): This should come from the MB-SMF request to the AMF
+    // Send all the TAIs of all gNBs connected
+    ogs_list_for_each(&amf_self()->gnb_list, gnb) {
+        // TAI - 9.3.3.11 (M)
+        tAI = CALLOC(1, sizeof(NGAP_TAI_t));
+        ogs_assert(tAI);
+        ASN_SEQUENCE_ADD(mBS_ServiceAreaTAIList, tAI);
 
-    // TODO (borieher): Grab PLMN and TAI from amf_context -> served_tai
-    // tai.plmn_id
-    // tai.tac
+        int i;
+        for (i = 0; i < gnb->num_of_supported_ta_list; i++) {
+            ogs_5gs_tai_t tai;
+            // Grab the first PLMN only
+            // PLMN Identity - 9.3.3.5 (M)
+            tai.plmn_id = gnb->supported_ta_list[i].bplmn_list[0].plmn_id;
+            // TAC - 9.3.3.10 (M)
+            tai.tac = gnb->supported_ta_list[i].tac;
 
-    // PLMN Identity - 9.3.3.5 (M)
-    // TAC - 9.3.3.10 (M)
-    ogs_5gs_tai_t tai;
-    ogs_plmn_id_build(&tai.plmn_id, ogs_plmn_id_mcc(&amf_self()->plmn_support[0].plmn_id),
-        ogs_plmn_id_mnc(&amf_self()->plmn_support[0].plmn_id), ogs_plmn_id_mnc_len(&amf_self()->plmn_support[0].plmn_id));
-    // TODO (borieher): Fill the TAC without hardcoded values
-    tai.tac = ogs_uint24_from_string(ogs_strdup("1"));
-
-    ogs_ngap_5gs_tai_to_ASN(&tai, tAI);
+            ogs_ngap_5gs_tai_to_ASN(&tai, tAI);
+        }
+    }
 
     mBS_ServiceAreaCellList = CALLOC(1, sizeof(NGAP_MBS_ServiceAreaCellList_t));
     ogs_assert(mBS_ServiceAreaCellList);
     mBS_ServiceAreaInformation->mBS_ServiceAreaCellList = mBS_ServiceAreaCellList;
 
-    // NR-CGI - 9.3.1.7 (M)
-    nR_CGI = CALLOC(1, sizeof(NGAP_NR_CGI_t));
-    ogs_assert(nR_CGI);
-    ASN_SEQUENCE_ADD(mBS_ServiceAreaCellList, nR_CGI);
+    // TODO (borieher): This should come from the MB-SMF request to the AMF
+    // Send the NR-CGI of all gNBs connected
+    ogs_list_for_each(&amf_self()->gnb_list, gnb) {
+        // NR-CGI - 9.3.1.7 (M)
+        nR_CGI = CALLOC(1, sizeof(NGAP_NR_CGI_t));
+        ogs_assert(nR_CGI);
+        ASN_SEQUENCE_ADD(mBS_ServiceAreaCellList, nR_CGI);
 
-    // PLMN Identity - 9.3.3.5 (M)
-    // NR Cell Identity (M)
-    ogs_nr_cgi_t nr_cgi;
-    ogs_plmn_id_build(&nr_cgi.plmn_id, ogs_plmn_id_mcc(&amf_self()->plmn_support[0].plmn_id),
-        ogs_plmn_id_mnc(&amf_self()->plmn_support[0].plmn_id), ogs_plmn_id_mnc_len(&amf_self()->plmn_support[0].plmn_id));
-    nr_cgi.cell_id = 73588229257;
+        // PLMN Identity - 9.3.3.5 (M)
+        // NR Cell Identity (M)
+        ogs_nr_cgi_t nr_cgi;
+        ogs_plmn_id_build(&nr_cgi.plmn_id, ogs_plmn_id_mcc(&gnb->plmn_id), ogs_plmn_id_mnc(&gnb->plmn_id),
+            ogs_plmn_id_mnc_len(&gnb->plmn_id));
 
-    ogs_ngap_nr_cgi_to_ASN(&nr_cgi, nR_CGI);
+        // Build NR-CGI from the gNB ID (assuming 22 bits) + Sector ID hardcoded to 0
+        // NR-CGI is 36 bits, in case of gNB ID using 22 bits the rest (14) is the Sector ID
+        nr_cgi.cell_id = gnb->gnb_id << 14;
 
-    // TODO (borieher): Fill the NR-CGI without hardcoded values
+        ogs_ngap_nr_cgi_to_ASN(&nr_cgi, nR_CGI);
+    }
 
     // MBS Session Setup Request Transfer - OCTET STRING (SIZE(3)) (M)
     ie = CALLOC(1, sizeof(NGAP_BroadcastSessionSetupRequestIEs_t));
