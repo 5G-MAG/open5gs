@@ -636,12 +636,10 @@ ogs_pkbuf_t *ngap_build_mbs_session_setup_or_modification_request_transfer(smf_m
     sharedNGU_MulticastTNLInformation = &mBS_SessionTNLInfo5GCItem->sharedNGU_MulticastTNLInformation;
 
     // Transport Layer Address - 9.3.2.4 (M)
-    // TODO (borieher): Fix this
     iP_MulticastAddress = &sharedNGU_MulticastTNLInformation->iP_MulticastAddress;
     ogs_asn_ip_to_BIT_STRING(&mbs_sess->ll_ssm.dest_ip_addr, iP_MulticastAddress);
 
     // Transport Layer Address - 9.3.2.4 (M)
-    // TODO (borieher): Or this
     iP_SourceAddress = &sharedNGU_MulticastTNLInformation->iP_SourceAddress;
     ogs_asn_ip_to_BIT_STRING(&mbs_sess->ll_ssm.src_ip_addr, iP_SourceAddress);
 
@@ -660,8 +658,8 @@ ogs_pkbuf_t *ngap_build_mbs_session_setup_or_modification_request_transfer(smf_m
 
     mBS_QoSFlowsToBeSetupList = &ie->value.choice.MBS_QoSFlowsToBeSetupList;
 
-    // A couple of MBS QoS Flows
-    for (uint8_t i = 1; i <= 2; i++) {
+    // Generate 3 MBS QoS Flows, 5QI: 7, 8 and 9
+    for (uint8_t i = 1; i <= 3; i++) {
         mBS_QoSFlowsToBeSetupItem = CALLOC(1, sizeof(struct NGAP_MBS_QoSFlowsToBeSetupItem));
         ogs_assert(mBS_QoSFlowsToBeSetupItem);
         ASN_SEQUENCE_ADD(&mBS_QoSFlowsToBeSetupList->list, mBS_QoSFlowsToBeSetupItem);
@@ -687,7 +685,7 @@ ogs_pkbuf_t *ngap_build_mbs_session_setup_or_modification_request_transfer(smf_m
         *mBS_QoSFlowIdentifier = i;
 
         // 5QI - INTEGER (M)
-        nonDynamic5QIDescriptor->fiveQI = 9;
+        nonDynamic5QIDescriptor->fiveQI = 6+i;
 
         // Priority Level - INTEGER (M)
         allocationAndRetentionPriority->priorityLevelARP = 8;
