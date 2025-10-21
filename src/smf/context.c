@@ -3258,12 +3258,12 @@ static char *smf_tmgi_gen_random_mbs_service_id(void)
     return mbs_service_id;
 }
 
-// Using the 2024-05-13T13:05:40.483504+00:00 format
+// Using the 2024-05-13T13:05:40.483504Z format (UTC)
 char *smf_tmgi_gen_expiration_time(int validity_seconds)
 {
     char *expiration_time = NULL;
 
-    expiration_time = ogs_sbi_localtime_string(
+    expiration_time = ogs_sbi_gmtime_string(
         ogs_time_now() + ogs_time_from_sec(validity_seconds));
 
     return expiration_time;
