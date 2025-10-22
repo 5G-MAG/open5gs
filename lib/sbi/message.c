@@ -208,6 +208,8 @@ void ogs_sbi_message_free(ogs_sbi_message_t *message)
         OpenAPI_ue_reg_status_update_rsp_data_free(message->UeRegStatusUpdateRspData);
     if (message->TmgiAllocate)
         OpenAPI_tmgi_allocate_free(message->TmgiAllocate);
+    if (message->TmgiAllocated)
+        OpenAPI_tmgi_allocated_free(message->TmgiAllocated);
     if (message->CreateReqData)
         OpenAPI_create_req_data_free(message->CreateReqData);
     if (message->CreateRspData)
@@ -2635,9 +2637,18 @@ static int parse_json(ogs_sbi_message_t *message,
                 SWITCH(message->h.method)
                 CASE(OGS_SBI_HTTP_METHOD_POST)
                     if (message->res_status == 0) {
+                        /* client request */
                         message->TmgiAllocate =
                             OpenAPI_tmgi_allocate_parseFromJSON(item);
                         if (!message->TmgiAllocate) {
+                            rv = OGS_ERROR;
+                            ogs_error("JSON parse error");
+                        }
+                    } else {
+                        /* server response */
+                        message->TmgiAllocated =
+                            OpenAPI_tmgi_allocated_parseFromJSON(item);
+                        if (!message->TmgiAllocated) {
                             rv = OGS_ERROR;
                             ogs_error("JSON parse error");
                         }
