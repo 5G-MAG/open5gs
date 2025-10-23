@@ -42,3 +42,7 @@ If you're contributing through a pull request to Open5GS project on GitHub, plea
 ## Support
 
 Technical support and customized services for Open5GS are provided by [NewPlane](https://newplane.io/) at [support@newplane.io](mailto:support@newplane.io).
+
+## Acknowledgements
+
+The reference implementation of the MBS features was funded by the European Union through the [6G-SANDBOX](https://6g-sandbox.eu/) project.
