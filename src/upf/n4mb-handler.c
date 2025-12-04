@@ -27,6 +27,7 @@
 #include "gtp-path.h"
 #include "pfcp-path.h"
 #include "n4mb-handler.h"
+#include "multicastrouter/multicastrouter.h"
 
 static void _mbs_tunnel_poll_handler(short when, ogs_socket_t fd, void *data);
 static uint16_t _get_next_udp_tunnel_port(upf_context_t *ctx);
@@ -36,6 +37,7 @@ void upf_n4mb_handle_session_establishment_request(
         upf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
         ogs_pfcp_session_establishment_request_t *req)
 {
+
     int i;
     uint8_t cause_value = 0;
     uint8_t offending_ie_value = 0;
@@ -297,6 +299,25 @@ void upf_n4mb_handle_session_establishment_request(
 
         if (far->gnode) {
             ogs_pfcp_far_f_teid_hash_set(far);
+        }
+    }
+
+
+    if(upf_self()->mbs_multicastrouter_activate){
+        // get the ips from the PDR that gets created
+        uint32_t ip_multicast = created_pdr[0]->ip_multicast_addressing_info.ip_multicast_address.s_ipv4_addr;
+        uint32_t ip_source    = created_pdr[0]->ip_multicast_addressing_info.source_ip_address.ipv4_addr;
+
+        char ip_multicast_string[INET_ADDRSTRLEN];
+        char ip_source_string[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &ip_multicast, ip_multicast_string, sizeof ip_multicast_string);
+        inet_ntop(AF_INET, &ip_source, ip_source_string, sizeof ip_source_string);
+
+        if(OGS_ERROR == multicastrouter_add_route_and_join(ip_source_string, ip_multicast_string)){
+            ogs_error("Could not create multicast route: %s to %s", ip_source_string, ip_multicast_string);
+        }else{
+            ogs_info("Multicast route created: %s to %s", ip_source_string, ip_multicast_string);
+            ogs_info("Join multicast group: %s", ip_multicast_string);
         }
     }
 
