@@ -51,6 +51,10 @@ static void smf_tmgi_remove_all(void);
 static void smf_mbs_sess_remove(smf_mbs_sess_t *smf_mbs_sess);
 static void smf_mbs_sess_remove_all(void);
 
+const char smf_mbs_sess_multicast_state_configured[] = "Configured";
+const char smf_mbs_sess_multicast_state_active[] = "Active";
+const char smf_mbs_sess_multicast_state_inactive[] = "Inactive";
+
 int smf_ctf_config_init(smf_ctf_config_t *ctf_config)
 {
     ctf_config->enabled = SMF_CTF_ENABLED_AUTO;
@@ -3400,9 +3404,6 @@ static void smf_mbs_sess_remove(smf_mbs_sess_t *smf_mbs_sess)
     if (smf_mbs_sess->service_type)
         ogs_free(smf_mbs_sess->service_type);
 
-    if (smf_mbs_sess->state)
-        ogs_free(smf_mbs_sess->state);
-
     // TMGI is allocated/freed separately
 
     if (smf_mbs_sess->ssm)
@@ -3484,7 +3485,7 @@ smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, ogs_ssm_t *ssm, char *serv
             smf_mbs_sess->mbs_session_id.tmgi = tmgi;
             smf_mbs_sess->mbs_session_id.is_tmgi = 1;
         }
-        smf_mbs_sess->state = ogs_strdup("Start");
+        smf_mbs_sess->state = smf_mbs_sess_multicast_state_configured;
     }
 
     return smf_mbs_sess;

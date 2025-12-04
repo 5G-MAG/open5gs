@@ -52,6 +52,10 @@ extern int __gsm_log_domain;
 #undef OGS_LOG_DOMAIN
 #define OGS_LOG_DOMAIN __smf_log_domain
 
+extern const char smf_mbs_sess_multicast_state_configured[];
+extern const char smf_mbs_sess_multicast_state_active[];
+extern const char smf_mbs_sess_multicast_state_inactive[];
+
 typedef enum {
     SMF_CTF_ENABLED_AUTO = 0,
     SMF_CTF_ENABLED_YES,
@@ -511,10 +515,10 @@ typedef struct smf_sess_s {
 } smf_sess_t;
 
 typedef struct smf_mbs_sess_s {
+    ogs_lnode_t lnode;      /* A node of list_t */
+
     ogs_sbi_object_t sbi;
     ogs_pool_id_t id;
-
-    ogs_lnode_t lnode;      /* A node of list_t */
 
     uint32_t index;         /* An index of this node */
     char *mbs_session_ref;  /* mbsSessionRef */
@@ -526,7 +530,8 @@ typedef struct smf_mbs_sess_s {
     char *service_type;
 
     // Multicast specific
-    char *state;
+    OpenAPI_mbs_session_activity_status_e activity_status;
+    const char *state;
 
     ogs_pfcp_sess_t pfcp;   /* PFCP session context */
 
@@ -551,6 +556,7 @@ typedef struct smf_mbs_sess_s {
     /* MBS UDP Tunnel */
     bool ingress_tun_addr_req;
     ogs_sockaddr_t *ingress_tun_addr;
+
 } smf_mbs_sess_t;
 
 // NOTE (borieher): Not defined in the specs, default to 2 extra hours

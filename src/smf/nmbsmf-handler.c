@@ -477,6 +477,10 @@ bool smf_nmbsmf_handle_mbs_session_create(
     mbs_sess->ingress_tun_addr_req = (CreateReqData->mbs_session->is_ingress_tun_addr_req &&
                                       CreateReqData->mbs_session->ingress_tun_addr_req != 0);
 
+    if (is_multicast_service) {
+	mbs_sess->activity_status = CreateReqData->mbs_session->activity_status;
+    }
+
     /*********************************************************************
      * Send PFCP N4mb Session Establishment Request to the UPF
      *********************************************************************/
@@ -537,6 +541,199 @@ bool smf_nmbsmf_handle_mbs_session_release(
     memset(&sendmsg, 0, sizeof(sendmsg));
 
     response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
+
+    ogs_assert(response);
+
+    ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+
+    return true;
+}
+
+/*
+ * 3GPP TS 29.532 - Release 17.4.0
+ * 5G System; 5G Multicast-Broadcast Session Management Services; Stage 3
+ * Ch. 5.3.2.3 - Nmbsmf_MBSSession Service - MBS Session Update service operation
+ */
+bool smf_nmbsmf_handle_mbs_session_patch(smf_mbs_sess_t *mbs_sess,
+                                         ogs_sbi_stream_t *stream,
+                                         ogs_sbi_message_t *message)
+{
+    // TODO (davidjw): Not handling the 307 Temporary Redirect and 308 Permanent Redirect errors for now
+    ogs_debug("MBS Session update request received");
+
+    ogs_sbi_message_t sendmsg;
+    ogs_sbi_response_t *response = NULL;
+
+    ogs_assert(stream);
+    ogs_assert(message);
+    ogs_assert(mbs_sess);
+
+    if (!message->PatchItemList) {
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                    message, "Missing patch list", "Requested MBS Session Update failed, no patch list provided",
+                    "INVALID_MSG_FORMAT");
+        return false;
+    }
+
+    OpenAPI_lnode_t *node;
+    OpenAPI_list_for_each(message->PatchItemList, node) {
+        OpenAPI_patch_item_t *patch_item = (OpenAPI_patch_item_t*)node->data;
+        if (!patch_item->path || !patch_item->op) {
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                    message, "Malformed patch list", "Requested MBS Session Update failed, patch list malformed",
+                    "INVALID_MSG_FORMAT");
+            return false;
+        }
+        SWITCH(patch_item->path)
+        CASE("/activityStatus")
+	    if (strcmp(mbs_sess->service_type, "MULTICAST")) {
+		ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN, message, "Update forbidden",
+                        "Requested MBS Session Update failed, activityStatus can only be updated for multicast services",
+			"MODIFICATION_NOT_ALLOWED");
+                return false;
+            }
+            mbs_sess->activity_status = OpenAPI_mbs_session_activity_status_FromString(cJSON_GetStringValue(patch_item->value->json));
+            break;
+        CASE("/mbsSessionId")
+        CASE("/mbsSessionId/tmgi")
+        CASE("/mbsSessionId/tmgi/mbsServiceId")
+        CASE("/mbsSessionId/tmgi/plmnId")
+        CASE("/mbsSessionId/tmgi/plmnId/mcc")
+        CASE("/mbsSessionId/tmgi/plmnId/mnc")
+        CASE("/mbsSessionId/ssm/sourceIpAddr")
+        CASE("/mbsSessionId/ssm/sourceIpAddr/ipv4Addr")
+        CASE("/mbsSessionId/ssm/sourceIpAddr/ipv6Addr")
+        CASE("/mbsSessionId/ssm/sourceIpAddr/ipv6Prefix")
+        CASE("/mbsSessionId/ssm/destIpAddr")
+        CASE("/mbsSessionId/ssm/destIpAddr/ipv4Addr")
+        CASE("/mbsSessionId/ssm/destIpAddr/ipv6Addr")
+        CASE("/mbsSessionId/ssm/destIpAddr/ipv6Prefix")
+        CASE("/mbsSessionId/nid")
+        CASE("/tmgiAllocReq")
+        CASE("/tmgi")
+        CASE("/tmgi/mbsServiceId")
+        CASE("/tmgi/plmnId")
+        CASE("/tmgi/plmnId/mcc")
+        CASE("/tmgi/plmnId/mnc")
+        CASE("/expirationTime")
+        CASE("/serviceType")
+        CASE("/locationDependent")
+        CASE("/areaSessionId")
+        CASE("/ingressTunReqAddr")
+        CASE("/ingressTunAddr")
+        CASE("/ssm")
+        CASE("/ssm/sourceIpAddr")
+        CASE("/ssm/sourceIpAddr/ipv4Addr")
+        CASE("/ssm/sourceIpAddr/ipv6Addr")
+        CASE("/ssm/sourceIpAddr/ipv6Prefix")
+        CASE("/ssm/destIpAddr")
+        CASE("/ssm/destIpAddr/ipv4Addr")
+        CASE("/ssm/destIpAddr/ipv6Addr")
+        CASE("/ssm/destIpAddr/ipv6Prefix")
+        CASE("/dnn")
+        CASE("/snssai")
+        CASE("/snssai/sst")
+        CASE("/snssai/sd")
+        CASE("/startTime")
+        CASE("/terminationTime")
+        CASE("/mbsSessionSubsc")
+        CASE("/mbsSessionSubsc/mbsSessionId")
+        CASE("/mbsSessionSubsc/mbsSessionId/tmgi")
+        CASE("/mbsSessionSubsc/mbsSessionId/tmgi/mbsServiceId")
+        CASE("/mbsSessionSubsc/mbsSessionId/tmgi/plmnId")
+        CASE("/mbsSessionSubsc/mbsSessionId/tmgi/plmnId/mcc")
+        CASE("/mbsSessionSubsc/mbsSessionId/tmgi/plmnId/mnc")
+        CASE("/mbsSessionSubsc/mbsSessionId/ssm/sourceIpAddr")
+        CASE("/mbsSessionSubsc/mbsSessionId/ssm/sourceIpAddr/ipv4Addr")
+        CASE("/mbsSessionSubsc/mbsSessionId/ssm/sourceIpAddr/ipv6Addr")
+        CASE("/mbsSessionSubsc/mbsSessionId/ssm/sourceIpAddr/ipv6Prefix")
+        CASE("/mbsSessionSubsc/mbsSessionId/ssm/destIpAddr")
+        CASE("/mbsSessionSubsc/mbsSessionId/ssm/destIpAddr/ipv4Addr")
+        CASE("/mbsSessionSubsc/mbsSessionId/ssm/destIpAddr/ipv6Addr")
+        CASE("/mbsSessionSubsc/mbsSessionId/ssm/destIpAddr/ipv6Prefix")
+        CASE("/anyUeInd")
+        CASE("/mbsSecurityContext")
+        CASE("/mbsSecurityContext/keyList")
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN, message, "Update forbidden",
+                    "Requested MBS Session Update failed, update not allowed for one or more field paths",
+                    "MODIFICATION_NOT_ALLOWED");
+            return false;
+        CASE("/mbsServiceArea")
+        CASE("/mbsServiceArea/ncgiTaiList")
+        CASE("/mbsServiceArea/taiList")
+        CASE("/extMbsServiceArea")
+        CASE("/extMbsServiceArea/geographicAreaList")
+        CASE("/extMbsServiceArea/civicAddressList")
+        CASE("/mbsServInfo")
+        CASE("/mbsServInfo/mbsMediaComps")
+        CASE("/mbsServInfo/mbsSdfResPrio")
+        CASE("/mbsServInfo/afAppId")
+        CASE("/mbsServInfo/mbsSessionAmbr")
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_NOT_IMPLEMENTED, message, "Update not implemented",
+                    "Requested MBS Session Update failed, update for requested field path is not implemented", NULL);
+            return false;
+        DEFAULT
+            /* handle array paths */
+            if (!strncmp(patch_item->path, "/mbsServiceArea/ncgiTaiList/", 28) ||
+                !strncmp(patch_item->path, "/mbsServiceArea/taiList/", 24) ||
+                !strncmp(patch_item->path, "/extMbsServiceArea/geographicAreaList/", 38) ||
+                !strncmp(patch_item->path, "/extMbsServiceArea/civicAddressList", 35) ||
+                !strncmp(patch_item->path, "/mbsServInfo/mbsMediaComps/", 27)) {
+                ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_NOT_IMPLEMENTED, message, "Update not implemented",
+                        "Requested MBS Session Update failed, update for requested field path is not implemented", NULL);
+                return false;
+            } else {
+                ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST, message, "Update path not found",
+                        "Requested MBS Session Update failed, patch path not recognised", "INVALID_MSG_FORMAT");
+                return false;
+            }
+        END
+    }
+#if 1
+    response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
+#else /* for Rel 18 we can return 200 + UpdateRspData JSON */
+    OpenAPI_mbs_session_id_t *mbs_session_id = NULL;
+    OpenAPI_tmgi_t *tmgi = NULL;
+    char *expiration_time = NULL;
+    OpenAPI_mbs_service_type_e service_type = OpenAPI_mbs_service_type_NULL;
+    OpenAPI_list_t *ingress_tun_addr = NULL;
+    OpenAPI_ssm_t *ssm = NULL;
+    char *dnn = NULL;
+    OpenAPI_snssai_t *snssai = NULL;
+    OpenAPI_mbs_session_activity_status_e activity_status = OpenAPI_mbs_session_activity_status_NULL;
+    bool is_any_ue_ind = false;
+    int any_ue_ind = 0;
+
+    /* TODO (davidjw): fill in mbs session fields from mbs_sess */
+
+    sendmsg.UpdateRspData = OpenAPI_update_rsp_data_create(
+            OpenAPI_ext_mbs_session_create(mbs_session_id, /* mbsSessionId */
+                                           false, 0, /* tmgiAllocReq */
+                                           tmgi, /* tmgi */
+                                           expiration_time, /* expirationTime */
+                                           service_type, /* serviceType */
+                                           false, 0, /* locationDependent */
+                                           false, 0, /* areaSessionId */
+                                           false, 0, /* ingressTunAddrReq */
+                                           ingress_tun_addr, /* ingressTunAddr */
+                                           ssm, /* ssm */
+                                           NULL, /* mbsServiceArea */
+                                           NULL, /* extMbsServiceArea */
+                                           dnn, /* dnn */
+                                           snssai, /* snssai */
+                                           NULL, /* activationTime */
+                                           NULL, /* startTime */
+                                           NULL, /* terminationTime */
+                                           NULL, /* mbsServInfo */
+                                           NULL, /* mbsSessionSubsc */
+                                           activity_status, /* activityStatus */
+                                           is_any_ue_ind, any_ue_ind,
+                                           NULL, /* mbsFsaIdList */
+                                           NULL, /* mbsSecurityContext */
+                                           false, 0 /* contactPcfInd */
+                                          ));
+    response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_OK);
+#endif
 
     ogs_assert(response);
 

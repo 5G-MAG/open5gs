@@ -253,7 +253,7 @@ uint8_t smf_n4mb_handle_session_establishment_response(
                                                      NULL             /* termination_time */,
                                                      NULL             /* mbs_serv_info */,
                                                      NULL             /* mbs_session_subsc */,
-                                                     OpenAPI_mbs_session_activity_status_NULL /* activity_status */,
+                                                     mbs_sess->activity_status /* activity_status */,
                                                      false            /* is_any_ue_ind */, 0 /* any_ue_ind */,
                                                      NULL             /* mbs_fsa_id_list */,
                                                      NULL             /* mbs_security_context */,

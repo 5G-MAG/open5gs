@@ -64,6 +64,10 @@ bool smf_nmbsmf_handle_mbs_session_create(
 bool smf_nmbsmf_handle_mbs_session_release(
     smf_mbs_sess_t *mbs_sess, ogs_sbi_stream_t *stream, ogs_sbi_message_t *message);
 
+/* Nmbsmf_MBSSession Service - MBS Session Update/Patch service operation */
+bool smf_nmbsmf_handle_mbs_session_patch(
+    smf_mbs_sess_t *mbs_sess, ogs_sbi_stream_t *stream, ogs_sbi_message_t *message);
+
 #ifdef __cplusplus
 }
 #endif
