@@ -1,0 +1,23 @@
+diff --git a/libfdcore/extensions.c b/libfdcore/extensions.c
+index 2748f14..89acaa0 100644
+--- a/libfdcore/extensions.c
++++ b/libfdcore/extensions.c
+@@ -161,15 +161,15 @@ int fd_ext_load()
+ 		
+ 		/* Load the extension */
+ #ifndef DEBUG
+-		ext->handler = dlopen(ext->filename, RTLD_LAZY | RTLD_GLOBAL);
++		ext->handler = dlopen(ext->filename, RTLD_LAZY | RTLD_LOCAL);
+ #else /* DEBUG */
+ 		/* We resolve symbols immediatly so it's easier to find problems in ABI */
+-		ext->handler = dlopen(ext->filename, RTLD_NOW | RTLD_GLOBAL);
++		ext->handler = dlopen(ext->filename, RTLD_NOW | RTLD_LOCAL);
+ #endif /* DEBUG */
+ 		if (ext->handler == NULL) {
+ 			/* An error occured */
+ 			LOG_F("Loading of extension %s failed: %s", ext->filename, dlerror());
+-			ext->handler = dlopen(ext->filename, RTLD_LAZY | RTLD_GLOBAL);
++			ext->handler = dlopen(ext->filename, RTLD_LAZY | RTLD_LOCAL);
+ 			if (ext->handler) {
+ 				if (!check_dependencies(ext)) {
+ 					LOG_F("In addition, not all declared dependencies are satisfied (Internal Error!)");
