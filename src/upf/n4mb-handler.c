@@ -307,20 +307,26 @@ void upf_n4mb_handle_session_establishment_request(
         for (i = 0; i < num_of_created_pdr; i++) {
             pdr = created_pdr[i];
             ogs_assert(pdr);
-            // get the ips from the PDR
-            uint32_t ip_multicast = pdr->ip_multicast_addressing_info.ip_multicast_address.s_ipv4_addr;
-            uint32_t ip_source    = pdr->ip_multicast_addressing_info.source_ip_address.ipv4_addr;
 
-            char ip_multicast_string[INET_ADDRSTRLEN];
-            char ip_source_string[INET_ADDRSTRLEN];
-            inet_ntop(AF_INET, &ip_multicast, ip_multicast_string, sizeof ip_multicast_string);
-            inet_ntop(AF_INET, &ip_source, ip_source_string, sizeof ip_source_string);
+            if (pdr->ip_multicast_addressing_info.source_ip_address.v4 || pdr->ip_multicast_addressing_info.ip_multicast_address.v4) {
+                // get the ips from the PDR
+                uint32_t ip_multicast = pdr->ip_multicast_addressing_info.ip_multicast_address.s_ipv4_addr;
+                uint32_t ip_source    = pdr->ip_multicast_addressing_info.source_ip_address.ipv4_addr;
 
-            if(OGS_ERROR == multicastrouter_add_route_and_join(ip_source_string, ip_multicast_string)){
-                ogs_error("Could not create multicast route: %s to %s", ip_source_string, ip_multicast_string);
-            }else{
-                ogs_info("Multicast route created: %s to %s", ip_source_string, ip_multicast_string);
-                ogs_info("Join multicast group: %s", ip_multicast_string);
+                char ip_multicast_string[INET_ADDRSTRLEN];
+                char ip_source_string[INET_ADDRSTRLEN];
+                inet_ntop(AF_INET, &ip_multicast, ip_multicast_string, sizeof ip_multicast_string);
+                inet_ntop(AF_INET, &ip_source, ip_source_string, sizeof ip_source_string);
+
+                if(OGS_ERROR == multicastrouter_add_route_and_join(ip_source_string, ip_multicast_string)){
+                    ogs_error("Could not create multicast route: %s to %s", ip_source_string, ip_multicast_string);
+                }else{
+                    ogs_info("Multicast route created: %s to %s", ip_source_string, ip_multicast_string);
+                    ogs_info("Join multicast group: %s", ip_multicast_string);
+                }
+            }else if (pdr->ip_multicast_addressing_info.source_ip_address.v6 || pdr->ip_multicast_addressing_info.ip_multicast_address.v6) {
+                ogs_warn("Multicast router for ipv6 not implemented yet");
+                continue;
             }
         }
     }
