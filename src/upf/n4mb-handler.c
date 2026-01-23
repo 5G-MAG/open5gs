@@ -303,7 +303,7 @@ void upf_n4mb_handle_session_establishment_request(
     }
 
 
-    if(upf_self()->mbs_multicastrouter_activate){
+    if(upf_self()->mbs_multicastrouter_activate && !req->create_traffic_endpoint.presence){
         for (i = 0; i < num_of_created_pdr; i++) {
             pdr = created_pdr[i];
             ogs_assert(pdr);
