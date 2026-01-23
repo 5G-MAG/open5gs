@@ -3362,7 +3362,6 @@ static smf_mbs_sess_t *smf_mbs_sess_add(void)
                     OGS_MAX_NUM_OF_MBS_SESSIONS);
         return NULL;
     }
-    memset(smf_mbs_sess, 0, sizeof *smf_mbs_sess);
 
     smf_mbs_sess->index = ogs_pool_index(&smf_mbs_sess_pool, smf_mbs_sess);
     ogs_assert(smf_mbs_sess->index > 0 && smf_mbs_sess->index <= OGS_MAX_NUM_OF_MBS_SESSIONS);
@@ -3406,13 +3405,13 @@ static void smf_mbs_sess_remove(smf_mbs_sess_t *smf_mbs_sess)
 
     // TMGI is allocated/freed separately
 
-    if (smf_mbs_sess->ssm)
-        ogs_free(smf_mbs_sess->ssm);
-
     if (smf_mbs_sess->mbs_session_id.is_ssm) {
         ogs_hash_set(self.smf_mbs_sess_by_ssm, ((char*)smf_mbs_sess->mbs_session_id.ssm)+sizeof(ogs_lnode_t), sizeof(*smf_mbs_sess->mbs_session_id.ssm)-sizeof(ogs_lnode_t), NULL);
         ogs_free(smf_mbs_sess->mbs_session_id.ssm);
     }
+
+    if (smf_mbs_sess->ssm && (!smf_mbs_sess->mbs_session_id.is_ssm || smf_mbs_sess->ssm != smf_mbs_sess->mbs_session_id.ssm))
+        ogs_free(smf_mbs_sess->ssm);
 
     if (smf_mbs_sess->mbs_session_id.nid)
         ogs_free(smf_mbs_sess->mbs_session_id.nid);
