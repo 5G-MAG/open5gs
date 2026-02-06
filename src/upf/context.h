@@ -69,6 +69,11 @@ typedef struct upf_context_s {
     uint16_t *mbs_udp_tun_ports;         /* Array of available port numbers when not using ephemeral ports */
     uint16_t **mbs_udp_tun_ports_free;   /* Array of entries in mbs_udp_tun_ports that are free to use */
     size_t mbs_udp_tun_ports_next_free;  /* Index of last free port pointer in mbs_udp_tun_ports_free */
+
+    /* MBS multicast router configuration */
+    bool mbs_multicastrouter_activate; /* Activate the multicast router */
+    char mbs_multicastrouter_input_interface[IFNAMSIZ]; /* Name of the input interface of the multicast router */
+    char mbs_multicastrouter_output_interface[IFNAMSIZ]; /* Name of the output interface of the multicast router */
 } upf_context_t;
 
 /* trie mapping from IP framed routes to session. */

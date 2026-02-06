@@ -52,6 +52,19 @@ upf:
 #
        port: 0
 
+# Use Linux Multicast Forwarding Cache to automatically create multicast routes
+# towards the ogstun in the MB-UPF.
+# - the multicast router is only used when "activate: true" is configured.
+# - input_interface is the interface that receives the multicast traffic from the AF.
+#   - if it is not configured and the host only has one interface (other than "lo" or "ogstun"), it will automatically use that interface.
+# - output_interface is the tun interface used to send the traffic towards the UEs.
+#   - if it is not configured, it will try to use "ogstun" by default.
+
+#    multicast_router:
+#      input_interface: eno1
+#      output_interface: ogstun
+#      activate: true
+
 ################################################################################
 # PFCP Server
 ################################################################################

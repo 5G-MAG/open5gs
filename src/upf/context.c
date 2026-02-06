@@ -72,6 +72,10 @@ void upf_context_init(void)
     self.ipv6_hash = ogs_hash_make();
     ogs_assert(self.ipv6_hash);
 
+    memset(self.mbs_multicastrouter_input_interface, 0, sizeof self.mbs_multicastrouter_input_interface);
+    memset(self.mbs_multicastrouter_output_interface, 0, sizeof self.mbs_multicastrouter_output_interface);
+    self.mbs_multicastrouter_activate = false;
+
     context_initialized = 1;
 }
 
@@ -290,6 +294,39 @@ int upf_context_parse_config(void)
                                     ogs_warn("unknown key `%s` in upf/mbs/udptunnel section", upf_mbs_tunnel_key);
                                 }
                             }
+                        } else if (!strcmp(upf_mbs_key, "multicast_router")) {
+                            ogs_yaml_iter_t upf_mbs_multicastrouter_iter;
+                            ogs_yaml_iter_recurse(&upf_mbs_iter, &upf_mbs_multicastrouter_iter);
+                            while (ogs_yaml_iter_next(&upf_mbs_multicastrouter_iter)) {
+                                const char *upf_mbs_multicastrouter_key = ogs_yaml_iter_key(&upf_mbs_multicastrouter_iter);
+                                ogs_assert(upf_mbs_multicastrouter_key);
+                                if (!strcmp(upf_mbs_multicastrouter_key, "input_interface")) {
+                                    ogs_yaml_iter_t upf_mbs_multicastrouter_address_iter;
+                                    ogs_yaml_iter_recurse(&upf_mbs_multicastrouter_iter, &upf_mbs_multicastrouter_address_iter);
+                                    const char *input_interface = ogs_yaml_iter_value(&upf_mbs_multicastrouter_address_iter);
+                                    strcpy(self.mbs_multicastrouter_input_interface , input_interface);
+                                }else if (!strcmp(upf_mbs_multicastrouter_key, "output_interface")) {
+                                    ogs_yaml_iter_t upf_mbs_multicastrouter_address_iter;
+                                    ogs_yaml_iter_recurse(&upf_mbs_multicastrouter_iter, &upf_mbs_multicastrouter_address_iter);
+                                    const char *output_interface = ogs_yaml_iter_value(&upf_mbs_multicastrouter_address_iter);
+                                    strcpy(self.mbs_multicastrouter_output_interface , output_interface);
+                                }else if (!strcmp(upf_mbs_multicastrouter_key, "activate")) {
+                                    ogs_yaml_iter_t upf_mbs_multicastrouter_address_iter;
+                                    ogs_yaml_iter_recurse(&upf_mbs_multicastrouter_iter, &upf_mbs_multicastrouter_address_iter);
+                                    const char *value = ogs_yaml_iter_value(&upf_mbs_multicastrouter_address_iter);
+                                    if(strcmp(value, "true") == 0){
+                                        self.mbs_multicastrouter_activate = true;
+                                    }else if(strcmp(value, "false") == 0){
+                                        self.mbs_multicastrouter_activate = false;
+                                    }else{
+                                        ogs_warn("unkown value `%s` in mbs/multicast_router_activate, must be either true or false", value);
+                                        self.mbs_multicastrouter_activate = false;
+                                    }
+                                } else {
+                                    ogs_warn("unknown key `%s` in upf/mbs/multicastrouter section", upf_mbs_multicastrouter_key);
+                                }
+                            }
+
                         } else {
                             ogs_warn("unknown key `%s` in upf/mbs section", upf_mbs_key);
                         }

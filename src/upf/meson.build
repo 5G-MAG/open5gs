@@ -57,6 +57,7 @@ libupf_sources = files('''
     n4-handler.h
     n4mb-handler.h
     n4mb-build.h
+    multicastrouter-path.h
 
     rule-match.c
     init.c
@@ -72,6 +73,7 @@ libupf_sources = files('''
     n4-handler.c
     n4mb-handler.c
     n4mb-build.c
+    multicastrouter-path.c
 '''.split())
 
 libtins_dep = dependency('libtins',
@@ -106,6 +108,7 @@ libupf_dep = declare_dependency(
         libpfcp_dep,
         libtun_dep,
         libarp_nd_dep,
+        libmulticastrouter_dep,
     ])
 
 upf_sources = files('''
