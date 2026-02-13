@@ -22,6 +22,12 @@
 #include <netinet/ip.h>
 #include <netinet/ip6.h>
 #include <netinet/udp.h>
+#include <net/if.h>
+#include <sys/ioctl.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <ifaddrs.h>
+#include <unistd.h>
 
 #include "context.h"
 #include "gtp-path.h"
@@ -32,6 +38,7 @@
 static void _mbs_tunnel_poll_handler(short when, ogs_socket_t fd, void *data);
 static uint16_t _get_next_udp_tunnel_port(upf_context_t *ctx);
 static ogs_pkbuf_config_t *_udp_tunnel_make_pool_config(size_t max_buf_size, size_t max_buffers);
+static int get_mtu_for_address(const struct sockaddr *addr, socklen_t addr_len);
 
 void upf_n4mb_handle_session_establishment_request(
         upf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
@@ -107,9 +114,10 @@ void upf_n4mb_handle_session_establishment_request(
 
     if (req->create_traffic_endpoint.presence) {
         if (req->create_traffic_endpoint.local_ingress_tunnel.presence) {
-	    ogs_pfcp_local_ingress_tunnel_t *lit = (ogs_pfcp_local_ingress_tunnel_t*)req->create_traffic_endpoint.local_ingress_tunnel.data;
-	    if (lit->choose) {
-		if (lit->ipv4) {
+            ogs_pfcp_local_ingress_tunnel_t *lit = (ogs_pfcp_local_ingress_tunnel_t*)req->create_traffic_endpoint.local_ingress_tunnel.data;
+            if (lit->choose) {
+                int mtu = 1500;
+                if (lit->ipv4) {
                     // Create IPv4 UDP tunnel endpoint and return the address & port in the session response
                     ogs_sockaddr_t *bind_address = NULL;
                     upf_context_t *ctx = upf_self();
@@ -119,14 +127,16 @@ void upf_n4mb_handle_session_establishment_request(
                     ogs_sock_bind(mbs_sess->udp_tunnel, bind_address);
                     // get the true local address to fill in ephemeral ports.
                     socklen_t name_len = sizeof(mbs_sess->udp_tunnel->local_addr.ss);
-		    getsockname(mbs_sess->udp_tunnel->fd, (struct sockaddr*)&mbs_sess->udp_tunnel->local_addr.ss, &name_len);
+                    getsockname(mbs_sess->udp_tunnel->fd, (struct sockaddr*)&mbs_sess->udp_tunnel->local_addr.ss, &name_len);
                     ogs_freeaddrinfo(bind_address);
-                    /* TODO: find the MTU of the interface the UDP tunnel is bound to */
-                    mbs_sess->udp_tunnel_mtu = 1500 - sizeof(struct ether_header) - sizeof(struct iphdr) - sizeof(struct udphdr);
+                    /* find the MTU of the interface the UDP tunnel is bound to */
+                    mtu = get_mtu_for_address((const struct sockaddr*)&mbs_sess->udp_tunnel->local_addr.ss, name_len);
+                    mbs_sess->udp_tunnel_mtu = mtu - sizeof(struct ether_header) - sizeof(struct iphdr) - sizeof(struct udphdr);
+                    ogs_debug("UDP tunnel using MTU of %i (%i after overheads)", mtu, mbs_sess->udp_tunnel_mtu);
                     ogs_pkbuf_config_t *config = _udp_tunnel_make_pool_config(mbs_sess->udp_tunnel_mtu, 32); /* 32 buffers */
                     mbs_sess->udp_tunnel_pkbuf_pool = ogs_pkbuf_pool_create(config);
                     ogs_free(config);
-		    ogs_pollset_add(ogs_app()->pollset, OGS_POLLIN, mbs_sess->udp_tunnel->fd, _mbs_tunnel_poll_handler, mbs_sess);
+                    ogs_pollset_add(ogs_app()->pollset, OGS_POLLIN, mbs_sess->udp_tunnel->fd, _mbs_tunnel_poll_handler, mbs_sess);
                 } else if (lit->ipv6) {
                     // Create IPv6 UDP tunnel endpoint and return the address & port in the session response
                     ogs_sockaddr_t *bind_address = NULL;
@@ -137,23 +147,25 @@ void upf_n4mb_handle_session_establishment_request(
                     ogs_sock_bind(mbs_sess->udp_tunnel, bind_address);
                     // get the true local address to fill in ephemeral ports.
                     socklen_t name_len = sizeof(mbs_sess->udp_tunnel->local_addr.ss);
-		    getsockname(mbs_sess->udp_tunnel->fd, (struct sockaddr*)&mbs_sess->udp_tunnel->local_addr.ss, &name_len);
+                    getsockname(mbs_sess->udp_tunnel->fd, (struct sockaddr*)&mbs_sess->udp_tunnel->local_addr.ss, &name_len);
                     ogs_freeaddrinfo(bind_address);
-                    /* TODO: find the MTU of the interface the UDP tunnel is bound to */
-                    mbs_sess->udp_tunnel_mtu = 1500 - sizeof(struct ether_header) - sizeof(struct ip6_hdr) - sizeof(struct udphdr);
+                    /* find the MTU of the interface the UDP tunnel is bound to */
+                    mtu = get_mtu_for_address((const struct sockaddr*)&mbs_sess->udp_tunnel->local_addr.ss, name_len);
+                    mbs_sess->udp_tunnel_mtu = mtu - sizeof(struct ether_header) - sizeof(struct ip6_hdr) - sizeof(struct udphdr);
+                    ogs_debug("UDP tunnel using MTU of %i (%i after overheads)", mtu, mbs_sess->udp_tunnel_mtu);
                     ogs_pkbuf_config_t *config = _udp_tunnel_make_pool_config(mbs_sess->udp_tunnel_mtu, 32); /* 32 buffers */
                     mbs_sess->udp_tunnel_pkbuf_pool = ogs_pkbuf_pool_create(config);
                     ogs_free(config);
-		    ogs_pollset_add(ogs_app()->pollset, OGS_POLLIN, mbs_sess->udp_tunnel->fd, _mbs_tunnel_poll_handler, mbs_sess);
+                    ogs_pollset_add(ogs_app()->pollset, OGS_POLLIN, mbs_sess->udp_tunnel->fd, _mbs_tunnel_poll_handler, mbs_sess);
                 }
             } else {
-		if (lit->ipv4) {
+                if (lit->ipv4) {
                     // TODO: Open IPv4 UDP tunnel endpoint at the address and port requested
                 }
                 if (lit->ipv6) {
                     // TODO: Open IPv6 UDP tunnel endpoint at the address and port requested
                 }
-	    }
+            }
         }
     }
 
@@ -205,18 +217,18 @@ void upf_n4mb_handle_session_establishment_request(
         if (req->mbs_session_n4mb_control_information.mbs_session_identifier.presence) {
             // TODO (borieher): Continue parsing MBS Session Identifier, after fixing it
             if (ogs_pfcp_parse_mbs_session_identifier(&mbs_session_identifier, &req->mbs_session_n4mb_control_information.mbs_session_identifier)) {
-		// Free old values
-		if (mbs_sess->mbs_session_id.is_tmgi && mbs_sess->mbs_session_id.tmgi) ogs_free(mbs_sess->mbs_session_id.tmgi);
-		if (mbs_sess->mbs_session_id.is_ssm && mbs_sess->mbs_session_id.ssm) ogs_free(mbs_sess->mbs_session_id.ssm);
-		if (mbs_sess->mbs_session_id.nid) ogs_free(mbs_sess->mbs_session_id.nid);
+                // Free old values
+                if (mbs_sess->mbs_session_id.is_tmgi && mbs_sess->mbs_session_id.tmgi) ogs_free(mbs_sess->mbs_session_id.tmgi);
+                if (mbs_sess->mbs_session_id.is_ssm && mbs_sess->mbs_session_id.ssm) ogs_free(mbs_sess->mbs_session_id.ssm);
+                if (mbs_sess->mbs_session_id.nid) ogs_free(mbs_sess->mbs_session_id.nid);
 
-		// Initialise to empty
-		mbs_sess->mbs_session_id.is_tmgi = 0;
-		mbs_sess->mbs_session_id.is_ssm = 0;
-		mbs_sess->mbs_session_id.tmgi = NULL;
-		mbs_sess->mbs_session_id.nid = NULL;
+                // Initialise to empty
+                mbs_sess->mbs_session_id.is_tmgi = 0;
+                mbs_sess->mbs_session_id.is_ssm = 0;
+                mbs_sess->mbs_session_id.tmgi = NULL;
+                mbs_sess->mbs_session_id.nid = NULL;
 
-		if (mbs_session_identifier.tmgif) {
+                if (mbs_session_identifier.tmgif) {
                     mbs_sess->mbs_session_id.is_tmgi = 1;
                     mbs_sess->mbs_session_id.tmgi = (ogs_tmgi_t*)ogs_calloc(1, sizeof(*mbs_sess->mbs_session_id.tmgi));
                     mbs_sess->mbs_session_id.tmgi->mbs_service_id = ogs_msprintf("%.2X%.2X%.2X", mbs_session_identifier.tmgi.mbs_service_id[2], mbs_session_identifier.tmgi.mbs_service_id[1], mbs_session_identifier.tmgi.mbs_service_id[0]);
@@ -227,7 +239,7 @@ void upf_n4mb_handle_session_establishment_request(
                     mbs_sess->mbs_session_id.tmgi->plmn_id.mnc2 = mbs_session_identifier.tmgi.mnc2;
                     mbs_sess->mbs_session_id.tmgi->plmn_id.mnc3 = mbs_session_identifier.tmgi.mnc3;
                     /* mbs_sess->mbs_session_id.tmgi->expiration_time = ; */
-		} else if (mbs_session_identifier.ssmif) {
+                } else if (mbs_session_identifier.ssmif) {
                     mbs_sess->mbs_session_id.is_ssm = 1;
                     mbs_sess->mbs_session_id.ssm = (ogs_ssm_t*)ogs_calloc(1, sizeof(*mbs_sess->mbs_session_id.ssm));
                     switch (mbs_session_identifier.ssm.ip_source_address.address_type) {
@@ -261,14 +273,14 @@ void upf_n4mb_handle_session_establishment_request(
                         break;
                     }
                 }
-		if (!mbs_sess->ssm.dest_ip_addr.ipv4 && !mbs_sess->ssm.dest_ip_addr.ipv6 && mbs_session_identifier.ssmif) {
+                if (!mbs_sess->ssm.dest_ip_addr.ipv4 && !mbs_sess->ssm.dest_ip_addr.ipv6 && mbs_session_identifier.ssmif) {
                     /* Duplicate to ID SSM to SSM settings if we don't already have an SSM destination */
-		    memcpy(&mbs_sess->ssm, mbs_sess->mbs_session_id.ssm, sizeof(mbs_sess->ssm));
-		}
-		if (mbs_session_identifier.nidif) {
-		    mbs_sess->mbs_session_id.nid = (char*)ogs_calloc(1, 12);
-		}
-	    }
+                    memcpy(&mbs_sess->ssm, mbs_sess->mbs_session_id.ssm, sizeof(mbs_sess->ssm));
+                }
+                if (mbs_session_identifier.nidif) {
+                    mbs_sess->mbs_session_id.nid = (char*)ogs_calloc(1, 12);
+                }
+            }
         }
 
         // MBSN4mbReq-Flags IE
@@ -381,7 +393,7 @@ static ogs_pkbuf_config_t *_udp_tunnel_make_pool_config(size_t max_buf_size, siz
     ogs_pkbuf_config_t *config = ogs_calloc(1, sizeof(*config));
     size_t pkbuf_buffer_size = sizeof(ogs_pkbuf_t) + max_buf_size;
     if (pkbuf_buffer_size <= 128) {
-	config->cluster_128_pool = 128 * max_buffers;
+        config->cluster_128_pool = 128 * max_buffers;
     } else if (pkbuf_buffer_size <= 256) {
         config->cluster_256_pool = 256 * max_buffers;
     } else if (pkbuf_buffer_size <= 512) {
@@ -398,4 +410,100 @@ static ogs_pkbuf_config_t *_udp_tunnel_make_pool_config(size_t max_buf_size, siz
         config->cluster_big_pool = 65536 * max_buffers;
     }
     return config;
+}
+
+static int get_mtu_for_address(const struct sockaddr *addr, socklen_t addr_len)
+{
+    typedef union {
+        struct in_addr in;
+        struct in6_addr in6;
+    } address_type;
+
+    int mtu = 1500;
+    int i;
+    struct ifaddrs *ifa = NULL;
+    struct ifaddrs *ifa_it;
+    const char *if_name = NULL;
+    size_t a_len;
+    size_t a_offset;
+    address_type addr_with_mask;
+    address_type ifc_with_mask;
+
+    if (addr->sa_family != AF_INET && addr->sa_family != AF_INET6) {
+        ogs_error("Unknown socket address type when finding MTU, using default 1500 MTU");
+        return mtu;
+    }
+
+    if ((addr->sa_family == AF_INET && addr_len < sizeof(struct sockaddr_in)) ||
+        (addr->sa_family == AF_INET6 && addr_len < sizeof(struct sockaddr_in6))) {
+        ogs_error("Wrong address size when retrieving MTU, using default 1500 MTU");
+        return mtu;
+    }
+
+    if (addr->sa_family == AF_INET) {
+        struct sockaddr_in sa;
+        addr_len = sizeof(struct sockaddr_in);
+        a_len = sizeof(struct in_addr);
+        a_offset = ((unsigned char*)&sa.sin_addr) - ((unsigned char*)&sa);
+    } else {
+        struct sockaddr_in6 sa;
+        addr_len = sizeof(sa);
+        a_len = sizeof(sa.sin6_addr);
+        a_offset = ((unsigned char*)&sa.sin6_addr) - ((unsigned char*)&sa);
+    }
+
+    if (getifaddrs(&ifa) == -1) {
+        ogs_warn("getifaddrs failed: %s", strerror(errno));
+        return mtu;
+    }
+
+    for (ifa_it = ifa; ifa_it; ifa_it = ifa_it->ifa_next) {
+        if (!ifa_it->ifa_addr)
+            continue;
+        if (!ifa_it->ifa_name)
+            continue;
+        if (ifa_it->ifa_addr->sa_family != addr->sa_family)
+            continue;
+
+        memcpy(&addr_with_mask, ((unsigned char*)addr) + a_offset, a_len);
+        memcpy(&ifc_with_mask, ((unsigned char*)ifa_it->ifa_addr) + a_offset, a_len);
+
+        for (i=0; i<a_len; i++) {
+            ((unsigned char*)&addr_with_mask)[i] &= ((unsigned char*)ifa_it->ifa_netmask)[a_offset + i];
+            ((unsigned char*)&ifc_with_mask)[i] &= ((unsigned char*)ifa_it->ifa_netmask)[a_offset + i];
+        }
+
+#if 0
+        {
+            char buf1[INET6_ADDRSTRLEN], buf2[INET6_ADDRSTRLEN];
+            inet_ntop(addr->sa_family, &addr_with_mask, buf1, sizeof(buf1));
+            inet_ntop(addr->sa_family, &ifc_with_mask, buf2, sizeof(buf2));
+            ogs_debug("Compare %s to %s...", buf1, buf2);
+        }
+#endif
+
+        if (memcmp(&addr_with_mask, &ifc_with_mask, a_len) == 0) {
+            /* ogs_debug("Found interface name: %s", ifa_it->ifa_name); */
+            if_name = ifa_it->ifa_name;
+            break;
+        }
+    }
+
+    if (if_name) {
+        struct ifreq ifr;
+        strcpy(ifr.ifr_name, if_name);
+        int fd = socket(AF_INET, SOCK_DGRAM, 0);
+        if (ioctl(fd, SIOCGIFMTU, &ifr) == -1) {
+            ogs_warn("Failed to get MTU: %s", strerror(errno));
+        } else {
+            mtu = ifr.ifr_mtu;
+        }
+        close(fd);
+    } else {
+        ogs_warn("Unable to get interface name for address, using default MTU of 1500");
+    }
+
+    freeifaddrs(ifa);
+
+    return mtu;
 }
