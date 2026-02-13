@@ -51,6 +51,22 @@ static void smf_tmgi_remove_all(void);
 static void smf_mbs_sess_remove(smf_mbs_sess_t *smf_mbs_sess);
 static void smf_mbs_sess_remove_all(void);
 
+static void smf_mbs_sess_list_hash_destroy(ogs_hash_t *mbs_sess_list_hash);
+
+static void smf_mbs_sessions_by_tmgi_add_mbs_sess(smf_mbs_sess_t *mbs_sess);
+static void smf_mbs_sessions_by_tmgi_remove_mbs_sess(smf_mbs_sess_t *mbs_sess);
+static void *smf_mbs_sessions_by_tmgi_key(ogs_tmgi_t *tmgi, int *klen);
+
+static void smf_mbs_sessions_by_ssm_add_mbs_sess(smf_mbs_sess_t *mbs_sess);
+static void smf_mbs_sessions_by_ssm_remove_mbs_sess(smf_mbs_sess_t *mbs_sess);
+static void *smf_mbs_sessions_by_ssm_key(ogs_ssm_t *ssm, int *klen);
+
+static bool smf_mbs_sess_list_service_areas_overlap(ogs_list_t *mbs_sess_list, smf_mbs_sess_t *mbs_session);
+static bool smf_mbs_sess_service_areas_overlap(smf_mbs_sess_t *a, smf_mbs_sess_t *b);
+
+static bool smf_tai_equal(const ogs_tai_t *a, const ogs_tai_t *b);
+static bool smf_ncgi_equal(const ogs_ncgi_t *a, const ogs_ncgi_t *b);
+
 const char smf_mbs_sess_multicast_state_configured[] = "Configured";
 const char smf_mbs_sess_multicast_state_active[] = "Active";
 const char smf_mbs_sess_multicast_state_inactive[] = "Inactive";
@@ -121,8 +137,10 @@ void smf_context_init(void)
     ogs_assert(self.ipv6_hash);
     self.n1n2message_hash = ogs_hash_make();
     ogs_assert(self.n1n2message_hash);
-    self.smf_mbs_sess_by_ssm = ogs_hash_make();
-    ogs_assert(self.smf_mbs_sess_by_ssm);
+    self.smf_mbs_sessions_by_ssm = ogs_hash_make();
+    ogs_assert(self.smf_mbs_sessions_by_ssm);
+    self.smf_mbs_sessions_by_tmgi = ogs_hash_make();
+    ogs_assert(self.smf_mbs_sessions_by_tmgi);
 
     context_initialized = 1;
 }
@@ -148,8 +166,8 @@ void smf_context_final(void)
     ogs_hash_destroy(self.ipv6_hash);
     ogs_assert(self.n1n2message_hash);
     ogs_hash_destroy(self.n1n2message_hash);
-    ogs_assert(self.smf_mbs_sess_by_ssm);
-    ogs_hash_destroy(self.smf_mbs_sess_by_ssm);
+    smf_mbs_sess_list_hash_destroy(self.smf_mbs_sessions_by_ssm);
+    smf_mbs_sess_list_hash_destroy(self.smf_mbs_sessions_by_tmgi);
 
     ogs_pool_final(&smf_ue_pool);
     ogs_pool_final(&smf_bearer_pool);
@@ -176,6 +194,36 @@ void smf_context_final(void)
 smf_context_t *smf_self(void)
 {
     return &self;
+}
+
+bool smf_context_have_matching_mbs_session_id(smf_mbs_sess_t *mbs_session)
+{
+    if (mbs_session->mbs_session_id.is_tmgi) {
+        void *key;
+        int klen;
+
+	ogs_debug("Checking MBS Session ID TMGI");
+        key = smf_mbs_sessions_by_tmgi_key(mbs_session->mbs_session_id.tmgi, &klen);
+        if (key) {
+            ogs_list_t *mbs_sess_list = (ogs_list_t*)ogs_hash_get(self.smf_mbs_sessions_by_tmgi, key, klen);
+	    ogs_debug("Found %i sessions matching TMGI", mbs_sess_list?ogs_list_count(mbs_sess_list):0);
+            if (smf_mbs_sess_list_service_areas_overlap(mbs_sess_list, mbs_session)) return true;
+        }
+    }
+
+    if (mbs_session->mbs_session_id.is_ssm) {
+        void *key;
+        int klen;
+	ogs_debug("Checking MBS Session ID SSM");
+        key = smf_mbs_sessions_by_ssm_key(mbs_session->mbs_session_id.ssm, &klen);
+        if (key) {
+            ogs_list_t *mbs_sess_list = (ogs_list_t*)ogs_hash_get(self.smf_mbs_sessions_by_ssm, key, klen);
+            ogs_debug("Found %i sessions matching SSM", mbs_sess_list?ogs_list_count(mbs_sess_list):0);
+            if (smf_mbs_sess_list_service_areas_overlap(mbs_sess_list, mbs_session)) return true;
+        }
+    }
+
+    return false;
 }
 
 static int smf_context_prepare(void)
@@ -3390,12 +3438,9 @@ static smf_mbs_sess_t *smf_mbs_sess_add(void)
     return smf_mbs_sess;
 }
 
-static void smf_mbs_sess_remove(smf_mbs_sess_t *smf_mbs_sess)
+static void smf_mbs_sess_free(smf_mbs_sess_t *smf_mbs_sess)
 {
-    ogs_assert(smf_mbs_sess);
-
-    ogs_list_remove(&self.smf_mbs_sess_list, smf_mbs_sess);
-    ogs_pfcp_sess_clear(&smf_mbs_sess->pfcp);
+    if (!smf_mbs_sess) return;
 
     if (smf_mbs_sess->mbs_session_ref)
         ogs_free(smf_mbs_sess->mbs_session_ref);
@@ -3403,10 +3448,9 @@ static void smf_mbs_sess_remove(smf_mbs_sess_t *smf_mbs_sess)
     if (smf_mbs_sess->service_type)
         ogs_free(smf_mbs_sess->service_type);
 
-    // TMGI is allocated/freed separately
+    // TMGI is allocated/freed separately but we need to tidy up the index hash
 
     if (smf_mbs_sess->mbs_session_id.is_ssm) {
-        ogs_hash_set(self.smf_mbs_sess_by_ssm, ((char*)smf_mbs_sess->mbs_session_id.ssm)+sizeof(ogs_lnode_t), sizeof(*smf_mbs_sess->mbs_session_id.ssm)-sizeof(ogs_lnode_t), NULL);
         ogs_free(smf_mbs_sess->mbs_session_id.ssm);
     }
 
@@ -3430,7 +3474,28 @@ static void smf_mbs_sess_remove(smf_mbs_sess_t *smf_mbs_sess)
 
     ogs_pool_free(&smf_n4_seid_pool, smf_mbs_sess->smf_n4mb_seid_node);
 
+    ogs_mbs_service_area_free(smf_mbs_sess->mbs_service_area);
+    ogs_ext_mbs_service_area_free(smf_mbs_sess->ext_mbs_service_area);
+
     ogs_pool_id_free(&smf_mbs_sess_pool, smf_mbs_sess);
+}
+
+static void smf_mbs_sess_remove(smf_mbs_sess_t *smf_mbs_sess)
+{
+    ogs_assert(smf_mbs_sess);
+
+    ogs_list_remove(&self.smf_mbs_sess_list, smf_mbs_sess);
+    ogs_pfcp_sess_clear(&smf_mbs_sess->pfcp);
+
+    if (smf_mbs_sess->mbs_session_id.is_tmgi) {
+        smf_mbs_sessions_by_tmgi_remove_mbs_sess(smf_mbs_sess);
+    }
+
+    if (smf_mbs_sess->mbs_session_id.is_ssm) {
+        smf_mbs_sessions_by_ssm_remove_mbs_sess(smf_mbs_sess);
+    }
+
+    smf_mbs_sess_free(smf_mbs_sess);
 
     ogs_info("[Removed] Number of MBS Sessions in SMF is now %d",
             ogs_list_count(&self.smf_mbs_sess_list));
@@ -3463,7 +3528,6 @@ smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, ogs_ssm_t *ssm, char *serv
     if (ogs_strcasecmp(smf_mbs_sess->service_type, "BROADCAST") == 0) {
         smf_mbs_sess->mbs_session_id.tmgi = tmgi;
         smf_mbs_sess->mbs_session_id.is_tmgi = 1;
-
         if (ssm)
             smf_mbs_sess->ssm = ssm;
     } else if (ogs_strcasecmp(smf_mbs_sess->service_type, "MULTICAST") == 0) {
@@ -3475,7 +3539,6 @@ smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, ogs_ssm_t *ssm, char *serv
             if (!ssm->dest_ip_addr.ipv4) memset(&ssm->dest_ip_addr.addr, 0, sizeof(ssm->dest_ip_addr.addr));
             if (!ssm->dest_ip_addr.ipv6) memset(ssm->dest_ip_addr.addr6, 0, sizeof(ssm->dest_ip_addr.addr6));
             ssm->dest_ip_addr.reserved = 0;
-            ogs_hash_set(self.smf_mbs_sess_by_ssm, ((char*)ssm) + sizeof(ogs_lnode_t), sizeof(*ssm)-sizeof(ogs_lnode_t), smf_mbs_sess);
             smf_mbs_sess->mbs_session_id.ssm = ssm;
             smf_mbs_sess->mbs_session_id.is_ssm = 1;
 
@@ -3485,6 +3548,17 @@ smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, ogs_ssm_t *ssm, char *serv
             smf_mbs_sess->mbs_session_id.is_tmgi = 1;
         }
         smf_mbs_sess->state = smf_mbs_sess_multicast_state_configured;
+    }
+
+    if (smf_context_have_matching_mbs_session_id(smf_mbs_sess)) {
+	ogs_debug("New MBS Session collides with an existing MBS Session, aborting create");
+        smf_mbs_sess_free(smf_mbs_sess);
+        smf_mbs_sess = NULL;
+    } else {
+        if (smf_mbs_sess->mbs_session_id.is_tmgi)
+            smf_mbs_sessions_by_tmgi_add_mbs_sess(smf_mbs_sess);
+        if (smf_mbs_sess->mbs_session_id.is_ssm)
+            smf_mbs_sessions_by_ssm_add_mbs_sess(smf_mbs_sess);
     }
 
     return smf_mbs_sess;
@@ -3514,102 +3588,6 @@ void smf_mbs_sess_release(smf_mbs_sess_t *smf_mbs_sess)
 smf_mbs_sess_t *smf_mbs_sess_find_by_seid(uint64_t seid)
 {
     return ogs_hash_get(self.smf_n4_seid_hash, &seid, sizeof(seid));
-}
-
-#if 0
-#define OGS_SSM_MAX_STRING_LENGTH (INET6_ADDRSTRLEN*2 + 4)
-
-static char *ogs_ssm_string(const ogs_ssm_t *ssm, char *buffer)
-{
-    if (!ssm) {
-        strcpy(buffer, "<null>");
-    } else {
-        if (ssm->src_ip_addr.ipv4) {
-            char addr[INET_ADDRSTRLEN];
-            sprintf(buffer, "%s:", inet_ntop(AF_INET, &ssm->src_ip_addr.addr, addr, INET_ADDRSTRLEN));
-        } else if (ssm->src_ip_addr.ipv6) {
-            char addr[INET6_ADDRSTRLEN];
-            sprintf(buffer, "[%s]:", inet_ntop(AF_INET6, ssm->src_ip_addr.addr6, addr, INET6_ADDRSTRLEN));
-        } else {
-            strcpy(buffer, "*:");
-        }
-        char *rest = buffer + strlen(buffer);
-        if (ssm->dest_ip_addr.ipv4) {
-            char addr[INET_ADDRSTRLEN];
-            strcpy(rest, inet_ntop(AF_INET, &ssm->dest_ip_addr.addr, addr, INET_ADDRSTRLEN));
-        } else if (ssm->dest_ip_addr.ipv6) {
-            char addr[INET6_ADDRSTRLEN];
-            strcpy(rest, inet_ntop(AF_INET6, ssm->dest_ip_addr.addr6, addr, INET6_ADDRSTRLEN));
-        } else {
-            strcpy(rest, "*");
-        }
-    }
-    return buffer;
-}
-
-static int _dump_ssm_keys(void *rec, const void *key, int klen, const void *value)
-{
-    const ogs_ssm_t *ssm = (const ogs_ssm_t *)(((const char*)key)-sizeof(ogs_lnode_t));
-    const ogs_ssm_t *ssm2 = (const ogs_ssm_t *)(((const char*)rec)-sizeof(ogs_lnode_t));
-    char buffer[OGS_SSM_MAX_STRING_LENGTH];
-    char buffer2[OGS_SSM_MAX_STRING_LENGTH];
-
-    char *diff = NULL;
-    size_t i;
-    for (i = 0; i < sizeof(ogs_ssm_t) - sizeof(ogs_lnode_t); i++) {
-        if (((char*)rec)[i] != ((const char*)key)[i]) {
-            if (!diff) {
-                diff = ogs_msprintf("differs at bytes: %zu", i);
-            } else {
-                diff = ogs_mstrcatf(diff, ", %zu", i);
-            }
-        }
-    }
-    if (!diff) diff = ogs_strdup("same");
-
-    ogs_debug(" (%p) %s == %s : %s", value, ogs_ssm_string(ssm, buffer), ogs_ssm_string(ssm2, buffer2), diff);
-    ogs_free(diff);
-    return 1;
-}
-#endif
-
-smf_mbs_sess_t *smf_mbs_sess_find_by_ssm(ogs_ssm_t *ssm)
-{
-    if (!ssm) return NULL;
-
-    /* sanitize SSM for comparison */
-    ogs_ssm_t tmp;
-    memset(&tmp, 0, sizeof(tmp));
-    if (ssm->src_ip_addr.ipv4) {
-        tmp.src_ip_addr.ipv4 = 1;
-        tmp.src_ip_addr.addr = ssm->src_ip_addr.addr;
-    }
-    if (ssm->src_ip_addr.ipv6) {
-        tmp.src_ip_addr.ipv6 = 1;
-        memcpy(tmp.src_ip_addr.addr6, ssm->src_ip_addr.addr6, sizeof(tmp.src_ip_addr.addr6));
-    }
-    tmp.src_ip_addr.len = ssm->src_ip_addr.len;
-    if (ssm->dest_ip_addr.ipv4) {
-        tmp.dest_ip_addr.ipv4 = 1;
-        tmp.dest_ip_addr.addr = ssm->dest_ip_addr.addr;
-    }
-    if (ssm->dest_ip_addr.ipv6) {
-        tmp.dest_ip_addr.ipv6 = 1;
-        memcpy(tmp.dest_ip_addr.addr6, ssm->dest_ip_addr.addr6, sizeof(tmp.dest_ip_addr.addr6));
-    }
-    tmp.dest_ip_addr.len = ssm->dest_ip_addr.len;
-
-#if 0
-    char buffer[OGS_SSM_MAX_STRING_LENGTH];
-    ogs_debug("Search for MBS Session with SSM = %s", ogs_ssm_string(&tmp, buffer));
-
-    ogs_hash_do(_dump_ssm_keys, ((char*)&tmp) + sizeof(ogs_lnode_t), self.smf_mbs_sess_by_ssm);
-#endif
-
-    smf_mbs_sess_t *ret = ogs_hash_get(self.smf_mbs_sess_by_ssm, ((char*)&tmp) + sizeof(ogs_lnode_t), sizeof(tmp) - sizeof(ogs_lnode_t));
-    ogs_debug("Found MBS Session %p", ret);
-
-    return ret;
 }
 
 // TODO (borieher): Select UPF based on MBS parameters
@@ -3721,4 +3699,246 @@ void smf_mbs_sess_create_mbs_data_forwarding(smf_mbs_sess_t *mbs_sess)
     //dl_far->outer_header_creation.gtpu4 = 1;
     dl_far->outer_header_creation.ssm_c_teid = 1;
     dl_far->outer_header_creation_len = 6;
+}
+
+static int smf_mbs_sess_list_delete_hash_entry(void *rec, const void *key, int klen, const void *value)
+{
+    ogs_hash_t *mbs_sess_list_hash = (ogs_hash_t*)rec;
+    ogs_list_t *mbs_sess_list = (ogs_list_t*)value;
+    smf_mbs_sess_lnode_t *lnode;
+    smf_mbs_sess_lnode_t *next;
+
+    ogs_hash_set(mbs_sess_list_hash, key, klen, NULL);
+
+    ogs_list_for_each_safe(mbs_sess_list, next, lnode) {
+        ogs_list_remove(mbs_sess_list, lnode);
+        ogs_free(lnode);
+    }
+
+    ogs_free(mbs_sess_list);
+
+    return 1;
+}
+
+static void smf_mbs_sess_list_hash_destroy(ogs_hash_t *mbs_sess_list_hash)
+{
+    ogs_assert(mbs_sess_list_hash);
+    ogs_hash_do(smf_mbs_sess_list_delete_hash_entry, mbs_sess_list_hash, mbs_sess_list_hash);
+    ogs_hash_destroy(mbs_sess_list_hash);
+}
+
+static void smf_mbs_sessions_by_tmgi_add_mbs_sess(smf_mbs_sess_t *mbs_sess)
+{
+    int klen;
+    void *key;
+
+    if (mbs_sess && mbs_sess->mbs_session_id.is_tmgi) {
+	key = smf_mbs_sessions_by_tmgi_key(mbs_sess->mbs_session_id.tmgi, &klen);
+        ogs_list_t *mbs_sess_list = (ogs_list_t*)ogs_hash_get(self.smf_mbs_sessions_by_tmgi, key, klen);
+        if (!mbs_sess_list) {
+            mbs_sess_list = (ogs_list_t*)ogs_calloc(1, sizeof(ogs_list_t));
+            ogs_assert(mbs_sess_list);
+            ogs_hash_set(self.smf_mbs_sessions_by_tmgi, key, klen, mbs_sess_list);
+        }
+        smf_mbs_sess_lnode_t *lnode = (smf_mbs_sess_lnode_t*)ogs_calloc(1, sizeof(smf_mbs_sess_lnode_t));
+        lnode->mbs_session = mbs_sess;
+        ogs_list_add(mbs_sess_list, lnode);
+    }
+}
+
+static void smf_mbs_sessions_by_tmgi_remove_mbs_sess(smf_mbs_sess_t *mbs_sess)
+{
+    int klen;
+    void *key;
+
+    if (mbs_sess && mbs_sess->mbs_session_id.is_tmgi) {
+        key = smf_mbs_sessions_by_tmgi_key(mbs_sess->mbs_session_id.tmgi, &klen);
+        ogs_list_t *mbs_sess_list = (ogs_list_t*)ogs_hash_get(self.smf_mbs_sessions_by_tmgi, key, klen);
+        if (mbs_sess_list) {
+            smf_mbs_sess_lnode_t *next;
+            smf_mbs_sess_lnode_t *lnode;
+            ogs_list_for_each_safe(mbs_sess_list, next, lnode) {
+                if (lnode->mbs_session == mbs_sess) {
+                    ogs_list_remove(mbs_sess_list, lnode);
+                    ogs_free(lnode);
+                    break;
+                }
+            }
+            if (ogs_list_count(mbs_sess_list) == 0) {
+                ogs_hash_set(self.smf_mbs_sessions_by_tmgi, key, klen, NULL);
+                ogs_free(mbs_sess_list);
+            }
+        }
+    }
+}
+
+static void *smf_mbs_sessions_by_tmgi_key(ogs_tmgi_t *tmgi, int *klen)
+{
+    if (!tmgi) {
+        *klen = 0;
+        return NULL;
+    }
+
+    *klen = sizeof(ogs_tmgi_t) - sizeof(ogs_lnode_t);
+    return (void*)(((char*)tmgi) + sizeof(ogs_lnode_t));
+}
+
+static void smf_mbs_sessions_by_ssm_add_mbs_sess(smf_mbs_sess_t *mbs_sess)
+{
+    int klen;
+    void *key;
+
+    if (mbs_sess && mbs_sess->mbs_session_id.is_ssm) {
+        key = smf_mbs_sessions_by_ssm_key(mbs_sess->mbs_session_id.ssm, &klen);
+        ogs_list_t *mbs_sess_list = (ogs_list_t*)ogs_hash_get(self.smf_mbs_sessions_by_ssm, key, klen);
+        if (!mbs_sess_list) {
+            mbs_sess_list = (ogs_list_t*)ogs_calloc(1, sizeof(ogs_list_t));
+            ogs_assert(mbs_sess_list);
+            ogs_hash_set(self.smf_mbs_sessions_by_ssm, key, klen, mbs_sess_list);
+        }
+        smf_mbs_sess_lnode_t *lnode = (smf_mbs_sess_lnode_t*)ogs_calloc(1, sizeof(smf_mbs_sess_lnode_t));
+        lnode->mbs_session = mbs_sess;
+        ogs_list_add(mbs_sess_list, lnode);
+    }
+}
+
+static void smf_mbs_sessions_by_ssm_remove_mbs_sess(smf_mbs_sess_t *mbs_sess)
+{
+    int klen;
+    void *key;
+
+    if (mbs_sess && mbs_sess->mbs_session_id.is_ssm) {
+        key = smf_mbs_sessions_by_ssm_key(mbs_sess->mbs_session_id.ssm, &klen);
+        ogs_list_t *mbs_sess_list = (ogs_list_t*)ogs_hash_get(self.smf_mbs_sessions_by_ssm, key, klen);
+        if (mbs_sess_list) {
+            smf_mbs_sess_lnode_t *next;
+            smf_mbs_sess_lnode_t *lnode;
+            ogs_list_for_each_safe(mbs_sess_list, next, lnode) {
+                if (lnode->mbs_session == mbs_sess) {
+                    ogs_list_remove(mbs_sess_list, lnode);
+                    ogs_free(lnode);
+                    break;
+                }
+            }
+            if (ogs_list_count(mbs_sess_list) == 0) {
+                ogs_hash_set(self.smf_mbs_sessions_by_ssm, key, klen, NULL);
+                ogs_free(mbs_sess_list);
+            }
+        }
+    }
+}
+
+static void *smf_mbs_sessions_by_ssm_key(ogs_ssm_t *ssm, int *klen)
+{
+    if (!ssm) {
+        *klen = 0;
+        return NULL;
+    }
+
+    *klen = sizeof(ogs_ssm_t) - sizeof(ogs_lnode_t);
+    return (void*)(((char*)ssm) + sizeof(ogs_lnode_t));
+}
+
+static bool smf_mbs_sess_list_service_areas_overlap(ogs_list_t *mbs_sess_list, smf_mbs_sess_t *mbs_session)
+{
+    smf_mbs_sess_lnode_t *node;
+
+    if (!mbs_sess_list || !mbs_session) return false;
+    if (!mbs_session->mbs_service_area && !mbs_session->ext_mbs_service_area) return true;
+
+    ogs_list_for_each(mbs_sess_list, node) {
+        if (smf_mbs_sess_service_areas_overlap(node->mbs_session, mbs_session)) return true;
+    }
+
+    return false;
+}
+
+static bool smf_mbs_sess_service_areas_overlap(smf_mbs_sess_t *a, smf_mbs_sess_t *b)
+{
+    // If either MBS Session is for the global Service Area, then there's an overlap.
+    if (!a->mbs_service_area && !a->ext_mbs_service_area) return true;
+    // if (!b->mbs_service_area && !b->ext_mbs_service_area) return true; // Already tested
+
+    if (a->mbs_service_area && b->mbs_service_area) {
+        // check MBS Service Areas overlap
+        if (a->mbs_service_area->ncgi_tai_list) {
+            ogs_ncgi_tai_t *a_ncgi_tai;
+            ogs_list_for_each(a->mbs_service_area->ncgi_tai_list, a_ncgi_tai) {
+                if (b->mbs_service_area->ncgi_tai_list) {
+                    ogs_ncgi_tai_t *b_ncgi_tai;
+                    ogs_list_for_each(b->mbs_service_area->ncgi_tai_list, b_ncgi_tai) {
+                        if (smf_tai_equal(&a_ncgi_tai->tai, &b_ncgi_tai->tai)) {
+                            ogs_ncgi_t *a_ncgi;
+                            ogs_list_for_each(&a_ncgi_tai->cell_list, a_ncgi) {
+                                ogs_ncgi_t *b_ncgi;
+                                ogs_list_for_each(&b_ncgi_tai->cell_list, b_ncgi) {
+                                    if (smf_ncgi_equal(a_ncgi, b_ncgi)) return true;
+                                }
+                            }
+                        }
+                    }
+                }
+                if (b->mbs_service_area->tai_list) {
+                    ogs_tai_t *b_tai;
+                    ogs_list_for_each(b->mbs_service_area->tai_list, b_tai) {
+                        if (smf_tai_equal(&a_ncgi_tai->tai, b_tai)) return true;
+                    }
+                }
+            }
+        }
+        if (a->mbs_service_area->tai_list) {
+            ogs_tai_t *a_tai;
+            ogs_list_for_each(a->mbs_service_area->tai_list, a_tai) {
+                if (b->mbs_service_area->ncgi_tai_list) {
+                    ogs_ncgi_tai_t *b_ncgi_tai;
+                    ogs_list_for_each(b->mbs_service_area->ncgi_tai_list, b_ncgi_tai) {
+                        if (smf_tai_equal(a_tai, &b_ncgi_tai->tai)) return true;
+                    }
+                }
+                if (b->mbs_service_area->tai_list) {
+                    ogs_tai_t *b_tai;
+                    ogs_list_for_each(b->mbs_service_area->tai_list, b_tai) {
+                        if (smf_tai_equal(a_tai, b_tai)) return true;
+                    }
+                }
+            }
+        }
+    }
+
+    if (a->ext_mbs_service_area && b->ext_mbs_service_area) {
+        // TODO: check External MBS Service Areas overlap
+        ogs_warn("smf_mbs_sess_service_areas_overlap: External MBS Service Area comparison not implemented yet!");
+    }
+
+    return false;
+}
+
+static bool smf_tai_equal(const ogs_tai_t *a, const ogs_tai_t *b)
+{
+    if (!a && !b) return true;
+    if (!a || !b) return false;
+    if (ogs_plmn_id_mcc(&a->plmn_id) == ogs_plmn_id_mcc(&b->plmn_id) &&
+        ogs_plmn_id_mnc(&a->plmn_id) == ogs_plmn_id_mnc(&b->plmn_id)) {
+        if (strcmp(a->tac, b->tac) == 0) {
+            if (!a->nid && !b->nid) return true;
+            if (!a->nid || !b->nid) return false;
+            return (strcmp(a->nid, b->nid) == 0);
+        }
+    }
+    return false;
+}
+
+static bool smf_ncgi_equal(const ogs_ncgi_t *a, const ogs_ncgi_t *b)
+{
+    if (!a && !b) return true;
+    if (!a || !b) return false;
+    if (ogs_plmn_id_mcc(&a->plmn_id) == ogs_plmn_id_mcc(&b->plmn_id) &&
+        ogs_plmn_id_mnc(&a->plmn_id) == ogs_plmn_id_mnc(&b->plmn_id)) {
+        if (strcmp(a->nr_cell_id, b->nr_cell_id) == 0) {
+            if (!a->nid && !b->nid) return true;
+            if (!a->nid || !b->nid) return false;
+            return (strcmp(a->nid, b->nid) == 0);
+        }
+    }
+    return false;
 }

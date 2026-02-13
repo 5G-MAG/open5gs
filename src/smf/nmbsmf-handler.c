@@ -18,9 +18,18 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include "ogs-proto.h"
+
 #include "sbi-path.h"
 #include "pfcp-path.h"
 #include "nmbsmf-handler.h"
+
+static bool smf_nmbsmf_parse_tai(ogs_sbi_stream_t *stream, ogs_sbi_message_t *message, ogs_tai_t *tai, OpenAPI_tai_t *api_tai);
+static bool smf_nmbsmf_parse_ncgi(ogs_sbi_stream_t *stream, ogs_sbi_message_t *message, ogs_ncgi_t *ncgi, OpenAPI_ncgi_t *api_ncgi);
+static bool smf_nmbsmf_parse_geographic_area(ogs_sbi_stream_t *stream, ogs_sbi_message_t *message, ogs_geographic_area_t *geog_area,
+                                            OpenAPI_geographic_area_t *api_geog_area);
+static bool smf_nmbsmf_parse_civic_address(ogs_sbi_stream_t *stream, ogs_sbi_message_t *message, ogs_civic_address_t *civic_addr,
+                                            OpenAPI_civic_address_t *api_civic_addr);
 
 /* Nmbsmf_TMGI Service API */
 
@@ -299,6 +308,13 @@ bool smf_nmbsmf_handle_mbs_session_create(
     ogs_tmgi_t *tmgi = NULL;
     ogs_ssm_t *ssm = NULL;
     smf_mbs_sess_t *mbs_sess = NULL;
+    ogs_mbs_service_area_t *mbs_service_area = NULL;
+    ogs_ext_mbs_service_area_t *ext_mbs_service_area = NULL;
+    ogs_ncgi_t *ncgi = NULL;
+    ogs_tai_t *tai = NULL;
+    ogs_ncgi_tai_t *ncgi_tai = NULL;
+    ogs_geographic_area_t *geog_area = NULL;
+    ogs_civic_address_t *civic_addr = NULL;
 
     ogs_assert(stream);
     ogs_assert(message);
@@ -370,14 +386,6 @@ bool smf_nmbsmf_handle_mbs_session_create(
         ssm = ogs_malloc(sizeof(*ssm));
         ogs_assert(ssm);
         ogs_sbi_parse_ssm(ssm, CreateReqData->mbs_session->ssm);
-    }
-    if (ssm && is_multicast_service && smf_mbs_sess_find_by_ssm(ssm)) {
-         ogs_error("MBS Session Create: SSM already used");
-         ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
-                        message, "Forbidden", "MBS Session Create failed, SSM in [mbsSessionId] has already been used",
-                        NMBSMF_MBSSESSION_MBS_SESSION_ALREADY_CREATED);
-         rv = OGS_ERROR;
-         goto cleanup;
     }
 
     // Perform the TMGI allocate operation
@@ -469,16 +477,122 @@ bool smf_nmbsmf_handle_mbs_session_create(
         }
     }
 
+    // Extract MBS Service Area if present
+    if (CreateReqData->mbs_session->mbs_service_area) {
+        if (CreateReqData->mbs_session->mbs_service_area->ncgi_list) {
+            OpenAPI_lnode_t *node;
+            OpenAPI_list_for_each(CreateReqData->mbs_session->mbs_service_area->ncgi_list, node) {
+                OpenAPI_lnode_t *cell_node;
+                if (!mbs_service_area) mbs_service_area = (__typeof__(mbs_service_area))ogs_calloc(1, sizeof(*mbs_service_area));
+                if (!mbs_service_area->ncgi_tai_list)
+                    mbs_service_area->ncgi_tai_list =
+                            (__typeof__(mbs_service_area->ncgi_tai_list))ogs_calloc(1, sizeof(*mbs_service_area->ncgi_tai_list));
+                OpenAPI_ncgi_tai_t *api_ncgi_tai = (OpenAPI_ncgi_tai_t*)node->data;
+                ncgi_tai = (ogs_ncgi_tai_t*)ogs_calloc(1, sizeof(*ncgi_tai));
+                if (!smf_nmbsmf_parse_tai(stream, message, &ncgi_tai->tai, api_ncgi_tai->tai)) {
+                    rv = OGS_ERROR;
+                    goto cleanup;
+                }
+                OpenAPI_list_for_each(api_ncgi_tai->cell_list, cell_node) {
+                    OpenAPI_ncgi_t *api_ncgi = (OpenAPI_ncgi_t*)node->data;
+                    ncgi = (ogs_ncgi_t*)ogs_calloc(1, sizeof(*ncgi));
+                    if (!smf_nmbsmf_parse_ncgi(stream, message, ncgi, api_ncgi)) {
+                        rv = OGS_ERROR;
+                        goto cleanup;
+                    }
+                    ogs_list_add(&ncgi_tai->cell_list, ncgi);
+                    ncgi = NULL;
+                }
+                ogs_list_add(mbs_service_area->ncgi_tai_list, ncgi_tai);
+                ncgi_tai = NULL;
+            }
+        }
+        if (CreateReqData->mbs_session->mbs_service_area->tai_list) {
+            OpenAPI_lnode_t *node;
+            OpenAPI_list_for_each(CreateReqData->mbs_session->mbs_service_area->tai_list, node) {
+                if (!mbs_service_area) mbs_service_area = (__typeof__(mbs_service_area))ogs_calloc(1, sizeof(*mbs_service_area));
+                if (!mbs_service_area->tai_list)
+                    mbs_service_area->tai_list =
+                            (__typeof__(mbs_service_area->tai_list))ogs_calloc(1, sizeof(*mbs_service_area->tai_list));
+                OpenAPI_tai_t *api_tai = (OpenAPI_tai_t*)node->data;
+                tai = (ogs_tai_t*)ogs_calloc(1, sizeof(*tai));
+                if (!smf_nmbsmf_parse_tai(stream, message, tai, api_tai)) {
+                    rv = OGS_ERROR;
+                    goto cleanup;
+                }
+                ogs_list_add(mbs_service_area->tai_list, tai);
+                tai = NULL;
+            }
+        }
+    }
+
+    // Extract External MBS Service Area if present
+    if (CreateReqData->mbs_session->ext_mbs_service_area) {
+        if (CreateReqData->mbs_session->ext_mbs_service_area->geographic_area_list) {
+            OpenAPI_lnode_t *node;
+            OpenAPI_list_for_each(CreateReqData->mbs_session->ext_mbs_service_area->geographic_area_list, node) {
+                if (!ext_mbs_service_area)
+                    ext_mbs_service_area = (__typeof__(ext_mbs_service_area))ogs_calloc(1, sizeof(*ext_mbs_service_area));
+                if (!ext_mbs_service_area->geographic_area_list)
+                    ext_mbs_service_area->geographic_area_list =
+                            (__typeof__(ext_mbs_service_area->geographic_area_list))ogs_calloc(1,
+                                        sizeof(*ext_mbs_service_area->geographic_area_list));
+                OpenAPI_geographic_area_t *api_geog_area = (OpenAPI_geographic_area_t*)node->data;
+                geog_area = (ogs_geographic_area_t*)ogs_calloc(1, sizeof(*geog_area));
+                if (!smf_nmbsmf_parse_geographic_area(stream, message, geog_area, api_geog_area)) {
+                    rv = OGS_ERROR;
+                    goto cleanup;
+                }
+                ogs_list_add(ext_mbs_service_area->geographic_area_list, geog_area);
+                geog_area = NULL;
+            }
+        }
+        if (CreateReqData->mbs_session->ext_mbs_service_area->civic_address_list) {
+            OpenAPI_lnode_t *node;
+            OpenAPI_list_for_each(CreateReqData->mbs_session->ext_mbs_service_area->civic_address_list, node) {
+                if (!ext_mbs_service_area)
+                    ext_mbs_service_area = (__typeof__(ext_mbs_service_area))ogs_calloc(1, sizeof(*ext_mbs_service_area));
+                if (!ext_mbs_service_area->civic_address_list)
+                    ext_mbs_service_area->civic_address_list =
+                            (__typeof__(ext_mbs_service_area->civic_address_list))ogs_calloc(1,
+                                        sizeof(*ext_mbs_service_area->civic_address_list));
+                OpenAPI_civic_address_t *api_civic_addr = (OpenAPI_civic_address_t*)node->data;
+                civic_addr = (ogs_civic_address_t*)ogs_calloc(1, sizeof(*civic_addr));
+                if (!smf_nmbsmf_parse_civic_address(stream, message, civic_addr, api_civic_addr)) {
+                    rv = OGS_ERROR;
+                    goto cleanup;
+                }
+                ogs_list_add(ext_mbs_service_area->civic_address_list, civic_addr);
+                civic_addr = NULL;
+            }
+        }
+    }
+
     // TODO (borieher): Check provided TMGI is not added to an existing MBS Session
 
     // MBS Session create
     mbs_sess = smf_mbs_sess_create(tmgi, ssm, service_type);
     ssm = NULL; // ssm passed to mbs_sess
+
+    if (!mbs_sess) {
+        ogs_error("MBS Session Create: MBS Session Id collides with existing MBS Session");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
+                        message, "Forbidden", "MBS Session Create failed, [mbsSessionId] has already been used in the same area",
+                        NMBSMF_MBSSESSION_MBS_SESSION_ALREADY_CREATED);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
     mbs_sess->ingress_tun_addr_req = (CreateReqData->mbs_session->is_ingress_tun_addr_req &&
                                       CreateReqData->mbs_session->ingress_tun_addr_req != 0);
 
+    mbs_sess->mbs_service_area = mbs_service_area;
+    mbs_service_area = NULL;
+    mbs_sess->ext_mbs_service_area = ext_mbs_service_area;
+    ext_mbs_service_area = NULL;
+
     if (is_multicast_service) {
-	mbs_sess->activity_status = CreateReqData->mbs_session->activity_status;
+        mbs_sess->activity_status = CreateReqData->mbs_session->activity_status;
     }
 
     /*********************************************************************
@@ -490,6 +604,27 @@ bool smf_nmbsmf_handle_mbs_session_create(
     smf_5gc_pfcp_n4mb_send_session_establishment_request(mbs_sess, 0, stream);
 
 cleanup:
+    if (mbs_service_area)
+        ogs_mbs_service_area_free(mbs_service_area);
+
+    if (ext_mbs_service_area)
+        ogs_ext_mbs_service_area_free(ext_mbs_service_area);
+
+    if (ncgi)
+        ogs_ncgi_free(ncgi);
+
+    if (tai)
+        ogs_tai_free(tai);
+
+    if (ncgi_tai)
+        ogs_ncgi_tai_free(ncgi_tai);
+
+    if (geog_area)
+        ogs_geographic_area_free(geog_area);
+
+    if (civic_addr)
+        ogs_civic_address_free(civic_addr);
+
     if (expiration_time)
         ogs_free(expiration_time);
 
@@ -586,10 +721,10 @@ bool smf_nmbsmf_handle_mbs_session_patch(smf_mbs_sess_t *mbs_sess,
         }
         SWITCH(patch_item->path)
         CASE("/activityStatus")
-	    if (strcmp(mbs_sess->service_type, "MULTICAST")) {
-		ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN, message, "Update forbidden",
+            if (strcmp(mbs_sess->service_type, "MULTICAST")) {
+                ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN, message, "Update forbidden",
                         "Requested MBS Session Update failed, activityStatus can only be updated for multicast services",
-			"MODIFICATION_NOT_ALLOWED");
+                        "MODIFICATION_NOT_ALLOWED");
                 return false;
             }
             mbs_sess->activity_status = OpenAPI_mbs_session_activity_status_FromString(cJSON_GetStringValue(patch_item->value->json));
@@ -738,6 +873,89 @@ bool smf_nmbsmf_handle_mbs_session_patch(smf_mbs_sess_t *mbs_sess,
     ogs_assert(response);
 
     ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+
+    return true;
+}
+
+static bool smf_nmbsmf_parse_tai(ogs_sbi_stream_t *stream, ogs_sbi_message_t *message, ogs_tai_t *tai, OpenAPI_tai_t *api_tai)
+{
+    if (!ogs_sbi_parse_plmn_id(&tai->plmn_id, api_tai->plmn_id)) {
+        ogs_error("Parse TAI: Unable to parse the PLMN Id");
+        // bad plmn id, send error (400 + ERROR_INPUT_PARAMETERS)
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            message, "Bad PLMN Id", "MBS Session: TAI: Unable to parse the PLMN Id",
+            NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
+        return false;
+    }
+    if (api_tai->tac) tai->tac = ogs_strdup(api_tai->tac);
+    if (api_tai->nid) tai->nid = ogs_strdup(api_tai->nid);
+    return true;
+}
+
+static bool smf_nmbsmf_parse_ncgi(ogs_sbi_stream_t *stream, ogs_sbi_message_t *message, ogs_ncgi_t *ncgi, OpenAPI_ncgi_t *api_ncgi)
+{
+    if (!ogs_sbi_parse_plmn_id(&ncgi->plmn_id, api_ncgi->plmn_id)) {
+        ogs_error("Parse NCGI: Unable to parse the PLMN Id");
+        // bad plmn id, send error (400 + ERROR_INPUT_PARAMETERS)
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            message, "Bad PLMN Id", "MBS Session: NCGI: Unable to parse the PLMN Id",
+            NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
+        return false;
+    }
+    if (api_ncgi->nr_cell_id) ncgi->nr_cell_id = ogs_strdup(api_ncgi->nr_cell_id);
+    if (api_ncgi->nid) ncgi->nid = ogs_strdup(api_ncgi->nid);
+    return true;
+}
+
+static bool smf_nmbsmf_parse_civic_address(ogs_sbi_stream_t *stream, ogs_sbi_message_t *message, ogs_civic_address_t *civic_addr,
+                                            OpenAPI_civic_address_t *api_civic_addr)
+{
+    if (api_civic_addr->country) civic_addr->country = ogs_strdup(api_civic_addr->country);
+    if (api_civic_addr->a1) civic_addr->a[0] = ogs_strdup(api_civic_addr->a1);
+    if (api_civic_addr->a2) civic_addr->a[1] = ogs_strdup(api_civic_addr->a2);
+    if (api_civic_addr->a3) civic_addr->a[2] = ogs_strdup(api_civic_addr->a3);
+    if (api_civic_addr->a4) civic_addr->a[3] = ogs_strdup(api_civic_addr->a4);
+    if (api_civic_addr->a5) civic_addr->a[4] = ogs_strdup(api_civic_addr->a5);
+    if (api_civic_addr->a6) civic_addr->a[5] = ogs_strdup(api_civic_addr->a6);
+    if (api_civic_addr->prd) civic_addr->prd = ogs_strdup(api_civic_addr->prd);
+    if (api_civic_addr->pod) civic_addr->pod = ogs_strdup(api_civic_addr->pod);
+    if (api_civic_addr->sts) civic_addr->sts = ogs_strdup(api_civic_addr->sts);
+    if (api_civic_addr->hno) civic_addr->hno = ogs_strdup(api_civic_addr->hno);
+    if (api_civic_addr->hns) civic_addr->hns = ogs_strdup(api_civic_addr->hns);
+    if (api_civic_addr->lmk) civic_addr->lmk = ogs_strdup(api_civic_addr->lmk);
+    if (api_civic_addr->loc) civic_addr->loc = ogs_strdup(api_civic_addr->loc);
+    if (api_civic_addr->nam) civic_addr->nam = ogs_strdup(api_civic_addr->nam);
+    if (api_civic_addr->pc) civic_addr->pc = ogs_strdup(api_civic_addr->pc);
+    if (api_civic_addr->bld) civic_addr->bld = ogs_strdup(api_civic_addr->bld);
+    if (api_civic_addr->unit) civic_addr->unit = ogs_strdup(api_civic_addr->unit);
+    if (api_civic_addr->flr) civic_addr->flr = ogs_strdup(api_civic_addr->flr);
+    if (api_civic_addr->room) civic_addr->room = ogs_strdup(api_civic_addr->room);
+    if (api_civic_addr->plc) civic_addr->plc = ogs_strdup(api_civic_addr->plc);
+    if (api_civic_addr->pcn) civic_addr->pcn = ogs_strdup(api_civic_addr->pcn);
+    if (api_civic_addr->pobox) civic_addr->pobox = ogs_strdup(api_civic_addr->pobox);
+    if (api_civic_addr->addcode) civic_addr->addcode = ogs_strdup(api_civic_addr->addcode);
+    if (api_civic_addr->seat) civic_addr->seat = ogs_strdup(api_civic_addr->seat);
+    if (api_civic_addr->rd) civic_addr->rd = ogs_strdup(api_civic_addr->rd);
+    if (api_civic_addr->rdsec) civic_addr->rdsec = ogs_strdup(api_civic_addr->rdsec);
+    if (api_civic_addr->rdbr) civic_addr->rdbr = ogs_strdup(api_civic_addr->rdbr);
+    if (api_civic_addr->rdsubbr) civic_addr->rdsubbr = ogs_strdup(api_civic_addr->rdsubbr);
+    if (api_civic_addr->prm) civic_addr->prm = ogs_strdup(api_civic_addr->prm);
+    if (api_civic_addr->pom) civic_addr->pom = ogs_strdup(api_civic_addr->pom);
+    if (api_civic_addr->usage_rules) civic_addr->usage_rules = ogs_strdup(api_civic_addr->usage_rules);
+    if (api_civic_addr->method) civic_addr->method = ogs_strdup(api_civic_addr->method);
+    if (api_civic_addr->provided_by) civic_addr->provided_by = ogs_strdup(api_civic_addr->provided_by);
+
+    return true;
+}
+
+static bool smf_nmbsmf_parse_geographic_area(ogs_sbi_stream_t *stream, ogs_sbi_message_t *message, ogs_geographic_area_t *geog_area,
+                                            OpenAPI_geographic_area_t *api_geog_area)
+{
+    /* TODO (David Waring): OpenAPI type for geographic area is incomplete, so ignore until the templates are fixed */
+    /* For now just create a point at 0,0 */
+    geog_area->shape = ogs_supported_gad_shape_POINT;
+    geog_area->point.point.lon = 0.0;
+    geog_area->point.point.lat = 0.0;
 
     return true;
 }

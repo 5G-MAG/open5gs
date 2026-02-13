@@ -1168,3 +1168,144 @@ int ogs_pcc_rule_update_qos_from_media(
 
     return OGS_OK;
 }
+
+void ogs_ncgi_free(ogs_ncgi_t *ncgi)
+{
+    if (!ncgi) return;
+    if (ncgi->nr_cell_id) ogs_free(ncgi->nr_cell_id);
+    if (ncgi->nid) ogs_free(ncgi->nid);
+    ogs_free(ncgi);
+}
+
+void ogs_tai_free(ogs_tai_t *tai)
+{
+    if (!tai) return;
+    if (tai->tac) ogs_free(tai->tac);
+    if (tai->nid) ogs_free(tai->nid);
+    ogs_free(tai);
+}
+
+void ogs_ncgi_tai_free(ogs_ncgi_tai_t *ncgi_tai)
+{
+    ogs_ncgi_t *next, *ncgi;
+
+    if (!ncgi_tai) return;
+    if (ncgi_tai->tai.tac) ogs_free(ncgi_tai->tai.tac);
+    if (ncgi_tai->tai.nid) ogs_free(ncgi_tai->tai.nid);
+    ogs_list_for_each_safe(&ncgi_tai->cell_list, next, ncgi) {
+        ogs_list_remove(&ncgi_tai->cell_list, ncgi);
+        ogs_ncgi_free(ncgi);
+    }
+    ogs_free(ncgi_tai);
+}
+
+void ogs_mbs_service_area_free(ogs_mbs_service_area_t *mbs_service_area)
+{
+    if (!mbs_service_area) return;
+    if (mbs_service_area->ncgi_tai_list) {
+        ogs_ncgi_tai_t *ncgi_tai, *next;
+        ogs_list_for_each_safe(mbs_service_area->ncgi_tai_list, next, ncgi_tai) {
+            ogs_list_remove(mbs_service_area->ncgi_tai_list, ncgi_tai);
+            ogs_ncgi_tai_free(ncgi_tai);
+        }
+        ogs_free(mbs_service_area->ncgi_tai_list);
+    }
+    if (mbs_service_area->tai_list) {
+        ogs_tai_t *tai, *next;
+        ogs_list_for_each_safe(mbs_service_area->tai_list, next, tai) {
+            ogs_list_remove(mbs_service_area->tai_list, tai);
+            ogs_tai_free(tai);
+        }
+        ogs_free(mbs_service_area->tai_list);
+    }
+    ogs_free(mbs_service_area);
+}
+
+void ogs_geographic_area_free(ogs_geographic_area_t *geographic_area)
+{
+    if (!geographic_area) return;
+    switch (geographic_area->shape) {
+    case ogs_supported_gad_shape_POINT:
+    case ogs_supported_gad_shape_POINT_UNCERTAINTY_CIRCLE:
+    case ogs_supported_gad_shape_POINT_UNCERTAINTY_ELLIPSE:
+    case ogs_supported_gad_shape_POINT_ALTITUDE:
+    case ogs_supported_gad_shape_POINT_ALTITUDE_UNCERTAINTY:
+    case ogs_supported_gad_shape_ELLIPSOID_ARC:
+        /* nothing extra to free */
+        break;
+    case ogs_supported_gad_shape_POLYGON:
+        {
+            /* free list of polygon points */
+            ogs_geographic_coordinates_t *coord, *next;
+            ogs_list_for_each_safe(&geographic_area->polygon.point_list, next, coord) {
+                ogs_list_remove(&geographic_area->polygon.point_list, coord);
+                ogs_free(coord);
+            }
+        }
+        break;
+    default:
+        ogs_warn("ogs_geographic_area_free: Unsupported Geographic Area shape");
+    }
+    ogs_free(geographic_area);
+}
+
+void ogs_civic_address_free(ogs_civic_address_t *civic_address)
+{
+    int i;
+
+    if (!civic_address) return;
+    if (civic_address->country) ogs_free(civic_address->country);
+    for (i=0; i<6; i++)
+        if (civic_address->a[i]) ogs_free(civic_address->a[i]);
+    if (civic_address->prd) ogs_free(civic_address->prd);
+    if (civic_address->pod) ogs_free(civic_address->pod);
+    if (civic_address->sts) ogs_free(civic_address->sts);
+    if (civic_address->hno) ogs_free(civic_address->hno);
+    if (civic_address->hns) ogs_free(civic_address->hns);
+    if (civic_address->lmk) ogs_free(civic_address->lmk);
+    if (civic_address->loc) ogs_free(civic_address->loc);
+    if (civic_address->nam) ogs_free(civic_address->nam);
+    if (civic_address->pc) ogs_free(civic_address->pc);
+    if (civic_address->bld) ogs_free(civic_address->bld);
+    if (civic_address->unit) ogs_free(civic_address->unit);
+    if (civic_address->flr) ogs_free(civic_address->flr);
+    if (civic_address->room) ogs_free(civic_address->room);
+    if (civic_address->plc) ogs_free(civic_address->plc);
+    if (civic_address->pcn) ogs_free(civic_address->pcn);
+    if (civic_address->pobox) ogs_free(civic_address->pobox);
+    if (civic_address->addcode) ogs_free(civic_address->addcode);
+    if (civic_address->seat) ogs_free(civic_address->seat);
+    if (civic_address->rd) ogs_free(civic_address->rd);
+    if (civic_address->rdsec) ogs_free(civic_address->rdsec);
+    if (civic_address->rdbr) ogs_free(civic_address->rdbr);
+    if (civic_address->rdsubbr) ogs_free(civic_address->rdsubbr);
+    if (civic_address->prm) ogs_free(civic_address->prm);
+    if (civic_address->pom) ogs_free(civic_address->pom);
+    if (civic_address->usage_rules) ogs_free(civic_address->usage_rules);
+    if (civic_address->method) ogs_free(civic_address->method);
+    if (civic_address->provided_by) ogs_free(civic_address->provided_by);
+    ogs_free(civic_address);
+}
+
+void ogs_ext_mbs_service_area_free(ogs_ext_mbs_service_area_t *ext_mbs_service_area)
+{
+    if (!ext_mbs_service_area) return;
+    if (ext_mbs_service_area->geographic_area_list) {
+        ogs_geographic_area_t *geog_area, *next;
+        ogs_list_for_each_safe(ext_mbs_service_area->geographic_area_list, next, geog_area) {
+            ogs_list_remove(ext_mbs_service_area->geographic_area_list, geog_area);
+            ogs_geographic_area_free(geog_area);
+        }
+        ogs_free(ext_mbs_service_area->geographic_area_list);
+        ext_mbs_service_area->geographic_area_list = NULL;
+    }
+    if (ext_mbs_service_area->civic_address_list) {
+        ogs_civic_address_t *civic_address, *next;
+        ogs_list_for_each_safe(ext_mbs_service_area->civic_address_list, next, civic_address) {
+            ogs_list_remove(ext_mbs_service_area->civic_address_list, civic_address);
+            ogs_civic_address_free(civic_address);
+        }
+        ogs_free(ext_mbs_service_area->civic_address_list);
+        ext_mbs_service_area->civic_address_list = NULL;
+    }
+}

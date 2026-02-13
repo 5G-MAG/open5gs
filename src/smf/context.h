@@ -68,6 +68,13 @@ typedef struct smf_ctf_config_s {
 
 int smf_ctf_config_init(smf_ctf_config_t *ctf_config);
 
+typedef struct smf_mbs_sess_s smf_mbs_sess_t;
+
+typedef struct smf_mbs_sess_lnode_s {
+    ogs_lnode_t     node;
+    smf_mbs_sess_t *mbs_session; // weak link, not freed with node
+} smf_mbs_sess_lnode_t;
+
 typedef struct smf_context_s {
     smf_ctf_config_t    ctf_config;
     const char*         diam_conf_path;   /* SMF Diameter conf path */
@@ -94,7 +101,8 @@ typedef struct smf_context_s {
     ogs_hash_t      *ipv6_hash;     /* hash table (IPv6 Address) */
     ogs_hash_t      *smf_n4_seid_hash; /* hash table (SMF-N4-SEID) */
     ogs_hash_t      *n1n2message_hash; /* hash table (N1N2Message Location) */
-    ogs_hash_t	    *smf_mbs_sess_by_ssm; /* hash table of SSM => multicast MBS Session (weak link) */
+    ogs_hash_t	    *smf_mbs_sessions_by_ssm; /* hash table of SSM => ogs_list_t of smf_mbs_sess_lnode_t items */
+    ogs_hash_t      *smf_mbs_sessions_by_tmgi; /* hash table of TMGI => ogs_list_t of smf_mbs_sess_lnode_t items */
 
     uint16_t        mtu;            /* MTU to advertise in PCO */
 
@@ -109,8 +117,8 @@ typedef struct smf_context_s {
      ((__sMF) && (ogs_list_count(&(__sMF)->sess_list)) == 1)
     ogs_list_t      smf_ue_list;
 
-    ogs_list_t      tmgi_list;
-    ogs_list_t      smf_mbs_sess_list;
+    ogs_list_t      tmgi_list;         /* list of ogs_tmgi_t */
+    ogs_list_t      smf_mbs_sess_list; /* list of smf_mbs_sess_t */
 } smf_context_t;
 
 typedef struct smf_gtp_node_s {
@@ -557,6 +565,9 @@ typedef struct smf_mbs_sess_s {
     bool ingress_tun_addr_req;
     ogs_sockaddr_t *ingress_tun_addr;
 
+    /* Service Areas */
+    ogs_mbs_service_area_t *mbs_service_area;
+    ogs_ext_mbs_service_area_t *ext_mbs_service_area;
 } smf_mbs_sess_t;
 
 // NOTE (borieher): Not defined in the specs, default to 2 extra hours
@@ -683,9 +694,10 @@ void smf_mbs_sess_release(smf_mbs_sess_t *smf_mbs_sess);
 smf_mbs_sess_t *smf_mbs_sess_find_by_id(ogs_pool_id_t id);
 smf_mbs_sess_t *smf_mbs_sess_find_by_mbs_session_ref(char *mbs_session_ref);
 smf_mbs_sess_t *smf_mbs_sess_find_by_seid(uint64_t seid);
-smf_mbs_sess_t *smf_mbs_sess_find_by_ssm(ogs_ssm_t *ssm);
 void smf_mbs_sess_select_upf(smf_mbs_sess_t *mbs_sess);
 void smf_mbs_sess_create_mbs_data_forwarding(smf_mbs_sess_t *mbs_sess);
+
+bool smf_context_have_matching_mbs_session_id(smf_mbs_sess_t *mbs_session);
 
 #ifdef __cplusplus
 }

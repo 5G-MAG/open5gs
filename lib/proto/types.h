@@ -1027,6 +1027,241 @@ ED3(uint8_t is_tmgi:1;,
     uint8_t spare:6;)
 } ogs_mbs_session_id_t;
 
+/***************************************************
+ * NCGI
+ * 3GPP TS 29.571 Ch. 5.4.4.6 - Ncgi
+ */
+typedef struct ogs_ncgi_s {
+    ogs_lnode_t lnode;           /* A node of list_t */
+    ogs_plmn_id_t plmn_id;
+    char *nr_cell_id;
+    char *nid;
+} ogs_ncgi_t;
+
+void ogs_ncgi_free(ogs_ncgi_t *ncgi);
+
+/***************************************************
+ * TAI
+ * 3GPP TS 29.571 Ch. 5.4.4.4 - Tai
+ */
+typedef struct ogs_tai_s {
+    ogs_lnode_t lnode;           /* A node of list_t */
+    ogs_plmn_id_t plmn_id;
+    char *tac;
+    char *nid;
+} ogs_tai_t;
+
+void ogs_tai_free(ogs_tai_t *tai);
+
+/***************************************************
+ * NCGI TAI
+ * 3GPP TS 29.571 Ch. 5.9.4.5 - NcgiTai
+ */
+typedef struct ogs_ncgi_tai_s {
+    ogs_tai_t tai;        /* TAI contains a node of list_t */
+    ogs_list_t cell_list; /* list of ogs_ncgi_t */
+} ogs_ncgi_tai_t;
+
+void ogs_ncgi_tai_free(ogs_ncgi_tai_t *ncgi_tai);
+
+/***************************************************
+ * MBS Service Area
+ * 3GPP TS 29.571 Ch. 5.9.4.4 - MbsServiceArea
+ */
+typedef struct ogs_mbs_service_area_s {
+    ogs_lnode_t lnode;           /* A node of list_t */
+    ogs_list_t *ncgi_tai_list;   /* list of ogs_ncgi_tai_t */
+    ogs_list_t *tai_list;        /* list of ogs_tai_t */
+} ogs_mbs_service_area_t;
+
+void ogs_mbs_service_area_free(ogs_mbs_service_area_t *mbs_service_area);
+
+/***************************************************
+ * Supported Geographic Area Shapes
+ * 3GPP TS 29.572 Ch. 6.1.6.3.4 - SupportedGADShapes
+ */
+typedef enum ogs_supported_gad_shapes_e {
+    ogs_supported_gad_shape_POINT,
+    ogs_supported_gad_shape_POINT_UNCERTAINTY_CIRCLE,
+    ogs_supported_gad_shape_POINT_UNCERTAINTY_ELLIPSE,
+    ogs_supported_gad_shape_POLYGON,
+    ogs_supported_gad_shape_POINT_ALTITUDE,
+    ogs_supported_gad_shape_POINT_ALTITUDE_UNCERTAINTY,
+    ogs_supported_gad_shape_ELLIPSOID_ARC,
+    ogs_supported_gad_shape_LOCAL_2D_POINT_UNCERTAINTY_ELLIPSE,
+    ogs_supported_gad_shape_LOCAL_3D_POINT_UNCERTAINTY_ELLIPSOID,
+    ogs_supported_gad_shape_DISTANCE_DIRECTION,
+    ogs_supported_gad_shape_RELATIVE_2D_LOCATION_UNCERTAINTY_ELLIPSE,
+    ogs_supported_gad_shape_RELATIVE_3D_LOCATION_UNCERTAINTY_ELLIPSOID
+} ogs_supported_gad_shapes_t;
+
+/***************************************************
+ * Geographic Coordinate
+ * 3GPP TS 29.572 Ch. 6.1.6.2.4 - GeographicCoordinates
+ */
+typedef struct ogs_geographic_coordinates_s {
+    ogs_lnode_t lnode;	/* a node in an ogs_list_t */
+    double lon; /* -180.0 to 180.0 */
+    double lat; /* -90.0 to 90.0 */
+} ogs_geographic_coordinates_t;
+
+/***************************************************
+ * Point (Geographic Area)
+ * 3GPP TS 29.572 Ch. 6.1.6.2.6 - Point
+ */
+typedef struct ogs_point_s {
+    /* shape property handled by ogs_geographic_area_t */
+    ogs_geographic_coordinates_t point;
+} ogs_point_t;
+
+/***************************************************
+ * Point Uncertainty Circle (Geographic Area)
+ * 3GPP TS 29.572 Ch. 6.1.6.2.7 - PointUncertaintyCircle
+ */
+typedef struct ogs_point_uncertainty_circle_s {
+    /* shape property handled by ogs_geographic_area_t */
+    ogs_geographic_coordinates_t point;
+    double uncertainty; /* minimum 0, measured in meters */
+} ogs_point_uncertainty_circle_t;
+
+/***************************************************
+ * Uncertainty Ellipse
+ * 3GPP TS 29.572 Ch. 6.1.6.2.22 - UncertaintyEllipse
+ */
+typedef struct ogs_uncertainty_ellipse_s {
+    double semi_major;        /* minimum 0, measured in meters */
+    double semi_minor;        /* minimum 0, measured in meters */
+    int    orientation_major; /* 0 to 180, measured in degrees */
+} ogs_uncertainty_ellipse_t;
+
+/***************************************************
+ * Point Uncertainty Ellipse (Geographic Area)
+ * 3GPP TS 29.572 Ch. 6.1.6.2.8 - PointUncertaintyEllipse
+ */
+typedef struct ogs_point_uncertainty_ellipse_s {
+    /* shape property handled by ogs_geographic_area_t */
+    ogs_geographic_coordinates_t point;
+    ogs_uncertainty_ellipse_t    uncertainty_ellipse;
+    int                          confidence; /* 0 to 100, measured as a percentage */
+} ogs_point_uncertainty_ellipse_t;
+
+/***************************************************
+ * Polygon (Geographic Area)
+ * 3GPP TS 29.572 Ch. 6.1.6.2.9 - Polygon
+ */
+typedef struct ogs_polygon_s {
+    /* shape property handled by ogs_geographic_area_t */
+    ogs_list_t point_list; /* list of ogs_geographic_coordinates_t, 3 to 15 list entries */
+} ogs_polygon_t;
+
+/***************************************************
+ * Point Altitude (Geographic Area)
+ * 3GPP TS 29.572 Ch. 6.1.6.2.10 - PointAltitude
+ */
+typedef struct ogs_point_altitude_s {
+    /* shape property handled by ogs_geographic_area_t */
+    ogs_geographic_coordinates_t point;
+    double altitude; /* -32767.0 to 32767.0, measured in meters */
+} ogs_point_altitude_t;
+
+/***************************************************
+ * Point Altitude Uncertainty (Geographic Area)
+ * 3GPP TS 29.572 Ch. 6.1.6.2.11 - PointAltitudeUncertainty
+ */
+typedef struct ogs_point_altitude_uncertainty_s {
+    /* shape property handled by ogs_geographic_area_t */
+    ogs_geographic_coordinates_t point;
+    double                       altitude; /* -32767.0 to 32767.0, measured in meters */
+    ogs_uncertainty_ellipse_t    uncertainty_ellipse;
+    double                       uncertainty_altitude; /* minimum 0, measured in meters */
+    int                          confidence; /* 0 to 100, measured as a percentage */
+    int                          v_confidence; /* -1 for not present or 0 to 100, measured as a percentage */
+} ogs_point_altitude_uncertainty_t;
+
+/***************************************************
+ * Ellipsoid Arc (Geographic Area)
+ * 3GPP TS 29.572 Ch. 6.1.6.2.12 - EllipsoidArc
+ */
+typedef struct ogs_ellipsoid_arc_s {
+    /* shape property handled by ogs_geographic_area_t */
+    ogs_geographic_coordinates_t point;
+    int                          inner_radius; /* 0 to 327675, measured in meters */
+    double                       uncertainty_radius; /* minimum 0, measured in meters */
+    int                          offset_angle; /* 0 to 360, measured in degrees */
+    int                          included_angle; /* 0 to 360, measured in degrees */
+    int                          confidence; /* 0 to 100, measured as a percentage */
+} ogs_ellipsoid_arc_t;
+
+/***************************************************
+ * Geographic Area
+ * 3GPP TS 29.572 Ch. 6.1.6.2.5 - GeographicArea
+ */
+typedef struct ogs_geographic_area_s {
+    ogs_lnode_t lnode;			/* A node of list_t */
+    ogs_supported_gad_shapes_t shape;
+    union {
+        ogs_point_t point;
+        ogs_point_uncertainty_circle_t   point_uncertainty_circle;
+        ogs_point_uncertainty_ellipse_t  point_uncertainty_ellipse;
+        ogs_polygon_t                    polygon;
+        ogs_point_altitude_t             point_altitude;
+        ogs_point_altitude_uncertainty_t point_altitude_uncertainty;
+        ogs_ellipsoid_arc_t              ellipsoid_arc;
+    };
+} ogs_geographic_area_t;
+
+void ogs_geographic_area_free(ogs_geographic_area_t *geographic_area);
+
+/***************************************************
+ * Civic Address
+ * 3GPP TS 29.572 Ch. 6.1.6.2.14 - CivicAddress
+ */
+typedef struct ogs_civic_address_s {
+    char *country;
+    char *a[6];
+    char *prd;
+    char *pod;
+    char *sts;
+    char *hno;
+    char *hns;
+    char *lmk;
+    char *loc;
+    char *nam;
+    char *pc;
+    char *bld;
+    char *unit;
+    char *flr;
+    char *room;
+    char *plc;
+    char *pcn;
+    char *pobox;
+    char *addcode;
+    char *seat;
+    char *rd;
+    char *rdsec;
+    char *rdbr;
+    char *rdsubbr;
+    char *prm;
+    char *pom;
+    char *usage_rules;
+    char *method;
+    char *provided_by;
+} ogs_civic_address_t;
+
+void ogs_civic_address_free(ogs_civic_address_t *civic_address);
+
+/***************************************************
+ * External MBS Service Area
+ * 3GPP TS 29.571 Ch. 5.9.4.11 - ExternalMbsServiceArea
+ */
+typedef struct ogs_ext_mbs_service_area_s {
+    ogs_lnode_t lnode;                /* A node of list_t */
+    ogs_list_t *geographic_area_list; /* list of ogs_geographic_area_t */
+    ogs_list_t *civic_address_list;   /* list of ogs_civic_address_t */
+} ogs_ext_mbs_service_area_t;
+
+void ogs_ext_mbs_service_area_free(ogs_ext_mbs_service_area_t *ext_mbs_service_area);
+
 #ifdef __cplusplus
 }
 #endif
