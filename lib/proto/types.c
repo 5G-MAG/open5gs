@@ -1308,4 +1308,5 @@ void ogs_ext_mbs_service_area_free(ogs_ext_mbs_service_area_t *ext_mbs_service_a
         ogs_free(ext_mbs_service_area->civic_address_list);
         ext_mbs_service_area->civic_address_list = NULL;
     }
+    ogs_free(ext_mbs_service_area);
 }
