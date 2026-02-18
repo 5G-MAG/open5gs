@@ -468,9 +468,11 @@ static int get_mtu_for_address(const struct sockaddr *addr, socklen_t addr_len)
         memcpy(&addr_with_mask, ((unsigned char*)addr) + a_offset, a_len);
         memcpy(&ifc_with_mask, ((unsigned char*)ifa_it->ifa_addr) + a_offset, a_len);
 
-        for (i=0; i<a_len; i++) {
-            ((unsigned char*)&addr_with_mask)[i] &= ((unsigned char*)ifa_it->ifa_netmask)[a_offset + i];
-            ((unsigned char*)&ifc_with_mask)[i] &= ((unsigned char*)ifa_it->ifa_netmask)[a_offset + i];
+        if (ifa_it->ifa_netmask) {
+            for (i=0; i<a_len; i++) {
+                ((unsigned char*)&addr_with_mask)[i] &= ((unsigned char*)ifa_it->ifa_netmask)[a_offset + i];
+                ((unsigned char*)&ifc_with_mask)[i] &= ((unsigned char*)ifa_it->ifa_netmask)[a_offset + i];
+            }
         }
 
 #if 0
