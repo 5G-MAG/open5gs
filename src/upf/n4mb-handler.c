@@ -495,12 +495,16 @@ static int get_mtu_for_address(const struct sockaddr *addr, socklen_t addr_len)
         struct ifreq ifr;
         strcpy(ifr.ifr_name, if_name);
         int fd = socket(AF_INET, SOCK_DGRAM, 0);
-        if (ioctl(fd, SIOCGIFMTU, &ifr) == -1) {
-            ogs_warn("Failed to get MTU: %s", strerror(errno));
+        if (fd < 0) {
+            ogs_warn("Failed to open datagram socket: %s", strerror(errno));
         } else {
-            mtu = ifr.ifr_mtu;
+            if (ioctl(fd, SIOCGIFMTU, &ifr) == -1) {
+                ogs_warn("Failed to get MTU: %s", strerror(errno));
+            } else {
+                mtu = ifr.ifr_mtu;
+            }
+            close(fd);
         }
-        close(fd);
     } else {
         ogs_warn("Unable to get interface name for address, using default MTU of 1500");
     }
