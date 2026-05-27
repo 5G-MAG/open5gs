@@ -571,8 +571,11 @@ bool smf_nmbsmf_handle_mbs_session_create(
     // TODO (borieher): Check provided TMGI is not added to an existing MBS Session
 
     // MBS Session create
-    mbs_sess = smf_mbs_sess_create(tmgi, ssm, service_type);
+    mbs_sess = smf_mbs_sess_create(tmgi, ssm, service_type, mbs_service_area, ext_mbs_service_area);
+    tmgi = NULL; // tmgi passed to mbs_sess
     ssm = NULL; // ssm passed to mbs_sess
+    mbs_service_area = NULL; // mbs_service_area passed to mbs_sess
+    ext_mbs_service_area = NULL; // ext_mbs_service_area passed to mbs_sess
 
     if (!mbs_sess) {
         ogs_error("MBS Session Create: MBS Session Id collides with existing MBS Session");
@@ -585,11 +588,6 @@ bool smf_nmbsmf_handle_mbs_session_create(
 
     mbs_sess->ingress_tun_addr_req = (CreateReqData->mbs_session->is_ingress_tun_addr_req &&
                                       CreateReqData->mbs_session->ingress_tun_addr_req != 0);
-
-    mbs_sess->mbs_service_area = mbs_service_area;
-    mbs_service_area = NULL;
-    mbs_sess->ext_mbs_service_area = ext_mbs_service_area;
-    ext_mbs_service_area = NULL;
 
     if (is_multicast_service) {
         mbs_sess->activity_status = CreateReqData->mbs_session->activity_status;

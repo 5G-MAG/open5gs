@@ -3509,7 +3509,7 @@ static void smf_mbs_sess_remove_all(void)
         smf_mbs_sess_remove(smf_mbs_sess);
 }
 
-smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, ogs_ssm_t *ssm, char *service_type)
+smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, ogs_ssm_t *ssm, char *service_type, ogs_mbs_service_area_t *mbs_service_area, ogs_ext_mbs_service_area_t *ext_mbs_service_area)
 {
     smf_mbs_sess_t *smf_mbs_sess = NULL;
 
@@ -3517,13 +3517,16 @@ smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, ogs_ssm_t *ssm, char *serv
     ogs_assert(service_type);
 
     if ((smf_mbs_sess = smf_mbs_sess_add()) == NULL) {
-        ogs_error("smf_mbs_sess_create() failed");
+        ogs_error("smf_mbs_sess_add() failed");
         return NULL;
     }
 
     smf_mbs_sess->tmgi = tmgi;
 
     smf_mbs_sess->service_type = ogs_strdup(service_type);
+
+    smf_mbs_sess->mbs_service_area = mbs_service_area;
+    smf_mbs_sess->ext_mbs_service_area = ext_mbs_service_area;
 
     if (ogs_strcasecmp(smf_mbs_sess->service_type, "BROADCAST") == 0) {
         smf_mbs_sess->mbs_session_id.tmgi = tmgi;
