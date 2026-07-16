@@ -17,6 +17,10 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <netdb.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+
 #include "context.h"
 #include "pfcp-path.h"
 
@@ -190,24 +194,63 @@ int upf_context_parse_config(void)
                             while (ogs_yaml_iter_next(&upf_mbs_tunnel_iter)) {
                                 const char *upf_mbs_tunnel_key = ogs_yaml_iter_key(&upf_mbs_tunnel_iter);
                                 ogs_assert(upf_mbs_tunnel_key);
-                                if (!strcmp(upf_mbs_tunnel_key, "address")) {
-                                    /* expect a single IPv4 or IPv6 address */
-				    ogs_yaml_iter_t upf_mbs_tunnel_address_iter;
-				    ogs_yaml_iter_recurse(&upf_mbs_tunnel_iter, &upf_mbs_tunnel_address_iter);
+				if (!strcmp(upf_mbs_tunnel_key, "address")) {
+                                    /* expect either a single IPv4 / IPv6 address or hostname */
+                                    ogs_yaml_iter_t upf_mbs_tunnel_address_iter;
+                                    ogs_yaml_iter_recurse(&upf_mbs_tunnel_iter, &upf_mbs_tunnel_address_iter);
+
                                     if (ogs_yaml_iter_type(&upf_mbs_tunnel_address_iter) == YAML_SCALAR_NODE) {
                                         const char *upf_mbs_tunnel_addr = ogs_yaml_iter_value(&upf_mbs_tunnel_address_iter);
+					char resolved_addr[INET6_ADDRSTRLEN];
+                                        memset(resolved_addr, 0, sizeof(resolved_addr));
                                         if (ogs_inet_pton(AF_INET, upf_mbs_tunnel_addr, &self.mbs_udp_tun_base_addr) != OGS_OK) {
-                                            if (ogs_inet_pton(AF_INET6, upf_mbs_tunnel_addr, &self.mbs_udp_tun_base_addr) != OGS_OK) {
-                                                ogs_error("Cannot resolve '%s' as an address for upf/mbs/updtunnel/address", upf_mbs_tunnel_addr);
-                                                return OGS_ERROR;
+				            if (ogs_inet_pton(AF_INET6, upf_mbs_tunnel_addr, &self.mbs_udp_tun_base_addr) != OGS_OK) {
+                                                struct addrinfo hints;
+                                                struct addrinfo *result = NULL;
+                                                int rv;
+
+                                                memset(&hints, 0, sizeof(hints));
+                                                hints.ai_family = AF_UNSPEC;
+                                                hints.ai_socktype = SOCK_DGRAM;
+
+                                                rv = getaddrinfo(upf_mbs_tunnel_addr, NULL, &hints, &result);
+                                                if (rv != 0) {
+                                                    ogs_error("Cannot resolve [%s] for upf/mbs/udptunnel/address: %s", upf_mbs_tunnel_addr, gai_strerror(rv));
+                                                    return OGS_ERROR;
+                                                }
+
+                                                if (result->ai_family == AF_INET) {
+                                                    struct sockaddr_in *addr4 = (struct sockaddr_in *)result->ai_addr;
+                                                    memset(&self.mbs_udp_tun_base_addr, 0, sizeof(self.mbs_udp_tun_base_addr));
+                                                    self.mbs_udp_tun_base_addr.sin.sin_family = AF_INET;
+                                                    memcpy(&self.mbs_udp_tun_base_addr.sin.sin_addr, &addr4->sin_addr, sizeof(struct in_addr));
+						    inet_ntop(AF_INET, &addr4->sin_addr, resolved_addr, sizeof(resolved_addr));
+
+                                                } else if (result->ai_family == AF_INET6) {
+                                                    struct sockaddr_in6 *addr6 = (struct sockaddr_in6 *)result->ai_addr;
+                                                    memset(&self.mbs_udp_tun_base_addr, 0, sizeof(self.mbs_udp_tun_base_addr));
+						    self.mbs_udp_tun_base_addr.sin6.sin6_family = AF_INET6;
+                                                    memcpy(&self.mbs_udp_tun_base_addr.sin6.sin6_addr, &addr6->sin6_addr, sizeof(struct in6_addr));
+                                                    inet_ntop(AF_INET6, &addr6->sin6_addr, resolved_addr, sizeof(resolved_addr));
+
+                                                } else {
+                                                    ogs_error("Unsupported address family for '%s'", upf_mbs_tunnel_addr);
+                                                    freeaddrinfo(result);
+                                                    return OGS_ERROR;
+					        }
+                                                freeaddrinfo(result);
+                                            } else {
+                                               inet_ntop(AF_INET6, &self.mbs_udp_tun_base_addr.sin6.sin6_addr, resolved_addr, sizeof(resolved_addr));
                                             }
+					} else {
+					    inet_ntop(AF_INET, &self.mbs_udp_tun_base_addr.sin.sin_addr, resolved_addr, sizeof(resolved_addr));
                                         }
-                                        self.mbs_udp_tun_base_addr.hostname = strdup(upf_mbs_tunnel_addr);
-                                    } else {
-                                        ogs_error("upf/mbs/udptunnel/address must be a single address");
+                                        self.mbs_udp_tun_base_addr.hostname = strdup(resolved_addr);
+				    } else {
+                                        ogs_error("upf/mbs/udptunnel/address must be a single address or hostname");
                                         return OGS_ERROR;
                                     }
-                                } else if (!strcmp(upf_mbs_tunnel_key, "port")) {
+			        } else if (!strcmp(upf_mbs_tunnel_key, "port")) {
 				    ogs_yaml_iter_t upf_mbs_tunnel_port_iter;
                                     ogs_yaml_iter_recurse(&upf_mbs_tunnel_iter, &upf_mbs_tunnel_port_iter);
                                     if (ogs_yaml_iter_type(&upf_mbs_tunnel_port_iter) == YAML_SCALAR_NODE) {
