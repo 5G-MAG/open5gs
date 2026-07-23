@@ -17,10 +17,6 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#include <netdb.h>
-#include <arpa/inet.h>
-#include <netinet/in.h>
-
 #include "context.h"
 #include "pfcp-path.h"
 
@@ -119,6 +115,12 @@ void upf_context_final(void)
     ogs_pool_final(&upf_mbs_sess_pool);
 
     // MBS UDP Tunnel configuration
+
+    if (self.mbs_udp_tun_base_addr.hostname != NULL) {
+        ogs_free(self.mbs_udp_tun_base_addr.hostname);
+        self.mbs_udp_tun_base_addr.hostname = NULL;
+    }
+
     if (self.mbs_udp_tun_ports_free) ogs_free(self.mbs_udp_tun_ports_free);
     if (self.mbs_udp_tun_ports) ogs_free(self.mbs_udp_tun_ports);
 
@@ -194,64 +196,31 @@ int upf_context_parse_config(void)
                             while (ogs_yaml_iter_next(&upf_mbs_tunnel_iter)) {
                                 const char *upf_mbs_tunnel_key = ogs_yaml_iter_key(&upf_mbs_tunnel_iter);
                                 ogs_assert(upf_mbs_tunnel_key);
-				if (!strcmp(upf_mbs_tunnel_key, "address")) {
+                                if (!strcmp(upf_mbs_tunnel_key, "address")) {
                                     /* expect either a single IPv4 / IPv6 address or hostname */
+                                    int port = 0;
+                                    int rv;
+                                    ogs_sockaddr_t *addr = NULL;
                                     ogs_yaml_iter_t upf_mbs_tunnel_address_iter;
                                     ogs_yaml_iter_recurse(&upf_mbs_tunnel_iter, &upf_mbs_tunnel_address_iter);
 
                                     if (ogs_yaml_iter_type(&upf_mbs_tunnel_address_iter) == YAML_SCALAR_NODE) {
                                         const char *upf_mbs_tunnel_addr = ogs_yaml_iter_value(&upf_mbs_tunnel_address_iter);
-					char resolved_addr[INET6_ADDRSTRLEN];
-                                        memset(resolved_addr, 0, sizeof(resolved_addr));
-                                        if (ogs_inet_pton(AF_INET, upf_mbs_tunnel_addr, &self.mbs_udp_tun_base_addr) != OGS_OK) {
-				            if (ogs_inet_pton(AF_INET6, upf_mbs_tunnel_addr, &self.mbs_udp_tun_base_addr) != OGS_OK) {
-                                                struct addrinfo hints;
-                                                struct addrinfo *result = NULL;
-                                                int rv;
-
-                                                memset(&hints, 0, sizeof(hints));
-                                                hints.ai_family = AF_UNSPEC;
-                                                hints.ai_socktype = SOCK_DGRAM;
-
-                                                rv = getaddrinfo(upf_mbs_tunnel_addr, NULL, &hints, &result);
-                                                if (rv != 0) {
-                                                    ogs_error("Cannot resolve [%s] for upf/mbs/udptunnel/address: %s", upf_mbs_tunnel_addr, gai_strerror(rv));
-                                                    return OGS_ERROR;
-                                                }
-
-                                                if (result->ai_family == AF_INET) {
-                                                    struct sockaddr_in *addr4 = (struct sockaddr_in *)result->ai_addr;
-                                                    memset(&self.mbs_udp_tun_base_addr, 0, sizeof(self.mbs_udp_tun_base_addr));
-                                                    self.mbs_udp_tun_base_addr.sin.sin_family = AF_INET;
-                                                    memcpy(&self.mbs_udp_tun_base_addr.sin.sin_addr, &addr4->sin_addr, sizeof(struct in_addr));
-						    inet_ntop(AF_INET, &addr4->sin_addr, resolved_addr, sizeof(resolved_addr));
-
-                                                } else if (result->ai_family == AF_INET6) {
-                                                    struct sockaddr_in6 *addr6 = (struct sockaddr_in6 *)result->ai_addr;
-                                                    memset(&self.mbs_udp_tun_base_addr, 0, sizeof(self.mbs_udp_tun_base_addr));
-						    self.mbs_udp_tun_base_addr.sin6.sin6_family = AF_INET6;
-                                                    memcpy(&self.mbs_udp_tun_base_addr.sin6.sin6_addr, &addr6->sin6_addr, sizeof(struct in6_addr));
-                                                    inet_ntop(AF_INET6, &addr6->sin6_addr, resolved_addr, sizeof(resolved_addr));
-
-                                                } else {
-                                                    ogs_error("Unsupported address family for '%s'", upf_mbs_tunnel_addr);
-                                                    freeaddrinfo(result);
-                                                    return OGS_ERROR;
-					        }
-                                                freeaddrinfo(result);
-                                            } else {
-                                               inet_ntop(AF_INET6, &self.mbs_udp_tun_base_addr.sin6.sin6_addr, resolved_addr, sizeof(resolved_addr));
-                                            }
-					} else {
-					    inet_ntop(AF_INET, &self.mbs_udp_tun_base_addr.sin.sin_addr, resolved_addr, sizeof(resolved_addr));
+                                        rv = ogs_getaddrinfo(&addr, AF_UNSPEC, upf_mbs_tunnel_addr, port, 0);
+                                        if (rv == OGS_OK && addr) {
+                                            self.mbs_udp_tun_base_addr = *addr;
+                                            ogs_freeaddrinfo(addr);
+                                        } else {
+                                            ogs_error("ogs_getaddrinfo[%s] failed", upf_mbs_tunnel_addr);
+                                            return OGS_ERROR;
                                         }
-                                        self.mbs_udp_tun_base_addr.hostname = strdup(resolved_addr);
-				    } else {
+                                        self.mbs_udp_tun_base_addr.hostname = strdup(upf_mbs_tunnel_addr);
+                                    } else {
                                         ogs_error("upf/mbs/udptunnel/address must be a single address or hostname");
                                         return OGS_ERROR;
                                     }
-			        } else if (!strcmp(upf_mbs_tunnel_key, "port")) {
-				    ogs_yaml_iter_t upf_mbs_tunnel_port_iter;
+                                } else if (!strcmp(upf_mbs_tunnel_key, "port")) {
+                                    ogs_yaml_iter_t upf_mbs_tunnel_port_iter;
                                     ogs_yaml_iter_recurse(&upf_mbs_tunnel_iter, &upf_mbs_tunnel_port_iter);
                                     if (ogs_yaml_iter_type(&upf_mbs_tunnel_port_iter) == YAML_SCALAR_NODE) {
                                         /* single value = single port (0=ephemeral) */
@@ -280,7 +249,7 @@ int upf_context_parse_config(void)
                                                     end_port = (uint16_t)ogs_uint64_from_string(ogs_yaml_iter_value(&upf_mbs_tunnel_port_iter));
                                                 } else {
                                                     ogs_warn("unknown key `%s` in upf/mbs/udptunnel/port section", upf_mbs_tunnel_port_key);
-						}
+                                                }
                                             } else {
                                                 ogs_warn("wrong type for key `%s` in upf/mbs/udptunnel/port section, ignoring", upf_mbs_tunnel_port_key);
                                             }
@@ -288,7 +257,7 @@ int upf_context_parse_config(void)
                                         if (!start_port || !end_port) {
                                             self.mbs_udp_tun_ephemeral_port = true;
                                         } else {
-					    uint32_t i, port;
+                                            uint32_t i, port;
                                             if (end_port < start_port) {
                                                 start_port ^= end_port;
                                                 end_port ^= start_port;
@@ -1181,8 +1150,8 @@ static void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess)
             size_t i;
             for (i=0; i < self.mbs_udp_tun_num_of_ports && self.mbs_udp_tun_ports[i] != port; i++);
             if (i < self.mbs_udp_tun_num_of_ports) {
-		self.mbs_udp_tun_ports_free[self.mbs_udp_tun_ports_next_free++] = self.mbs_udp_tun_ports + i;
-	    }
+                self.mbs_udp_tun_ports_free[self.mbs_udp_tun_ports_next_free++] = self.mbs_udp_tun_ports + i;
+            }
         }
         ogs_sock_destroy(upf_mbs_sess->udp_tunnel);
         upf_mbs_sess->udp_tunnel = NULL;
