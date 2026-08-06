@@ -121,7 +121,7 @@ void upf_n4mb_handle_session_establishment_request(
                     // Create IPv4 UDP tunnel endpoint and return the address & port in the session response
                     ogs_sockaddr_t *bind_address = NULL;
                     upf_context_t *ctx = upf_self();
-                    ogs_copyaddrinfo(&bind_address, &ctx->mbs_udp_tun_base_addr);
+                    ogs_copyaddrinfo(&bind_address, ctx->mbs_udp_tun_base_addr);
                     bind_address->ogs_sin_port = _get_next_udp_tunnel_port(ctx);
                     mbs_sess->udp_tunnel = ogs_sock_socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
                     ogs_sock_bind(mbs_sess->udp_tunnel, bind_address);
@@ -141,7 +141,7 @@ void upf_n4mb_handle_session_establishment_request(
                     // Create IPv6 UDP tunnel endpoint and return the address & port in the session response
                     ogs_sockaddr_t *bind_address = NULL;
                     upf_context_t *ctx = upf_self();
-                    ogs_copyaddrinfo(&bind_address, &ctx->mbs_udp_tun_base_addr);
+                    ogs_copyaddrinfo(&bind_address, ctx->mbs_udp_tun_base_addr);
                     bind_address->sin6.sin6_port = _get_next_udp_tunnel_port(ctx);
                     mbs_sess->udp_tunnel = ogs_sock_socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
                     ogs_sock_bind(mbs_sess->udp_tunnel, bind_address);

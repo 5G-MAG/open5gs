@@ -115,12 +115,7 @@ void upf_context_final(void)
     ogs_pool_final(&upf_mbs_sess_pool);
 
     // MBS UDP Tunnel configuration
-
-    if (self.mbs_udp_tun_base_addr.hostname != NULL) {
-        ogs_free(self.mbs_udp_tun_base_addr.hostname);
-        self.mbs_udp_tun_base_addr.hostname = NULL;
-    }
-
+    ogs_freeaddrinfo(self.mbs_udp_tun_base_addr);
     if (self.mbs_udp_tun_ports_free) ogs_free(self.mbs_udp_tun_ports_free);
     if (self.mbs_udp_tun_ports) ogs_free(self.mbs_udp_tun_ports);
 
@@ -199,22 +194,20 @@ int upf_context_parse_config(void)
                                 if (!strcmp(upf_mbs_tunnel_key, "address")) {
                                     /* expect either a single IPv4 / IPv6 address or hostname */
                                     int port = 0;
-                                    int rv;
-                                    ogs_sockaddr_t *addr = NULL;
                                     ogs_yaml_iter_t upf_mbs_tunnel_address_iter;
                                     ogs_yaml_iter_recurse(&upf_mbs_tunnel_iter, &upf_mbs_tunnel_address_iter);
 
                                     if (ogs_yaml_iter_type(&upf_mbs_tunnel_address_iter) == YAML_SCALAR_NODE) {
                                         const char *upf_mbs_tunnel_addr = ogs_yaml_iter_value(&upf_mbs_tunnel_address_iter);
-                                        rv = ogs_getaddrinfo(&addr, AF_UNSPEC, upf_mbs_tunnel_addr, port, 0);
-                                        if (rv == OGS_OK && addr) {
-                                            self.mbs_udp_tun_base_addr = *addr;
-                                            ogs_freeaddrinfo(addr);
-                                        } else {
+                                        ogs_freeaddrinfo(self.mbs_udp_tun_base_addr);
+                                        rv = ogs_getaddrinfo(&self.mbs_udp_tun_base_addr, AF_UNSPEC, upf_mbs_tunnel_addr, port, 0);
+                                        if (rv != OGS_OK || !self.mbs_udp_tun_base_addr) {
                                             ogs_error("ogs_getaddrinfo[%s] failed", upf_mbs_tunnel_addr);
                                             return OGS_ERROR;
                                         }
-                                        self.mbs_udp_tun_base_addr.hostname = strdup(upf_mbs_tunnel_addr);
+                                        if (!self.mbs_udp_tun_base_addr->hostname) {
+                                            self.mbs_udp_tun_base_addr->hostname = strdup(upf_mbs_tunnel_addr);
+                                        }
                                     } else {
                                         ogs_error("upf/mbs/udptunnel/address must be a single address or hostname");
                                         return OGS_ERROR;
