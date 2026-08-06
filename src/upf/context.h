@@ -63,7 +63,7 @@ typedef struct upf_context_s {
     ogs_list_t upf_mbs_sess_list;
 
     /* MBS UDP Tunnel configuration */
-    ogs_sockaddr_t mbs_udp_tun_base_addr;
+    ogs_sockaddr_t *mbs_udp_tun_base_addr;
     bool mbs_udp_tun_ephemeral_port;
     size_t mbs_udp_tun_num_of_ports;
     uint16_t *mbs_udp_tun_ports;         /* Array of available port numbers when not using ephemeral ports */
