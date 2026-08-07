@@ -659,6 +659,24 @@ bool smf_nmbsmf_handle_mbs_session_release(
     ogs_assert(message);
     ogs_assert(mbs_sess);
 
+    // BUG FIX: confirmed live this session -- MBSF's own delete-cascade sends up to three duplicate
+    // Nmbsmf_MBSSession Release requests for the exact same session (same instant, same resource), which
+    // made everything below fire multiple times concurrently for the same still-live mbs_sess and is the
+    // likely cause of a real SMF segfault observed live (confirmed via dmesg). Make this idempotent: only
+    // the first release call actually triggers the AMF/UPF release chain; any duplicate just replies
+    // 204 without touching mbs_sess again (it may already be mid-teardown, or freed, by the time a
+    // duplicate is dispatched).
+    if (mbs_sess->release_triggered) {
+        ogs_warn("MBS Session release requested again for an already-releasing session -- ignoring "
+                "duplicate (mbsSessionRef[%s])", mbs_sess->mbs_session_ref);
+        memset(&sendmsg, 0, sizeof(sendmsg));
+        response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
+        ogs_assert(response);
+        ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+        return true;
+    }
+    mbs_sess->release_triggered = true;
+
     // BUG FIX: this used to release the local smf_mbs_sess_t immediately (smf_mbs_sess_release()) without
     // ever telling the AMF or the UPF -- the release chain was a no-op beyond this process's own
     // bookkeeping. This is confirmed to be the root cause of the UPF's fixed-size MBS session pool

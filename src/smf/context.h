@@ -574,6 +574,16 @@ typedef struct smf_mbs_sess_s {
     /* Service Areas */
     ogs_mbs_service_area_t *mbs_service_area;
     ogs_ext_mbs_service_area_t *ext_mbs_service_area;
+
+    /* BUG FIX: confirmed live this session -- MBSF's own delete-cascade sends up to three duplicate
+     * Nmbsmf_MBSSession Release requests for the exact same distribution session (same URL,
+     * same timestamp), which made smf_nmbsmf_handle_mbs_session_release() fire the AMF/UPF release
+     * requests below multiple times concurrently for the same still-live session object, and appears to
+     * have caused SMF to segfault (confirmed via dmesg). This flag makes that handler idempotent: once
+     * the real release chain has been triggered once for a session, any further duplicate release
+     * request is a safe no-op instead of re-entering the release logic on a session that may already be
+     * mid-teardown (or already freed, by the time a duplicate call is dispatched). */
+    bool release_triggered;
 } smf_mbs_sess_t;
 
 // NOTE (borieher): Not defined in the specs, default to 2 extra hours
