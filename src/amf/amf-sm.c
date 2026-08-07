@@ -288,6 +288,16 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
                             stream, &sbi_message);
                     break;
 
+                // BUG FIX: no DELETE branch existed at all -- any HTTP method other than POST
+                // (including DELETE) fell straight through to the DEFAULT case below and was rejected
+                // with 403 Forbidden. This is why a Namf_MBSBroadcast ContextDelete
+                // (DELETE /namf-mbs-bc/v1/mbs-contexts/{mbsContextRef}, TS 29.518 5.6.2.3) could never
+                // reach the AMF, and the NGAP BroadcastSessionRelease this triggers never got sent.
+                CASE(OGS_SBI_HTTP_METHOD_DELETE)
+                    amf_namf_handle_mbs_broadcast_context_delete(
+                            stream, &sbi_message);
+                    break;
+
                 DEFAULT
                     ogs_error("Invalid HTTP method [%s]", sbi_message.h.method);
                     // NOTE (borieher): Should send HTTP 405 Method Not Allowed?

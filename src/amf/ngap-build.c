@@ -2928,3 +2928,56 @@ ogs_pkbuf_t *ngap_build_broadcast_session_setup_request(amf_mbs_context_t *mbs_c
 
     return ogs_ngap_encode(&pdu);
 }
+
+/*
+ * 3GPP TS 38.413 - Release 17
+ * NG-RAN; NG Application Protocol (NGAP)
+ * Ch. 9.2.2.x - BROADCAST SESSION RELEASE REQUEST
+ *
+ * BUG FIX: this builder did not exist before -- only ngap_build_broadcast_session_setup_request() above
+ * did, which is why an MBS Broadcast session was never actually torn down over NGAP. Mirrors the setup
+ * request builder's MBS Session ID IE construction; the only mandatory IE for this message (Cause is
+ * optional and omitted here, matching this codebase's existing practice of only building mandatory IEs
+ * for other NGAP release-style messages).
+ */
+ogs_pkbuf_t *ngap_build_broadcast_session_release_request(amf_mbs_context_t *mbs_context)
+{
+    NGAP_NGAP_PDU_t pdu;
+    NGAP_InitiatingMessage_t *initiatingMessage = NULL;
+    NGAP_BroadcastSessionReleaseRequest_t *BroadcastSessionReleaseRequest = NULL;
+
+    NGAP_BroadcastSessionReleaseRequestIEs_t *ie = NULL;
+
+    // MBS Session ID
+    NGAP_MBS_SessionID_t *mBS_SessionID = NULL;
+
+    ogs_assert(mbs_context);
+
+    ogs_debug("BROADCAST SESSION RELEASE REQUEST");
+
+    memset(&pdu, 0, sizeof(NGAP_NGAP_PDU_t));
+    pdu.present = NGAP_NGAP_PDU_PR_initiatingMessage;
+    pdu.choice.initiatingMessage = CALLOC(1, sizeof(NGAP_InitiatingMessage_t));
+
+    initiatingMessage = pdu.choice.initiatingMessage;
+    initiatingMessage->procedureCode = NGAP_ProcedureCode_id_BroadcastSessionRelease;
+    initiatingMessage->criticality = NGAP_Criticality_reject;
+    initiatingMessage->value.present = NGAP_InitiatingMessage__value_PR_BroadcastSessionReleaseRequest;
+
+    BroadcastSessionReleaseRequest = &initiatingMessage->value.choice.BroadcastSessionReleaseRequest;
+
+    // MBS Session ID - 9.3.1.206 (M)
+    ie = CALLOC(1, sizeof(NGAP_BroadcastSessionReleaseRequestIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(&BroadcastSessionReleaseRequest->protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_MBS_SessionID;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present = NGAP_BroadcastSessionReleaseRequestIEs__value_PR_MBS_SessionID;
+
+    mBS_SessionID = &ie->value.choice.MBS_SessionID;
+
+    ogs_ngap_5gs_tmgi_to_ASN(&mbs_context->tmgi, &mBS_SessionID->tMGI);
+
+    return ogs_ngap_encode(&pdu);
+}

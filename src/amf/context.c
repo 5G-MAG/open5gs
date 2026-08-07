@@ -44,7 +44,6 @@ static void stats_add_amf_session(void);
 static void stats_remove_amf_session(void);
 static bool amf_namf_comm_parse_guti(ogs_nas_5gs_guti_t *guti, char *ue_context_id);
 
-static void amf_mbs_context_remove(amf_mbs_context_t *amf_mbs_context);
 static void amf_mbs_context_remove_all(void);
 
 void amf_context_init(void)
@@ -3096,7 +3095,10 @@ static amf_mbs_context_t *amf_mbs_context_add(void)
     return amf_mbs_context;
 }
 
-static void amf_mbs_context_remove(amf_mbs_context_t *amf_mbs_context)
+// BUG FIX: this was static, and no find-by-ref helper existed at all -- there was no way for a
+// ContextDelete handler to locate an amf_mbs_context_t given the mbsContextRef path segment the DELETE
+// request addresses (see amf_mbs_context_find_by_ref() below), nor to remove it once done.
+void amf_mbs_context_remove(amf_mbs_context_t *amf_mbs_context)
 {
     ogs_assert(amf_mbs_context);
 
@@ -3133,4 +3135,23 @@ amf_mbs_context_t *amf_mbs_context_create(ogs_tmgi_t *tmgi)
         amf_mbs_context->tmgi.expiration_time = tmgi->expiration_time;
 
     return amf_mbs_context;
+}
+
+// BUG FIX: no find-by-* helper existed at all for amf_mbs_context_t (confirmed by exploration: a grep for
+// amf_mbs_context_find across the AMF tree returned nothing) -- there was no way to locate the right
+// context to release given the mbsContextRef a DELETE request addresses
+// (/namf-mbs-bc/v1/mbs-contexts/{mbsContextRef}, TS 29.518 5.6.2.3).
+amf_mbs_context_t *amf_mbs_context_find_by_ref(const char *mbs_context_ref)
+{
+    amf_mbs_context_t *amf_mbs_context = NULL;
+
+    ogs_assert(mbs_context_ref);
+
+    ogs_list_for_each(&self.amf_mbs_context_list, amf_mbs_context) {
+        if (amf_mbs_context->mbs_context_ref &&
+                strcmp(amf_mbs_context->mbs_context_ref, mbs_context_ref) == 0)
+            return amf_mbs_context;
+    }
+
+    return NULL;
 }

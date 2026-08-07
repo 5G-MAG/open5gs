@@ -1025,6 +1025,8 @@ int amf_instance_get_load(void);
 void amf_ue_save_to_release_session_list(amf_ue_t *amf_ue);
 
 amf_mbs_context_t *amf_mbs_context_create(ogs_tmgi_t *tmgi);
+amf_mbs_context_t *amf_mbs_context_find_by_ref(const char *mbs_context_ref);
+void amf_mbs_context_remove(amf_mbs_context_t *amf_mbs_context);
 
 #ifdef __cplusplus
 }

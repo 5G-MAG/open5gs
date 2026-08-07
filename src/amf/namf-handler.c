@@ -2135,3 +2135,76 @@ cleanup:
     else
         return false;
 }
+
+/*
+ * 3GPP TS 29.518 - Release 17.11.0
+ * 5G System; Access and Mobility Management Services; Stage 3
+ * Ch. 5.6.2.3 - Namf_MBSBroadcast Service API - MBS Broadcast ContextDelete service operation
+ *
+ * BUG FIX: this handler did not exist before -- the SBI dispatcher (amf-sm.c) had no DELETE case at all,
+ * so nothing ever called this. Without it, a broadcast session's AMF-side context lived forever and no
+ * NGAP BroadcastSessionRelease was ever sent, leaving the gNB's MCCH content and MAC/scheduler resources
+ * permanently allocated for a session the SMF believes has been released.
+ */
+int amf_namf_handle_mbs_broadcast_context_delete(
+        ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg)
+{
+    ogs_debug("MBS Broadcast ContextDelete request received");
+
+    const char *mbs_context_ref = NULL;
+    amf_mbs_context_t *mbs_context = NULL;
+    ogs_pkbuf_t *n2msgreq = NULL;
+    amf_gnb_t *gnb = NULL;
+    int gnb_rv = OGS_OK;
+
+    ogs_sbi_message_t sendmsg;
+    ogs_sbi_response_t *response = NULL;
+
+    ogs_assert(stream);
+    ogs_assert(recvmsg);
+
+    mbs_context_ref = recvmsg->h.resource.component[1];
+    if (!mbs_context_ref) {
+        ogs_error("MBS Broadcast ContextDelete: No mbsContextRef in the request path");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request", "Requested MBS Broadcast ContextDelete failed, no mbsContextRef", NULL);
+        return OGS_ERROR;
+    }
+
+    mbs_context = amf_mbs_context_find_by_ref(mbs_context_ref);
+    if (!mbs_context) {
+        ogs_error("MBS Broadcast ContextDelete: mbsContextRef[%s] not found", mbs_context_ref);
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_NOT_FOUND,
+            recvmsg, "Not Found", "Requested MBS Broadcast ContextDelete failed, mbsContextRef not found", NULL);
+        return OGS_ERROR;
+    }
+
+    // NGAP BROADCAST SESSION RELEASE REQUEST message
+    n2msgreq = ngap_build_broadcast_session_release_request(mbs_context);
+
+    // Careful! this sends the message to all the gNBs connected to the AMF, mirroring
+    // amf_namf_handle_mbs_broadcast_context_create()'s send loop above.
+    ogs_list_for_each(&amf_self()->gnb_list, gnb) {
+        ogs_debug("Sending N2 MBS Session Release to gNB %i", gnb->gnb_id);
+        gnb_rv = ngap_send_to_gnb(gnb, n2msgreq, NGAP_NON_UE_SIGNALLING);
+        if (gnb_rv != OGS_OK) {
+            ogs_error("ngap_send_to_gnb() failed");
+            break;
+        }
+    }
+
+    amf_mbs_context_remove(mbs_context);
+
+    /*********************************************************************
+     * Send OGS_SBI_HTTP_STATUS_NO_CONTENT (/namf-mbs-bc/v1/mbs-contexts/{mbsContextRef}) to the consumer NF
+     *********************************************************************/
+
+    memset(&sendmsg, 0, sizeof(sendmsg));
+
+    response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
+    ogs_assert(response);
+
+    ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+
+    return OGS_OK;
+}

@@ -55,6 +55,10 @@ int amf_namf_comm_handle_registration_status_update_response(
 int amf_namf_handle_mbs_broadcast_context_create(
         ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg);
 
+/* Namf_MBSBroadcast Service - MBS Broadcast ContextDelete service operation */
+int amf_namf_handle_mbs_broadcast_context_delete(
+        ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg);
+
 #ifdef __cplusplus
 }
 #endif
