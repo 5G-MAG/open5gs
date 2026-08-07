@@ -3104,6 +3104,16 @@ void amf_mbs_context_remove(amf_mbs_context_t *amf_mbs_context)
 
     ogs_list_remove(&self.amf_mbs_context_list, amf_mbs_context);
 
+    // Free the owned copies made in amf_mbs_context_create() (see the BUG FIX comment there).
+    if (amf_mbs_context->tmgi.mbs_service_id)
+        ogs_free(amf_mbs_context->tmgi.mbs_service_id);
+    if (amf_mbs_context->tmgi.expiration_time)
+        ogs_free(amf_mbs_context->tmgi.expiration_time);
+    // BUG FIX: mbs_context_ref (ogs_msprintf()'d in amf_mbs_context_add()) was never freed on removal --
+    // a small leak on every release, noticed while fixing the two leaks above.
+    if (amf_mbs_context->mbs_context_ref)
+        ogs_free(amf_mbs_context->mbs_context_ref);
+
     ogs_pool_free(&amf_mbs_context_pool, amf_mbs_context);
 
     ogs_info("[Removed] Number of MBS Contexts in AMF is now %d",
@@ -3129,10 +3139,20 @@ amf_mbs_context_t *amf_mbs_context_create(ogs_tmgi_t *tmgi)
         return NULL;
     }
 
-    amf_mbs_context->tmgi.mbs_service_id = tmgi->mbs_service_id;
+    // BUG FIX: mbs_service_id/expiration_time are char* (ogs_tmgi_t, lib/proto/types.h) -- these two lines
+    // used to copy the raw pointer, not the string. `tmgi` here is a short-lived caller-owned struct
+    // borrowing its string fields straight from the incoming ContextCreateReqData (see
+    // ogs_sbi_parse_tmgi(): "tmgi->mbs_service_id = Tmgi->mbs_service_id;", also a raw pointer copy) --
+    // once amf_namf_handle_mbs_broadcast_context_create() returns and that request data is freed,
+    // amf_mbs_context->tmgi.mbs_service_id became a dangling pointer. This was never noticed because
+    // nothing read mbs_context->tmgi again after creation until the NGAP release path added in this
+    // session's release-chain work -- confirmed live: the NGAP BroadcastSessionReleaseRequest carried a
+    // garbage TMGI, and the gNB correctly rejected it ("Dropping ... Cause: NGAP MBS Session context does
+    // not exist") because it no longer matched the TMGI actually used at session setup.
+    amf_mbs_context->tmgi.mbs_service_id = ogs_strdup(tmgi->mbs_service_id);
     amf_mbs_context->tmgi.plmn_id = tmgi->plmn_id;
     if (tmgi->expiration_time)
-        amf_mbs_context->tmgi.expiration_time = tmgi->expiration_time;
+        amf_mbs_context->tmgi.expiration_time = ogs_strdup(tmgi->expiration_time);
 
     return amf_mbs_context;
 }
