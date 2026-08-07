@@ -209,8 +209,20 @@ void upf_pfcp_state_associated(ogs_fsm_t *s, upf_event_t *e)
         xact = ogs_pfcp_xact_find_by_id(e->pfcp_xact_id);
         ogs_assert(xact);
 
-        if (message->h.seid_presence && message->h.seid != 0)
-            sess = upf_sess_find_by_upf_n4_seid(message->h.seid);
+        if (message->h.seid_presence && message->h.seid != 0) {
+            // BUG FIX: this used to unconditionally call upf_sess_find_by_upf_n4_seid(), which does a
+            // blind ogs_hash_get() on a hash table SHARED between upf_sess_t and upf_mbs_sess_t (both
+            // draw their SEIDs from the same upf_n4_seid_pool -- see upf_mbs_sess_add() in context.c).
+            // Whenever message->h.seid actually belonged to an MBS session, `sess` ended up holding an
+            // upf_mbs_sess_t* mistyped as upf_sess_t* -- a type-confusion bug that mattered most for
+            // OGS_PFCP_SESSION_DELETION_REQUEST_TYPE below, the one case that dereferences `sess`
+            // directly instead of routing around it via a message-body presence check (as the
+            // establishment case already does). Try the MBS pool first, exactly as
+            // upf_mbs_sess_find_by_seid()'s own doc comment describes.
+            mbs_sess = upf_mbs_sess_find_by_seid(message->h.seid);
+            if (!mbs_sess)
+                sess = upf_sess_find_by_upf_n4_seid(message->h.seid);
+        }
 
         switch (message->h.type) {
         case OGS_PFCP_HEARTBEAT_REQUEST_TYPE:
@@ -304,8 +316,19 @@ void upf_pfcp_state_associated(ogs_fsm_t *s, upf_event_t *e)
                 sess, xact, &message->pfcp_session_modification_request);
             break;
         case OGS_PFCP_SESSION_DELETION_REQUEST_TYPE:
-            upf_n4_handle_session_deletion_request(
-                sess, xact, &message->pfcp_session_deletion_request);
+            // BUG FIX: no MBS-aware branch existed here at all -- this unconditionally called the
+            // regular-session handler even when the SEID belonged to an MBS session (a bug the top-level
+            // lookup fix above only preventing the type confusion for; this is what actually routes MBS
+            // deletions to the correct, MBS-aware handler so the UPF's own MBS session pool entry
+            // actually gets freed). This is the fix for the "Maximum number of MBS Sessions[20] reached"
+            // pool exhaustion observed live this session.
+            if (mbs_sess) {
+                upf_n4mb_handle_session_deletion_request(
+                    mbs_sess, xact, &message->pfcp_session_deletion_request);
+            } else {
+                upf_n4_handle_session_deletion_request(
+                    sess, xact, &message->pfcp_session_deletion_request);
+            }
             break;
         case OGS_PFCP_SESSION_REPORT_RESPONSE_TYPE:
             upf_n4_handle_session_report_response(

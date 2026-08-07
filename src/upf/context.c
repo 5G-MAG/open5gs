@@ -33,7 +33,6 @@ static int context_initialized = 0;
 
 static void upf_sess_urr_acc_remove_all(upf_sess_t *sess);
 
-static void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess);
 static void upf_mbs_sess_remove_all(void);
 
 void upf_context_init(void)
@@ -1100,7 +1099,12 @@ static upf_mbs_sess_t *upf_mbs_sess_add(ogs_pfcp_f_seid_t *cp_f_seid)
     return upf_mbs_sess;
 }
 
-static void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess)
+// BUG FIX: this was static and had no runtime caller at all (confirmed: its only caller was
+// upf_mbs_sess_remove_all(), itself only called from upf_context_final() at process shutdown) -- this is
+// why the fixed-size MBS session pool (OGS_MAX_NUM_OF_MBS_SESSIONS=20) filled up after repeated test
+// session creation/deletion cycles and never drained. Exposed for upf_n4mb_handle_session_deletion_request()
+// below to call at runtime, mirroring the equivalent AMF-side fix (amf_mbs_context_remove()).
+void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess)
 {
     ogs_assert(upf_mbs_sess);
 
@@ -1170,6 +1174,28 @@ upf_mbs_sess_t *upf_mbs_sess_find_by_smf_n4mb_f_seid(ogs_pfcp_f_seid_t *f_seid)
     key.seid = f_seid->seid;
 
     return ogs_hash_get(self.smf_n4_f_seid_hash, &key, sizeof(key));
+}
+
+/*
+ * BUG FIX: no way existed to look up an upf_mbs_sess_t by its own (UPF-assigned) SEID -- only by the SMF's
+ * F-SEID (above, only present in the Establishment Request). A PFCP Session Deletion Request carries no
+ * IEs of its own (ogs_pfcp_session_deletion_request_t is empty) and is addressed purely by the SEID in
+ * the PFCP header, so this is what pfcp-sm.c's deletion dispatch needs to tell an MBS session's SEID
+ * apart from a regular session's before routing to the right handler -- both types' SEIDs are drawn from
+ * the same shared upf_n4_seid_pool/hash (see upf_mbs_sess_add() above), so blindly treating the shared
+ * hash's result as a upf_sess_t* (as the pre-existing deletion dispatch code did) is a type-confusion bug
+ * whenever the SEID actually belongs to an MBS session.
+ */
+upf_mbs_sess_t *upf_mbs_sess_find_by_seid(uint64_t seid)
+{
+    upf_mbs_sess_t *upf_mbs_sess = NULL;
+
+    ogs_list_for_each(&self.upf_mbs_sess_list, upf_mbs_sess) {
+        if (upf_mbs_sess->upf_n4mb_seid == seid)
+            return upf_mbs_sess;
+    }
+
+    return NULL;
 }
 
 upf_mbs_sess_t *upf_mbs_sess_add_by_message(ogs_pfcp_message_t *message)

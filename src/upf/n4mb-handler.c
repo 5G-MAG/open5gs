@@ -352,6 +352,36 @@ cleanup:
             cause_value, offending_ie_value);
 }
 
+/*
+ * BUG FIX: this handler did not exist before -- pfcp-sm.c's Session Deletion Request dispatch had no
+ * MBS-aware branch at all (see the matching fix there), so an MBS session's N4mb Session Deletion Request
+ * was never routed anywhere sensible. Mirrors the non-MBS upf_n4_handle_session_deletion_request(): reply
+ * then free the local session. This is what actually frees the entry in the fixed-size MBS session pool
+ * (OGS_MAX_NUM_OF_MBS_SESSIONS=20) that was observed exhausting after repeated test session
+ * creation/deletion cycles this session ("Maximum number of MBS Sessions[20] reached").
+ */
+void upf_n4mb_handle_session_deletion_request(
+        upf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
+        ogs_pfcp_session_deletion_request_t *req)
+{
+    ogs_assert(xact);
+    ogs_assert(req);
+
+    ogs_debug("N4mb Session Deletion Request");
+
+    if (!mbs_sess) {
+        ogs_error("No MBS Session Context");
+        ogs_pfcp_send_error_message(xact, 0,
+                OGS_PFCP_SESSION_DELETION_RESPONSE_TYPE,
+                OGS_PFCP_CAUSE_SESSION_CONTEXT_NOT_FOUND, 0);
+        return;
+    }
+
+    upf_pfcp_n4mb_send_session_deletion_response(xact, mbs_sess);
+
+    upf_mbs_sess_remove(mbs_sess);
+}
+
 static void _mbs_tunnel_poll_handler(short when, ogs_socket_t fd, void *data)
 {
     upf_mbs_sess_t *mbs_sess = data;

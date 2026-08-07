@@ -29,6 +29,10 @@ void upf_n4mb_handle_session_establishment_request(
         upf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
         ogs_pfcp_session_establishment_request_t *req);
 
+void upf_n4mb_handle_session_deletion_request(
+        upf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
+        ogs_pfcp_session_deletion_request_t *req);
+
 #ifdef __cplusplus
 }
 #endif

@@ -144,3 +144,21 @@ ogs_pkbuf_t *upf_n4mb_build_session_establishment_response(uint8_t type,
 
     return pkbuf;
 }
+
+/*
+ * BUG FIX: no N4mb Session Deletion Response builder existed at all -- mirrors the non-MBS
+ * upf_n4_build_session_deletion_response(), minus the URR usage-report accumulation that function does
+ * (MBS sessions in this codebase don't populate urr_list the way regular sessions do), via the same
+ * generic ogs_pfcp_build_session_deletion_response() helper both use.
+ */
+ogs_pkbuf_t *upf_n4mb_build_session_deletion_response(uint8_t type, upf_mbs_sess_t *mbs_sess)
+{
+    ogs_pfcp_user_plane_report_t report;
+
+    ogs_debug("N4mb Session Deletion Response");
+    ogs_assert(mbs_sess);
+
+    memset(&report, 0, sizeof(report));
+
+    return ogs_pfcp_build_session_deletion_response(type, OGS_PFCP_CAUSE_REQUEST_ACCEPTED, &report);
+}
