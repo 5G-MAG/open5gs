@@ -2951,6 +2951,9 @@ ogs_pkbuf_t *ngap_build_broadcast_session_release_request(amf_mbs_context_t *mbs
     // MBS Session ID
     NGAP_MBS_SessionID_t *mBS_SessionID = NULL;
 
+    // Cause
+    NGAP_Cause_t *Cause = NULL;
+
     ogs_assert(mbs_context);
 
     ogs_debug("BROADCAST SESSION RELEASE REQUEST");
@@ -2978,6 +2981,23 @@ ogs_pkbuf_t *ngap_build_broadcast_session_release_request(amf_mbs_context_t *mbs
     mBS_SessionID = &ie->value.choice.MBS_SessionID;
 
     ogs_ngap_5gs_tmgi_to_ASN(&mbs_context->tmgi, &mBS_SessionID->tMGI);
+
+    // Cause - 9.3.1.2 (M)
+    // BUG FIX: Cause is mandatory for this message (38413-h30.asn: BroadcastSessionReleaseRequestIEs,
+    // "PRESENCE mandatory") -- omitting it produced a malformed PDU that the gNB correctly rejected with
+    // "Mandatory fields are missing" / "Couldn't unpack NGAP PDU", confirmed live this session. This is a
+    // CN-initiated release, not a radio-triggered one, so use radioNetwork/release_due_to_5gc_generated_reason.
+    ie = CALLOC(1, sizeof(NGAP_BroadcastSessionReleaseRequestIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(&BroadcastSessionReleaseRequest->protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_Cause;
+    ie->criticality = NGAP_Criticality_ignore;
+    ie->value.present = NGAP_BroadcastSessionReleaseRequestIEs__value_PR_Cause;
+
+    Cause = &ie->value.choice.Cause;
+    Cause->present = NGAP_Cause_PR_radioNetwork;
+    Cause->choice.radioNetwork = NGAP_CauseRadioNetwork_release_due_to_5gc_generated_reason;
 
     return ogs_ngap_encode(&pdu);
 }
