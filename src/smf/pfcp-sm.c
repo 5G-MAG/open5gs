@@ -228,15 +228,30 @@ void smf_pfcp_state_associated(ogs_fsm_t *s, smf_event_t *e)
         xact = ogs_pfcp_xact_find_by_id(e->pfcp_xact_id);
         ogs_assert(xact);
 
+        // BUG FIX: this used to unconditionally call smf_sess_find_by_seid(), which does a blind
+        // ogs_hash_get() on self.smf_n4_seid_hash -- a hash table SHARED between smf_sess_t and
+        // smf_mbs_sess_t, since both draw their SEIDs from the same smf_n4_seid_pool (see
+        // smf_mbs_sess_create() and smf_sess_t's own SEID allocation sites, all of which call
+        // ogs_hash_set() on this same self.smf_n4_seid_hash). Whenever an incoming PFCP response's SEID
+        // actually belonged to an MBS session -- as every response to the N4mb Session Deletion Request
+        // added this session does -- `sess` ended up holding a smf_mbs_sess_t* mistyped as smf_sess_t*,
+        // and ogs_fsm_dispatch(&sess->sm, e) below then dispatched an FSM event through garbage memory.
+        // Confirmed live: this crashed the SMF (segfault, via dmesg) immediately upon receiving the very
+        // first genuine N4mb Session Deletion Response. Try the MBS pool first, exactly mirroring the
+        // matching fix applied to the UPF's own pfcp-sm.c for the identical shared-hash problem there.
         if (message->h.seid_presence && message->h.seid != 0) {
-               sess = smf_sess_find_by_seid(message->h.seid);
+            mbs_sess = smf_mbs_sess_find_by_seid(message->h.seid);
+            if (!mbs_sess)
+                sess = smf_sess_find_by_seid(message->h.seid);
         } else if (xact->local_seid) { /* rx no SEID or SEID=0 */
             /* 3GPP TS 29.244 7.2.2.4.2: we receive SEID=0 under some
              * conditions, such as cause "Session context not found". In those
              * cases, we still want to identify the local session which
              * originated the message, so try harder by using the SEID we
              * locally stored in xact when sending the original request: */
-            sess = smf_sess_find_by_seid(xact->local_seid);
+            mbs_sess = smf_mbs_sess_find_by_seid(xact->local_seid);
+            if (!mbs_sess)
+                sess = smf_sess_find_by_seid(xact->local_seid);
         }
         if (sess)
             e->sess_id = sess->id;
@@ -314,6 +329,32 @@ void smf_pfcp_state_associated(ogs_fsm_t *s, smf_event_t *e)
         case OGS_PFCP_SESSION_ESTABLISHMENT_RESPONSE_TYPE:
             if (!message->h.seid_presence) ogs_error("No SEID");
 
+            // BUG FIX: this MBS-presence check used to sit AFTER the "if (!sess) { ... break; }"
+            // regular-session bail-out below, which meant it was only ever reached when `sess` happened
+            // to be non-NULL. Before the shared-hash type-confusion fix above, `sess` was ALWAYS non-NULL
+            // here for an MBS response too (mistyped, but non-NULL, from the same blind
+            // smf_sess_find_by_seid() lookup) -- so this establishment path only ever "worked" by
+            // accident, riding on the very bug the fix above corrects. With `sess` now correctly staying
+            // NULL for an MBS SEID, the old ordering hit "No Session" / "No associated GTP transaction"
+            // and broke out of the switch before ever reaching this check, which is why the very first
+            // N4mb Session Establishment Response after that fix silently stalled (confirmed live: the
+            // SBI client eventually timed out 10s later with no response ever sent). Check MBS presence
+            // first -- it's a self-contained, message-body-driven routing decision that doesn't depend on
+            // `sess` at all -- and only fall through to the regular-session path below for non-MBS
+            // responses.
+            if (message->pfcp_session_establishment_response.mbs_session_n4mb_information.presence) {
+                // Find MBS Session by the SEID
+                if (message->h.seid_presence && message->h.seid != 0) {
+                    mbs_sess = smf_mbs_sess_find_by_seid(message->h.seid);
+                } else if (xact->local_seid) { /* rx no SEID or SEID=0 */
+                    mbs_sess = smf_mbs_sess_find_by_seid(xact->local_seid);
+                }
+
+                smf_n4mb_handle_session_establishment_response(mbs_sess, xact,
+                    &message->pfcp_session_establishment_response);
+                break;
+            }
+
             if (!sess) {
                 ogs_gtp_xact_t *gtp_xact =
                     ogs_gtp_xact_find_by_id(xact->assoc_xact_id);
@@ -330,21 +371,6 @@ void smf_pfcp_state_associated(ogs_fsm_t *s, smf_event_t *e)
                     ogs_gtp2_send_error_message(gtp_xact, 0,
                         OGS_GTP2_CREATE_SESSION_RESPONSE_TYPE,
                         OGS_GTP2_CAUSE_CONTEXT_NOT_FOUND);
-                break;
-            }
-
-            // NOTE (borieher): Quick workaround to differentiate between N4 and N4mb
-            // the issue is that N4mb information is only present when PLLSSM flag is used
-            if (message->pfcp_session_establishment_response.mbs_session_n4mb_information.presence) {
-                // Find MBS Session by the SEID
-                if (message->h.seid_presence && message->h.seid != 0) {
-                    mbs_sess = smf_mbs_sess_find_by_seid(message->h.seid);
-                } else if (xact->local_seid) { /* rx no SEID or SEID=0 */
-                    mbs_sess = smf_mbs_sess_find_by_seid(xact->local_seid);
-                }
-
-                smf_n4mb_handle_session_establishment_response(mbs_sess, xact,
-                    &message->pfcp_session_establishment_response);
                 break;
             }
 
