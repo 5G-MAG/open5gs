@@ -659,13 +659,42 @@ bool smf_nmbsmf_handle_mbs_session_release(
     ogs_assert(message);
     ogs_assert(mbs_sess);
 
-    // TODO (borieher): Send here the MBS Broadcast Context Release (handle the response and perform the PFCP Release)
+    // BUG FIX: this used to release the local smf_mbs_sess_t immediately (smf_mbs_sess_release()) without
+    // ever telling the AMF or the UPF -- the release chain was a no-op beyond this process's own
+    // bookkeeping. This is confirmed to be the root cause of the UPF's fixed-size MBS session pool
+    // (OGS_MAX_NUM_OF_MBS_SESSIONS=20) filling up after repeated test session creation/deletion cycles.
+    //
+    // Fire both real release triggers now, while mbs_sess is still valid, mirroring how the create path
+    // (smf_n4mb_handle_session_establishment_response()) already responds to its northbound caller before
+    // its own follow-on Namf_MBSBroadcast create call completes. The local smf_mbs_sess_t itself is now
+    // only freed once the UPF's N4mb Session Deletion Response actually arrives
+    // (smf_n4mb_handle_session_deletion_response() in n4mb-handler.c), not eagerly here.
 
-    // NOTE (borieher): Currently the response is right after the request, but in the call flow is after the PFCP Session Deletion
-    //                  separate this in request and response
+    // Release the AMF/NGAP broadcast context, if one was ever actually created for this session (a
+    // Multicast session, or a Broadcast session that never got far enough to receive a mbsContextRef,
+    // has nothing to release here).
+    if (mbs_sess->mbs_context_ref) {
+        int r = smf_sbi_old_discover_and_send(
+                OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC, NULL,
+                smf_namf_build_mbs_broadcast_context_delete_request,
+                mbs_sess, NULL, 0, NULL);
+        if (r != OGS_OK)
+            ogs_error("Failed to send MBS Broadcast ContextDelete for mbsContextRef[%s]",
+                    mbs_sess->mbs_context_ref);
+    }
 
-    // MBS Session release
-    smf_mbs_sess_release(mbs_sess);
+    // Release the UPF-side N4mb PFCP session. If no PFCP peer was ever associated (e.g. the session
+    // never got far enough to be established), there is nothing to tell the UPF -- release local state
+    // directly instead of waiting for a response that will never come.
+    if (mbs_sess->pfcp_node) {
+        int r = smf_5gc_pfcp_n4mb_send_session_deletion_request(mbs_sess);
+        if (r != OGS_OK) {
+            ogs_error("Failed to send N4mb Session Deletion Request, releasing local state anyway");
+            smf_mbs_sess_release(mbs_sess);
+        }
+    } else {
+        smf_mbs_sess_release(mbs_sess);
+    }
 
     /*********************************************************************
      * Send HTTP_STATUS_NO_CONTENT (/nmbsmf-mbssession/v1/mbs-sessions) to the consumer NF

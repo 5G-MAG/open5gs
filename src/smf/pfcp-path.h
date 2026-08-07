@@ -69,6 +69,8 @@ uint32_t smf_pfcp_urr_usage_report_trigger2diam_gy_reporting_reason(
 int smf_5gc_pfcp_n4mb_send_session_establishment_request(
         smf_mbs_sess_t *mbs_sess, uint64_t flags, ogs_sbi_stream_t *stream);
 
+int smf_5gc_pfcp_n4mb_send_session_deletion_request(smf_mbs_sess_t *mbs_sess);
+
 #ifdef __cplusplus
 }
 #endif

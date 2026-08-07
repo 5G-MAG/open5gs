@@ -1036,6 +1036,54 @@ static void mbs_sess_5gc_timeout(ogs_pfcp_xact_t *xact, void *data)
     }
 }
 
+/*
+ * BUG FIX: this send function did not exist before -- mbs_sess_5gc_timeout() above already had a
+ * complete OGS_PFCP_SESSION_DELETION_REQUEST_TYPE branch (including the smf_mbs_sess_release() call on
+ * timeout), anticipating that a deletion request would eventually be sent, but nothing ever called it.
+ * Mirrors smf_5gc_pfcp_n4mb_send_session_establishment_request() below and the non-MBS
+ * smf_5gc_pfcp_send_session_deletion_request().
+ */
+int smf_5gc_pfcp_n4mb_send_session_deletion_request(smf_mbs_sess_t *mbs_sess)
+{
+    int rv;
+    ogs_pkbuf_t *n4mbbuf = NULL;
+    ogs_pfcp_header_t h;
+    ogs_pfcp_xact_t *xact = NULL;
+
+    ogs_assert(mbs_sess);
+
+    xact = ogs_pfcp_xact_local_create(
+            mbs_sess->pfcp_node, mbs_sess_5gc_timeout, OGS_UINT_TO_POINTER(mbs_sess->id));
+    if (!xact) {
+        ogs_error("ogs_pfcp_xact_local_create() failed");
+        return OGS_ERROR;
+    }
+
+    xact->delete_trigger = OGS_PFCP_DELETE_TRIGGER_LOCAL_INITIATED;
+    xact->local_seid = mbs_sess->smf_n4mb_seid;
+
+    memset(&h, 0, sizeof(ogs_pfcp_header_t));
+    h.type = OGS_PFCP_SESSION_DELETION_REQUEST_TYPE;
+    h.seid = mbs_sess->upf_n4mb_seid;
+
+    n4mbbuf = smf_n4mb_build_session_deletion_request(h.type, mbs_sess);
+    if (!n4mbbuf) {
+        ogs_error("smf_n4mb_build_session_deletion_request() failed");
+        return OGS_ERROR;
+    }
+
+    rv = ogs_pfcp_xact_update_tx(xact, &h, n4mbbuf);
+    if (rv != OGS_OK) {
+        ogs_error("ogs_pfcp_xact_update_tx() failed");
+        return OGS_ERROR;
+    }
+
+    rv = ogs_pfcp_xact_commit(xact);
+    ogs_expect(rv == OGS_OK);
+
+    return rv;
+}
+
 int smf_5gc_pfcp_n4mb_send_session_establishment_request(
         smf_mbs_sess_t *mbs_sess, uint64_t flags, ogs_sbi_stream_t *stream)
 {

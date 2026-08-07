@@ -367,6 +367,22 @@ void smf_pfcp_state_associated(ogs_fsm_t *s, smf_event_t *e)
             if (!message->h.seid_presence) ogs_error("No SEID");
 
             if (!sess) {
+                // BUG FIX: this branch previously always fell through to the GTP not-found error path
+                // for an MBS N4mb session's deletion response, since `sess` (looked up from the regular
+                // smf_sess_t pool at the top of this function) is always NULL for an MBS session's SEID.
+                // Mirrors the OGS_PFCP_SESSION_ESTABLISHMENT_RESPONSE_TYPE case above.
+                if (message->h.seid_presence && message->h.seid != 0) {
+                    mbs_sess = smf_mbs_sess_find_by_seid(message->h.seid);
+                } else if (xact->local_seid) { /* rx no SEID or SEID=0 */
+                    mbs_sess = smf_mbs_sess_find_by_seid(xact->local_seid);
+                }
+
+                if (mbs_sess) {
+                    smf_n4mb_handle_session_deletion_response(mbs_sess, xact,
+                        &message->pfcp_session_deletion_response);
+                    break;
+                }
+
                 ogs_gtp_xact_t *gtp_xact =
                     ogs_gtp_xact_find_by_id(xact->assoc_xact_id);
                 ogs_error("No Session");

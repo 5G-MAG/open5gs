@@ -286,3 +286,36 @@ cleanup:
 
     return request;
 }
+
+/*
+ * 3GPP TS 29.518 - Release 17.11.0
+ * 5G System; Access and Mobility Management Services; Stage 3
+ * Ch. 5.6.2.3 - Namf_MBSBroadcast Service API - MBS Broadcast ContextRelease service operation
+ *
+ * BUG FIX: this builder did not exist before -- only the ContextCreate builder above did, which is why
+ * a broadcast session's AMF/NGAP-side state (and, transitively, the DU's MCCH content and MAC/scheduler
+ * resources) was never released. Mirrors the ContextCreate builder's header/request-building pattern.
+ */
+ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_delete_request(
+        smf_mbs_sess_t *mbs_sess, void *data)
+{
+    ogs_debug("Building MBS Broadcast ContextDelete request");
+
+    ogs_sbi_message_t message;
+    ogs_sbi_request_t *request = NULL;
+
+    ogs_assert(mbs_sess);
+    ogs_assert(mbs_sess->mbs_context_ref);
+
+    memset(&message, 0, sizeof(message));
+    message.h.method = (char *) OGS_SBI_HTTP_METHOD_DELETE;
+    message.h.service.name = (char *) OGS_SBI_SERVICE_NAME_NAMF_MBS_BC;
+    message.h.api.version = (char *) OGS_SBI_API_V1;
+    message.h.resource.component[0] = (char *) OGS_SBI_RESOURCE_NAME_MBS_CONTEXTS;
+    message.h.resource.component[1] = mbs_sess->mbs_context_ref;
+
+    request = ogs_sbi_build_request(&message);
+    ogs_expect(request);
+
+    return request;
+}

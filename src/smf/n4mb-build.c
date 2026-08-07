@@ -227,3 +227,35 @@ ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
 
     return pkbuf;
 }
+
+/*
+ * BUG FIX: no N4mb Session Deletion Request builder existed at all -- this is why the UPF's MBS session
+ * pool (OGS_MAX_NUM_OF_MBS_SESSIONS=20) filled up after repeated test session creation/deletion cycles
+ * and never drained until process restart. The N4mb Session Deletion Request carries no mandatory IEs of
+ * its own (ogs_pfcp_session_deletion_request_t is empty, same as the non-MBS
+ * smf_n4_build_session_deletion_request() this mirrors) -- the SEID in the PFCP header alone identifies
+ * which UPF-side session to release.
+ */
+ogs_pkbuf_t *smf_n4mb_build_session_deletion_request(
+        uint8_t type, smf_mbs_sess_t *mbs_sess)
+{
+    ogs_pfcp_message_t *pfcp_message = NULL;
+    ogs_pkbuf_t *pkbuf = NULL;
+
+    ogs_debug("N4mb Session Deletion Request");
+    ogs_assert(mbs_sess);
+
+    pfcp_message = ogs_calloc(1, sizeof(*pfcp_message));
+    if (!pfcp_message) {
+        ogs_error("ogs_calloc() failed");
+        return NULL;
+    }
+
+    pfcp_message->h.type = type;
+    pkbuf = ogs_pfcp_build_msg(pfcp_message);
+    ogs_expect(pkbuf);
+
+    ogs_free(pfcp_message);
+
+    return pkbuf;
+}

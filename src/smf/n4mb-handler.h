@@ -29,6 +29,10 @@ uint8_t smf_n4mb_handle_session_establishment_response(
         smf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
         ogs_pfcp_session_establishment_response_t *rsp);
 
+uint8_t smf_n4mb_handle_session_deletion_response(
+        smf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
+        ogs_pfcp_session_deletion_response_t *rsp);
+
 #ifdef __cplusplus
 }
 #endif

@@ -306,3 +306,47 @@ uint8_t smf_n4mb_handle_session_establishment_response(
 
     return OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
 }
+
+/*
+ * BUG FIX: this response handler did not exist before -- no N4mb Session Deletion Request was ever sent
+ * (see smf_5gc_pfcp_n4mb_send_session_deletion_request() in pfcp-path.c), so there was nothing to
+ * respond to. This is what actually completes the release chain: it releases the local smf_mbs_sess_t
+ * (freeing the local PFCP bookkeeping via smf_mbs_sess_release()) only once the UPF has genuinely
+ * acknowledged (or rejected) tearing down its own session, instead of the caller
+ * (smf_nmbsmf_handle_mbs_session_release()) freeing it eagerly before the UPF was ever told.
+ */
+uint8_t smf_n4mb_handle_session_deletion_response(
+        smf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
+        ogs_pfcp_session_deletion_response_t *rsp)
+{
+    uint8_t cause_value = OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
+
+    ogs_assert(mbs_sess);
+    ogs_assert(xact);
+    ogs_assert(rsp);
+
+    ogs_debug("N4mb Session Deletion Response");
+
+    ogs_pfcp_xact_commit(xact);
+
+    if (rsp->cause.presence) {
+        if (rsp->cause.u8 != OGS_PFCP_CAUSE_REQUEST_ACCEPTED) {
+            ogs_error("PFCP Cause [%d] : Not Accepted", rsp->cause.u8);
+            cause_value = rsp->cause.u8;
+        }
+    } else {
+        ogs_error("No Cause");
+        cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+    }
+
+    if (cause_value != OGS_PFCP_CAUSE_REQUEST_ACCEPTED) {
+        // An UPF-side rejection (or malformed response) shouldn't leak the SMF's own bookkeeping
+        // forever -- there is no northbound caller left waiting; the 204 response was already sent by
+        // smf_nmbsmf_handle_mbs_session_release() before this request was even dispatched.
+        ogs_error("MBS Session N4mb deletion rejected by UPF, releasing local state anyway");
+    }
+
+    smf_mbs_sess_release(mbs_sess);
+
+    return cause_value;
+}

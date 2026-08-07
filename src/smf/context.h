@@ -537,6 +537,12 @@ typedef struct smf_mbs_sess_s {
     ogs_ssm_t *ssm;
     char *service_type;
 
+    /* mbsContextRef assigned by the AMF in the Location header of a Namf_MBSBroadcast ContextCreate
+     * response (TS 29.518 5.6.2.2), so it can be addressed again on release
+     * (DELETE /namf-mbs-bc/v1/mbs-contexts/{mbsContextRef}, TS 29.518 5.6.2.3). NULL if no AMF broadcast
+     * context was ever created for this session (e.g. a Multicast session). */
+    char *mbs_context_ref;
+
     // Multicast specific
     OpenAPI_mbs_session_activity_status_e activity_status;
     const char *state;

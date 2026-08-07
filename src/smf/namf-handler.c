@@ -250,16 +250,68 @@ bool smf_namf_comm_handle_n1_n2_message_transfer_failure_notify(
 /* Namf_MBSBroadcast Service API */
 
 bool smf_namf_handle_mbs_broadcast_context_create_response(
-        ogs_sbi_message_t *recvmsg)
+        smf_mbs_sess_t *mbs_sess, ogs_sbi_message_t *recvmsg)
 {
-    // TODO (borieher): Handle MBS Broadcast ContextCreate response
-    ogs_warn("Handling MBS Broadcast ContextCreate response");
+    ogs_debug("Handling MBS Broadcast ContextCreate response");
 
-    int rv = OGS_OK;
+    ogs_sbi_message_t location_message;
+    ogs_sbi_header_t header;
+    int rv;
 
-cleanup:
-    if (rv == OGS_OK)
-        return true;
-    else
+    ogs_assert(mbs_sess);
+    ogs_assert(recvmsg);
+
+    // BUG FIX: this handler used to be a stub that only logged a warning. As a result the AMF-assigned
+    // mbsContextRef (returned in the Location header of the 201 Created response, TS 29.518 5.6.2.2) was
+    // silently discarded, leaving no way to later address this context for release
+    // (DELETE /namf-mbs-bc/v1/mbs-contexts/{mbsContextRef}, TS 29.518 5.6.2.3).
+    if (!recvmsg->http.location) {
+        ogs_error("MBS Broadcast ContextCreate response: No http.location, cannot capture mbsContextRef");
         return false;
+    }
+
+    memset(&header, 0, sizeof(header));
+    header.uri = recvmsg->http.location;
+
+    rv = ogs_sbi_parse_header(&location_message, &header);
+    if (rv != OGS_OK) {
+        ogs_error("MBS Broadcast ContextCreate response: Cannot parse http.location [%s]",
+                recvmsg->http.location);
+        return false;
+    }
+
+    if (!location_message.h.resource.component[1]) {
+        ogs_sbi_header_free(&header);
+        ogs_error("MBS Broadcast ContextCreate response: No mbsContextRef in Location [%s]",
+                recvmsg->http.location);
+        return false;
+    }
+
+    if (mbs_sess->mbs_context_ref)
+        ogs_free(mbs_sess->mbs_context_ref);
+    mbs_sess->mbs_context_ref = ogs_strdup(location_message.h.resource.component[1]);
+    ogs_assert(mbs_sess->mbs_context_ref);
+
+    ogs_sbi_header_free(&header);
+
+    ogs_info("MBS Broadcast ContextCreate: mbsContextRef[%s]", mbs_sess->mbs_context_ref);
+
+    return true;
+}
+
+bool smf_namf_handle_mbs_broadcast_context_delete_response(
+        smf_mbs_sess_t *mbs_sess, ogs_sbi_message_t *recvmsg)
+{
+    ogs_assert(mbs_sess);
+    ogs_assert(recvmsg);
+
+    if (recvmsg->res_status != OGS_SBI_HTTP_STATUS_NO_CONTENT) {
+        ogs_error("MBS Broadcast ContextDelete: unexpected HTTP response [%d] for mbsContextRef[%s]",
+                recvmsg->res_status, mbs_sess->mbs_context_ref);
+        return false;
+    }
+
+    ogs_info("MBS Broadcast ContextDelete: mbsContextRef[%s] released", mbs_sess->mbs_context_ref);
+
+    return true;
 }

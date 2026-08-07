@@ -3445,6 +3445,9 @@ static void smf_mbs_sess_free(smf_mbs_sess_t *smf_mbs_sess)
     if (smf_mbs_sess->mbs_session_ref)
         ogs_free(smf_mbs_sess->mbs_session_ref);
 
+    if (smf_mbs_sess->mbs_context_ref)
+        ogs_free(smf_mbs_sess->mbs_context_ref);
+
     if (smf_mbs_sess->service_type)
         ogs_free(smf_mbs_sess->service_type);
 
