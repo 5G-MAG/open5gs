@@ -3847,9 +3847,17 @@ static bool smf_mbs_sess_list_service_areas_overlap(ogs_list_t *mbs_sess_list, s
     smf_mbs_sess_lnode_t *node;
 
     if (!mbs_sess_list || !mbs_session) return false;
-    if (!mbs_session->mbs_service_area && !mbs_session->ext_mbs_service_area) return true;
 
+    // BUG FIX: this used to short-circuit `return true` right here, before ever checking whether
+    // mbs_sess_list actually has any entries -- meaning a session with no explicit service area
+    // (the common case: no tgtServAreas/extTgtServAreas restriction, i.e. "global") was reported
+    // as colliding even when the found hash bucket was empty (ogs_hash_get can return a live-but-
+    // empty list object, not NULL, once its one-time occupant is torn down elsewhere). Confirmed
+    // live: brand-new, never-before-used SSM addresses were rejected as "already exists" on their
+    // very first creation attempt. The "no service area = overlaps with everything" rule is
+    // correct, but only once there's at least one actual session in the list to overlap with.
     ogs_list_for_each(mbs_sess_list, node) {
+        if (!mbs_session->mbs_service_area && !mbs_session->ext_mbs_service_area) return true;
         if (smf_mbs_sess_service_areas_overlap(node->mbs_session, mbs_session)) return true;
     }
 
