@@ -216,6 +216,12 @@ void ogs_sbi_message_free(ogs_sbi_message_t *message)
         OpenAPI_create_rsp_data_free(message->CreateRspData);
     if (message->ContextCreateReqData)
         OpenAPI_context_create_req_data_free(message->ContextCreateReqData);
+    // BUG FIX: ContextCreateRspData (parsed on every 201-Created Namf_MBSBroadcast ContextCreate
+    // response) had no free branch at all here, unlike its siblings above -- a bounded per-request
+    // heap leak (including its nested mbs_session_id/n2_mbs_sm_info_list allocations) on every
+    // successful MBS broadcast session setup.
+    if (message->ContextCreateRspData)
+        OpenAPI_context_create_rsp_data_free(message->ContextCreateRspData);
 
     /* HTTP Part */
     for (i = 0; i < message->num_of_part; i++) {
