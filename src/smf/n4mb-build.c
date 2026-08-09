@@ -136,7 +136,11 @@ ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
             req->create_traffic_endpoint.presence = 1;
 	    req->create_traffic_endpoint.local_ingress_tunnel.presence = 1;
             req->create_traffic_endpoint.local_ingress_tunnel.data = &local_ingress_tunnel;
-            req->create_traffic_endpoint.local_ingress_tunnel.len = sizeof(local_ingress_tunnel)/*len*/;
+            // BUG FIX: was sizeof(local_ingress_tunnel) (the full union struct, 23 octets), not
+            // the address-family-specific length ogs_pfcp_sockaddr_to_local_ingress_tunnel()
+            // computed into len (TS 29.244 cl.8.2.209: flags + port + address only -- 7 octets
+            // for IPv4, 19 for IPv6) -- padding the wire encoding with trailing zero octets.
+            req->create_traffic_endpoint.local_ingress_tunnel.len = len;
         } else {
             ogs_warn("Couldn't add Local Ingress Tunnel address to PFCP request");
         }
