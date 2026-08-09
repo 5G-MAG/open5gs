@@ -123,16 +123,21 @@ bool smf_nmbsmf_handle_tmgi_allocate(
             if ((smf_tmgi_count() + TmgiAllocate->tmgi_number) > OGS_MAX_NUM_OF_TMGI) {
                 ogs_error("TMGI Allocate: Cannot allocate %d TMGIs", TmgiAllocate->tmgi_number);
                 // Custom error handling, not the 3GPP TS
-                // Avoid reaching the maximum number of TMGI, send error (500)
-                ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+                // BUG FIX: this is a deterministic, non-transient, client-triggerable condition
+                // (the fork's own pool size limit), not a server fault -- 5xx is semantically
+                // wrong for it. smf_nmbsmf_handle_mbs_session_create() already reports the
+                // identical underlying condition as 403 Forbidden; match that here too.
+                ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
                     message, "Forbidden", "Cannot allocate [tmgiNumber] of TMGIs", NMBSMF_TMGI_INSUFFICIENT_RESOURCES);
                 rv = OGS_ERROR;
                 goto cleanup;
             }
         } else {
             ogs_error("TMGI Allocate: allocate error, incorrect number in tmgi_number");
-            // tmgi_number needs to be between 1 and 255, send error (400 + MANDATORY_IE_INCORRECT)
-            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            // BUG FIX: TS 29.532 Table 6.1.3.2.3.1-3 (POST /tmgi response table) maps
+            // MANDATORY_IE_INCORRECT, "if the required TMGI number for TMGI allocation is not
+            // valid," to HTTP 403 Forbidden, not 400 Bad Request.
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
                 message, "Mandatory IE incorrect", "Requested TMGI Allocate failed, incorrect number in [tmgiNumber]",
                 NMBSMF_TMGI_MANDATORY_IE_INCORRECT);
             rv = OGS_ERROR;
@@ -158,8 +163,16 @@ bool smf_nmbsmf_handle_tmgi_allocate(
                 // TMGI present, refresh the expiration_time
                 ogs_free(tmgi_found->expiration_time);
                 tmgi_found->expiration_time = ogs_strdup(expiration_time);
+
+                // BUG FIX: refreshed TMGIs were never added to the outgoing tmgi_list --
+                // TmgiAllocated.tmgiList is required with minItems: 1 (TS 29.532 Table
+                // 6.1.3.2.3.1-3: the response "shall contain the list of the TMGI(s) and their
+                // new expiration time" for refresh flows too), so a pure-refresh request (no
+                // tmgiNumber) previously returned TmgiAllocated{tmgiList: [], ...},
+                // schema-invalid and silently discarding the refresh confirmation.
+                Tmgi_copy = ogs_sbi_build_tmgi(tmgi_found);
+                OpenAPI_list_add(tmgi_list, Tmgi_copy);
             }
-            // TODO (borieher): Add the refreshed TMGIs to the tmgi_list
         }
     }
 
@@ -235,12 +248,18 @@ bool smf_nmbsmf_handle_tmgi_deallocate(
     tmgi_list = message->param.tmgi_list;
 
     if (!tmgi_list) {
-        // Extracted from the OpenAPI spec, not the 3GPP TS
-        // tmgi_list not present, send error (400)
-        ogs_error("TMGI Deallocate: No tmgi_list");
-        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
-            message, "Bad Request", "Requested TMGI Deallocate failed, no tmgi-list", NMBSMF_TMGI_MANDATORY_IE_MISSING);
-        return false;
+        // BUG FIX: tmgi-list is optional on this operation (TS 29.532 cl.5.2.2.3.1: the consumer
+        // "may request deallocation of all previously allocated TMGIs or one or more specific
+        // TMGIs"; TS29532_Nmbsmf_TMGI.yaml's tmgi-list query parameter has no "required: true")
+        // -- omitting it means "deallocate all", not a 400 client error. This previously rejected
+        // every conformant "deallocate all" request outright.
+        ogs_debug("TMGI Deallocate: no tmgi-list, deallocating all TMGIs");
+        smf_tmgi_deallocate_all();
+
+        response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
+        ogs_assert(response);
+        ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+        return true;
     }
 
     // Error checking for tmgi_list
@@ -258,6 +277,20 @@ bool smf_nmbsmf_handle_tmgi_deallocate(
             ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_NOT_FOUND,
                 message, "Unknown TMGI", "Requested TMGI Deallocate failed, TMGI expired or cannot be found",
                 NMBSMF_TMGI_UNKNOWN_TMGI);
+            return false;
+        }
+
+        // BUG FIX: a TMGI still referenced by a live MBS session was previously freed
+        // unconditionally. smf_mbs_sess_create() stores the *same* ogs_tmgi_t pointer directly
+        // (not a copy) in smf_mbs_sess_t, so freeing it here left that session with a dangling
+        // pointer a later, unrelated TMGI allocation could silently recycle and overwrite,
+        // corrupting the still-live session's identity as it feeds PFCP N4mb, Namf_MBSBroadcast,
+        // and NGAP signalling. See smf_mbs_sess_find_by_tmgi()'s own comment.
+        if (smf_mbs_sess_find_by_tmgi(tmgi_found)) {
+            ogs_error("TMGI Deallocate: deallocate error, TMGI still in use by an MBS session");
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
+                message, "Forbidden", "Requested TMGI Deallocate failed, TMGI still in use by an MBS session",
+                NMBSMF_TMGI_TMGI_IN_USE);
             return false;
         }
     }

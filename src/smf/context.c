@@ -3358,6 +3358,25 @@ void smf_tmgi_deallocate(ogs_tmgi_t *tmgi) {
     smf_tmgi_remove(tmgi);
 }
 
+// BUG FIX: tmgi-list is optional on TMGIDeallocate (TS 29.532 cl.5.2.2.3.1: the consumer "may
+// request deallocation of all previously allocated TMGIs or one or more specific TMGIs";
+// TS29532_Nmbsmf_TMGI.yaml's tmgi-list query parameter is not required) -- omitting it means
+// "deallocate all", not a client error. Mirrors smf_tmgi_remove_all() above, but skips (rather
+// than unconditionally frees) any TMGI still referenced by a live MBS session -- see
+// smf_mbs_sess_find_by_tmgi()'s own comment on why that check matters.
+void smf_tmgi_deallocate_all(void)
+{
+    ogs_tmgi_t *tmgi = NULL, *next = NULL;
+
+    ogs_list_for_each_safe(&self.tmgi_list, next, tmgi) {
+        if (smf_mbs_sess_find_by_tmgi(tmgi)) {
+            ogs_warn("TMGI Deallocate (all): skipping TMGI still in use by an MBS session");
+            continue;
+        }
+        smf_tmgi_remove(tmgi);
+    }
+}
+
 ogs_tmgi_t *smf_tmgi_find_by_tmgi(ogs_tmgi_t *tmgi_to_find)
 {
     ogs_tmgi_t *tmgi = NULL;
