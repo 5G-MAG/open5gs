@@ -295,14 +295,21 @@ uint8_t smf_n4mb_handle_session_establishment_response(
         ogs_free(sendmsg.http.location);
 
 
-    // TODO (borieher): Remove this after testing
-    r = smf_sbi_old_discover_and_send(
-    OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC, NULL,
-    smf_namf_build_mbs_broadcast_context_create_request,
-    mbs_sess, NULL, 0, (char *) OGS_SBI_RESOURCE_NAME_MBS_CONTEXTS);
+    // BUG FIX: this fired unconditionally for every MBS session, including MULTICAST, with no
+    // check on service_type -- confirmed leftover test scaffolding (the removed TODO said so
+    // explicitly). Namf_MBSBroadcast is a Broadcast-only service (TS 23.247 cl.7.3.1 step 2:
+    // sent "if the service type is broadcast service"); a Multicast session has no TMGI-centric
+    // broadcast context to create here at all -- it instead uses Namf_MBSCommunication at
+    // UE-join time, a separate, currently unimplemented procedure.
+    if (ogs_strcasecmp(mbs_sess->service_type, "BROADCAST") == 0) {
+        r = smf_sbi_old_discover_and_send(
+        OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC, NULL,
+        smf_namf_build_mbs_broadcast_context_create_request,
+        mbs_sess, NULL, 0, (char *) OGS_SBI_RESOURCE_NAME_MBS_CONTEXTS);
 
-    ogs_expect(r == OGS_OK);
-    ogs_assert(r != OGS_ERROR);
+        ogs_expect(r == OGS_OK);
+        ogs_assert(r != OGS_ERROR);
+    }
 
     return OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
 }
