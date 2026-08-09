@@ -99,7 +99,15 @@ ogs_pkbuf_t *upf_n4mb_build_session_establishment_response(uint8_t type,
         multicast_transport_information.spare = 0;
 
         multicast_transport_information.c_teid = htobe32(mbs_sess->c_teid);
-        created_pdr[0]->far->outer_header_creation.teid = mbs_sess->c_teid;
+        // BUG FIX: was hard-indexed at created_pdr[0] only -- one Common TEID is allocated per
+        // MBS session and used (Apply Action FSSM) to forward that session's data for every
+        // PDR/FAR of the session (TS 29.244 cl.8.2.207/5.34.2.2), but any FAR beyond the first
+        // (an MBS session with more than one QoS flow/PDR) was left with outer_header_creation
+        // .teid == 0, and ogs_pfcp_send_g_pdu() copies this verbatim into outgoing GTP-U headers.
+        // Currently latent (the SMF side only creates one PDR/FAR per session today), but this
+        // loop is the structurally correct form.
+        for (i = 0; i < num_of_created_pdr; i++)
+            created_pdr[i]->far->outer_header_creation.teid = mbs_sess->c_teid;
 
         multicast_transport_information_len += 5;
 

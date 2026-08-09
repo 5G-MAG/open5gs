@@ -237,9 +237,17 @@ void upf_gtpv1_receive_buffer_for_mbs_sess(ogs_pkbuf_t *recvbuf, upf_mbs_sess_t 
         return;
     }
 
-    /* Increment total & dl octets + pkts */
-    for (i = 0; i < pdr->num_of_urr; i++)
-        upf_sess_urr_acc_add(sess, pdr->urr[i], recvbuf->len, false);
+    // BUG FIX: sess is NULL here on the MBS-session branch (see the top of this function), but
+    // upf_sess_urr_acc_add() dereferences sess->urr_acc[...] with no NULL check -- any MBS PDR
+    // that ends up with a non-zero URR count (already possible via the generic Create PDR
+    // URR-ID association path) crashed the whole UPF process. MBS charging/URR accounting isn't
+    // implemented for MBS sessions at all (upf_mbs_sess_t has no urr_acc storage), so skip this
+    // rather than dereference a session that doesn't exist for this branch.
+    if (sess) {
+        /* Increment total & dl octets + pkts */
+        for (i = 0; i < pdr->num_of_urr; i++)
+            upf_sess_urr_acc_add(sess, pdr->urr[i], recvbuf->len, false);
+    }
 
     ogs_assert(true == ogs_pfcp_up_handle_pdr(
                 pdr, OGS_GTPU_MSGTYPE_GPDU, NULL, recvbuf, &report));
@@ -258,16 +266,26 @@ void upf_gtpv1_receive_buffer_for_mbs_sess(ogs_pkbuf_t *recvbuf, upf_mbs_sess_t 
 #endif
 
     if (report.type.downlink_data_report) {
-        ogs_assert(pdr->sess);
-        sess = UPF_SESS(pdr->sess);
-        ogs_assert(sess);
+        // BUG FIX: UPF_SESS() is ogs_container_of(pdr->sess, upf_sess_t, pfcp) -- only valid when
+        // the embedded ogs_pfcp_sess_t belongs to a real upf_sess_t. On the MBS-session branch,
+        // pdr->sess is instead embedded in a differently-laid-out upf_mbs_sess_t, so this
+        // computed a garbage/mistyped pointer and dereferenced it (SEID, PFCP node, session ID
+        // fields read/written at the wrong offsets), corrupting state or crashing on a code path
+        // shared with ordinary UE sessions. upf_pfcp_send_session_report_request() also has no
+        // upf_mbs_sess_t-typed counterpart to correctly send this for an MBS session yet (it
+        // needs a pool id to box into the PFCP xact's timeout callback data, which
+        // upf_mbs_sess_t doesn't have) -- skip rather than corrupt memory; the MBS-session
+        // Downlink Data Report path is a separate follow-up, not implemented here.
+        if (sess) {
+            report.downlink_data.pdr_id = pdr->id;
+            if (pdr->qer && pdr->qer->qfi)
+                report.downlink_data.qfi = pdr->qer->qfi; /* for 5GC */
 
-        report.downlink_data.pdr_id = pdr->id;
-        if (pdr->qer && pdr->qer->qfi)
-            report.downlink_data.qfi = pdr->qer->qfi; /* for 5GC */
-
-        ogs_assert(OGS_OK ==
-            upf_pfcp_send_session_report_request(sess, &report));
+            ogs_assert(OGS_OK ==
+                upf_pfcp_send_session_report_request(sess, &report));
+        } else {
+            ogs_warn("Downlink Data Report requested for an MBS session -- not yet implemented, skipping");
+        }
     }
 
     /*
