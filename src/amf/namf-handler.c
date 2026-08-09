@@ -2062,16 +2062,52 @@ int amf_namf_handle_mbs_broadcast_context_create(
         goto cleanup;
     }
 
+    // BUG FIX: ContextCreateReqData's schema requires exactly one of mbsServiceArea/
+    // mbsServiceAreaInfoList (oneOf), not just "at least one" -- the check above only rejects
+    // both-absent, silently accepting a non-conformant request that sends both.
+    if (ContextCreateReqData->mbs_service_area && ContextCreateReqData->mbs_service_area_info_list) {
+        ogs_error("MBS Broadcast ContextCreate: mbs_service_area and mbs_service_area_info_list are mutually exclusive");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request",
+            "Requested MBS Broadcast ContextCreate failed, [mbsServiceArea] and [mbsServiceAreaInfoList] are mutually exclusive", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
     ogs_sbi_parse_tmgi(&tmgi, ContextCreateReqData->mbs_session_id->tmgi);
+
+    // BUG FIX: a retried/duplicate ContextCreate for the same TMGI (e.g. an SMF retry after a
+    // lost response) used to always allocate a brand-new context, leaking a slot in the
+    // fixed-size pool that could never be reached again via ContextDelete -- see
+    // amf_mbs_context_find_by_tmgi()'s own comment. Remove any stale context for this TMGI first.
+    {
+        amf_mbs_context_t *stale_mbs_context = amf_mbs_context_find_by_tmgi(&tmgi);
+        if (stale_mbs_context) {
+            ogs_warn("MBS Broadcast ContextCreate: replacing existing context [%s] for the same TMGI",
+                    stale_mbs_context->mbs_context_ref);
+            amf_mbs_context_remove(stale_mbs_context);
+        }
+    }
+
     mbs_context = amf_mbs_context_create(&tmgi);
 
     // NGAP BROADCAST SESSION SETUP REQUEST message with MBS Session Setup or Modification Request Transfer IE
     n2msgreq = ngap_build_broadcast_session_setup_request(mbs_context, n2mbssmbuf);
 
-    // Careful! this sends the message to all the gNBs connected to the AMF
+    // BUG FIX: ngap_send_to_gnb() always takes ownership of the pkbuf it's given (frees it on
+    // failure; for SOCK_STREAM gNBs, splices its embedded lnode into that gNB's own write_queue
+    // on success) -- passing the same n2msgreq to every gNB in this loop meant every iteration
+    // after the first operated on an already-freed buffer, or spliced the same list node into a
+    // second gNB's queue while the first might still reference it. Give each gNB its own copy;
+    // the shared template is freed once, after the loop, since it is never itself sent.
     ogs_list_for_each(&amf_self()->gnb_list, gnb) {
+        ogs_pkbuf_t *n2msgreq_copy = ogs_pkbuf_copy(n2msgreq);
+        if (!n2msgreq_copy) {
+            ogs_error("ogs_pkbuf_copy() failed");
+            break;
+        }
         ogs_debug("Sending N2 MBS SM info to gNB %i", gnb->gnb_id);
-        gnb_rv = ngap_send_to_gnb(gnb, n2msgreq, NGAP_NON_UE_SIGNALLING);
+        gnb_rv = ngap_send_to_gnb(gnb, n2msgreq_copy, NGAP_NON_UE_SIGNALLING);
         if (gnb_rv != OGS_OK) {
             ogs_error("ngap_send_to_gnb() failed");
             break;
@@ -2079,6 +2115,7 @@ int amf_namf_handle_mbs_broadcast_context_create(
             ogs_debug("Sent to gnb [%i]", gnb->gnb_id);
         }
     }
+    ogs_pkbuf_free(n2msgreq);
 
     // TODO (borieher): Start timer to wait for reception?
     //ogs_timer_start(mbs_context->gnb_timer,
@@ -2139,7 +2176,10 @@ cleanup:
 /*
  * 3GPP TS 29.518 - Release 17.11.0
  * 5G System; Access and Mobility Management Services; Stage 3
- * Ch. 5.6.2.3 - Namf_MBSBroadcast Service API - MBS Broadcast ContextDelete service operation
+ * Ch. 5.6.2.4 - Namf_MBSBroadcast Service API - MBS Broadcast ContextRelease service operation
+ * (this operation is named ContextRelease per the TS 29.518 table of contents -- 5.6.2.3 is
+ * ContextUpdate, a different, currently unimplemented operation; this DELETE-triggered handler's
+ * behaviour was already correct, only the cited clause number and operation name were wrong)
  *
  * BUG FIX: this handler did not exist before -- the SBI dispatcher (amf-sm.c) had no DELETE case at all,
  * so nothing ever called this. Without it, a broadcast session's AMF-side context lived forever and no
@@ -2182,16 +2222,23 @@ int amf_namf_handle_mbs_broadcast_context_delete(
     // NGAP BROADCAST SESSION RELEASE REQUEST message
     n2msgreq = ngap_build_broadcast_session_release_request(mbs_context);
 
-    // Careful! this sends the message to all the gNBs connected to the AMF, mirroring
-    // amf_namf_handle_mbs_broadcast_context_create()'s send loop above.
+    // BUG FIX: same use-after-free/double-free/write_queue-corruption bug as
+    // amf_namf_handle_mbs_broadcast_context_create()'s send loop above -- see its comment. Give
+    // each gNB its own copy; free the shared template once, after the loop.
     ogs_list_for_each(&amf_self()->gnb_list, gnb) {
+        ogs_pkbuf_t *n2msgreq_copy = ogs_pkbuf_copy(n2msgreq);
+        if (!n2msgreq_copy) {
+            ogs_error("ogs_pkbuf_copy() failed");
+            break;
+        }
         ogs_debug("Sending N2 MBS Session Release to gNB %i", gnb->gnb_id);
-        gnb_rv = ngap_send_to_gnb(gnb, n2msgreq, NGAP_NON_UE_SIGNALLING);
+        gnb_rv = ngap_send_to_gnb(gnb, n2msgreq_copy, NGAP_NON_UE_SIGNALLING);
         if (gnb_rv != OGS_OK) {
             ogs_error("ngap_send_to_gnb() failed");
             break;
         }
     }
+    ogs_pkbuf_free(n2msgreq);
 
     amf_mbs_context_remove(mbs_context);
 

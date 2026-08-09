@@ -3175,3 +3175,26 @@ amf_mbs_context_t *amf_mbs_context_find_by_ref(const char *mbs_context_ref)
 
     return NULL;
 }
+
+// BUG FIX: ContextCreate had no TMGI-based dedup -- amf_mbs_context_create() always allocated a
+// brand-new context with no check for an existing one for the same TMGI. A retried/duplicate
+// ContextCreate for the same broadcast session (e.g. an SMF retry after a lost response) leaked a
+// slot in the fixed-size pool (OGS_MAX_NUM_OF_MBS_SESSIONS), since the SMF only ever tracks the
+// last mbsContextRef it received and so could never reach the earlier, orphaned context via
+// ContextDelete. Mirrors amf_mbs_context_find_by_ref() above.
+amf_mbs_context_t *amf_mbs_context_find_by_tmgi(const ogs_tmgi_t *tmgi)
+{
+    amf_mbs_context_t *amf_mbs_context = NULL;
+
+    ogs_assert(tmgi);
+    ogs_assert(tmgi->mbs_service_id);
+
+    ogs_list_for_each(&self.amf_mbs_context_list, amf_mbs_context) {
+        if (amf_mbs_context->tmgi.mbs_service_id &&
+                strcmp(amf_mbs_context->tmgi.mbs_service_id, tmgi->mbs_service_id) == 0 &&
+                memcmp(&amf_mbs_context->tmgi.plmn_id, &tmgi->plmn_id, sizeof(tmgi->plmn_id)) == 0)
+            return amf_mbs_context;
+    }
+
+    return NULL;
+}
