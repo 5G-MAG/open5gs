@@ -1094,7 +1094,16 @@ int smf_5gc_pfcp_n4mb_send_session_establishment_request(
 
     ogs_assert(mbs_sess);
 
-    xact = ogs_pfcp_xact_local_create(mbs_sess->pfcp_node, mbs_sess_5gc_timeout, mbs_sess);
+    /*
+     * BUG FIX: this used to pass the raw smf_mbs_sess_t* pointer directly as the timeout callback's
+     * `data` argument. The shared callback mbs_sess_5gc_timeout() unconditionally treats `data` as a
+     * boxed pool ID (OGS_POINTER_TO_UINT(data) then smf_mbs_sess_find_by_id()), matching every other
+     * call site in this file (including smf_5gc_pfcp_n4mb_send_session_deletion_request() below). A
+     * raw pointer here would either fail the pool-ID range ogs_assert() (abort) or, if the truncated
+     * bits happened to fall in-range, misattribute the timeout to a completely unrelated MBS session.
+     */
+    xact = ogs_pfcp_xact_local_create(
+            mbs_sess->pfcp_node, mbs_sess_5gc_timeout, OGS_UINT_TO_POINTER(mbs_sess->id));
     if (!xact) {
         ogs_error("ogs_pfcp_xact_local_create() failed");
         return OGS_ERROR;

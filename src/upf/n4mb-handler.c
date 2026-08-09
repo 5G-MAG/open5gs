@@ -136,7 +136,16 @@ void upf_n4mb_handle_session_establishment_request(
                     ogs_pkbuf_config_t *config = _udp_tunnel_make_pool_config(mbs_sess->udp_tunnel_mtu, 32); /* 32 buffers */
                     mbs_sess->udp_tunnel_pkbuf_pool = ogs_pkbuf_pool_create(config);
                     ogs_free(config);
-                    ogs_pollset_add(ogs_app()->pollset, OGS_POLLIN, mbs_sess->udp_tunnel->fd, _mbs_tunnel_poll_handler, mbs_sess);
+                    // BUG FIX (video MTCH investigation): this return value was previously discarded, so
+                    // mbs_sess->udp_tunnel_poll stayed NULL and context.c's session-teardown cleanup (which
+                    // guards on `if (upf_mbs_sess->udp_tunnel_poll)`) never called ogs_pollset_remove() before
+                    // ogs_sock_destroy() closed the socket. That leaves ogs-epoll.c's internal fd->map_hash
+                    // entry stale for this fd; when the *next* MBS session's tunnel socket happens to be
+                    // handed the same (just-freed) fd number by the kernel, epoll_add() sees a stale map entry
+                    // and issues EPOLL_CTL_MOD instead of _ADD -- which fails with ENOENT, since the kernel's
+                    // epoll instance was never told to watch this new socket at all, silently breaking
+                    // reception for every MBS session after the first one to reuse a freed fd.
+                    mbs_sess->udp_tunnel_poll = ogs_pollset_add(ogs_app()->pollset, OGS_POLLIN, mbs_sess->udp_tunnel->fd, _mbs_tunnel_poll_handler, mbs_sess);
                 } else if (lit->ipv6) {
                     // Create IPv6 UDP tunnel endpoint and return the address & port in the session response
                     ogs_sockaddr_t *bind_address = NULL;
@@ -156,7 +165,9 @@ void upf_n4mb_handle_session_establishment_request(
                     ogs_pkbuf_config_t *config = _udp_tunnel_make_pool_config(mbs_sess->udp_tunnel_mtu, 32); /* 32 buffers */
                     mbs_sess->udp_tunnel_pkbuf_pool = ogs_pkbuf_pool_create(config);
                     ogs_free(config);
-                    ogs_pollset_add(ogs_app()->pollset, OGS_POLLIN, mbs_sess->udp_tunnel->fd, _mbs_tunnel_poll_handler, mbs_sess);
+                    // BUG FIX (video MTCH investigation): see the matching comment in the ipv4 branch above --
+                    // same fix, same reason.
+                    mbs_sess->udp_tunnel_poll = ogs_pollset_add(ogs_app()->pollset, OGS_POLLIN, mbs_sess->udp_tunnel->fd, _mbs_tunnel_poll_handler, mbs_sess);
                 }
             } else {
                 if (lit->ipv4) {

@@ -568,7 +568,23 @@ bool smf_nmbsmf_handle_mbs_session_create(
         }
     }
 
-    // TODO (borieher): Check provided TMGI is not added to an existing MBS Session
+    // BUG FIX: an explicitly-provided TMGI (as opposed to a freshly tmgi_alloc_req'd one, which is
+    // guaranteed unused by construction) was never checked against MBS Sessions already using it.
+    // smf_mbs_sess_create()'s own smf_context_have_matching_mbs_session_id() check only catches this
+    // when TMGI is the MBS Session ID itself (is_tmgi) -- for MULTICAST sessions using SSM as the MBS
+    // Session ID alongside a separate explicit TMGI, that TMGI was never checked at all.
+    if (tmgi && (!CreateReqData->mbs_session->is_tmgi_alloc_req ||
+                CreateReqData->mbs_session->tmgi_alloc_req == 0)) {
+        if (smf_mbs_sess_find_by_tmgi(tmgi)) {
+            ogs_error("MBS Session Create: provided TMGI is already in use by an existing MBS Session");
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
+                message, "Forbidden",
+                "MBS Session Create failed, provided TMGI is already in use by an existing MBS Session",
+                NMBSMF_MBSSESSION_MBS_SESSION_ALREADY_CREATED);
+            rv = OGS_ERROR;
+            goto cleanup;
+        }
+    }
 
     // MBS Session create
     mbs_sess = smf_mbs_sess_create(tmgi, ssm, service_type, mbs_service_area, ext_mbs_service_area);

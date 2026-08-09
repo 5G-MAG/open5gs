@@ -710,6 +710,7 @@ void smf_mbs_sess_release(smf_mbs_sess_t *smf_mbs_sess);
 smf_mbs_sess_t *smf_mbs_sess_find_by_id(ogs_pool_id_t id);
 smf_mbs_sess_t *smf_mbs_sess_find_by_mbs_session_ref(char *mbs_session_ref);
 smf_mbs_sess_t *smf_mbs_sess_find_by_seid(uint64_t seid);
+smf_mbs_sess_t *smf_mbs_sess_find_by_tmgi(ogs_tmgi_t *tmgi_to_find);
 void smf_mbs_sess_select_upf(smf_mbs_sess_t *mbs_sess);
 void smf_mbs_sess_create_mbs_data_forwarding(smf_mbs_sess_t *mbs_sess);
 

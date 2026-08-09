@@ -3400,6 +3400,50 @@ ogs_tmgi_t *smf_tmgi_find_by_tmgi(ogs_tmgi_t *tmgi_to_find)
     return NULL;
 }
 
+/*
+ * BUG FIX: an explicitly-provided TMGI (as opposed to a freshly auto-allocated one, which is
+ * guaranteed unused by construction) was never checked against MBS Sessions already using it before
+ * being accepted. smf_context_have_matching_mbs_session_id() only catches TMGI reuse for sessions
+ * where TMGI *is* the MBS Session ID (mbs_session_id.is_tmgi) -- for MULTICAST sessions that use an
+ * SSM as the MBS Session ID with a separate TMGI (smf_mbs_sess->tmgi), that TMGI was never checked
+ * against other sessions at all. This scans every live smf_mbs_sess_t's TMGI (which is always set,
+ * regardless of whether it ended up as the MBS Session ID or as a secondary field -- see
+ * smf_mbs_sess_create()), mirroring the comparison already used by smf_tmgi_find_by_tmgi() above.
+ */
+smf_mbs_sess_t *smf_mbs_sess_find_by_tmgi(ogs_tmgi_t *tmgi_to_find)
+{
+    smf_mbs_sess_t *mbs_sess = NULL;
+
+    ogs_assert(tmgi_to_find);
+
+    ogs_list_for_each(&self.smf_mbs_sess_list, mbs_sess) {
+        ogs_assert(mbs_sess);
+
+        if (!mbs_sess->tmgi) continue;
+
+        if (strcmp(mbs_sess->tmgi->mbs_service_id, tmgi_to_find->mbs_service_id) == 0) {
+            char *mcc = NULL, *mnc = NULL, *to_find_mcc = NULL, *to_find_mnc = NULL;
+            bool same_plmn;
+
+            mcc = ogs_plmn_id_mcc_string(&mbs_sess->tmgi->plmn_id);
+            mnc = ogs_plmn_id_mnc_string(&mbs_sess->tmgi->plmn_id);
+            to_find_mcc = ogs_plmn_id_mcc_string(&tmgi_to_find->plmn_id);
+            to_find_mnc = ogs_plmn_id_mnc_string(&tmgi_to_find->plmn_id);
+
+            same_plmn = (strcmp(mcc, to_find_mcc) == 0 && strcmp(mnc, to_find_mnc) == 0);
+
+            ogs_free(mcc);
+            ogs_free(mnc);
+            ogs_free(to_find_mcc);
+            ogs_free(to_find_mnc);
+
+            if (same_plmn) return mbs_sess;
+        }
+    }
+
+    return NULL;
+}
+
 static smf_mbs_sess_t *smf_mbs_sess_add(void)
 {
     smf_mbs_sess_t *smf_mbs_sess = NULL;
