@@ -3654,9 +3654,30 @@ void smf_mbs_sess_release(smf_mbs_sess_t *smf_mbs_sess)
     smf_mbs_sess_remove(smf_mbs_sess);
 }
 
+// BUG FIX: this used to be `return ogs_hash_get(self.smf_n4_seid_hash, &seid, sizeof(seid));` --
+// the exact same blind lookup as smf_sess_find_by_seid() below, on the SAME hash table shared
+// between smf_sess_t and smf_mbs_sess_t (both draw their SEIDs from smf_n4_seid_pool). It always
+// "succeeds" whenever the SEID exists in the hash AT ALL, regardless of which type is actually
+// stored there -- so smf_pfcp_state_associated()'s "try smf_mbs_sess_find_by_seid() first, fall
+// back to smf_sess_find_by_seid() only if that misses" pattern (added in 46ff3ba1b, meant to fix
+// the type confusion) never actually fell back for a REGULAR session's response, since this
+// always returned non-NULL for it too -- confirmed live: every ordinary (non-MBS) PDU session's
+// N4 Session Establishment Response hit "No Session" / "No associated GTP transaction" and
+// silently stalled the whole GSM state machine, exactly the failure mode this function's own
+// mistyped return was supposed to prevent, just for the opposite session type. Genuinely
+// restrict the search to the MBS pool, exactly mirroring the already-correct UPF-side
+// upf_mbs_sess_find_by_seid() (context.c, added in 4f236da40): a linear scan over the real,
+// correctly-typed session list, matching on the MBS session's own SEID field.
 smf_mbs_sess_t *smf_mbs_sess_find_by_seid(uint64_t seid)
 {
-    return ogs_hash_get(self.smf_n4_seid_hash, &seid, sizeof(seid));
+    smf_mbs_sess_t *mbs_sess = NULL;
+
+    ogs_list_for_each(&self.smf_mbs_sess_list, mbs_sess) {
+        if (mbs_sess->smf_n4mb_seid == seid)
+            return mbs_sess;
+    }
+
+    return NULL;
 }
 
 // TODO (borieher): Select UPF based on MBS parameters
