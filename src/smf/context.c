@@ -3681,6 +3681,7 @@ void smf_mbs_sess_create_mbs_data_forwarding(smf_mbs_sess_t *mbs_sess)
 {
     ogs_pfcp_pdr_t *dl_pdr = NULL;
     ogs_pfcp_far_t *dl_far = NULL;
+    ogs_pfcp_qer_t *dl_qer = NULL;
 
     ogs_assert(mbs_sess);
 
@@ -3768,6 +3769,24 @@ void smf_mbs_sess_create_mbs_data_forwarding(smf_mbs_sess_t *mbs_sess)
     //dl_far->outer_header_creation.gtpu4 = 1;
     dl_far->outer_header_creation.ssm_c_teid = 1;
     dl_far->outer_header_creation_len = 6;
+
+    // BUG FIX (found live, 2026-08-10): the MBS DL PDR was never associated with any QER, so
+    // pdr->qer stayed NULL all the way down to ogs_pfcp_send_g_pdu() (lib/pfcp/path.c), whose
+    // "if (pdr->qer && pdr->qer->qfi)" guard is what decides whether to add the GTP-U PDU Session
+    // Container extension header (TS 29.281/38.415) carrying the QFI. With no QER, every N3mb
+    // downlink G-PDU the UPF emitted for a broadcast/multicast session was sent WITHOUT that
+    // mandatory extension header, and the gNB correctly rejected every one of them: "Incomplete
+    // PDU at NG-U interface: missing or invalid PDU session container". This is a real 3GPP
+    // requirement, not a validation quirk, so the fix is to actually give the PDR a QER/QFI, the
+    // same way unicast QoS flows do elsewhere in this file (see smf_qos_flow_add()), rather than
+    // relax anything on the gNB side. There's no per-flow QoS profile modelled anywhere upstream
+    // of this function for MBS (no AF-supplied 5QI, no QFI pool for mbs_sess), so a single fixed
+    // QFI is used here -- correct for the single-flow broadcast delivery this reference stack
+    // supports today.
+    dl_qer = ogs_pfcp_qer_add(&mbs_sess->pfcp);
+    ogs_assert(dl_qer);
+    dl_qer->qfi = 1;
+    ogs_pfcp_pdr_associate_qer(dl_pdr, dl_qer);
 }
 
 static int smf_mbs_sess_list_delete_hash_entry(void *rec, const void *key, int klen, const void *value)
