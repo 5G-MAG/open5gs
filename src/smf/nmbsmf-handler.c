@@ -741,6 +741,28 @@ bool smf_nmbsmf_handle_mbs_session_release(
     // Multicast session, or a Broadcast session that never got far enough to receive a mbsContextRef,
     // has nothing to release here).
     if (mbs_sess->mbs_context_ref) {
+        // BUG FIX (found live, 2026-08-12): mbs_sess->sbi caches whatever nf_instance the FIRST
+        // namf-mbs-bc call for this session resolved (see OGS_SBI_SETUP_NF_INSTANCE in
+        // ogs_sbi_discover_and_send()), and this same struct is reused unchanged for every later
+        // call to that service on this session -- ContextCreate here at session-create time, then
+        // this ContextDelete later. Confirmed live: by delete time the cached nf_instance's
+        // nf_service_list has no "namf-mbs-bc" entry (its own request-scoped discovery/notify path
+        // apparently never populates that service specifically), so
+        // ogs_sbi_client_find_by_service_name() silently falls back to the NF-instance-level
+        // default client -- which carries no port -- and the outgoing request gets built with a
+        // bare, portless 3gpp-Sbi-Target-apiRoot ("http://<amf-ip>", no ":<port>"). The SCP then
+        // fails the downstream HTTP/2 connection ("Remote peer returned unexpected data while we
+        // expected SETTINGS frame") and returns 500, so the AMF's Namf_MBSBroadcast ContextDelete
+        // -- and the NGAP Broadcast Session Release it would otherwise trigger -- never happens:
+        // the gNB never frees the session's MRB/LCID. ContextCreate, by contrast, reliably starts
+        // from a bare/empty cache slot (this is the first namf-mbs-bc call this session ever
+        // makes) and goes through the SCP's own fresh discovery instead, which correctly resolves
+        // the real, complete profile (confirmed live: same AMF, working case). Clearing the cached
+        // slot here forces this call down that same, already-proven-reliable path rather than
+        // reusing whatever this session's create-time lookup left behind.
+        mbs_sess->sbi.service_type_array[OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC].nf_instance = NULL;
+        mbs_sess->sbi.service_type_array[OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC].validity_timeout = 0;
+
         int r = smf_sbi_old_discover_and_send(
                 OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC, NULL,
                 smf_namf_build_mbs_broadcast_context_delete_request,

@@ -613,6 +613,13 @@ static void pfcp_mbs_restoration(ogs_pfcp_node_t *node)
                 mbs_sess->mbs_session_ref);
 
         if (mbs_sess->mbs_context_ref) {
+            // BUG FIX (found live, 2026-08-12): same portless-apiroot/SCP-500 issue as the
+            // matching ContextDelete in nmbsmf-handler.c -- see that comment for the full
+            // explanation. Clear the cached nf_instance here too so this call goes through
+            // the same reliable fresh-discovery path ContextCreate uses.
+            mbs_sess->sbi.service_type_array[OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC].nf_instance = NULL;
+            mbs_sess->sbi.service_type_array[OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC].validity_timeout = 0;
+
             int r = smf_sbi_old_discover_and_send(
                     OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC, NULL,
                     smf_namf_build_mbs_broadcast_context_delete_request,
