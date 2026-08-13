@@ -150,7 +150,7 @@ void upf_n4mb_handle_session_establishment_request(
                     }
                     if (ogs_sock_bind(mbs_sess->udp_tunnel, bind_address) != OGS_OK) {
                         ogs_error("Failed to bind to UDP tunnel for listening");
-                        cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+                        cause_value = OGS_PFCP_CAUSE_SYSTEM_FAILURE;
                         offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
                         ogs_freeaddrinfo(bind_address);
                         goto cleanup;
