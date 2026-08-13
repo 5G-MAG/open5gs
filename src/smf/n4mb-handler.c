@@ -24,7 +24,7 @@
 // NOTE (borieher): Needed for the SBI request
 #include "sbi-path.h"
 
-
+static const char *_pfcp_cause_to_problem_cause(uint8_t pfcp_cause);
 
 uint8_t smf_n4mb_handle_session_establishment_response(
         smf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
@@ -83,7 +83,7 @@ uint8_t smf_n4mb_handle_session_establishment_response(
     }
 
     if (cause_value != OGS_PFCP_CAUSE_REQUEST_ACCEPTED) {
-        ogs_assert(true == ogs_sbi_server_send_error(sbi_stream, 500, NULL, "Unable to establish MBS session", "MBS Session establishment with UPF rejected", "Unknown"));
+        ogs_assert(true == ogs_sbi_server_send_error(sbi_stream, 500, NULL, "Unable to establish MBS session", "MBS Session establishment with UPF rejected", _pfcp_cause_to_problem_cause(cause_value)));
         return cause_value;
     }
 
@@ -305,4 +305,20 @@ uint8_t smf_n4mb_handle_session_establishment_response(
     ogs_assert(r != OGS_ERROR);
 
     return OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
+}
+
+static const char *_pfcp_cause_to_problem_cause(uint8_t pfcp_cause)
+{
+    switch (pfcp_cause) {
+    case OGS_PFCP_CAUSE_MANDATORY_IE_MISSING:
+    case OGS_PFCP_CAUSE_CONDITIONAL_IE_MISSING:
+	return "MANDATORY_IE_MISSING";
+    case OGS_PFCP_CAUSE_INVALID_LENGTH:
+        return "INCORRECT_LENGTH";
+    case OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE:
+        return "INSUFFICIENT_RESOURCES";
+    default:
+        break;
+    }
+    return "SYSTEM_FAILURE";
 }

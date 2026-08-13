@@ -47,7 +47,7 @@ void upf_n4mb_handle_session_establishment_request(
 
     int i;
     uint8_t cause_value = 0;
-    uint8_t offending_ie_value = 0;
+    uint16_t offending_ie_value = 0;
 
     ogs_pfcp_pdr_t *pdr = NULL;
     ogs_pfcp_far_t *far = NULL;
@@ -72,9 +72,11 @@ void upf_n4mb_handle_session_establishment_request(
 
     for (i = 0; i < OGS_MAX_NUM_OF_PDR; i++) {
         // NOTE (borieher): Put sereq_flags to NULL?
+        uint8_t offending_ie_value_tmp = 0;
         created_pdr[i] = ogs_pfcp_handle_create_pdr(&mbs_sess->pfcp,
                 &req->create_pdr[i], NULL,
-                &cause_value, &offending_ie_value);
+                &cause_value, &offending_ie_value_tmp);
+        offending_ie_value = offending_ie_value_tmp;
         if (created_pdr[i] == NULL)
             break;
     }
@@ -84,9 +86,13 @@ void upf_n4mb_handle_session_establishment_request(
         goto cleanup;
 
     for (i = 0; i < OGS_MAX_NUM_OF_FAR; i++) {
+        uint8_t offending_ie_value_tmp = 0;
         if (ogs_pfcp_handle_create_far(&mbs_sess->pfcp, &req->create_far[i],
-                    &cause_value, &offending_ie_value) == NULL)
+                    &cause_value, &offending_ie_value_tmp) == NULL) {
+            offending_ie_value = offending_ie_value_tmp;
             break;
+        }
+        offending_ie_value = offending_ie_value_tmp;
     }
     if (cause_value != OGS_PFCP_CAUSE_REQUEST_ACCEPTED)
         goto cleanup;
@@ -105,9 +111,13 @@ void upf_n4mb_handle_session_establishment_request(
     }
 
     for (i = 0; i < OGS_MAX_NUM_OF_QER; i++) {
+        uint8_t offending_ie_value_tmp = 0;
         if (ogs_pfcp_handle_create_qer(&mbs_sess->pfcp, &req->create_qer[i],
-                    &cause_value, &offending_ie_value) == NULL)
+                    &cause_value, &offending_ie_value_tmp) == NULL) {
+            offending_ie_value = offending_ie_value_tmp;
             break;
+        }
+        offending_ie_value = offending_ie_value_tmp;
     }
     if (cause_value != OGS_PFCP_CAUSE_REQUEST_ACCEPTED)
         goto cleanup;
@@ -122,9 +132,29 @@ void upf_n4mb_handle_session_establishment_request(
                     ogs_sockaddr_t *bind_address = NULL;
                     upf_context_t *ctx = upf_self();
                     ogs_copyaddrinfo(&bind_address, ctx->mbs_udp_tun_base_addr);
-                    bind_address->ogs_sin_port = _get_next_udp_tunnel_port(ctx);
+                    bind_address->ogs_sin_port = htons(_get_next_udp_tunnel_port(ctx));
+                    if (bind_address->ogs_sin_port == 0xffff) {
+                        // Error already reported, abort MBS Session
+                        cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+                        offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
+                        ogs_freeaddrinfo(bind_address);
+                        goto cleanup;
+                    }
                     mbs_sess->udp_tunnel = ogs_sock_socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-                    ogs_sock_bind(mbs_sess->udp_tunnel, bind_address);
+                    if (!mbs_sess->udp_tunnel) {
+                        ogs_error("Failed to create socket for UDP tunnel");
+                        cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+                        offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
+                        ogs_freeaddrinfo(bind_address);
+                        goto cleanup;
+                    }
+                    if (ogs_sock_bind(mbs_sess->udp_tunnel, bind_address) != OGS_OK) {
+                        ogs_error("Failed to bind to UDP tunnel for listening");
+                        cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+                        offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
+                        ogs_freeaddrinfo(bind_address);
+                        goto cleanup;
+                    }
                     // get the true local address to fill in ephemeral ports.
                     socklen_t name_len = sizeof(mbs_sess->udp_tunnel->local_addr.ss);
                     getsockname(mbs_sess->udp_tunnel->fd, (struct sockaddr*)&mbs_sess->udp_tunnel->local_addr.ss, &name_len);
@@ -134,17 +164,57 @@ void upf_n4mb_handle_session_establishment_request(
                     mbs_sess->udp_tunnel_mtu = mtu - sizeof(struct ether_header) - sizeof(struct iphdr) - sizeof(struct udphdr);
                     ogs_debug("UDP tunnel using MTU of %i (%i after overheads)", mtu, mbs_sess->udp_tunnel_mtu);
                     ogs_pkbuf_config_t *config = _udp_tunnel_make_pool_config(mbs_sess->udp_tunnel_mtu, 32); /* 32 buffers */
+                    if (!config) {
+                        ogs_error("Failed to allocate packet buffers configuration for UDP tunnel");
+                        cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+                        offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
+                        goto cleanup;
+                    }
                     mbs_sess->udp_tunnel_pkbuf_pool = ogs_pkbuf_pool_create(config);
                     ogs_free(config);
-                    ogs_pollset_add(ogs_app()->pollset, OGS_POLLIN, mbs_sess->udp_tunnel->fd, _mbs_tunnel_poll_handler, mbs_sess);
+#if OGS_USE_TALLOC == 0
+                    if (!mbs_sess->udp_tunnel_pkbuf_pool) {
+                        ogs_error("Failed to allocate 32 x %u byte packet buffers for UDP tunnel", mbs_sess->udp_tunnel_mtu);
+                        cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+                        offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
+                        goto cleanup;
+                    }
+#endif
+                    mbs_sess->udp_tunnel_poll = ogs_pollset_add(ogs_app()->pollset, OGS_POLLIN, mbs_sess->udp_tunnel->fd, _mbs_tunnel_poll_handler, mbs_sess);
+                    if (!mbs_sess->udp_tunnel_poll) {
+                        ogs_error("Failed to add UDP tunnel to pollset");
+                        cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+                        offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
+                        goto cleanup;
+                    }
                 } else if (lit->ipv6) {
                     // Create IPv6 UDP tunnel endpoint and return the address & port in the session response
                     ogs_sockaddr_t *bind_address = NULL;
                     upf_context_t *ctx = upf_self();
                     ogs_copyaddrinfo(&bind_address, ctx->mbs_udp_tun_base_addr);
-                    bind_address->sin6.sin6_port = _get_next_udp_tunnel_port(ctx);
+                    bind_address->sin6.sin6_port = htons(_get_next_udp_tunnel_port(ctx));
+                    if (bind_address->sin6.sin6_port == 0xffff) {
+                        // Error already reported, abort MBS Session
+                        cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+                        offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
+                        ogs_freeaddrinfo(bind_address);
+                        goto cleanup;
+                    }
                     mbs_sess->udp_tunnel = ogs_sock_socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
-                    ogs_sock_bind(mbs_sess->udp_tunnel, bind_address);
+                    if (!mbs_sess->udp_tunnel) {
+                        ogs_error("Failed to create socket for UDP tunnel");
+                        cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+                        offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
+                        ogs_freeaddrinfo(bind_address);
+                        goto cleanup;
+                    }
+                    if (ogs_sock_bind(mbs_sess->udp_tunnel, bind_address) != OGS_OK) {
+                        ogs_error("Failed to bind to UDP tunnel for listening");
+                        cause_value = OGS_PFCP_CAUSE_SYSTEM_FAILURE;
+                        offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
+                        ogs_freeaddrinfo(bind_address);
+                        goto cleanup;
+                    }
                     // get the true local address to fill in ephemeral ports.
                     socklen_t name_len = sizeof(mbs_sess->udp_tunnel->local_addr.ss);
                     getsockname(mbs_sess->udp_tunnel->fd, (struct sockaddr*)&mbs_sess->udp_tunnel->local_addr.ss, &name_len);
@@ -154,9 +224,27 @@ void upf_n4mb_handle_session_establishment_request(
                     mbs_sess->udp_tunnel_mtu = mtu - sizeof(struct ether_header) - sizeof(struct ip6_hdr) - sizeof(struct udphdr);
                     ogs_debug("UDP tunnel using MTU of %i (%i after overheads)", mtu, mbs_sess->udp_tunnel_mtu);
                     ogs_pkbuf_config_t *config = _udp_tunnel_make_pool_config(mbs_sess->udp_tunnel_mtu, 32); /* 32 buffers */
+                    if (!config) {
+                        ogs_error("Failed to allocate packet buffers configuration for UDP tunnel");
+                        cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+                        offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
+                        goto cleanup;
+                    }
                     mbs_sess->udp_tunnel_pkbuf_pool = ogs_pkbuf_pool_create(config);
                     ogs_free(config);
-                    ogs_pollset_add(ogs_app()->pollset, OGS_POLLIN, mbs_sess->udp_tunnel->fd, _mbs_tunnel_poll_handler, mbs_sess);
+                    if (!mbs_sess->udp_tunnel_pkbuf_pool) {
+                        ogs_error("Failed to allocate 32 x %u byte packet buffers for UDP tunnel", mbs_sess->udp_tunnel_mtu);
+                        cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+                        offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
+                        goto cleanup;
+                    }
+                    mbs_sess->udp_tunnel_poll = ogs_pollset_add(ogs_app()->pollset, OGS_POLLIN, mbs_sess->udp_tunnel->fd, _mbs_tunnel_poll_handler, mbs_sess);
+                    if (!mbs_sess->udp_tunnel_poll) {
+                        ogs_error("Failed to add UDP tunnel to pollset");
+                        cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+                        offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
+                        goto cleanup;
+                    }
                 }
             } else {
                 if (lit->ipv4) {
@@ -347,6 +435,18 @@ void upf_n4mb_handle_session_establishment_request(
 
 cleanup:
     ogs_pfcp_sess_clear(&mbs_sess->pfcp);
+    if (mbs_sess->udp_tunnel) {
+        ogs_sock_destroy(mbs_sess->udp_tunnel);
+        mbs_sess->udp_tunnel = NULL;
+    }
+    if (mbs_sess->udp_tunnel_pkbuf_pool) {
+        ogs_pkbuf_pool_destroy(mbs_sess->udp_tunnel_pkbuf_pool);
+        mbs_sess->udp_tunnel_pkbuf_pool = NULL;
+    }
+    if (mbs_sess->udp_tunnel_poll) {
+        ogs_pollset_remove(mbs_sess->udp_tunnel_poll);
+        mbs_sess->udp_tunnel_poll = NULL;
+    }
     ogs_pfcp_send_error_message(xact, mbs_sess ? mbs_sess->smf_n4mb_f_seid.seid : 0,
             OGS_PFCP_SESSION_ESTABLISHMENT_RESPONSE_TYPE,
             cause_value, offending_ie_value);
@@ -392,6 +492,8 @@ static ogs_pkbuf_config_t *_udp_tunnel_make_pool_config(size_t max_buf_size, siz
 {
     ogs_pkbuf_config_t *config = ogs_calloc(1, sizeof(*config));
     size_t pkbuf_buffer_size = sizeof(ogs_pkbuf_t) + max_buf_size;
+
+    if (!config) return NULL;
     if (pkbuf_buffer_size <= 128) {
         config->cluster_128_pool = 128 * max_buffers;
     } else if (pkbuf_buffer_size <= 256) {
@@ -407,6 +509,7 @@ static ogs_pkbuf_config_t *_udp_tunnel_make_pool_config(size_t max_buf_size, siz
     } else if (pkbuf_buffer_size <= 32768) {
         config->cluster_32768_pool = 32768 * max_buffers;
     } else {
+        // Anything bigger would break maximum path MTU
         config->cluster_big_pool = 65536 * max_buffers;
     }
     return config;

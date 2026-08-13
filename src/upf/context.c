@@ -35,6 +35,9 @@ static void upf_sess_urr_acc_remove_all(upf_sess_t *sess);
 
 static void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess);
 static void upf_mbs_sess_remove_all(void);
+static unsigned long long _ull_from_string(const char *str, unsigned long long min_value, unsigned long long max_value,
+                                           char **error_string);
+static uint16_t _uint16_from_string(const char *str, uint16_t min_value, uint16_t max_value, char **error_string);
 
 void upf_context_init(void)
 {
@@ -218,7 +221,13 @@ int upf_context_parse_config(void)
                                     if (ogs_yaml_iter_type(&upf_mbs_tunnel_port_iter) == YAML_SCALAR_NODE) {
                                         /* single value = single port (0=ephemeral) */
                                         const char *upf_mbs_tunnel_port_str = ogs_yaml_iter_value(&upf_mbs_tunnel_port_iter);
-                                        uint16_t upf_mbs_tunnel_port = (uint16_t)ogs_uint64_from_string(upf_mbs_tunnel_port_str);
+                                        char *error = NULL;
+                                        uint16_t upf_mbs_tunnel_port = _uint16_from_string(upf_mbs_tunnel_port_str, 0, 0xfffe, &error);
+                                        if (error) {
+                                            ogs_error("UDP tunnel port error: %s", error);
+                                            ogs_free(error);
+                                            return OGS_ERROR;
+                                        }
                                         if (upf_mbs_tunnel_port) {
                                             self.mbs_udp_tun_ephemeral_port = false;
                                             self.mbs_udp_tun_num_of_ports = 1;
@@ -235,16 +244,44 @@ int upf_context_parse_config(void)
                                         uint16_t start_port = 0, end_port = 0;
                                         while (ogs_yaml_iter_next(&upf_mbs_tunnel_port_iter)) {
                                             const char *upf_mbs_tunnel_port_key = ogs_yaml_iter_key(&upf_mbs_tunnel_port_iter);
-                                            if (ogs_yaml_iter_type(&upf_mbs_tunnel_port_iter) == YAML_SCALAR_NODE) {
-                                                if (!strcmp(upf_mbs_tunnel_port_key, "start")) {
-                                                    start_port = (uint16_t)ogs_uint64_from_string(ogs_yaml_iter_value(&upf_mbs_tunnel_port_iter));
-                                                } else if (!strcmp(upf_mbs_tunnel_port_key, "end")) {
-                                                    end_port = (uint16_t)ogs_uint64_from_string(ogs_yaml_iter_value(&upf_mbs_tunnel_port_iter));
+                                            if (!strcmp(upf_mbs_tunnel_port_key, "start")) {
+                                                ogs_yaml_iter_t upf_mbs_tunnel_port_start_iter;
+                                                ogs_yaml_iter_recurse(&upf_mbs_tunnel_port_iter, &upf_mbs_tunnel_port_start_iter);
+                                                if (ogs_yaml_iter_type(&upf_mbs_tunnel_port_start_iter) == YAML_SCALAR_NODE) {
+                                                    const char *start_val = ogs_yaml_iter_value(&upf_mbs_tunnel_port_start_iter);
+                                                    char *error = NULL;
+                                                    start_port = _uint16_from_string(start_val, 0, 0xfffe, &error);
+                                                    if (error) {
+                                                        ogs_error("UDP tunnel start port error: %s", error);
+                                                        ogs_free(error);
+                                                        return OGS_ERROR;
+                                                    }
+                                                    if (start_port == 0) {
+                                                        ogs_warn("UDP tunnel start port is 0, ephemeral port allocation will be used");
+                                                    }
                                                 } else {
-                                                    ogs_warn("unknown key `%s` in upf/mbs/udptunnel/port section", upf_mbs_tunnel_port_key);
+                                                    ogs_warn("wrong type for key `%s` in upf/mbs/udptunnel/port section, ignoring", upf_mbs_tunnel_port_key);
+                                                }
+                                            } else if (!strcmp(upf_mbs_tunnel_port_key, "end")) {
+                                                ogs_yaml_iter_t upf_mbs_tunnel_port_end_iter;
+                                                ogs_yaml_iter_recurse(&upf_mbs_tunnel_port_iter, &upf_mbs_tunnel_port_end_iter);
+                                                if (ogs_yaml_iter_type(&upf_mbs_tunnel_port_end_iter) == YAML_SCALAR_NODE) {
+                                                    const char *end_val = ogs_yaml_iter_value(&upf_mbs_tunnel_port_end_iter);
+                                                    char *error = NULL;
+                                                    end_port = _uint16_from_string(end_val, 0, 0xfffe, &error);
+                                                    if (error) {
+                                                        ogs_error("UDP tunnel end port error: %s", error);
+                                                        ogs_free(error);
+                                                        return OGS_ERROR;
+                                                    }
+                                                    if (end_port == 0) {
+                                                        ogs_warn("UDP tunnel end port is 0, ephemeral port allocation will be used");
+                                                    }
+                                                } else {
+                                                    ogs_warn("wrong type for key `%s` in upf/mbs/udptunnel/port section, ignoring", upf_mbs_tunnel_port_key);
                                                 }
                                             } else {
-                                                ogs_warn("wrong type for key `%s` in upf/mbs/udptunnel/port section, ignoring", upf_mbs_tunnel_port_key);
+                                                ogs_warn("unknown key `%s` in upf/mbs/udptunnel/port section", upf_mbs_tunnel_port_key);
                                             }
                                         }
                                         if (!start_port || !end_port) {
@@ -267,17 +304,32 @@ int upf_context_parse_config(void)
                                                  self.mbs_udp_tun_ports_free[i] = self.mbs_udp_tun_ports + i;
                                             }
                                         }
-                                    } else if  (ogs_yaml_iter_type(&upf_mbs_tunnel_iter) == YAML_SEQUENCE_NODE) {
+                                    } else if  (ogs_yaml_iter_type(&upf_mbs_tunnel_port_iter) == YAML_SEQUENCE_NODE) {
                                         /* array value = list of port numbers */
-                                        size_t num_of_ports;
+                                        size_t num_of_ports = 0;
                                         bool ephemeral = false;
                                         while (ogs_yaml_iter_next(&upf_mbs_tunnel_port_iter)) {
-                                            uint16_t port = (uint16_t)ogs_uint64_from_string(ogs_yaml_iter_value(&upf_mbs_tunnel_port_iter));
-                                            if (!port) {
-                                                ephemeral = true;
-                                                break;
+                                            ogs_yaml_iter_t upf_mbs_tunnel_port_value_iter;
+                                            ogs_yaml_iter_recurse(&upf_mbs_tunnel_port_iter, &upf_mbs_tunnel_port_value_iter);
+                                            if (ogs_yaml_iter_type(&upf_mbs_tunnel_port_value_iter) == YAML_SCALAR_NODE) {
+                                                char *error = NULL;
+                                                const char *port_val = ogs_yaml_iter_value(&upf_mbs_tunnel_port_value_iter);
+                                                uint16_t port = _uint16_from_string(port_val, 0, 0xfffe, &error);
+                                                if (error) {
+                                                    ogs_error("UDP tunnel port value error: %s", error);
+                                                    ogs_free(error);
+                                                    return OGS_ERROR;
+                                                }
+                                                if (port == 0) {
+                                                    ogs_warn("UDP tunnel port is 0, ephemeral port allocation will be used");
+                                                    ephemeral = true;
+                                                    break;
+                                                }
+                                                num_of_ports++;
+                                            } else {
+                                                ogs_error("UDP tunnel port value error: Value is not a scalar type");
+                                                return OGS_ERROR;
                                             }
-                                            num_of_ports++;
                                         }
                                         if (ephemeral) {
                                             self.mbs_udp_tun_ephemeral_port = true;
@@ -289,11 +341,17 @@ int upf_context_parse_config(void)
                                             self.mbs_udp_tun_ports_next_free = num_of_ports;
                                             ogs_yaml_iter_recurse(&upf_mbs_tunnel_iter, &upf_mbs_tunnel_port_iter);
                                             for (i=0; ogs_yaml_iter_next(&upf_mbs_tunnel_port_iter); i++) {
-                                                self.mbs_udp_tun_ports[i] = (uint16_t)ogs_uint64_from_string(ogs_yaml_iter_value(&upf_mbs_tunnel_port_iter));
+                                                ogs_yaml_iter_t upf_mbs_tunnel_port_value_iter;
+                                                ogs_yaml_iter_recurse(&upf_mbs_tunnel_port_iter, &upf_mbs_tunnel_port_value_iter);
+                                                const char *str = ogs_yaml_iter_value(&upf_mbs_tunnel_port_value_iter);
+                                                self.mbs_udp_tun_ports[i] = _uint16_from_string(str, 0, 0xfffe, NULL);
                                                 self.mbs_udp_tun_ports_free[i] = self.mbs_udp_tun_ports + i;
                                             }
                                             self.mbs_udp_tun_num_of_ports = i;
                                         }
+                                    } else {
+                                        ogs_error("Unknown YAML node type");
+                                        return OGS_ERROR;
                                     }
                                 } else {
                                     ogs_warn("unknown key `%s` in upf/mbs/udptunnel section", upf_mbs_tunnel_key);
@@ -1139,7 +1197,7 @@ static void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess)
     if (upf_mbs_sess->udp_tunnel) {
         // Add tunnel port back into the free pool
         if (!self.mbs_udp_tun_ephemeral_port) {
-            uint16_t port = upf_mbs_sess->udp_tunnel->local_addr.ogs_sin_port;
+            uint16_t port = ntohs(upf_mbs_sess->udp_tunnel->local_addr.ogs_sin_port);
             size_t i;
             for (i=0; i < self.mbs_udp_tun_num_of_ports && self.mbs_udp_tun_ports[i] != port; i++);
             if (i < self.mbs_udp_tun_num_of_ports) {
@@ -1152,6 +1210,13 @@ static void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess)
     if (upf_mbs_sess->udp_tunnel_pkbuf_pool) {
         ogs_pkbuf_pool_destroy(upf_mbs_sess->udp_tunnel_pkbuf_pool);
         upf_mbs_sess->udp_tunnel_pkbuf_pool = NULL;
+    }
+
+    if (upf_mbs_sess->mbs_session_id.ssm) {
+	ogs_free(upf_mbs_sess->mbs_session_id.ssm);
+    }
+    if (upf_mbs_sess->mbs_session_id.nid) {
+        ogs_free(upf_mbs_sess->mbs_session_id.nid);
     }
 }
 
@@ -1243,4 +1308,30 @@ void upf_mbs_sess_set_llssm(upf_mbs_sess_t *mbs_sess)
     ogs_assert(mbs_sess);
 
     mbs_sess->ll_ssm = ogs_pfcp_llssm_add();
+}
+
+static unsigned long long _ull_from_string(const char *str, unsigned long long min_value, unsigned long long max_value,
+                                           char **error_string)
+{
+    unsigned long long val = 0;
+    if (str) {
+        char *end_ptr = NULL;
+        val = strtoull(str, &end_ptr, 0);
+        if (!end_ptr || *end_ptr != '\0') {
+            if (error_string)
+                *error_string = ogs_msprintf("The string \"%s\" could not be parsed as an unsigned integer", str);
+            return 0;
+        }
+    }
+    if (val < min_value || val > max_value) {
+        if (error_string)
+            *error_string = ogs_msprintf("Value %llu out of range: value must be between %llu and %llu inclusive", val, min_value, max_value);
+        return 0;
+    }
+    return val;
+}
+
+static uint16_t _uint16_from_string(const char *str, uint16_t min_value, uint16_t max_value, char **error_string)
+{
+    return (uint16_t)_ull_from_string(str, (unsigned long long)min_value, (unsigned long long)max_value, error_string);
 }

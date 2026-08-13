@@ -335,14 +335,15 @@ void smf_pfcp_state_associated(ogs_fsm_t *s, smf_event_t *e)
 
             // NOTE (borieher): Quick workaround to differentiate between N4 and N4mb
             // the issue is that N4mb information is only present when PLLSSM flag is used
-            if (message->pfcp_session_establishment_response.mbs_session_n4mb_information.presence) {
-                // Find MBS Session by the SEID
-                if (message->h.seid_presence && message->h.seid != 0) {
-                    mbs_sess = smf_mbs_sess_find_by_seid(message->h.seid);
-                } else if (xact->local_seid) { /* rx no SEID or SEID=0 */
-                    mbs_sess = smf_mbs_sess_find_by_seid(xact->local_seid);
-                }
-
+            if (message->h.seid_presence && message->h.seid != 0) {
+                mbs_sess = smf_mbs_sess_find_by_seid(message->h.seid);
+            }
+            if (!mbs_sess && xact->local_seid && (!message->h.seid_presence || message->h.seid == 0) &&
+                message->pfcp_session_establishment_response.mbs_session_n4mb_information.presence) {
+                // Try to find MBS Session by the transaction SEID
+                mbs_sess = smf_mbs_sess_find_by_seid(xact->local_seid);
+            }
+            if (mbs_sess) {
                 smf_n4mb_handle_session_establishment_response(mbs_sess, xact,
                     &message->pfcp_session_establishment_response);
                 break;
