@@ -1623,13 +1623,11 @@ static ogs_nas_ue_security_capability_t
 
     memset(&ue_security_capability, 0, sizeof(ue_security_capability));
     ue_security_capability_octets_string =
-            (char*) ogs_calloc(sizeof(ue_security_capability), sizeof(char));
+            (char*) ogs_calloc(sizeof(ue_security_capability)+1, sizeof(char));
     ogs_assert(ue_security_capability_octets_string);
 
+    ogs_assert(ogs_base64_decode_len(encoded) <= sizeof(ue_security_capability)+1);
     ogs_base64_decode(ue_security_capability_octets_string, encoded);
-
-    ogs_assert(sizeof(ue_security_capability_octets_string) <=
-            sizeof(ogs_nas_ue_security_capability_t) + 1);
 
     ue_security_capability_iei = // not copied anywhere for now
             ue_security_capability_octets_string[0];
