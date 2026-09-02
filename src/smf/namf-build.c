@@ -234,7 +234,7 @@ ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_create_request(
     mnc = ogs_plmn_id_mnc_string(&mbs_sess->tmgi->plmn_id);
     plmn_id = OpenAPI_plmn_id_create(mcc, mnc);
 
-    tmgi = OpenAPI_tmgi_create(mbs_sess->tmgi->mbs_service_id, plmn_id);
+    tmgi = OpenAPI_tmgi_create(ogs_strdup(mbs_sess->tmgi->mbs_service_id), plmn_id);
 
     // TODO (borieher): Fill NID when present
     mbs_session_id = OpenAPI_mbs_session_id_create(tmgi, NULL, NULL);
