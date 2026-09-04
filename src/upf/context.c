@@ -16,6 +16,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
+#include <inttypes.h>
 
 #include "context.h"
 #include "pfcp-path.h"
@@ -61,7 +62,7 @@ void upf_context_init(void)
     ogs_pool_init(&upf_n4_seid_pool, ogs_app()->pool.sess);
     ogs_pool_random_id_generate(&upf_n4_seid_pool);
 
-    ogs_pool_init(&upf_mbs_sess_pool, OGS_MAX_NUM_OF_MBS_SESSIONS);
+    ogs_pool_init(&upf_mbs_sess_pool, ogs_global_conf()->max.mbs.mbs_sessions);
     ogs_list_init(&self.upf_mbs_sess_list);
 
     self.upf_n4_seid_hash = ogs_hash_make();
@@ -1125,8 +1126,8 @@ static upf_mbs_sess_t *upf_mbs_sess_add(ogs_pfcp_f_seid_t *cp_f_seid)
 
     ogs_pool_alloc(&upf_mbs_sess_pool, &upf_mbs_sess);
     if (!upf_mbs_sess) {
-        ogs_error("Maximum number of MBS Sessions[%d] reached",
-                    OGS_MAX_NUM_OF_MBS_SESSIONS);
+        ogs_error("Maximum number of MBS Sessions[%" PRIu64 "] reached",
+                    ogs_global_conf()->max.mbs.mbs_sessions);
         return NULL;
     }
     memset(upf_mbs_sess, 0, sizeof *upf_mbs_sess);

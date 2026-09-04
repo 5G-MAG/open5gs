@@ -120,7 +120,7 @@ bool smf_nmbsmf_handle_tmgi_allocate(
                 TmgiAllocate->tmgi_number <= NMBSMF_TMGI_MAX_TMGI_NUMBER) {
 
             // Check the number of TMGIs available
-            if ((smf_tmgi_count() + TmgiAllocate->tmgi_number) > OGS_MAX_NUM_OF_TMGI) {
+            if ((smf_tmgi_count() + TmgiAllocate->tmgi_number) > ogs_global_conf()->max.mbs.tmgis) {
                 ogs_error("TMGI Allocate: Cannot allocate %d TMGIs", TmgiAllocate->tmgi_number);
                 // Custom error handling, not the 3GPP TS
                 // Avoid reaching the maximum number of TMGI, send error (500)
@@ -417,7 +417,7 @@ bool smf_nmbsmf_handle_mbs_session_create(
         }
 
         // Error checking, check the number of TMGIs available
-        if (smf_tmgi_count() >= OGS_MAX_NUM_OF_TMGI) {
+        if (smf_tmgi_count() >= ogs_global_conf()->max.mbs.tmgis) {
             ogs_error("MBS Session Create: Cannot allocate TMGI");
             // Custom error handling, not the 3GPP TS
             // Avoid reaching the maximum number of TMGI, send error (403)

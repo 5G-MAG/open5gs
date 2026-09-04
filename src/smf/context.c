@@ -16,6 +16,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
+#include <inttypes.h>
 
 #include "context.h"
 #include "gtp-path.h"
@@ -120,9 +121,9 @@ void smf_context_init(void)
     ogs_pool_init(&smf_n4_seid_pool, ogs_app()->pool.sess);
     ogs_pool_random_id_generate(&smf_n4_seid_pool);
 
-    ogs_pool_init(&tmgi_pool, OGS_MAX_NUM_OF_TMGI);
+    ogs_pool_init(&tmgi_pool, ogs_global_conf()->max.mbs.tmgis);
     ogs_list_init(&self.tmgi_list);
-    ogs_pool_init(&smf_mbs_sess_pool, OGS_MAX_NUM_OF_MBS_SESSIONS);
+    ogs_pool_init(&smf_mbs_sess_pool, ogs_global_conf()->max.mbs.mbs_sessions);
     ogs_list_init(&self.smf_mbs_sess_list);
 
     self.supi_hash = ogs_hash_make();
@@ -3256,8 +3257,8 @@ static ogs_tmgi_t *smf_tmgi_add(void)
 
     ogs_pool_alloc(&tmgi_pool, &tmgi);
     if (!tmgi) {
-        ogs_error("Maximum number of TMGIs[%d] reached",
-                    OGS_MAX_NUM_OF_TMGI);
+        ogs_error("Maximum number of TMGIs[%" PRIu64 "] reached",
+                  ogs_global_conf()->max.mbs.tmgis);
         return NULL;
     }
     memset(tmgi, 0, sizeof *tmgi);
@@ -3388,13 +3389,13 @@ static smf_mbs_sess_t *smf_mbs_sess_add(void)
 
     ogs_pool_id_calloc(&smf_mbs_sess_pool, &smf_mbs_sess);
     if (!smf_mbs_sess) {
-        ogs_error("Maximum number of MBS Sessions[%d] reached",
-                    OGS_MAX_NUM_OF_MBS_SESSIONS);
+        ogs_error("Maximum number of MBS Sessions[%" PRIu64 "] reached",
+                    ogs_global_conf()->max.mbs.mbs_sessions);
         return NULL;
     }
 
     smf_mbs_sess->index = ogs_pool_index(&smf_mbs_sess_pool, smf_mbs_sess);
-    ogs_assert(smf_mbs_sess->index > 0 && smf_mbs_sess->index <= OGS_MAX_NUM_OF_MBS_SESSIONS);
+    ogs_assert(smf_mbs_sess->index > 0 && smf_mbs_sess->index <= ogs_global_conf()->max.mbs.mbs_sessions);
 
     // Set mbsSessionRef
     smf_mbs_sess->mbs_session_ref = ogs_msprintf("%d", smf_mbs_sess->index);

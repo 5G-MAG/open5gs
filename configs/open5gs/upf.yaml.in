@@ -7,6 +7,9 @@ global:
   max:
     ue: 1024  # The number of UE can be increased depending on memory size.
 #    peer: 64
+#    mbs:
+#      tmgis: 20
+#      mbs_sessions: 20
 
 upf:
   pfcp:
