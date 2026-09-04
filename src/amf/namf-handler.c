@@ -1590,13 +1590,12 @@ static ogs_nas_5gmm_capability_t
             (char*) ogs_calloc(sizeof(gmm_capability) + 1, sizeof(char));
     ogs_assert(gmm_capability_octets_string);
 
+    ogs_assert(ogs_base64_decode_len(encoded) <= sizeof(gmm_capability) + 1);
+
     len = ogs_base64_decode(gmm_capability_octets_string, encoded);
 
     if (len == 0)
         ogs_error("Gmm capability not decoded");
-
-    ogs_assert(sizeof(gmm_capability_octets_string) <=
-            sizeof(gmm_capability) + 1);
 
     gmm_capability_iei = // not copied anywhere for now
             gmm_capability_octets_string[0];
