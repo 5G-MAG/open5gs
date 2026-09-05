@@ -214,8 +214,27 @@ void ogs_sbi_message_free(ogs_sbi_message_t *message)
         OpenAPI_create_req_data_free(message->CreateReqData);
     if (message->CreateRspData)
         OpenAPI_create_rsp_data_free(message->CreateRspData);
+    if (message->UpdateRspData)
+        OpenAPI_update_rsp_data_free(message->UpdateRspData);
     if (message->ContextCreateReqData)
         OpenAPI_context_create_req_data_free(message->ContextCreateReqData);
+        // ContextCreateRspData is parsed on every 201-Created Namf_MBSBroadcast ContextCreate response and needs
+        // freeing here like its siblings above; otherwise it, and its nested mbs_session_id and
+        // n2_mbs_sm_info_list allocations, leak once per successful MBS broadcast session setup.
+    if (message->ContextCreateRspData)
+        OpenAPI_context_create_rsp_data_free(message->ContextCreateRspData);
+    if (message->ContextStatusNotification)
+        OpenAPI_context_status_notification_free(message->ContextStatusNotification);
+    if (message->ContextUpdateReqData)
+        OpenAPI_context_update_req_data_free(message->ContextUpdateReqData);
+    if (message->ContextUpdateRspData)
+        OpenAPI_context_update_rsp_data_free(message->ContextUpdateRspData);
+    if (message->MbsN2MessageTransferReqData)
+        OpenAPI_mbs_n2_message_transfer_req_data_free(
+                message->MbsN2MessageTransferReqData);
+    if (message->MbsN2MessageTransferRspData)
+        OpenAPI_mbs_n2_message_transfer_rsp_data_free(
+                message->MbsN2MessageTransferRspData);
 
     /* HTTP Part */
     for (i = 0; i < message->num_of_part; i++) {
@@ -1464,6 +1483,10 @@ static char *build_json(ogs_sbi_message_t *message)
         item = OpenAPI_create_rsp_data_convertToJSON(
                 message->CreateRspData);
         ogs_assert(item);
+    } else if (message->UpdateRspData) {
+        item = OpenAPI_update_rsp_data_convertToJSON(
+                message->UpdateRspData);
+        ogs_assert(item);
     } else if (message->ContextCreateReqData) {
         item = OpenAPI_context_create_req_data_convertToJSON(
                 message->ContextCreateReqData);
@@ -1471,6 +1494,26 @@ static char *build_json(ogs_sbi_message_t *message)
     } else if (message->ContextCreateRspData) {
         item = OpenAPI_context_create_rsp_data_convertToJSON(
                 message->ContextCreateRspData);
+        ogs_assert(item);
+    } else if (message->ContextStatusNotification) {
+        item = OpenAPI_context_status_notification_convertToJSON(
+                message->ContextStatusNotification);
+        ogs_assert(item);
+    } else if (message->ContextUpdateReqData) {
+        item = OpenAPI_context_update_req_data_convertToJSON(
+                message->ContextUpdateReqData);
+        ogs_assert(item);
+    } else if (message->ContextUpdateRspData) {
+        item = OpenAPI_context_update_rsp_data_convertToJSON(
+                message->ContextUpdateRspData);
+        ogs_assert(item);
+    } else if (message->MbsN2MessageTransferReqData) {
+        item = OpenAPI_mbs_n2_message_transfer_req_data_convertToJSON(
+                message->MbsN2MessageTransferReqData);
+        ogs_assert(item);
+    } else if (message->MbsN2MessageTransferRspData) {
+        item = OpenAPI_mbs_n2_message_transfer_rsp_data_convertToJSON(
+                message->MbsN2MessageTransferRspData);
         ogs_assert(item);
     }
 
@@ -2690,6 +2733,20 @@ static int parse_json(ogs_sbi_message_t *message,
                     }
                     break;
 
+                CASE(OGS_SBI_HTTP_METHOD_PATCH)
+                    /* PATCH request bodies use the generic "application/json-patch+json"
+                     * content-type, parsed into message->PatchItemList above, before this
+                     * per-service SWITCH is ever reached (see the content_type check near the top
+                     * of this function) -- a PATCH message only reaches here for its response
+                     * body, e.g. TS 29.532 V18.6.0 cl.5.3.2.3.1 step 2b's "200 OK" UpdateRspData. */
+                    message->UpdateRspData =
+                        OpenAPI_update_rsp_data_parseFromJSON(item);
+                    if (!message->UpdateRspData) {
+                        rv = OGS_ERROR;
+                        ogs_error("JSON parse error");
+                    }
+                    break;
+
                 DEFAULT
                     rv = OGS_ERROR;
                     ogs_error("Unknown method [%s]", message->h.method);
@@ -2708,7 +2765,28 @@ static int parse_json(ogs_sbi_message_t *message,
             CASE(OGS_SBI_RESOURCE_NAME_MBS_CONTEXTS)
                 SWITCH(message->h.method)
                 CASE(OGS_SBI_HTTP_METHOD_POST)
-                    if (message->res_status == 0) {
+                                        // component[1], the path segment carrying mbsContextRef, distinguishes a POST on the
+                                        // individual resource (/mbs-contexts/{mbsContextRef}, Namf_MBSBroadcast_ContextUpdate,
+                                        // TS 29.518 cl.5.6.2.3) from a POST on the collection (ContextCreate).  The method
+                                        // alone does not.
+                    if (message->h.resource.component[1]) {
+                        if (message->res_status == 0) {
+                            message->ContextUpdateReqData =
+                                OpenAPI_context_update_req_data_parseFromJSON(item);
+                            if (!message->ContextUpdateReqData) {
+                                rv = OGS_ERROR;
+                                ogs_error("JSON parse error");
+                            }
+                        } else if (message->res_status == OGS_SBI_HTTP_STATUS_OK) {
+                            message->ContextUpdateRspData =
+                                OpenAPI_context_update_rsp_data_parseFromJSON(item);
+                            if (!message->ContextUpdateRspData) {
+                                rv = OGS_ERROR;
+                                ogs_error("JSON parse error");
+                            }
+                        }
+                        // 204 No Content carries no body to parse.
+                    } else if (message->res_status == 0) {
                         message->ContextCreateReqData =
                             OpenAPI_context_create_req_data_parseFromJSON(item);
                         if (!message->ContextCreateReqData) {
@@ -2720,6 +2798,41 @@ static int parse_json(ogs_sbi_message_t *message,
                         message->ContextCreateRspData =
                             OpenAPI_context_create_rsp_data_parseFromJSON(item);
                         if (!message->ContextCreateRspData) {
+                            rv = OGS_ERROR;
+                            ogs_error("JSON parse error");
+                        }
+                    }
+                    break;
+
+                DEFAULT
+                    rv = OGS_ERROR;
+                    ogs_error("Unknown method [%s]", message->h.method);
+                END
+                break;
+
+            DEFAULT
+                rv = OGS_ERROR;
+                ogs_error("Unknown resource name [%s]",
+                        message->h.resource.component[0]);
+            END
+            break;
+
+        CASE(OGS_SBI_SERVICE_NAME_NAMF_MBS_COMM)
+            SWITCH(message->h.resource.component[0])
+            CASE(OGS_SBI_RESOURCE_NAME_N2_MESSAGES)
+                SWITCH(message->h.method)
+                CASE(OGS_SBI_HTTP_METHOD_POST)
+                    if (message->res_status == 0) {
+                        message->MbsN2MessageTransferReqData =
+                            OpenAPI_mbs_n2_message_transfer_req_data_parseFromJSON(item);
+                        if (!message->MbsN2MessageTransferReqData) {
+                            rv = OGS_ERROR;
+                            ogs_error("JSON parse error");
+                        }
+                    } else if (message->res_status == OGS_SBI_HTTP_STATUS_OK) {
+                        message->MbsN2MessageTransferRspData =
+                            OpenAPI_mbs_n2_message_transfer_rsp_data_parseFromJSON(item);
+                        if (!message->MbsN2MessageTransferRspData) {
                             rv = OGS_ERROR;
                             ogs_error("JSON parse error");
                         }

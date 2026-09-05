@@ -20,6 +20,7 @@ OpenAPI_ext_mbs_session_t *OpenAPI_ext_mbs_session_create(
     OpenAPI_list_t *ingress_tun_addr,
     OpenAPI_ssm_t *ssm,
     OpenAPI_mbs_service_area_t *mbs_service_area,
+    OpenAPI_mbs_service_area_t *red_mbs_service_area,
     OpenAPI_external_mbs_service_area_t *ext_mbs_service_area,
     char *dnn,
     OpenAPI_snssai_t *snssai,
@@ -55,6 +56,7 @@ OpenAPI_ext_mbs_session_t *OpenAPI_ext_mbs_session_create(
     ext_mbs_session_local_var->ingress_tun_addr = ingress_tun_addr;
     ext_mbs_session_local_var->ssm = ssm;
     ext_mbs_session_local_var->mbs_service_area = mbs_service_area;
+    ext_mbs_session_local_var->red_mbs_service_area = red_mbs_service_area;
     ext_mbs_session_local_var->ext_mbs_service_area = ext_mbs_service_area;
     ext_mbs_session_local_var->dnn = dnn;
     ext_mbs_session_local_var->snssai = snssai;
@@ -107,6 +109,10 @@ void OpenAPI_ext_mbs_session_free(OpenAPI_ext_mbs_session_t *ext_mbs_session)
     if (ext_mbs_session->mbs_service_area) {
         OpenAPI_mbs_service_area_free(ext_mbs_session->mbs_service_area);
         ext_mbs_session->mbs_service_area = NULL;
+    }
+    if (ext_mbs_session->red_mbs_service_area) {
+        OpenAPI_mbs_service_area_free(ext_mbs_session->red_mbs_service_area);
+        ext_mbs_session->red_mbs_service_area = NULL;
     }
     if (ext_mbs_session->ext_mbs_service_area) {
         OpenAPI_external_mbs_service_area_free(ext_mbs_session->ext_mbs_service_area);
@@ -277,6 +283,19 @@ cJSON *OpenAPI_ext_mbs_session_convertToJSON(OpenAPI_ext_mbs_session_t *ext_mbs_
     }
     }
 
+    if (ext_mbs_session->red_mbs_service_area) {
+    cJSON *red_mbs_service_area_local_JSON = OpenAPI_mbs_service_area_convertToJSON(ext_mbs_session->red_mbs_service_area);
+    if (red_mbs_service_area_local_JSON == NULL) {
+        ogs_error("OpenAPI_ext_mbs_session_convertToJSON() failed [red_mbs_service_area]");
+        goto end;
+    }
+    cJSON_AddItemToObject(item, "redMbsServArea", red_mbs_service_area_local_JSON);
+    if (item->child == NULL) {
+        ogs_error("OpenAPI_ext_mbs_session_convertToJSON() failed [red_mbs_service_area]");
+        goto end;
+    }
+    }
+
     if (ext_mbs_session->ext_mbs_service_area) {
     cJSON *ext_mbs_service_area_local_JSON = OpenAPI_external_mbs_service_area_convertToJSON(ext_mbs_session->ext_mbs_service_area);
     if (ext_mbs_service_area_local_JSON == NULL) {
@@ -430,6 +449,8 @@ OpenAPI_ext_mbs_session_t *OpenAPI_ext_mbs_session_parseFromJSON(cJSON *ext_mbs_
     OpenAPI_ssm_t *ssm_local_nonprim = NULL;
     cJSON *mbs_service_area = NULL;
     OpenAPI_mbs_service_area_t *mbs_service_area_local_nonprim = NULL;
+    cJSON *red_mbs_service_area = NULL;
+    OpenAPI_mbs_service_area_t *red_mbs_service_area_local_nonprim = NULL;
     cJSON *ext_mbs_service_area = NULL;
     OpenAPI_external_mbs_service_area_t *ext_mbs_service_area_local_nonprim = NULL;
     cJSON *dnn = NULL;
@@ -557,6 +578,15 @@ OpenAPI_ext_mbs_session_t *OpenAPI_ext_mbs_session_parseFromJSON(cJSON *ext_mbs_
     mbs_service_area_local_nonprim = OpenAPI_mbs_service_area_parseFromJSON(mbs_service_area);
     if (!mbs_service_area_local_nonprim) {
         ogs_error("OpenAPI_mbs_service_area_parseFromJSON failed [mbs_service_area]");
+        goto end;
+    }
+    }
+
+    red_mbs_service_area = cJSON_GetObjectItemCaseSensitive(ext_mbs_sessionJSON, "redMbsServArea");
+    if (red_mbs_service_area) {
+    red_mbs_service_area_local_nonprim = OpenAPI_mbs_service_area_parseFromJSON(red_mbs_service_area);
+    if (!red_mbs_service_area_local_nonprim) {
+        ogs_error("OpenAPI_mbs_service_area_parseFromJSON failed [red_mbs_service_area]");
         goto end;
     }
     }
@@ -700,6 +730,7 @@ OpenAPI_ext_mbs_session_t *OpenAPI_ext_mbs_session_parseFromJSON(cJSON *ext_mbs_
         ingress_tun_addr ? ingress_tun_addrList : NULL,
         ssm ? ssm_local_nonprim : NULL,
         mbs_service_area ? mbs_service_area_local_nonprim : NULL,
+        red_mbs_service_area ? red_mbs_service_area_local_nonprim : NULL,
         ext_mbs_service_area ? ext_mbs_service_area_local_nonprim : NULL,
         dnn && !cJSON_IsNull(dnn) ? ogs_strdup(dnn->valuestring) : NULL,
         snssai ? snssai_local_nonprim : NULL,
@@ -741,6 +772,10 @@ end:
     if (mbs_service_area_local_nonprim) {
         OpenAPI_mbs_service_area_free(mbs_service_area_local_nonprim);
         mbs_service_area_local_nonprim = NULL;
+    }
+    if (red_mbs_service_area_local_nonprim) {
+        OpenAPI_mbs_service_area_free(red_mbs_service_area_local_nonprim);
+        red_mbs_service_area_local_nonprim = NULL;
     }
     if (ext_mbs_service_area_local_nonprim) {
         OpenAPI_external_mbs_service_area_free(ext_mbs_service_area_local_nonprim);

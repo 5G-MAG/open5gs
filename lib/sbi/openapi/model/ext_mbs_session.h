@@ -46,6 +46,15 @@ typedef struct OpenAPI_ext_mbs_session_s {
     OpenAPI_list_t *ingress_tun_addr;
     struct OpenAPI_ssm_s *ssm;
     struct OpenAPI_mbs_service_area_s *mbs_service_area;
+    /* TS 29.571 MbsSession.redMbsServArea (readOnly): not present in this vendored schema's
+     * base MbsSession type at all until this hand-patch -- confirmed absent at the Rel-17
+     * pin, added at TS 29.571 V18.12.0. Hand-patched here rather than regenerated, matching
+     * this codebase's own established practice for isolated new Rel-18 fields (see the
+     * schema-name-collision renames elsewhere in this generated tree). TS 29.532 V18.6.0
+     * cl.5.3.2.3.1 step 2b: "the MB-SMF shall return a '200 OK' response and provide in the
+     * response the representation of the updated MBS session including the reduced MBS
+     * service area in the redMbsServArea attribute". */
+    struct OpenAPI_mbs_service_area_s *red_mbs_service_area;
     struct OpenAPI_external_mbs_service_area_s *ext_mbs_service_area;
     char *dnn;
     struct OpenAPI_snssai_s *snssai;
@@ -79,6 +88,7 @@ OpenAPI_ext_mbs_session_t *OpenAPI_ext_mbs_session_create(
     OpenAPI_list_t *ingress_tun_addr,
     OpenAPI_ssm_t *ssm,
     OpenAPI_mbs_service_area_t *mbs_service_area,
+    OpenAPI_mbs_service_area_t *red_mbs_service_area,
     OpenAPI_external_mbs_service_area_t *ext_mbs_service_area,
     char *dnn,
     OpenAPI_snssai_t *snssai,

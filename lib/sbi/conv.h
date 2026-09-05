@@ -126,6 +126,8 @@ OpenAPI_tmgi_t *ogs_sbi_build_tmgi(ogs_tmgi_t *tmgi);
 bool ogs_sbi_parse_ssm(ogs_ssm_t *ssm, OpenAPI_ssm_t *Ssm);
 OpenAPI_ssm_t *ogs_sbi_build_ssm(ogs_ssm_t *ssm);
 
+OpenAPI_mbs_service_area_t *ogs_sbi_build_mbs_service_area(ogs_mbs_service_area_t *area);
+
 #ifdef __cplusplus
 }
 #endif
