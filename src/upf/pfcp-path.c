@@ -269,6 +269,44 @@ int upf_pfcp_send_session_deletion_response(ogs_pfcp_xact_t *xact,
     return rv;
 }
 
+/*
+ * BUG FIX: this send function did not exist before -- mirrors upf_pfcp_n4mb_send_session_establishment_response()
+ * above and the non-MBS upf_pfcp_send_session_deletion_response(). Needed so
+ * upf_n4mb_handle_session_deletion_request() (n4mb-handler.c) can actually respond to the SMF and let the
+ * MBS session pool entry be freed at runtime instead of only at process shutdown.
+ */
+int upf_pfcp_n4mb_send_session_deletion_response(
+        ogs_pfcp_xact_t *xact, upf_mbs_sess_t *mbs_sess)
+{
+    int rv;
+    ogs_pkbuf_t *n4mbbuf = NULL;
+    ogs_pfcp_header_t h;
+
+    ogs_assert(xact);
+    ogs_assert(mbs_sess);
+
+    memset(&h, 0, sizeof(ogs_pfcp_header_t));
+    h.type = OGS_PFCP_SESSION_DELETION_RESPONSE_TYPE;
+    h.seid = mbs_sess->smf_n4mb_f_seid.seid;
+
+    n4mbbuf = upf_n4mb_build_session_deletion_response(h.type, mbs_sess);
+    if (!n4mbbuf) {
+        ogs_error("upf_n4mb_build_session_deletion_response() failed");
+        return OGS_ERROR;
+    }
+
+    rv = ogs_pfcp_xact_update_tx(xact, &h, n4mbbuf);
+    if (rv != OGS_OK) {
+        ogs_error("ogs_pfcp_xact_update_tx() failed");
+        return OGS_ERROR;
+    }
+
+    rv = ogs_pfcp_xact_commit(xact);
+    ogs_expect(rv == OGS_OK);
+
+    return rv;
+}
+
 static void sess_timeout(ogs_pfcp_xact_t *xact, void *data)
 {
     upf_sess_t *sess = NULL;

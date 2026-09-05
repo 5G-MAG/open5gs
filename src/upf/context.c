@@ -33,7 +33,6 @@ static int context_initialized = 0;
 
 static void upf_sess_urr_acc_remove_all(upf_sess_t *sess);
 
-static void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess);
 static void upf_mbs_sess_remove_all(void);
 static unsigned long long _ull_from_string(const char *str, unsigned long long min_value, unsigned long long max_value,
                                            char **error_string);
@@ -305,7 +304,20 @@ int upf_context_parse_config(void)
                                             }
                                         }
                                     } else if  (ogs_yaml_iter_type(&upf_mbs_tunnel_port_iter) == YAML_SEQUENCE_NODE) {
+                                        /*
+                                         * BUG FIX: this used to check upf_mbs_tunnel_iter's type (the
+                                         * "port" key's own iterator, before recursing into its value) --
+                                         * always a MAPPING node at this point, never SEQUENCE, since the
+                                         * YAML "port:" key itself is a mapping-node entry. That made this
+                                         * whole branch permanently unreachable, so the list-of-ports form
+                                         * (e.g. "port: [1000, 1001, 1002]") could never actually be
+                                         * parsed. Check upf_mbs_tunnel_port_iter (the already-recursed
+                                         * child, matching the SCALAR/MAPPING checks above) instead.
+                                         */
                                         /* array value = list of port numbers */
+                                                                                // num_of_ports is assigned, not only incremented: an
+                                                                                // uninitialised value is undefined behaviour and, once this
+                                                                                // branch is reachable, a garbage allocation size.
                                         size_t num_of_ports = 0;
                                         bool ephemeral = false;
                                         while (ogs_yaml_iter_next(&upf_mbs_tunnel_port_iter)) {
@@ -1163,7 +1175,11 @@ static upf_mbs_sess_t *upf_mbs_sess_add(ogs_pfcp_f_seid_t *cp_f_seid)
     return upf_mbs_sess;
 }
 
-static void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess)
+// Non-static so upf_n4mb_handle_session_deletion_request() below can call it at runtime. Reachable only
+// through upf_mbs_sess_remove_all(), which runs from upf_context_final() at process shutdown, the
+// fixed-size MBS session pool (OGS_MAX_NUM_OF_MBS_SESSIONS) never drains across create and delete cycles.
+// Mirrors amf_mbs_context_remove() on the AMF side.
+void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess)
 {
     ogs_assert(upf_mbs_sess);
 
@@ -1240,6 +1256,28 @@ upf_mbs_sess_t *upf_mbs_sess_find_by_smf_n4mb_f_seid(ogs_pfcp_f_seid_t *f_seid)
     key.seid = f_seid->seid;
 
     return ogs_hash_get(self.smf_n4_f_seid_hash, &key, sizeof(key));
+}
+
+/*
+ * BUG FIX: no way existed to look up an upf_mbs_sess_t by its own (UPF-assigned) SEID -- only by the SMF's
+ * F-SEID (above, only present in the Establishment Request). A PFCP Session Deletion Request carries no
+ * IEs of its own (ogs_pfcp_session_deletion_request_t is empty) and is addressed purely by the SEID in
+ * the PFCP header, so this is what pfcp-sm.c's deletion dispatch needs to tell an MBS session's SEID
+ * apart from a regular session's before routing to the right handler -- both types' SEIDs are drawn from
+ * the same shared upf_n4_seid_pool/hash (see upf_mbs_sess_add() above), so blindly treating the shared
+ * hash's result as a upf_sess_t* (as the pre-existing deletion dispatch code did) is a type-confusion bug
+ * whenever the SEID actually belongs to an MBS session.
+ */
+upf_mbs_sess_t *upf_mbs_sess_find_by_seid(uint64_t seid)
+{
+    upf_mbs_sess_t *upf_mbs_sess = NULL;
+
+    ogs_list_for_each(&self.upf_mbs_sess_list, upf_mbs_sess) {
+        if (upf_mbs_sess->upf_n4mb_seid == seid)
+            return upf_mbs_sess;
+    }
+
+    return NULL;
 }
 
 upf_mbs_sess_t *upf_mbs_sess_add_by_message(ogs_pfcp_message_t *message)

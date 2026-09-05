@@ -99,7 +99,14 @@ ogs_pkbuf_t *upf_n4mb_build_session_establishment_response(uint8_t type,
         multicast_transport_information.spare = 0;
 
         multicast_transport_information.c_teid = htobe32(mbs_sess->c_teid);
-        created_pdr[0]->far->outer_header_creation.teid = mbs_sess->c_teid;
+                // Loops over the PDRs rather than indexing created_pdr[0]. One Common TEID is allocated per MBS
+                // session and used, through Apply Action FSSM, to forward that session's data for every PDR and FAR
+                // of the session (TS 29.244 cl.8.2.207 and cl.5.34.2.2), so indexing only the first leaves any
+                // further FAR with outer_header_creation.teid == 0, which ogs_pfcp_send_g_pdu() copies verbatim
+                // into outgoing GTP-U headers. Latent while the SMF creates one PDR and FAR per session, but this
+                // is the structurally correct form.
+        for (i = 0; i < num_of_created_pdr; i++)
+            created_pdr[i]->far->outer_header_creation.teid = mbs_sess->c_teid;
 
         multicast_transport_information_len += 5;
 
@@ -143,4 +150,22 @@ ogs_pkbuf_t *upf_n4mb_build_session_establishment_response(uint8_t type,
     ogs_free(pfcp_message);
 
     return pkbuf;
+}
+
+/*
+ * BUG FIX: no N4mb Session Deletion Response builder existed at all -- mirrors the non-MBS
+ * upf_n4_build_session_deletion_response(), minus the URR usage-report accumulation that function does
+ * (MBS sessions in this codebase don't populate urr_list the way regular sessions do), via the same
+ * generic ogs_pfcp_build_session_deletion_response() helper both use.
+ */
+ogs_pkbuf_t *upf_n4mb_build_session_deletion_response(uint8_t type, upf_mbs_sess_t *mbs_sess)
+{
+    ogs_pfcp_user_plane_report_t report;
+
+    ogs_debug("N4mb Session Deletion Response");
+    ogs_assert(mbs_sess);
+
+    memset(&report, 0, sizeof(report));
+
+    return ogs_pfcp_build_session_deletion_response(type, OGS_PFCP_CAUSE_REQUEST_ACCEPTED, &report);
 }
