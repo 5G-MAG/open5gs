@@ -21,6 +21,7 @@
 #include "nas-path.h"
 #include "ngap-path.h"
 #include "nnrf-handler.h"
+#include "namf-build.h"
 
 int amf_sbi_open(void)
 {
@@ -53,6 +54,20 @@ int amf_sbi_open(void)
     if (ogs_sbi_nf_service_is_available(OGS_SBI_SERVICE_NAME_NAMF_MBS_BC)) {
         service = ogs_sbi_nf_service_build_default(
                     nf_instance, OGS_SBI_SERVICE_NAME_NAMF_MBS_BC);
+        ogs_assert(service);
+        ogs_sbi_nf_service_add_version(
+                    service, OGS_SBI_API_V1, OGS_SBI_API_V1_0_0, NULL);
+        ogs_sbi_nf_service_add_allowed_nf_type(service, OpenAPI_nf_type_SMF);
+        ogs_sbi_nf_service_add_allowed_nf_type(service, OpenAPI_nf_type_MB_SMF);
+    }
+
+    /* Build NF service information. It will be transmitted to NRF.
+     * TS 29.518 cl.5.7.1: "This service enables an NF Service Consumer (e.g. MB-SMF) to request the
+     * AMF to transfer MBS multicast related N2 message towards NG-RAN(s) serving a multicast MBS
+     * session..." -- the multicast counterpart of Namf_MBSBroadcast above, same consumer (MB-SMF). */
+    if (ogs_sbi_nf_service_is_available(OGS_SBI_SERVICE_NAME_NAMF_MBS_COMM)) {
+        service = ogs_sbi_nf_service_build_default(
+                    nf_instance, OGS_SBI_SERVICE_NAME_NAMF_MBS_COMM);
         ogs_assert(service);
         ogs_sbi_nf_service_add_version(
                     service, OGS_SBI_API_V1, OGS_SBI_API_V1_0_0, NULL);
@@ -579,6 +594,43 @@ bool amf_sbi_send_n1_n2_failure_notify(
 
     rc = ogs_sbi_send_request_to_client(
             client, client_notify_cb, request, NULL);
+    ogs_expect(rc == true);
+
+    ogs_sbi_request_free(request);
+
+    return rc;
+}
+
+/*
+ * B-2: Namf_MBSBroadcast_ContextStatusNotify (TS 29.518 V18.14.0 cl.5.6.2.5). Sends to
+ * mbs_context->notify_client -- see its own comment (context.h) for how that client is set up (the same
+ * caller-supplied-URI idiom as sess->paging.client above), and amf_namf_build_mbs_broadcast_context_status_notify()
+ * (namf-build.c) for what the request carries. Reuses client_notify_cb: cl.5.6.2.5 2a says the NF Service
+ * Consumer returns "204 No Content" on success in the common case (no Broadcast Session Transport Request
+ * Transfer IE in the notification, which this fork never sends), the same response client_notify_cb
+ * already expects for N1N2MessageTransferFailureNotify.
+ */
+bool amf_sbi_send_mbs_broadcast_context_status_notify(
+        amf_mbs_context_t *mbs_context, ogs_pkbuf_t *n2mbssmbuf, bool completed)
+{
+    bool rc;
+    ogs_sbi_request_t *request = NULL;
+
+    ogs_assert(mbs_context);
+
+    if (!mbs_context->notify_client) {
+        ogs_warn("MBS Broadcast ContextStatusNotify: no notify_client for this session, not sent");
+        return false;
+    }
+
+    request = amf_namf_build_mbs_broadcast_context_status_notify(mbs_context, n2mbssmbuf, completed);
+    if (!request) {
+        ogs_error("amf_namf_build_mbs_broadcast_context_status_notify() failed");
+        return false;
+    }
+
+    rc = ogs_sbi_send_request_to_client(
+            mbs_context->notify_client, client_notify_cb, request, NULL);
     ogs_expect(rc == true);
 
     ogs_sbi_request_free(request);
