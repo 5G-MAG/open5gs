@@ -119,6 +119,13 @@ typedef struct smf_context_s {
 
     ogs_list_t      tmgi_list;         /* list of ogs_tmgi_t */
     ogs_list_t      smf_mbs_sess_list; /* list of smf_mbs_sess_t */
+
+    /* This MB-SMF instance's own configured coverage (smf.yaml mbs.serviceArea.taiList), TAI-list
+     * only -- see smf_mbs_service_area_reduce()'s own scope note. NULL (the default) means
+     * unconfigured: no coverage restriction, matching behaviour before this option existed. No
+     * clause, config option or documented default exists for what an unconfigured MB-SMF's own
+     * coverage should be (rule 12), so none is invented here. */
+    ogs_mbs_service_area_t *mbs_service_area;
 } smf_context_t;
 
 typedef struct smf_gtp_node_s {
@@ -522,6 +529,23 @@ typedef struct smf_sess_s {
     bool n2_released;
 } smf_sess_t;
 
+/* TS 29.571 MbsQoSReq, as carried per media component in TS 29.532's MbsSession.mbsServInfo.mbsMediaComps
+ * (MBS Session Create/Update request). qfi is not part of that schema -- it is locally assigned, one per
+ * media component in map-iteration order, matching the same "sequential small integer" convention this
+ * SMF's own regular-PDU-session QFI handling already uses (see smf_qos_flow_add()). */
+typedef struct smf_mbs_qos_flow_s {
+    ogs_lnode_t lnode;
+    uint8_t qfi;
+    uint8_t five_qi;
+} smf_mbs_qos_flow_t;
+
+/* TS 29.571 MbsFsaId (a 24-bit value, hex-encoded on the wire), as carried in TS 29.532's
+ * MbsSession.mbsFsaIdList (MBS Session Create/Update request). */
+typedef struct smf_mbs_fsa_id_s {
+    ogs_lnode_t lnode;
+    ogs_uint24_t id;
+} smf_mbs_fsa_id_t;
+
 typedef struct smf_mbs_sess_s {
     ogs_lnode_t lnode;      /* A node of list_t */
 
@@ -536,6 +560,12 @@ typedef struct smf_mbs_sess_s {
     ogs_tmgi_t *tmgi;
     ogs_ssm_t *ssm;
     char *service_type;
+
+    /* mbsContextRef assigned by the AMF in the Location header of a Namf_MBSBroadcast ContextCreate
+     * response (TS 29.518 5.6.2.2), so it can be addressed again on release
+     * (DELETE /namf-mbs-bc/v1/mbs-contexts/{mbsContextRef}, TS 29.518 5.6.2.3). NULL if no AMF broadcast
+     * context was ever created for this session (e.g. a Multicast session). */
+    char *mbs_context_ref;
 
     // Multicast specific
     OpenAPI_mbs_session_activity_status_e activity_status;
@@ -568,6 +598,32 @@ typedef struct smf_mbs_sess_s {
     /* Service Areas */
     ogs_mbs_service_area_t *mbs_service_area;
     ogs_ext_mbs_service_area_t *ext_mbs_service_area;
+
+    /* TS 29.532 MbsSession.mbsServInfo.mbsMediaComps[*].mbsQoSReq, parsed from the Create/Update
+     * request -- see smf_nmbsmf_handle_mbs_session_create()'s own comment for what this closes. */
+    ogs_list_t mbs_qos_flow_list;
+
+    /* TS 29.532 MbsSession.mbsFsaIdList, parsed from the Create/Update request -- see
+     * smf_nmbsmf_handle_mbs_session_create()'s own comment for what this closes. */
+    ogs_list_t mbs_fsa_id_list;
+
+    /* TS 29.532 V17.5.0 cl.5.3.2.2.1: "For a location dependent MBS service, the MB-SMF shall allocate
+     * a unique Area Session ID within the MBS session for the MBS Service Area." This SMF's own
+     * northbound schema (ExtMbsSession) carries at most one Area Session ID per session -- see
+     * smf_nmbsmf_handle_mbs_session_create()'s own comment on why a fixed value satisfies that
+     * uniqueness requirement here. */
+    bool location_dependent;
+    uint16_t area_session_id;
+
+    /* BUG FIX: confirmed live this session -- MBSF's own delete-cascade sends up to three duplicate
+     * Nmbsmf_MBSSession Release requests for the exact same distribution session (same URL,
+     * same timestamp), which made smf_nmbsmf_handle_mbs_session_release() fire the AMF/UPF release
+     * requests below multiple times concurrently for the same still-live session object, and appears to
+     * have caused SMF to segfault (confirmed via dmesg). This flag makes that handler idempotent: once
+     * the real release chain has been triggered once for a session, any further duplicate release
+     * request is a safe no-op instead of re-entering the release logic on a session that may already be
+     * mid-teardown (or already freed, by the time a duplicate call is dispatched). */
+    bool release_triggered;
 } smf_mbs_sess_t;
 
 // NOTE (borieher): Not defined in the specs, default to 2 extra hours
@@ -685,7 +741,9 @@ int smf_instance_get_load(void);
 int smf_tmgi_count(void);
 char *smf_tmgi_gen_expiration_time(int validity_seconds);
 ogs_tmgi_t *smf_tmgi_allocate(char *expiration_time);
+int smf_tmgi_reclaim_expired(void);
 void smf_tmgi_deallocate(ogs_tmgi_t *tmgi);
+void smf_tmgi_deallocate_all(void);
 ogs_tmgi_t *smf_tmgi_find_by_tmgi(ogs_tmgi_t *tmgi_to_find);
 
 smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, ogs_ssm_t *ssm, char *service_type, ogs_mbs_service_area_t *mbs_service_area, ogs_ext_mbs_service_area_t *ext_mbs_service_area);
@@ -694,10 +752,14 @@ void smf_mbs_sess_release(smf_mbs_sess_t *smf_mbs_sess);
 smf_mbs_sess_t *smf_mbs_sess_find_by_id(ogs_pool_id_t id);
 smf_mbs_sess_t *smf_mbs_sess_find_by_mbs_session_ref(char *mbs_session_ref);
 smf_mbs_sess_t *smf_mbs_sess_find_by_seid(uint64_t seid);
+smf_mbs_sess_t *smf_mbs_sess_find_by_tmgi(ogs_tmgi_t *tmgi_to_find);
 void smf_mbs_sess_select_upf(smf_mbs_sess_t *mbs_sess);
 void smf_mbs_sess_create_mbs_data_forwarding(smf_mbs_sess_t *mbs_sess);
 
 bool smf_context_have_matching_mbs_session_id(smf_mbs_sess_t *mbs_session);
+
+bool smf_mbs_service_area_reduce(
+        ogs_mbs_service_area_t *requested, ogs_mbs_service_area_t **reduced);
 
 #ifdef __cplusplus
 }

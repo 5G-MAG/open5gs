@@ -1043,6 +1043,96 @@ int smf_context_parse_config(void)
                     /* handle config in sbi library */
                 } else if (!strcmp(smf_key, "metrics")) {
                     /* handle config in metrics library */
+                } else if (!strcmp(smf_key, "mbsServiceArea")) {
+                    /* TS 29.532 V18.6.0 cl.5.3.2.2.1/5.3.2.3.1 step 2b: this MB-SMF instance's own
+                     * configured coverage, used by smf_mbs_service_area_reduce(). No clause,
+                     * config option or documented default exists for this (rule 12); this key
+                     * itself is what defines it. TAI list only, mirroring AMF's own "tai" config
+                     * shape (plmn_id/mcc,mnc + tac), not the compact tai0/1/2 range encoding that
+                     * config uses -- this is a plain coverage declaration, not a NAS TAI list IE. */
+                    ogs_yaml_iter_t area_iter;
+                    ogs_yaml_iter_recurse(&smf_iter, &area_iter);
+                    while (ogs_yaml_iter_next(&area_iter)) {
+                        const char *area_key = ogs_yaml_iter_key(&area_iter);
+                        ogs_assert(area_key);
+                        if (!strcmp(area_key, "taiList")) {
+                            ogs_yaml_iter_t tai_array, tai_iter;
+                            ogs_yaml_iter_recurse(&area_iter, &tai_array);
+                            do {
+                                const char *mcc = NULL, *mnc = NULL, *tac = NULL;
+
+                                if (ogs_yaml_iter_type(&tai_array) ==
+                                        YAML_MAPPING_NODE) {
+                                    memcpy(&tai_iter, &tai_array,
+                                            sizeof(ogs_yaml_iter_t));
+                                } else if (ogs_yaml_iter_type(&tai_array) ==
+                                        YAML_SEQUENCE_NODE) {
+                                    if (!ogs_yaml_iter_next(&tai_array))
+                                        break;
+                                    ogs_yaml_iter_recurse(&tai_array, &tai_iter);
+                                } else if (ogs_yaml_iter_type(&tai_array) ==
+                                        YAML_SCALAR_NODE) {
+                                    break;
+                                } else
+                                    ogs_assert_if_reached();
+
+                                while (ogs_yaml_iter_next(&tai_iter)) {
+                                    const char *tai_key =
+                                        ogs_yaml_iter_key(&tai_iter);
+                                    ogs_assert(tai_key);
+                                    if (!strcmp(tai_key, "plmn_id")) {
+                                        ogs_yaml_iter_t plmn_id_iter;
+                                        ogs_yaml_iter_recurse(
+                                                &tai_iter, &plmn_id_iter);
+                                        while (ogs_yaml_iter_next(
+                                                &plmn_id_iter)) {
+                                            const char *plmn_id_key =
+                                                ogs_yaml_iter_key(
+                                                        &plmn_id_iter);
+                                            ogs_assert(plmn_id_key);
+                                            if (!strcmp(plmn_id_key, "mcc"))
+                                                mcc = ogs_yaml_iter_value(
+                                                        &plmn_id_iter);
+                                            else if (!strcmp(plmn_id_key,
+                                                    "mnc"))
+                                                mnc = ogs_yaml_iter_value(
+                                                        &plmn_id_iter);
+                                        }
+                                    } else if (!strcmp(tai_key, "tac")) {
+                                        tac = ogs_yaml_iter_value(&tai_iter);
+                                    }
+                                }
+
+                                if (mcc && mnc && tac) {
+                                    ogs_tai_t *tai =
+                                        ogs_calloc(1, sizeof(*tai));
+                                    ogs_plmn_id_build(&tai->plmn_id,
+                                            atoi(mcc), atoi(mnc), strlen(mnc));
+                                    tai->tac = ogs_strdup(tac);
+                                    if (!self.mbs_service_area) {
+                                        self.mbs_service_area = ogs_calloc(
+                                                1, sizeof(*self.mbs_service_area));
+                                    }
+                                    if (!self.mbs_service_area->tai_list) {
+                                        self.mbs_service_area->tai_list =
+                                            ogs_calloc(1, sizeof(
+                                                *self.mbs_service_area->
+                                                    tai_list));
+                                    }
+                                    ogs_list_add(
+                                            self.mbs_service_area->tai_list,
+                                            tai);
+                                } else {
+                                    ogs_warn("mbsServiceArea.taiList: "
+                                            "entry missing plmn_id or tac, "
+                                            "ignored");
+                                }
+                            } while (ogs_yaml_iter_type(&tai_array) ==
+                                    YAML_SEQUENCE_NODE);
+                        } else
+                            ogs_warn("unknown key `mbsServiceArea.%s`",
+                                    area_key);
+                    }
                 } else
                     ogs_warn("unknown key `%s`", smf_key);
             }
@@ -3360,6 +3450,67 @@ void smf_tmgi_deallocate(ogs_tmgi_t *tmgi) {
     smf_tmgi_remove(tmgi);
 }
 
+// Deallocates every TMGI not currently referenced by a live MBS session, skipping rather than freeing any
+// that are; see smf_mbs_sess_find_by_tmgi() for why that check matters. Mirrors smf_tmgi_remove_all() above
+// with that one guard added.
+//
+// NOTE: currently uncalled. TS 29.532's table marks tmgi-list Mandatory for the Deallocate operation, and
+// the prose does not license omitting it, so "deallocate all" there means enumerating every TMGI in the
+// list rather than sending none. Kept rather than removed (rule 14): it is a correct primitive for a real
+// concept, a genuine "deallocate every TMGI I hold" operation such as an admin or reset path, just not one
+// reachable through that SBI operation.
+void smf_tmgi_deallocate_all(void)
+{
+    ogs_tmgi_t *tmgi = NULL, *next = NULL;
+
+    ogs_list_for_each_safe(&self.tmgi_list, next, tmgi) {
+        if (smf_mbs_sess_find_by_tmgi(tmgi)) {
+            ogs_warn("TMGI Deallocate (all): skipping TMGI still in use by an MBS session");
+            continue;
+        }
+        smf_tmgi_remove(tmgi);
+    }
+}
+
+// An expired TMGI is not a live allocation. TS 29.532 V18.6.0, clause 6.1.7.3, table 6.1.7.3-1,
+// row UNKNOWN_TMGI: "The requested TMGI Allocate or TMGI Deallocate service operation failed,
+// because requested TMGI expired or cannot be found." The expiration time generated here, returned
+// to the consumer and carried over N4mb was otherwise never read back, so nothing in this SMF could
+// tell an expired TMGI from a live one and every allocation was held for the process's lifetime.
+// Skips any TMGI a live MBS session still references, for the reason smf_tmgi_deallocate_all()
+// gives. Returns the number reclaimed.
+int smf_tmgi_reclaim_expired(void)
+{
+    ogs_tmgi_t *tmgi = NULL, *next = NULL;
+    ogs_time_t now = ogs_time_now();
+    int reclaimed = 0;
+
+    ogs_list_for_each_safe(&self.tmgi_list, next, tmgi) {
+        ogs_time_t expiry;
+
+        if (!tmgi->expiration_time)
+            continue;
+        if (ogs_sbi_time_from_string(&expiry, tmgi->expiration_time) == false) {
+            ogs_warn("TMGI reclaim: unparsable expiration time [%s], keeping TMGI",
+                    tmgi->expiration_time);
+            continue;
+        }
+        if (expiry > now)
+            continue;
+        if (smf_mbs_sess_find_by_tmgi(tmgi)) {
+            ogs_warn("TMGI reclaim: expired TMGI still in use by an MBS session, keeping it");
+            continue;
+        }
+        smf_tmgi_remove(tmgi);
+        reclaimed++;
+    }
+
+    if (reclaimed)
+        ogs_info("TMGI reclaim: released %d expired TMGI(s)", reclaimed);
+
+    return reclaimed;
+}
+
 ogs_tmgi_t *smf_tmgi_find_by_tmgi(ogs_tmgi_t *tmgi_to_find)
 {
     ogs_tmgi_t *tmgi = NULL;
@@ -3396,6 +3547,41 @@ ogs_tmgi_t *smf_tmgi_find_by_tmgi(ogs_tmgi_t *tmgi_to_find)
             ogs_free(tmgi_mnc);
             ogs_free(tmgi_to_find_mcc);
             ogs_free(tmgi_to_find_mnc);
+        }
+    }
+
+    return NULL;
+}
+
+/*
+ * Finds an MBS Session by the TMGI it carries, wherever that TMGI sits.
+ *
+ * Needed in addition to smf_context_have_matching_mbs_session_id(), which only sees a TMGI that is
+ * itself the MBS Session ID (mbs_session_id.is_tmgi). A MULTICAST session identified by an SSM
+ * carries its TMGI separately, in smf_mbs_sess->tmgi, and that one is invisible to the other
+ * lookup. smf_mbs_sess->tmgi is always set, whichever role it ended up in (see
+ * smf_mbs_sess_create()), so scanning it covers both. The comparison matches
+ * smf_tmgi_find_by_tmgi() above.
+ */
+smf_mbs_sess_t *smf_mbs_sess_find_by_tmgi(ogs_tmgi_t *tmgi_to_find)
+{
+    smf_mbs_sess_t *mbs_sess = NULL;
+
+    ogs_assert(tmgi_to_find);
+
+    ogs_list_for_each(&self.smf_mbs_sess_list, mbs_sess) {
+        ogs_assert(mbs_sess);
+
+        if (!mbs_sess->tmgi) continue;
+
+        if (strcmp(mbs_sess->tmgi->mbs_service_id, tmgi_to_find->mbs_service_id) == 0) {
+            /* Compared as integers rather than through ogs_plmn_id_mcc_string()/mnc_string(): those
+             * allocate, and a two-digit and a three-digit MNC are different PLMNs, which the packed
+             * representation already distinguishes. */
+            if (ogs_plmn_id_mcc(&mbs_sess->tmgi->plmn_id) == ogs_plmn_id_mcc(&tmgi_to_find->plmn_id) &&
+                ogs_plmn_id_mnc(&mbs_sess->tmgi->plmn_id) == ogs_plmn_id_mnc(&tmgi_to_find->plmn_id) &&
+                ogs_plmn_id_mnc_len(&mbs_sess->tmgi->plmn_id) == ogs_plmn_id_mnc_len(&tmgi_to_find->plmn_id))
+                return mbs_sess;
         }
     }
 
@@ -3447,6 +3633,9 @@ static void smf_mbs_sess_free(smf_mbs_sess_t *smf_mbs_sess)
     if (smf_mbs_sess->mbs_session_ref)
         ogs_free(smf_mbs_sess->mbs_session_ref);
 
+    if (smf_mbs_sess->mbs_context_ref)
+        ogs_free(smf_mbs_sess->mbs_context_ref);
+
     if (smf_mbs_sess->service_type)
         ogs_free(smf_mbs_sess->service_type);
 
@@ -3478,6 +3667,18 @@ static void smf_mbs_sess_free(smf_mbs_sess_t *smf_mbs_sess)
 
     ogs_mbs_service_area_free(smf_mbs_sess->mbs_service_area);
     ogs_ext_mbs_service_area_free(smf_mbs_sess->ext_mbs_service_area);
+
+    {
+        smf_mbs_qos_flow_t *qos_flow = NULL, *next_qos_flow = NULL;
+        ogs_list_for_each_safe(&smf_mbs_sess->mbs_qos_flow_list, next_qos_flow, qos_flow)
+            ogs_free(qos_flow);
+    }
+
+    {
+        smf_mbs_fsa_id_t *fsa_id = NULL, *next_fsa_id = NULL;
+        ogs_list_for_each_safe(&smf_mbs_sess->mbs_fsa_id_list, next_fsa_id, fsa_id)
+            ogs_free(fsa_id);
+    }
 
     ogs_pool_id_free(&smf_mbs_sess_pool, smf_mbs_sess);
 }
@@ -3619,6 +3820,7 @@ void smf_mbs_sess_create_mbs_data_forwarding(smf_mbs_sess_t *mbs_sess)
 {
     ogs_pfcp_pdr_t *dl_pdr = NULL;
     ogs_pfcp_far_t *dl_far = NULL;
+    ogs_pfcp_qer_t *dl_qer = NULL;
 
     ogs_assert(mbs_sess);
 
@@ -3706,6 +3908,20 @@ void smf_mbs_sess_create_mbs_data_forwarding(smf_mbs_sess_t *mbs_sess)
     //dl_far->outer_header_creation.gtpu4 = 1;
     dl_far->outer_header_creation.ssm_c_teid = 1;
     dl_far->outer_header_creation_len = 6;
+
+        // The MBS DL PDR is given a QER, because pdr->qer is what decides whether the GTP-U PDU Session
+        // Container extension header (TS 29.281/38.415) carrying the QFI is added: ogs_pfcp_send_g_pdu()
+        // (lib/pfcp/path.c) guards on "if (pdr->qer && pdr->qer->qfi)". Without one, every N3mb downlink G-PDU
+        // the UPF emits for a broadcast or multicast session lacks that mandatory header and a gNB rejects it
+        // ("Incomplete PDU at NG-U interface: missing or invalid PDU session container").
+        //
+        // Nothing upstream of this function models a per-flow QoS profile for MBS: no AF-supplied 5QI and no QFI
+        // pool for mbs_sess. A single fixed QFI is used, which is correct for the single-flow broadcast delivery
+        // this stack supports. Unicast flows get theirs from smf_qos_flow_add().
+    dl_qer = ogs_pfcp_qer_add(&mbs_sess->pfcp);
+    ogs_assert(dl_qer);
+    dl_qer->qfi = 1;
+    ogs_pfcp_pdr_associate_qer(dl_pdr, dl_qer);
 }
 
 static int smf_mbs_sess_list_delete_hash_entry(void *rec, const void *key, int klen, const void *value)
@@ -3851,6 +4067,14 @@ static bool smf_mbs_sess_list_service_areas_overlap(ogs_list_t *mbs_sess_list, s
     smf_mbs_sess_lnode_t *node;
 
     if (!mbs_sess_list || !mbs_session) return false;
+
+        // The list is checked for entries before reporting an overlap. "No service area means overlaps with
+        // everything" holds only once there is at least one session to overlap with: ogs_hash_get can return a
+        // live but empty list object rather than NULL once its one-time occupant is torn down, so returning true
+        // on the bucket alone rejects a brand-new SSM address as "already exists" on its first use.
+    /* The global-Service-Area case does not depend on the list entry, so it is answered before the
+     * loop rather than re-evaluated on every iteration. */
+    if (ogs_list_empty(mbs_sess_list)) return false;
     if (!mbs_session->mbs_service_area && !mbs_session->ext_mbs_service_area) return true;
 
     ogs_list_for_each(mbs_sess_list, node) {
@@ -3918,6 +4142,68 @@ static bool smf_mbs_sess_service_areas_overlap(smf_mbs_sess_t *a, smf_mbs_sess_t
     }
 
     return false;
+}
+
+/* TS 29.532 V18.6.0 cl.5.3.2.2.1 (Create) / cl.5.3.2.3.1 (Update) step 2b: "If the MBS service area
+ * received in the request cannot be entirely covered by the MB-SMF service area, the MB-SMF shall
+ * reduce the MBS service area to be within the MB-SMF service area ... indicate in the response the
+ * reduced MBS service area in the redMbsServArea attribute". "The MB-SMF service area" is this MB-SMF
+ * instance's own configured coverage (smf.yaml mbs.serviceArea, self.mbs_service_area below) -- no
+ * clause, config option or documented default names what an unconfigured MB-SMF's own coverage is
+ * (rule 12), so absent configuration means no restriction: every requested TAI is accepted
+ * unreduced, exactly as before this option existed.
+ *
+ * Scope limit (S12): checks TAI-list coverage only. A requested area expressed only as an NCGI list,
+ * or a configured coverage with no tai_list, cannot be compared without a cell-to-TAI mapping this
+ * codebase does not have -- such requests are passed through unreduced (not guessed at) rather than
+ * silently accepted or rejected.
+ *
+ * Returns true only if `requested` carries at least one TAI outside the configured coverage, and in
+ * that case allocates *reduced (caller frees with ogs_mbs_service_area_free()) containing exactly the
+ * requested TAIs that are within it. Returns false, leaving *reduced untouched, if unconfigured, if
+ * `requested` has no tai_list, or if every requested TAI is already covered.
+ */
+bool smf_mbs_service_area_reduce(
+        ogs_mbs_service_area_t *requested, ogs_mbs_service_area_t **reduced)
+{
+    ogs_mbs_service_area_t *own;
+    ogs_tai_t *req_tai;
+    bool any_uncovered = false;
+
+    ogs_assert(requested);
+    ogs_assert(reduced);
+
+    own = smf_self()->mbs_service_area;
+    if (!own || !own->tai_list) return false;
+    if (!requested->tai_list) return false;
+
+    ogs_list_for_each(requested->tai_list, req_tai) {
+        ogs_tai_t *own_tai;
+        bool covered = false;
+        ogs_list_for_each(own->tai_list, own_tai) {
+            if (smf_tai_equal(req_tai, own_tai)) { covered = true; break; }
+        }
+        if (!covered) { any_uncovered = true; break; }
+    }
+    if (!any_uncovered) return false;
+
+    *reduced = ogs_calloc(1, sizeof(**reduced));
+    (*reduced)->tai_list = ogs_calloc(1, sizeof(*(*reduced)->tai_list));
+    ogs_list_for_each(requested->tai_list, req_tai) {
+        ogs_tai_t *own_tai;
+        bool covered = false;
+        ogs_list_for_each(own->tai_list, own_tai) {
+            if (smf_tai_equal(req_tai, own_tai)) { covered = true; break; }
+        }
+        if (covered) {
+            ogs_tai_t *copy = ogs_calloc(1, sizeof(*copy));
+            copy->plmn_id = req_tai->plmn_id;
+            copy->tac = ogs_strdup(req_tai->tac);
+            if (req_tai->nid) copy->nid = ogs_strdup(req_tai->nid);
+            ogs_list_add((*reduced)->tai_list, copy);
+        }
+    }
+    return true;
 }
 
 static bool smf_tai_equal(const ogs_tai_t *a, const ogs_tai_t *b)
