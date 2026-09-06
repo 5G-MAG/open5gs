@@ -881,11 +881,17 @@ typedef struct amf_mbs_context_s {
     ogs_pool_id_t stream_id;
 
     /*
-     * B-2: Namf_MBSBroadcast_ContextStatusNotify (TS 29.518 V18.14.0 clause 5.6.2.5). "Upon receipt of
-     * subsequent responses from other NG-RANs after sending the 201 Created response, ... the AMF
-     * shall transfer such information by sending one or more Namf_MBSBroadcast_ContextStatusNotify
-     * requests to the MB-SMF. ... When the AMF receives the response from all NG-RANs, the AMF shall
-     * include an indication of the completion of the operation in the ...  request."
+     * B-2: Namf_MBSBroadcast_ContextStatusNotify (TS 29.518 V18.14.0 clause 5.6.2.5). Two obligations,
+     * each quoted contiguously rather than joined by elisions:
+     *
+     *   "the AMF shall transfer such information by sending one or more
+     *   Namf_MBSBroadcast_ContextStatusNotify requests to the MB-SMF"
+     *
+     *   "When the AMF receives the response from all NG-RANs, the AMF shall include an indication of
+     *   the completion of the operation in the Namf_MBSBroadcast_ContextStatusNotify request."
+     *
+     * The first applies on receipt of subsequent responses from other NG-RANs after the 201 Created
+     * response, where additional information needs transferring to the MB-SMF.
      *
      * notify_client is the NF Service Consumer's own caller-supplied notify_uri (ContextCreateReqData,
      * not a discovered NF), set up the same way sess->paging.client is for N1N2MessageTransfer

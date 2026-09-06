@@ -51,7 +51,7 @@ typedef struct OpenAPI_ext_mbs_session_s {
      * pin, added at TS 29.571 V18.12.0. Hand-patched here rather than regenerated, matching
      * this codebase's own established practice for isolated new Rel-18 fields (see the
      * schema-name-collision renames elsewhere in this generated tree). TS 29.532 V18.6.0
-     * cl.5.3.2.3.1 step 2b: "the MB-SMF shall return a '200 OK' response and provide in the
+     * clause 5.3.2.3.1 step 2b returns 200 OK and requires the MB-SMF to "provide in the
      * response the representation of the updated MBS session including the reduced MBS
      * service area in the redMbsServArea attribute". */
     struct OpenAPI_mbs_service_area_s *red_mbs_service_area;

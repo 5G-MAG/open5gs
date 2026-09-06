@@ -1026,15 +1026,16 @@ bool smf_nmbsmf_handle_mbs_session_patch(smf_mbs_sess_t *mbs_sess,
             }
         END
     }
-    /* TS 29.532 V18.6.0 cl.5.3.2.3.1 step 2b: "If the MBS service area received in the request
-     * cannot be entirely covered by the MB-SMF service area, the MB-SMF shall reduce the MBS
-     * service area to be within the MB-SMF service area and continue the Update service operation
-     * using the reduced MBS service area. In this case, the MB-SMF shall return a '200 OK'
-     * response and provide in the response the representation of the updated MBS session
+    /* TS 29.532 V18.6.0 clause 5.3.2.3.1 step 2b: "If the MBS service area received in the
+     * request cannot be entirely covered by the MB-SMF service area, the MB-SMF shall reduce the
+     * MBS service area to be within the MB-SMF service area and continue the Update service
+     * operation using the reduced MBS service area."  The step then returns 200 OK and requires
+     * the MB-SMF to "provide in the response the representation of the updated MBS session
      * including the reduced MBS service area in the redMbsServArea attribute set to the part of
      * the requested MBS service area that is within the MB-SMF service area in which the MBS
-     * session has been updated." Step 2a (unchanged, still the default): "On success, the MB-SMF
-     * shall return a '204 No Content' response."
+     * session has been updated".  Step 2a, unchanged and still the default, returns 204 No
+     * Content.  (Status codes are named without quotation marks here: the specification writes
+     * them inside its own quotation marks, which cannot be nested inside a quoted sentence.)
      *
      * Mirrors smf_n4mb_handle_session_establishment_response()'s own Create-side check
      * (n4mb-handler.c) against the same smf_mbs_service_area_reduce() -- see that function's own

@@ -2738,7 +2738,7 @@ static int parse_json(ogs_sbi_message_t *message,
                      * content-type, parsed into message->PatchItemList above, before this
                      * per-service SWITCH is ever reached (see the content_type check near the top
                      * of this function) -- a PATCH message only reaches here for its response
-                     * body, e.g. TS 29.532 V18.6.0 cl.5.3.2.3.1 step 2b's "200 OK" UpdateRspData. */
+                     * body, e.g. the 200 OK UpdateRspData of TS 29.532 V18.6.0 clause 5.3.2.3.1 step 2b. */
                     message->UpdateRspData =
                         OpenAPI_update_rsp_data_parseFromJSON(item);
                     if (!message->UpdateRspData) {

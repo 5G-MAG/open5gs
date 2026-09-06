@@ -1047,7 +1047,7 @@ int smf_context_parse_config(void)
                     /* TS 29.532 V18.6.0 cl.5.3.2.2.1/5.3.2.3.1 step 2b: this MB-SMF instance's own
                      * configured coverage, used by smf_mbs_service_area_reduce(). No clause,
                      * config option or documented default exists for this (rule 12); this key
-                     * itself is what defines it. TAI list only, mirroring AMF's own "tai" config
+                     * itself is what defines it. TAI list only, mirroring the AMF's own tai config
                      * shape (plmn_id/mcc,mnc + tac), not the compact tai0/1/2 range encoding that
                      * config uses -- this is a plain coverage declaration, not a NAS TAI list IE. */
                     ogs_yaml_iter_t area_iter;
@@ -4144,10 +4144,11 @@ static bool smf_mbs_sess_service_areas_overlap(smf_mbs_sess_t *a, smf_mbs_sess_t
     return false;
 }
 
-/* TS 29.532 V18.6.0 cl.5.3.2.2.1 (Create) / cl.5.3.2.3.1 (Update) step 2b: "If the MBS service area
- * received in the request cannot be entirely covered by the MB-SMF service area, the MB-SMF shall
- * reduce the MBS service area to be within the MB-SMF service area ... indicate in the response the
- * reduced MBS service area in the redMbsServArea attribute". "The MB-SMF service area" is this MB-SMF
+/* TS 29.532 V18.6.0 clause 5.3.2.2.1 (Create) and clause 5.3.2.3.1 (Update), step 2b, quoted without
+ * elision: "If the MBS service area received in the request cannot be entirely covered by the MB-SMF
+ * service area, the MB-SMF shall reduce the MBS service area to be within the MB-SMF service area and
+ * continue the Update service operation using the reduced MBS service area."  The reduced area is then
+ * reported in the redMbsServArea attribute.  The MB-SMF service area is this MB-SMF
  * instance's own configured coverage (smf.yaml mbs.serviceArea, self.mbs_service_area below) -- no
  * clause, config option or documented default names what an unconfigured MB-SMF's own coverage is
  * (rule 12), so absent configuration means no restriction: every requested TAI is accepted

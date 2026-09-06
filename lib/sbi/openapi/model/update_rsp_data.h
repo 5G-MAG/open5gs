@@ -23,8 +23,8 @@ extern "C" {
  * handler previously always answered "204 No Content". Hand-patched here, mirroring
  * create_rsp_data.h's own create/free/convertToJSON/parseFromJSON pattern, matching the vendored
  * TS29532_Nmbsmf_MBSSession.yaml's own UpdateRspData definition: one required field, mbsSession
- * (ExtMbsSession). TS 29.532 V18.6.0 table 6.2.6.2.24-1 (Type: UpdateRspData); cl.5.3.2.3.1 step
- * 2b: "the MB-SMF shall return a '200 OK' response and provide in the response the representation
+ * (ExtMbsSession). TS 29.532 V18.6.0 table 6.2.6.2.24-1 (Type: UpdateRspData); clause 5.3.2.3.1
+ * step 2b returns 200 OK and requires the MB-SMF to "provide in the response the representation
  * of the updated MBS session including the reduced MBS service area in the redMbsServArea
  * attribute". */
 typedef struct OpenAPI_update_rsp_data_s OpenAPI_update_rsp_data_t;

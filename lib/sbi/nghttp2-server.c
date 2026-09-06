@@ -1184,8 +1184,10 @@ static int on_frame_recv(nghttp2_session *session,
                  * overflow, regardless of whether the overflow was the new OGS_MAX_SDU_LEN check
                  * above (a real request that is genuinely too large) or a real allocation
                  * failure (the pre-existing behaviour for that case, unchanged in kind, now also
-                 * answered rather than silently dropped). TS 29.500 V18.10.0 table 5.2.7.1-1: 413
-                 * mandatory for PATCH/POST. */
+                 * answered rather than silently dropped). TS 29.500 V18.10.0 clause 5.2.7.1:
+                 * "If the received HTTP request contains content larger than the NF is able to
+                 * process, the NF shall reject the HTTP request with the HTTP status code"
+                 * 413 Content Too Large. Table 5.2.7.1-1 marks 413 mandatory for PATCH/POST. */
                 ogs_error("[DROP] Overflow");
                 ogs_assert(true ==
                     ogs_sbi_server_send_error(stream,
