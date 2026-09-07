@@ -1908,7 +1908,9 @@ smf_sess_t *smf_sess_find_by_teid(uint32_t teid)
 
 smf_sess_t *smf_sess_find_by_seid(uint64_t seid)
 {
-    return ogs_hash_get(self.smf_n4_seid_hash, &seid, sizeof(seid));
+    smf_sess_t *sess = ogs_hash_get(self.smf_n4_seid_hash, &seid, sizeof(seid));
+    if (sess && sess != smf_sess_find_by_id(sess->id)) sess = NULL;
+    return sess;
 }
 
 smf_sess_t *smf_sess_find_by_apn(smf_ue_t *smf_ue, char *apn, uint8_t rat_type)
@@ -3590,7 +3592,9 @@ void smf_mbs_sess_release(smf_mbs_sess_t *smf_mbs_sess)
 
 smf_mbs_sess_t *smf_mbs_sess_find_by_seid(uint64_t seid)
 {
-    return ogs_hash_get(self.smf_n4_seid_hash, &seid, sizeof(seid));
+    smf_mbs_sess_t *mbs_sess = ogs_hash_get(self.smf_n4_seid_hash, &seid, sizeof(seid));
+    if (mbs_sess && mbs_sess != smf_mbs_sess_find_by_id(mbs_sess->id)) mbs_sess = NULL;
+    return mbs_sess;
 }
 
 // TODO (borieher): Select UPF based on MBS parameters

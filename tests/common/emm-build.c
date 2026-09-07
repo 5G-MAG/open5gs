@@ -67,7 +67,7 @@ ogs_pkbuf_t *testemm_build_attach_request(
         *ue_additional_security_capability =
             &attach_request->ue_additional_security_capability;
 
-    uint8_t classmark_3[11] = "\x60\x14\x04\xef\x65\x23\x3b\x88\x78\xd2\x90";
+    uint8_t classmark_3[11] = {0x60, 0x14, 0x04, 0xef, 0x65, 0x23, 0x3b, 0x88, 0x78, 0xd2, 0x90};
 
     ogs_assert(test_ue);
     ogs_assert(esmbuf);
@@ -327,8 +327,8 @@ ogs_pkbuf_t *testemm_build_authentication_failure(
 
     uint8_t ak[OGS_AK_LEN];
 #if 0
-    uint8_t sqn_ms[OGS_SQN_LEN] = "\x00\x00\x11\x22\x33\x44";
-    uint8_t sqn_ms[OGS_SQN_LEN] = "\x00\x00\x00\x00\x1f\x60"; /* Issues 482 */
+    uint8_t sqn_ms[OGS_SQN_LEN] = {0x00, 0x00, 0x11, 0x22, 0x33, 0x44};
+    uint8_t sqn_ms[OGS_SQN_LEN] = {0x00, 0x00, 0x00, 0x00, 0x1f, 0x60}; /* Issues 482 */
 #endif
     uint8_t sqn[OGS_SQN_LEN];
     uint8_t mac_s[OGS_MAC_S_LEN];
@@ -591,7 +591,7 @@ ogs_pkbuf_t *testemm_build_tau_request(
         *ue_additional_security_capability =
             &tau_request->ue_additional_security_capability;
 
-    uint8_t classmark_3[11] = "\x60\x14\x04\xef\x65\x23\x3b\x88\x78\xd2\x90";
+    uint8_t classmark_3[11] = {0x60, 0x14, 0x04, 0xef, 0x65, 0x23, 0x3b, 0x88, 0x78, 0xd2, 0x90};
 
     ogs_assert(test_ue);
 

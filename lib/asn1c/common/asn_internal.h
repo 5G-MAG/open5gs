@@ -121,7 +121,7 @@ void CC_PRINTFLIKE(1, 2) ASN_DEBUG_f(const char *fmt, ...);
 #if __STDC_VERSION__ >= 199901L
 #define ASN_DEBUG(...) do{}while(0)
 #else   /* not C99 */
-static void CC_PRINTFLIKE(1, 2) ASN_DEBUG(const char *fmt, ...) { (void)fmt; }
+[[maybe_unused]] static void CC_PRINTFLIKE(1, 2) ASN_DEBUG([[maybe_unused]] const char *fmt, ...) {}
 #endif  /* C99 or better */
 #endif	/* ASN_EMIT_DEBUG */
 #endif	/* ASN_DEBUG */
