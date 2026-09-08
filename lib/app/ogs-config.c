@@ -19,6 +19,9 @@
 
 #include "ogs-app.h"
 
+#define DEFAULT_MAX_NUM_OF_TMGIS 20
+#define DEFAULT_MAX_NUM_OF_MBS_SESSIONS 20
+
 static ogs_app_global_conf_t global_conf;
 static ogs_app_local_conf_t local_conf;
 
@@ -114,6 +117,8 @@ static int global_conf_prepare(void)
 
     global_conf.max.ue = MAX_NUM_OF_UE;
     global_conf.max.peer = MAX_NUM_OF_PEER;
+    global_conf.max.mbs.tmgis = DEFAULT_MAX_NUM_OF_TMGIS;
+    global_conf.max.mbs.mbs_sessions = DEFAULT_MAX_NUM_OF_MBS_SESSIONS;
 
     ogs_pkbuf_default_init(&global_conf.pkbuf_config);
 
@@ -301,6 +306,32 @@ int ogs_app_parse_global_conf(ogs_yaml_iter_t *parent)
                             !strcmp(max_key, "enb")) {
                     const char *v = ogs_yaml_iter_value(&max_iter);
                     if (v) global_conf.max.gtp_peer = atoi(v);
+                } else if (!strcmp(max_key, "mbs")) {
+                    ogs_yaml_iter_t mbs_iter;
+                    ogs_yaml_iter_recurse(&max_iter, &mbs_iter);
+                    while (ogs_yaml_iter_next(&mbs_iter)) {
+                        const char *mbs_key = ogs_yaml_iter_key(&mbs_iter);
+                        ogs_assert(mbs_key);
+                        if (!strcmp(mbs_key, "tmgis")) {
+                            const char *v = ogs_yaml_iter_value(&mbs_iter);
+                            int val = v?atoi(v):0;
+                            if (val <= 0) {
+                                ogs_warn("Invalid value in configuration: %s/%s/%s must be greater than 0, using %i", global_key, max_key, mbs_key, DEFAULT_MAX_NUM_OF_TMGIS);
+                                val = DEFAULT_MAX_NUM_OF_TMGIS;
+                            }
+                            global_conf.max.mbs.tmgis = val;
+                        } else if (!strcmp(mbs_key, "mbs_sessions")) {
+                            const char *v = ogs_yaml_iter_value(&mbs_iter);
+                            int val = v?atoi(v):0;
+                            if (val <= 0) {
+                                ogs_warn("Invalid value in configuration: %s/%s/%s must be greater than 0, using %i", global_key, max_key, mbs_key, DEFAULT_MAX_NUM_OF_MBS_SESSIONS);
+                                val = DEFAULT_MAX_NUM_OF_MBS_SESSIONS;
+                            }
+                            global_conf.max.mbs.mbs_sessions = val;
+                        } else {
+                            ogs_warn("unknown key `%s/%s/%s`", global_key, max_key, mbs_key);
+                        }
+                    }
                 } else
                     ogs_warn("unknown key `%s`", max_key);
             }

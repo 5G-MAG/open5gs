@@ -534,6 +534,7 @@ typedef struct smf_mbs_sess_s {
     ogs_mbs_session_id_t mbs_session_id;
     // expiration_time is stored in TMGI
     ogs_tmgi_t *tmgi;
+    bool tmgi_allocated;
     ogs_ssm_t *ssm;
     char *service_type;
 
@@ -688,7 +689,8 @@ ogs_tmgi_t *smf_tmgi_allocate(char *expiration_time);
 void smf_tmgi_deallocate(ogs_tmgi_t *tmgi);
 ogs_tmgi_t *smf_tmgi_find_by_tmgi(ogs_tmgi_t *tmgi_to_find);
 
-smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, ogs_ssm_t *ssm, char *service_type, ogs_mbs_service_area_t *mbs_service_area, ogs_ext_mbs_service_area_t *ext_mbs_service_area);
+smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, bool tmgi_allocated_for_mbs_session, ogs_ssm_t *ssm, const char *service_type,
+                                    ogs_mbs_service_area_t *mbs_service_area, ogs_ext_mbs_service_area_t *ext_mbs_service_area);
 void smf_mbs_sess_release(smf_mbs_sess_t *smf_mbs_sess);
 
 smf_mbs_sess_t *smf_mbs_sess_find_by_id(ogs_pool_id_t id);

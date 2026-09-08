@@ -86,7 +86,7 @@ void ogs_pfcp_context_init(void)
     ogs_pool_init(&ogs_pfcp_dev_pool, OGS_MAX_NUM_OF_DEV);
     ogs_pool_init(&ogs_pfcp_subnet_pool, OGS_MAX_NUM_OF_SUBNET);
 
-    ogs_pool_init(&ogs_pfcp_llssm_pool, OGS_MAX_NUM_OF_MBS_SESSIONS);
+    ogs_pool_init(&ogs_pfcp_llssm_pool, ogs_global_conf()->max.mbs.mbs_sessions);
 
     self.object_teid_hash = ogs_hash_make();
     ogs_assert(self.object_teid_hash);

@@ -16,6 +16,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
+#include <inttypes.h>
 
 #include "context.h"
 #include "gtp-path.h"
@@ -120,9 +121,9 @@ void smf_context_init(void)
     ogs_pool_init(&smf_n4_seid_pool, ogs_app()->pool.sess);
     ogs_pool_random_id_generate(&smf_n4_seid_pool);
 
-    ogs_pool_init(&tmgi_pool, OGS_MAX_NUM_OF_TMGI);
+    ogs_pool_init(&tmgi_pool, ogs_global_conf()->max.mbs.tmgis);
     ogs_list_init(&self.tmgi_list);
-    ogs_pool_init(&smf_mbs_sess_pool, OGS_MAX_NUM_OF_MBS_SESSIONS);
+    ogs_pool_init(&smf_mbs_sess_pool, ogs_global_conf()->max.mbs.mbs_sessions);
     ogs_list_init(&self.smf_mbs_sess_list);
 
     self.supi_hash = ogs_hash_make();
@@ -202,11 +203,11 @@ bool smf_context_have_matching_mbs_session_id(smf_mbs_sess_t *mbs_session)
         void *key;
         int klen;
 
-	ogs_debug("Checking MBS Session ID TMGI");
+        ogs_debug("Checking MBS Session ID TMGI");
         key = smf_mbs_sessions_by_tmgi_key(mbs_session->mbs_session_id.tmgi, &klen);
         if (key) {
             ogs_list_t *mbs_sess_list = (ogs_list_t*)ogs_hash_get(self.smf_mbs_sessions_by_tmgi, key, klen);
-	    ogs_debug("Found %i sessions matching TMGI", mbs_sess_list?ogs_list_count(mbs_sess_list):0);
+            ogs_debug("Found %i sessions matching TMGI", mbs_sess_list?ogs_list_count(mbs_sess_list):0);
             if (smf_mbs_sess_list_service_areas_overlap(mbs_sess_list, mbs_session)) return true;
         }
     }
@@ -214,7 +215,7 @@ bool smf_context_have_matching_mbs_session_id(smf_mbs_sess_t *mbs_session)
     if (mbs_session->mbs_session_id.is_ssm) {
         void *key;
         int klen;
-	ogs_debug("Checking MBS Session ID SSM");
+        ogs_debug("Checking MBS Session ID SSM");
         key = smf_mbs_sessions_by_ssm_key(mbs_session->mbs_session_id.ssm, &klen);
         if (key) {
             ogs_list_t *mbs_sess_list = (ogs_list_t*)ogs_hash_get(self.smf_mbs_sessions_by_ssm, key, klen);
@@ -3256,8 +3257,8 @@ static ogs_tmgi_t *smf_tmgi_add(void)
 
     ogs_pool_alloc(&tmgi_pool, &tmgi);
     if (!tmgi) {
-        ogs_error("Maximum number of TMGIs[%d] reached",
-                    OGS_MAX_NUM_OF_TMGI);
+        ogs_error("Maximum number of TMGIs[%" PRIu64 "] reached",
+                  ogs_global_conf()->max.mbs.tmgis);
         return NULL;
     }
     memset(tmgi, 0, sizeof *tmgi);
@@ -3371,31 +3372,11 @@ ogs_tmgi_t *smf_tmgi_find_by_tmgi(ogs_tmgi_t *tmgi_to_find)
         ogs_assert(tmgi);
 
         // Check same MBS Session ID
-        if (strcmp(tmgi->mbs_service_id, tmgi_to_find->mbs_service_id) == 0) {
-            char *tmgi_mcc = NULL;
-            char *tmgi_mnc = NULL;
-            char *tmgi_to_find_mcc = NULL;
-            char *tmgi_to_find_mnc = NULL;
-
-            tmgi_mcc = ogs_plmn_id_mcc_string(&tmgi->plmn_id);
-            tmgi_mnc = ogs_plmn_id_mnc_string(&tmgi->plmn_id);
-            tmgi_to_find_mcc = ogs_plmn_id_mcc_string(&tmgi_to_find->plmn_id);
-            tmgi_to_find_mnc = ogs_plmn_id_mnc_string(&tmgi_to_find->plmn_id);
-
-            // Check same PLMN ID
-            if (strcmp(tmgi_mcc, tmgi_to_find_mcc) == 0 && \
-                    strcmp(tmgi_mnc, tmgi_to_find_mnc) == 0) {
-                ogs_free(tmgi_mcc);
-                ogs_free(tmgi_mnc);
-                ogs_free(tmgi_to_find_mcc);
-                ogs_free(tmgi_to_find_mnc);
-                return tmgi;
-            }
-
-            ogs_free(tmgi_mcc);
-            ogs_free(tmgi_mnc);
-            ogs_free(tmgi_to_find_mcc);
-            ogs_free(tmgi_to_find_mnc);
+        if (ogs_plmn_id_mcc(&tmgi->plmn_id) == ogs_plmn_id_mcc(&tmgi_to_find->plmn_id) &&
+            ogs_plmn_id_mnc(&tmgi->plmn_id) == ogs_plmn_id_mnc(&tmgi_to_find->plmn_id) &&
+            ogs_plmn_id_mnc_len(&tmgi->plmn_id) == ogs_plmn_id_mnc_len(&tmgi_to_find->plmn_id) &&
+            strcmp(tmgi->mbs_service_id, tmgi_to_find->mbs_service_id) == 0) {
+            return tmgi;
         }
     }
 
@@ -3408,13 +3389,13 @@ static smf_mbs_sess_t *smf_mbs_sess_add(void)
 
     ogs_pool_id_calloc(&smf_mbs_sess_pool, &smf_mbs_sess);
     if (!smf_mbs_sess) {
-        ogs_error("Maximum number of MBS Sessions[%d] reached",
-                    OGS_MAX_NUM_OF_MBS_SESSIONS);
+        ogs_error("Maximum number of MBS Sessions[%" PRIu64 "] reached",
+                    ogs_global_conf()->max.mbs.mbs_sessions);
         return NULL;
     }
 
     smf_mbs_sess->index = ogs_pool_index(&smf_mbs_sess_pool, smf_mbs_sess);
-    ogs_assert(smf_mbs_sess->index > 0 && smf_mbs_sess->index <= OGS_MAX_NUM_OF_MBS_SESSIONS);
+    ogs_assert(smf_mbs_sess->index > 0 && smf_mbs_sess->index <= ogs_global_conf()->max.mbs.mbs_sessions);
 
     // Set mbsSessionRef
     smf_mbs_sess->mbs_session_ref = ogs_msprintf("%d", smf_mbs_sess->index);
@@ -3450,7 +3431,9 @@ static void smf_mbs_sess_free(smf_mbs_sess_t *smf_mbs_sess)
     if (smf_mbs_sess->service_type)
         ogs_free(smf_mbs_sess->service_type);
 
-    // TMGI is allocated/freed separately but we need to tidy up the index hash
+    // If not allocated with MBS session, TMGI is allocated/freed separately
+    if (smf_mbs_sess->tmgi_allocated && smf_mbs_sess->tmgi)
+        smf_tmgi_deallocate(smf_mbs_sess->tmgi);
 
     if (smf_mbs_sess->mbs_session_id.is_ssm) {
         ogs_free(smf_mbs_sess->mbs_session_id.ssm);
@@ -3511,7 +3494,7 @@ static void smf_mbs_sess_remove_all(void)
         smf_mbs_sess_remove(smf_mbs_sess);
 }
 
-smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, ogs_ssm_t *ssm, char *service_type, ogs_mbs_service_area_t *mbs_service_area, ogs_ext_mbs_service_area_t *ext_mbs_service_area)
+smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, bool tmgi_allocated, ogs_ssm_t *ssm, const char *service_type, ogs_mbs_service_area_t *mbs_service_area, ogs_ext_mbs_service_area_t *ext_mbs_service_area)
 {
     smf_mbs_sess_t *smf_mbs_sess = NULL;
 
@@ -3524,6 +3507,7 @@ smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, ogs_ssm_t *ssm, char *serv
     }
 
     smf_mbs_sess->tmgi = tmgi;
+    smf_mbs_sess->tmgi_allocated = tmgi_allocated;
 
     smf_mbs_sess->service_type = ogs_strdup(service_type);
 
@@ -3556,7 +3540,7 @@ smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, ogs_ssm_t *ssm, char *serv
     }
 
     if (smf_context_have_matching_mbs_session_id(smf_mbs_sess)) {
-	ogs_debug("New MBS Session collides with an existing MBS Session, aborting create");
+        ogs_debug("New MBS Session collides with an existing MBS Session, aborting create");
         smf_mbs_sess_free(smf_mbs_sess);
         smf_mbs_sess = NULL;
     } else {
@@ -3740,7 +3724,7 @@ static void smf_mbs_sessions_by_tmgi_add_mbs_sess(smf_mbs_sess_t *mbs_sess)
     void *key;
 
     if (mbs_sess && mbs_sess->mbs_session_id.is_tmgi) {
-	key = smf_mbs_sessions_by_tmgi_key(mbs_sess->mbs_session_id.tmgi, &klen);
+        key = smf_mbs_sessions_by_tmgi_key(mbs_sess->mbs_session_id.tmgi, &klen);
         ogs_list_t *mbs_sess_list = (ogs_list_t*)ogs_hash_get(self.smf_mbs_sessions_by_tmgi, key, klen);
         if (!mbs_sess_list) {
             mbs_sess_list = (ogs_list_t*)ogs_calloc(1, sizeof(ogs_list_t));

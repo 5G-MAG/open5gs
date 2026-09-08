@@ -152,8 +152,8 @@ ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
 
     if (mbs_sess->mbs_session_id.is_tmgi) {
         mbs_session_identifier.tmgif = 1;
-        memcpy(mbs_session_identifier.tmgi.mbs_service_id,
-            mbs_sess->mbs_session_id.tmgi->mbs_service_id, OGS_MAX_MBS_SERVICE_ID_LEN);
+        ogs_uint24_t mbs_svc_id = ogs_htobe24(ogs_uint24_from_string(mbs_sess->mbs_session_id.tmgi->mbs_service_id));
+        memcpy(mbs_session_identifier.tmgi.mbs_service_id, &mbs_svc_id, sizeof(mbs_session_identifier.tmgi.mbs_service_id));
 
         // TODO (borieher): Check if I can copy plmn_id[3] directly
         mbs_session_identifier.tmgi.mcc3 = mbs_sess->mbs_session_id.tmgi->plmn_id.mcc3;

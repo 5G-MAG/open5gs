@@ -16,6 +16,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
+#include <inttypes.h>
 
 #include "ngap-path.h"
 
@@ -72,7 +73,7 @@ void amf_context_init(void)
     ogs_pool_init(&m_tmsi_pool, ogs_global_conf()->max.ue*2);
     ogs_pool_random_id_generate(&m_tmsi_pool);
 
-    ogs_pool_init(&amf_mbs_context_pool, OGS_MAX_NUM_OF_MBS_SESSIONS);
+    ogs_pool_init(&amf_mbs_context_pool, ogs_global_conf()->max.mbs.mbs_sessions);
     ogs_list_init(&self.amf_mbs_context_list);
 
 #if 0 /* For debugging : Verify whether there are duplicates of M_TMSI. */
@@ -3075,14 +3076,14 @@ static amf_mbs_context_t *amf_mbs_context_add(void)
 
     ogs_pool_alloc(&amf_mbs_context_pool, &amf_mbs_context);
     if (!amf_mbs_context) {
-        ogs_error("Maximum number of MBS Contexts[%d] reached",
-                    OGS_MAX_NUM_OF_MBS_SESSIONS);
+        ogs_error("Maximum number of MBS Contexts[%" PRIu64 "] reached",
+                    ogs_global_conf()->max.mbs.mbs_sessions);
         return NULL;
     }
     memset(amf_mbs_context, 0, sizeof *amf_mbs_context);
 
     amf_mbs_context->index = ogs_pool_index(&amf_mbs_context_pool, amf_mbs_context);
-    ogs_assert(amf_mbs_context->index > 0 && amf_mbs_context->index <= OGS_MAX_NUM_OF_MBS_SESSIONS);
+    ogs_assert(amf_mbs_context->index > 0 && amf_mbs_context->index <= ogs_global_conf()->max.mbs.mbs_sessions);
 
     // Set mbsContextRef
     amf_mbs_context->mbs_context_ref = ogs_msprintf("%d", amf_mbs_context->index);
