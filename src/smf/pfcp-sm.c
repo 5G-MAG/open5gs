@@ -348,13 +348,8 @@ void smf_pfcp_state_associated(ogs_fsm_t *s, smf_event_t *e)
                         // and stall every N4mb Session Establishment Response. Non-MBS responses fall through to the
                         // regular-session path below.
             if (message->pfcp_session_establishment_response.mbs_session_n4mb_information.presence) {
-                // Find MBS Session by the SEID
-                if (message->h.seid_presence && message->h.seid != 0) {
-                    mbs_sess = smf_mbs_sess_find_by_seid(message->h.seid);
-                } else if (xact->local_seid) { /* rx no SEID or SEID=0 */
-                    mbs_sess = smf_mbs_sess_find_by_seid(xact->local_seid);
-                }
-
+                // mbs_sess was already resolved from the same SEID at the top of this function, by the
+                // same two-way lookup, and nothing reassigns it in between.
                 smf_n4mb_handle_session_establishment_response(mbs_sess, xact,
                     &message->pfcp_session_establishment_response);
                 break;
@@ -401,12 +396,7 @@ void smf_pfcp_state_associated(ogs_fsm_t *s, smf_event_t *e)
                                 // Handles an MBS N4mb session's deletion response, for which `sess`, looked up from the
                                 // regular smf_sess_t pool at the top of this function, is always NULL. Mirrors the
                                 // OGS_PFCP_SESSION_ESTABLISHMENT_RESPONSE_TYPE case above.
-                if (message->h.seid_presence && message->h.seid != 0) {
-                    mbs_sess = smf_mbs_sess_find_by_seid(message->h.seid);
-                } else if (xact->local_seid) { /* rx no SEID or SEID=0 */
-                    mbs_sess = smf_mbs_sess_find_by_seid(xact->local_seid);
-                }
-
+                // mbs_sess was already resolved from the same SEID at the top of this function, as above.
                 if (mbs_sess) {
                     smf_n4mb_handle_session_deletion_response(mbs_sess, xact,
                         &message->pfcp_session_deletion_response);
