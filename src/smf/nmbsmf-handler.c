@@ -116,8 +116,13 @@ bool smf_nmbsmf_handle_tmgi_allocate(
 
     // Error checking for TmgiAllocate->tmgi_number
     if (TmgiAllocate->tmgi_number) {
-        if (TmgiAllocate->tmgi_number >= NMBSMF_TMGI_MIN_TMGI_NUMBER && \
-                TmgiAllocate->tmgi_number <= NMBSMF_TMGI_MAX_TMGI_NUMBER) {
+        /* The ceiling is the smaller of what the attribute may carry and what this MB-SMF could ever
+         * hold: a tmgiNumber above either is a request that no amount of waiting would satisfy, which
+         * is what TS 29.532 V18.6.0 table 6.1.3.2.3.1-3 answers with 403 MANDATORY_IE_INCORRECT in the
+         * else branch below. Being merely unsatisfiable right now is a different answer, handled inside. */
+        if (TmgiAllocate->tmgi_number >= NMBSMF_TMGI_MIN_TMGI_NUMBER &&
+                TmgiAllocate->tmgi_number <=
+                    ogs_min(NMBSMF_TMGI_MAX_TMGI_NUMBER, OGS_MAX_NUM_OF_TMGI)) {
 
             // Check the number of TMGIs available, after releasing any whose advertised
             // expiration time has passed -- see smf_tmgi_reclaim_expired().
@@ -126,20 +131,25 @@ bool smf_nmbsmf_handle_tmgi_allocate(
 
             if ((smf_tmgi_count() + TmgiAllocate->tmgi_number) > OGS_MAX_NUM_OF_TMGI) {
                 ogs_error("TMGI Allocate: Cannot allocate %d TMGIs", TmgiAllocate->tmgi_number);
-                                // Custom error handling, not the 3GPP TS
-                                // 403 Forbidden, not 5xx: this is a deterministic, client-triggerable condition, this fork's
-                                // own pool size limit, rather than a server fault.
-                                // smf_nmbsmf_handle_mbs_session_create() reports the same underlying condition the same way.
-                ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
-                    message, "Forbidden", "Cannot allocate [tmgiNumber] of TMGIs", NMBSMF_TMGI_INSUFFICIENT_RESOURCES);
+                /* 500, not 403: the request is within the ceiling checked above, so it is a valid request
+                 * that cannot be met at this moment, and repeating it later may succeed once TMGIs are
+                 * released. TS 29.532 V18.6.0 table 6.1.3.2.3.1-3 lists no application error for this
+                 * case, so the status comes from the common table.
+                 *
+                 * TS 29.500 V18.10.0 table 5.2.7.2-1, row INSUFFICIENT_RESOURCES, gives "500 Internal
+                 * Server Error" for "The request is rejected due to insufficient resources." */
+                ogs_sbi_server_send_error(stream,
+                    OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+                    message, "Insufficient resources", "Cannot allocate [tmgiNumber] of TMGIs",
+                    NMBSMF_TMGI_INSUFFICIENT_RESOURCES);
                 rv = OGS_ERROR;
                 goto cleanup;
             }
         } else {
             ogs_error("TMGI Allocate: allocate error, incorrect number in tmgi_number");
-                        // 403 Forbidden, not 400: TS 29.532 Table 6.1.3.2.3.1-3, the POST /tmgi response table, maps
-                        // MANDATORY_IE_INCORRECT, "if the required TMGI number for TMGI allocation is not valid," to
-                        // 403 Forbidden.
+            /* 403 Forbidden, not 400: TS 29.532 V18.6.0 table 6.1.3.2.3.1-3, the POST /tmgi response
+             * table, maps MANDATORY_IE_INCORRECT, "if the required TMGI number for TMGI allocation is
+             * not valid," to 403 Forbidden. */
             ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
                 message, "Mandatory IE incorrect", "Requested TMGI Allocate failed, incorrect number in [tmgiNumber]",
                 NMBSMF_TMGI_MANDATORY_IE_INCORRECT);
