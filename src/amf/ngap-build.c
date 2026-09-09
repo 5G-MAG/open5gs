@@ -2753,15 +2753,10 @@ ogs_pkbuf_t *ngap_build_broadcast_session_setup_request(amf_mbs_context_t *mbs_c
 
     // S-NSSAI
     NGAP_S_NSSAI_t *s_NSSAI = NULL;
-    // TODO (borieher): Remove this, after using it
     NGAP_SD_t *sD = NULL;
 
     // MBS Service Area
     NGAP_MBS_ServiceArea_t *mBS_ServiceArea = NULL;
-    NGAP_MBS_ServiceAreaInformationList_t *mBS_ServiceAreaInformationList = NULL;
-    NGAP_MBS_ServiceAreaInformationItem_t *mBS_ServiceAreaInformationItem = NULL;
-    // MBS Area Session ID
-    NGAP_MBS_AreaSessionID_t *mBS_AreaSessionID = NULL;
     // MBS Service Area Information
     NGAP_MBS_ServiceAreaInformation_t *mBS_ServiceAreaInformation = NULL;
     NGAP_MBS_ServiceAreaTAIList_t *mBS_ServiceAreaTAIList = NULL;
@@ -2816,19 +2811,17 @@ ogs_pkbuf_t *ngap_build_broadcast_session_setup_request(amf_mbs_context_t *mbs_c
 
     s_NSSAI = &ie->value.choice.S_NSSAI;
 
-    // TODO (borieher): Get S-NSSAI from the amf_context -> self, fix this
-    //ogs_asn_uint8_to_OCTET_STRING(amf_self()->plmn_support[0].s_nssai[0].sst, &s_NSSAI->sST);
-    //ogs_asn_uint24_to_OCTET_STRING(amf_self()->plmn_support[0].s_nssai[0].sd, s_NSSAI->sD);
+        // The S-NSSAI comes from the MB-SMF's own ContextCreate request, which
+        // amf_namf_handle_mbs_broadcast_context_create() stores on mbs_context, not from a fixed value.
+    ogs_asn_uint8_to_OCTET_STRING(mbs_context->s_nssai.sst, &s_NSSAI->sST);
 
-    uint8_t sst = 1;
-    ogs_asn_uint8_to_OCTET_STRING(sst, &s_NSSAI->sST);
+    if (mbs_context->s_nssai.sd.v != OGS_S_NSSAI_NO_SD_VALUE) {
+        sD = CALLOC(1, sizeof(NGAP_SD_t));
+        ogs_assert(sD);
+        s_NSSAI->sD = sD;
 
-    sD = CALLOC(1, sizeof(NGAP_SD_t));
-    ogs_assert(sD);
-    s_NSSAI->sD = sD;
-
-    ogs_uint24_t sd = ogs_uint24_from_string(ogs_strdup("33"));
-    ogs_asn_uint24_to_OCTET_STRING(sd, s_NSSAI->sD);
+        ogs_asn_uint24_to_OCTET_STRING(mbs_context->s_nssai.sd, s_NSSAI->sD);
+    }
 
     // MBS Service Area - 9.3.1.208 (M)
     ie = CALLOC(1, sizeof(NGAP_BroadcastSessionSetupRequestIEs_t));
@@ -2841,48 +2834,75 @@ ogs_pkbuf_t *ngap_build_broadcast_session_setup_request(amf_mbs_context_t *mbs_c
 
     mBS_ServiceArea = &ie->value.choice.MBS_ServiceArea;
 
-    mBS_ServiceAreaInformationList = CALLOC(1, sizeof(NGAP_MBS_ServiceAreaInformationList_t));
-    ogs_assert(mBS_ServiceAreaInformationList);
+        // The CHOICE arm follows mbs_context->location_dependent, which records which of the two
+        // mutually-exclusive request schemas the consumer used (mbsServiceArea or mbsServiceAreaInfoList; see
+        // amf_namf_handle_mbs_broadcast_context_create()). Always claiming "locationdependent"
+        // (TS 38.413 cl.9.3.1.208's other arm) would need a real per-area MBS Area Session ID, which
+        // TS29571_CommonData.yaml's MbsServiceAreaInfo makes mandatory per entry, and none exists for a
+        // location-independent request. The real area_session_id is used where one exists.
+    if (mbs_context->location_dependent) {
+        NGAP_MBS_ServiceAreaInformationList_t *service_area_info_list =
+                CALLOC(1, sizeof(NGAP_MBS_ServiceAreaInformationList_t));
+        NGAP_MBS_ServiceAreaInformationItem_t *service_area_info_item =
+                CALLOC(1, sizeof(NGAP_MBS_ServiceAreaInformationItem_t));
+        ogs_assert(service_area_info_list);
+        ogs_assert(service_area_info_item);
 
-    // Broadcast service is location dependent
-    mBS_ServiceArea->present = NGAP_MBS_ServiceArea_PR_locationdependent;
-    mBS_ServiceArea->choice.locationdependent = mBS_ServiceAreaInformationList;
+        mBS_ServiceArea->present = NGAP_MBS_ServiceArea_PR_locationdependent;
+        mBS_ServiceArea->choice.locationdependent = service_area_info_list;
 
-    mBS_ServiceAreaInformationItem = CALLOC(1, sizeof(NGAP_MBS_ServiceAreaInformationItem_t));
-    ogs_assert(mBS_ServiceAreaInformationItem);
-    ASN_SEQUENCE_ADD(mBS_ServiceAreaInformationList, mBS_ServiceAreaInformationItem);
+        ASN_SEQUENCE_ADD(service_area_info_list, service_area_info_item);
+        service_area_info_item->mBS_AreaSessionID = mbs_context->area_session_id;
+        mBS_ServiceAreaInformation = &service_area_info_item->mBS_ServiceAreaInformation;
+    } else {
+        mBS_ServiceAreaInformation = CALLOC(1, sizeof(NGAP_MBS_ServiceAreaInformation_t));
+        ogs_assert(mBS_ServiceAreaInformation);
 
-    // MBS Area Session ID - 9.3.1.207 (M)
-    mBS_AreaSessionID = &mBS_ServiceAreaInformationItem->mBS_AreaSessionID;
-    // TODO (borieher): Fill the MBS Area Session ID without hardcoded values
-    *mBS_AreaSessionID = 13;
-
-    // MBS Service Area Information - 9.3.1.209 (M)
-    mBS_ServiceAreaInformation = &mBS_ServiceAreaInformationItem->mBS_ServiceAreaInformation;
-    // TODO (borieher): Fill it
+        mBS_ServiceArea->present = NGAP_MBS_ServiceArea_PR_locationindependent;
+        mBS_ServiceArea->choice.locationindependent = mBS_ServiceAreaInformation;
+    }
 
     mBS_ServiceAreaTAIList = CALLOC(1, sizeof(NGAP_MBS_ServiceAreaTAIList_t));
     ogs_assert(mBS_ServiceAreaTAIList);
     mBS_ServiceAreaInformation->mBS_ServiceAreaTAIList = mBS_ServiceAreaTAIList;
 
-    // TODO (borieher): This should come from the MB-SMF request to the AMF
-    // Send all the TAIs of all gNBs connected
-    ogs_list_for_each(&amf_self()->gnb_list, gnb) {
-        // TAI - 9.3.3.11 (M)
-        tAI = CALLOC(1, sizeof(NGAP_TAI_t));
-        ogs_assert(tAI);
-        ASN_SEQUENCE_ADD(mBS_ServiceAreaTAIList, tAI);
-
-        int i;
-        for (i = 0; i < gnb->num_of_supported_ta_list; i++) {
+        // Sends the TAI list the request carried, which
+        // amf_namf_handle_mbs_broadcast_context_create() stores on mbs_context when present, rather than every
+        // connected gNB's own TAI. Falls back to that only when the request used mbsServiceAreaInfoList
+        // instead. NOT IMPLEMENTED: NCGI and NCGI-TAI-list forwarding, a separate gap.
+    if (mbs_context->mbs_service_area && mbs_context->mbs_service_area->tai_list) {
+        ogs_tai_t *tai_entry;
+        ogs_list_for_each(mbs_context->mbs_service_area->tai_list, tai_entry) {
             ogs_5gs_tai_t tai;
-            // Grab the first PLMN only
-            // PLMN Identity - 9.3.3.5 (M)
-            tai.plmn_id = gnb->supported_ta_list[i].bplmn_list[0].plmn_id;
-            // TAC - 9.3.3.10 (M)
-            tai.tac = gnb->supported_ta_list[i].tac;
+
+            tAI = CALLOC(1, sizeof(NGAP_TAI_t));
+            ogs_assert(tAI);
+            ASN_SEQUENCE_ADD(mBS_ServiceAreaTAIList, tAI);
+
+            tai.plmn_id = tai_entry->plmn_id;
+            tai.tac = tai_entry->tac ?
+                ogs_uint24_from_string(tai_entry->tac) : ogs_uint24_from_string(ogs_strdup("0"));
 
             ogs_ngap_5gs_tai_to_ASN(&tai, tAI);
+        }
+    } else {
+        ogs_list_for_each(&amf_self()->gnb_list, gnb) {
+            // TAI - 9.3.3.11 (M)
+            tAI = CALLOC(1, sizeof(NGAP_TAI_t));
+            ogs_assert(tAI);
+            ASN_SEQUENCE_ADD(mBS_ServiceAreaTAIList, tAI);
+
+            int i;
+            for (i = 0; i < gnb->num_of_supported_ta_list; i++) {
+                ogs_5gs_tai_t tai;
+                // Grab the first PLMN only
+                // PLMN Identity - 9.3.3.5 (M)
+                tai.plmn_id = gnb->supported_ta_list[i].bplmn_list[0].plmn_id;
+                // TAC - 9.3.3.10 (M)
+                tai.tac = gnb->supported_ta_list[i].tac;
+
+                ogs_ngap_5gs_tai_to_ASN(&tai, tAI);
+            }
         }
     }
 
@@ -2890,25 +2910,49 @@ ogs_pkbuf_t *ngap_build_broadcast_session_setup_request(amf_mbs_context_t *mbs_c
     ogs_assert(mBS_ServiceAreaCellList);
     mBS_ServiceAreaInformation->mBS_ServiceAreaCellList = mBS_ServiceAreaCellList;
 
-    // TODO (borieher): This should come from the MB-SMF request to the AMF
-    // Send the NR-CGI of all gNBs connected
-    ogs_list_for_each(&amf_self()->gnb_list, gnb) {
-        // NR-CGI - 9.3.1.7 (M)
-        nR_CGI = CALLOC(1, sizeof(NGAP_NR_CGI_t));
-        ogs_assert(nR_CGI);
-        ASN_SEQUENCE_ADD(mBS_ServiceAreaCellList, nR_CGI);
+        // Sends the NCGI-TAI list the request carried, which
+        // amf_namf_handle_mbs_broadcast_context_create() stores on mbs_context when present, flattened because
+        // the wire's MBS-ServiceAreaCellList is a flat NR-CGI list while the internal ncgi_tai_list groups by
+        // TAI. Falls back to every connected gNB's own NR-CGI only when the request carried none.
+    if (mbs_context->mbs_service_area && mbs_context->mbs_service_area->ncgi_tai_list) {
+        ogs_ncgi_tai_t *ncgi_tai;
+        ogs_list_for_each(mbs_context->mbs_service_area->ncgi_tai_list, ncgi_tai) {
+            ogs_ncgi_t *ncgi_entry;
+            ogs_list_for_each(&ncgi_tai->cell_list, ncgi_entry) {
+                ogs_nr_cgi_t nr_cgi;
 
-        // PLMN Identity - 9.3.3.5 (M)
-        // NR Cell Identity (M)
-        ogs_nr_cgi_t nr_cgi;
-        ogs_plmn_id_build(&nr_cgi.plmn_id, ogs_plmn_id_mcc(&gnb->plmn_id), ogs_plmn_id_mnc(&gnb->plmn_id),
-            ogs_plmn_id_mnc_len(&gnb->plmn_id));
+                nR_CGI = CALLOC(1, sizeof(NGAP_NR_CGI_t));
+                ogs_assert(nR_CGI);
+                ASN_SEQUENCE_ADD(mBS_ServiceAreaCellList, nR_CGI);
 
-        // Build NR-CGI from the gNB ID (assuming 22 bits) + Sector ID hardcoded to 0
-        // NR-CGI is 36 bits, in case of gNB ID using 22 bits the rest (14) is the Sector ID
-        nr_cgi.cell_id = gnb->gnb_id << 14;
+                nr_cgi.plmn_id = ncgi_entry->plmn_id;
+                // NrCellId (TS 29.571): 9 hex chars, 36 bits -- same encoding ogs_nr_cgi_t.cell_id
+                // already expects.
+                nr_cgi.cell_id = ncgi_entry->nr_cell_id ?
+                    ogs_uint64_from_string(ncgi_entry->nr_cell_id) : 0;
 
-        ogs_ngap_nr_cgi_to_ASN(&nr_cgi, nR_CGI);
+                ogs_ngap_nr_cgi_to_ASN(&nr_cgi, nR_CGI);
+            }
+        }
+    } else {
+        ogs_list_for_each(&amf_self()->gnb_list, gnb) {
+            // NR-CGI - 9.3.1.7 (M)
+            nR_CGI = CALLOC(1, sizeof(NGAP_NR_CGI_t));
+            ogs_assert(nR_CGI);
+            ASN_SEQUENCE_ADD(mBS_ServiceAreaCellList, nR_CGI);
+
+            // PLMN Identity - 9.3.3.5 (M)
+            // NR Cell Identity (M)
+            ogs_nr_cgi_t nr_cgi;
+            ogs_plmn_id_build(&nr_cgi.plmn_id, ogs_plmn_id_mcc(&gnb->plmn_id), ogs_plmn_id_mnc(&gnb->plmn_id),
+                ogs_plmn_id_mnc_len(&gnb->plmn_id));
+
+            // Build NR-CGI from the gNB ID (assuming 22 bits) + Sector ID hardcoded to 0
+            // NR-CGI is 36 bits, in case of gNB ID using 22 bits the rest (14) is the Sector ID
+            nr_cgi.cell_id = gnb->gnb_id << 14;
+
+            ogs_ngap_nr_cgi_to_ASN(&nr_cgi, nR_CGI);
+        }
     }
 
     // MBS Session Setup Request Transfer - OCTET STRING (SIZE(3)) (M)
@@ -2925,6 +2969,509 @@ ogs_pkbuf_t *ngap_build_broadcast_session_setup_request(amf_mbs_context_t *mbs_c
     oCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer->size = pkbuf->len;
 
     memcpy(oCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer->buf, pkbuf->data, pkbuf->len);
+
+    return ogs_ngap_encode(&pdu);
+}
+
+/*
+ * 3GPP TS 38.413 - Release 17
+ * NG-RAN; NG Application Protocol (NGAP)
+ * Ch. 9.2.2.x - BROADCAST SESSION RELEASE REQUEST
+ *
+ * BUG FIX: this builder did not exist before -- only ngap_build_broadcast_session_setup_request() above
+ * did, which is why an MBS Broadcast session was never actually torn down over NGAP. Mirrors the setup
+ * request builder's MBS Session ID IE construction; the only mandatory IE for this message (Cause is
+ * optional and omitted here, matching this codebase's existing practice of only building mandatory IEs
+ * for other NGAP release-style messages).
+ */
+ogs_pkbuf_t *ngap_build_broadcast_session_release_request(amf_mbs_context_t *mbs_context)
+{
+    NGAP_NGAP_PDU_t pdu;
+    NGAP_InitiatingMessage_t *initiatingMessage = NULL;
+    NGAP_BroadcastSessionReleaseRequest_t *BroadcastSessionReleaseRequest = NULL;
+
+    NGAP_BroadcastSessionReleaseRequestIEs_t *ie = NULL;
+
+    // MBS Session ID
+    NGAP_MBS_SessionID_t *mBS_SessionID = NULL;
+
+    // Cause
+    NGAP_Cause_t *Cause = NULL;
+
+    ogs_assert(mbs_context);
+
+    ogs_debug("BROADCAST SESSION RELEASE REQUEST");
+
+    memset(&pdu, 0, sizeof(NGAP_NGAP_PDU_t));
+    pdu.present = NGAP_NGAP_PDU_PR_initiatingMessage;
+    pdu.choice.initiatingMessage = CALLOC(1, sizeof(NGAP_InitiatingMessage_t));
+
+    initiatingMessage = pdu.choice.initiatingMessage;
+    initiatingMessage->procedureCode = NGAP_ProcedureCode_id_BroadcastSessionRelease;
+    initiatingMessage->criticality = NGAP_Criticality_reject;
+    initiatingMessage->value.present = NGAP_InitiatingMessage__value_PR_BroadcastSessionReleaseRequest;
+
+    BroadcastSessionReleaseRequest = &initiatingMessage->value.choice.BroadcastSessionReleaseRequest;
+
+    // MBS Session ID - 9.3.1.206 (M)
+    ie = CALLOC(1, sizeof(NGAP_BroadcastSessionReleaseRequestIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(&BroadcastSessionReleaseRequest->protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_MBS_SessionID;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present = NGAP_BroadcastSessionReleaseRequestIEs__value_PR_MBS_SessionID;
+
+    mBS_SessionID = &ie->value.choice.MBS_SessionID;
+
+    ogs_ngap_5gs_tmgi_to_ASN(&mbs_context->tmgi, &mBS_SessionID->tMGI);
+
+        // Cause - 9.3.1.2 (M)
+        // Cause is mandatory for this message (38413-h30.asn: BroadcastSessionReleaseRequestIEs, "PRESENCE
+        // mandatory"); without it the PDU is malformed and a gNB rejects it ("Mandatory fields are missing",
+        // "Couldn't unpack NGAP PDU"). This is a CN-initiated release rather than a radio-triggered one, hence
+        // radioNetwork/release_due_to_5gc_generated_reason.
+    ie = CALLOC(1, sizeof(NGAP_BroadcastSessionReleaseRequestIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(&BroadcastSessionReleaseRequest->protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_Cause;
+    ie->criticality = NGAP_Criticality_ignore;
+    ie->value.present = NGAP_BroadcastSessionReleaseRequestIEs__value_PR_Cause;
+
+    Cause = &ie->value.choice.Cause;
+    Cause->present = NGAP_Cause_PR_radioNetwork;
+    Cause->choice.radioNetwork = NGAP_CauseRadioNetwork_release_due_to_5gc_generated_reason;
+
+    return ogs_ngap_encode(&pdu);
+}
+
+/*
+ * Item B-3: Namf_MBSBroadcast_ContextUpdate (TS 29.518 cl.5.6.2.3) sends this to the gNB(s) already
+ * associated with the session. TS 38.413's own Request IEs: MBS-SessionID (M), MBS-ServiceArea (O),
+ * MBS Session Modification Request Transfer (O) -- unlike Setup, no S-NSSAI (fixed at Setup, not resent).
+ *
+ * has_service_area mirrors ngap_build_broadcast_session_setup_request()'s own MBS_ServiceArea handling
+ * exactly (same hardcoded "every connected gNB's own TAI/NR-CGI list, MBS Area Session ID = 13" content,
+ * same TODOs) rather than actually reading the caller-supplied mbsServiceArea/mbsServiceAreaInfoList --
+ * Setup itself does not yet thread the caller-supplied service area through either (see its own TODOs);
+ * fixing that is that finding's own item, not something to fix differently here just because Modification
+ * happens to need it too. pkbuf carries the (already re-packed) MBS Session Modification Request Transfer,
+ * or NULL if the ContextUpdateReqData carried no n2MbsSmInfo to forward.
+ */
+ogs_pkbuf_t *ngap_build_broadcast_session_modification_request(
+        amf_mbs_context_t *mbs_context, bool has_service_area, ogs_pkbuf_t *pkbuf)
+{
+    NGAP_NGAP_PDU_t pdu;
+    NGAP_InitiatingMessage_t *initiatingMessage = NULL;
+    NGAP_BroadcastSessionModificationRequest_t *BroadcastSessionModificationRequest = NULL;
+
+    NGAP_BroadcastSessionModificationRequestIEs_t *ie = NULL;
+
+    // MBS Session ID
+    NGAP_MBS_SessionID_t *mBS_SessionID = NULL;
+
+    // MBS Service Area
+    NGAP_MBS_ServiceArea_t *mBS_ServiceArea = NULL;
+    NGAP_MBS_ServiceAreaInformation_t *mBS_ServiceAreaInformation = NULL;
+    NGAP_MBS_ServiceAreaTAIList_t *mBS_ServiceAreaTAIList = NULL;
+    NGAP_MBS_ServiceAreaCellList_t *mBS_ServiceAreaCellList = NULL;
+    NGAP_TAI_t *tAI = NULL;
+    NGAP_NR_CGI_t *nR_CGI = NULL;
+
+    // MBS Session Modification Request Transfer
+    OCTET_STRING_t *oCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer = NULL;
+
+    amf_gnb_t *gnb = NULL;
+
+    ogs_assert(mbs_context);
+
+    ogs_debug("BROADCAST SESSION MODIFICATION REQUEST");
+
+    memset(&pdu, 0, sizeof(NGAP_NGAP_PDU_t));
+    pdu.present = NGAP_NGAP_PDU_PR_initiatingMessage;
+    pdu.choice.initiatingMessage = CALLOC(1, sizeof(NGAP_InitiatingMessage_t));
+
+    initiatingMessage = pdu.choice.initiatingMessage;
+    initiatingMessage->procedureCode = NGAP_ProcedureCode_id_BroadcastSessionModification;
+    initiatingMessage->criticality = NGAP_Criticality_reject;
+    initiatingMessage->value.present =
+        NGAP_InitiatingMessage__value_PR_BroadcastSessionModificationRequest;
+
+    BroadcastSessionModificationRequest =
+        &initiatingMessage->value.choice.BroadcastSessionModificationRequest;
+
+    // MBS Session ID - 9.3.1.206 (M)
+    ie = CALLOC(1, sizeof(NGAP_BroadcastSessionModificationRequestIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(&BroadcastSessionModificationRequest->protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_MBS_SessionID;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present = NGAP_BroadcastSessionModificationRequestIEs__value_PR_MBS_SessionID;
+
+    mBS_SessionID = &ie->value.choice.MBS_SessionID;
+
+    ogs_ngap_5gs_tmgi_to_ASN(&mbs_context->tmgi, &mBS_SessionID->tMGI);
+
+    // MBS Service Area - 9.3.1.208 (O)
+    if (has_service_area) {
+        ie = CALLOC(1, sizeof(NGAP_BroadcastSessionModificationRequestIEs_t));
+        ogs_assert(ie);
+        ASN_SEQUENCE_ADD(&BroadcastSessionModificationRequest->protocolIEs, ie);
+
+        ie->id = NGAP_ProtocolIE_ID_id_MBS_ServiceArea;
+        ie->criticality = NGAP_Criticality_reject;
+        ie->value.present = NGAP_BroadcastSessionModificationRequestIEs__value_PR_MBS_ServiceArea;
+
+        mBS_ServiceArea = &ie->value.choice.MBS_ServiceArea;
+
+                // Uses mbs_context's location_dependent and area_session_id, as
+                // ngap_build_broadcast_session_setup_request() does. LIMITATION: both are set at ContextCreate
+                // time and this AMF's ContextUpdate handler does not yet let a client change either.
+        if (mbs_context->location_dependent) {
+            NGAP_MBS_ServiceAreaInformationList_t *service_area_info_list =
+                    CALLOC(1, sizeof(NGAP_MBS_ServiceAreaInformationList_t));
+            NGAP_MBS_ServiceAreaInformationItem_t *service_area_info_item =
+                    CALLOC(1, sizeof(NGAP_MBS_ServiceAreaInformationItem_t));
+            ogs_assert(service_area_info_list);
+            ogs_assert(service_area_info_item);
+
+            mBS_ServiceArea->present = NGAP_MBS_ServiceArea_PR_locationdependent;
+            mBS_ServiceArea->choice.locationdependent = service_area_info_list;
+
+            ASN_SEQUENCE_ADD(service_area_info_list, service_area_info_item);
+            service_area_info_item->mBS_AreaSessionID = mbs_context->area_session_id;
+            mBS_ServiceAreaInformation = &service_area_info_item->mBS_ServiceAreaInformation;
+        } else {
+            mBS_ServiceAreaInformation = CALLOC(1, sizeof(NGAP_MBS_ServiceAreaInformation_t));
+            ogs_assert(mBS_ServiceAreaInformation);
+
+            mBS_ServiceArea->present = NGAP_MBS_ServiceArea_PR_locationindependent;
+            mBS_ServiceArea->choice.locationindependent = mBS_ServiceAreaInformation;
+        }
+
+        mBS_ServiceAreaTAIList = CALLOC(1, sizeof(NGAP_MBS_ServiceAreaTAIList_t));
+        ogs_assert(mBS_ServiceAreaTAIList);
+        mBS_ServiceAreaInformation->mBS_ServiceAreaTAIList = mBS_ServiceAreaTAIList;
+
+                    // Uses the TAI list this Update carried, which
+                    // amf_namf_handle_mbs_broadcast_context_update() stores on mbs_context when present, falling
+                    // back to every connected gNB's own TAI only when the request used mbsServiceAreaInfoList.
+        if (mbs_context->mbs_service_area && mbs_context->mbs_service_area->tai_list) {
+            ogs_tai_t *tai_entry;
+            ogs_list_for_each(mbs_context->mbs_service_area->tai_list, tai_entry) {
+                ogs_5gs_tai_t tai;
+
+                tAI = CALLOC(1, sizeof(NGAP_TAI_t));
+                ogs_assert(tAI);
+                ASN_SEQUENCE_ADD(mBS_ServiceAreaTAIList, tAI);
+
+                tai.plmn_id = tai_entry->plmn_id;
+                tai.tac = tai_entry->tac ?
+                    ogs_uint24_from_string(tai_entry->tac) : ogs_uint24_from_string(ogs_strdup("0"));
+
+                ogs_ngap_5gs_tai_to_ASN(&tai, tAI);
+            }
+        } else {
+            ogs_list_for_each(&amf_self()->gnb_list, gnb) {
+                tAI = CALLOC(1, sizeof(NGAP_TAI_t));
+                ogs_assert(tAI);
+                ASN_SEQUENCE_ADD(mBS_ServiceAreaTAIList, tAI);
+
+                int i;
+                for (i = 0; i < gnb->num_of_supported_ta_list; i++) {
+                    ogs_5gs_tai_t tai;
+                    tai.plmn_id = gnb->supported_ta_list[i].bplmn_list[0].plmn_id;
+                    tai.tac = gnb->supported_ta_list[i].tac;
+
+                    ogs_ngap_5gs_tai_to_ASN(&tai, tAI);
+                }
+            }
+        }
+
+        mBS_ServiceAreaCellList = CALLOC(1, sizeof(NGAP_MBS_ServiceAreaCellList_t));
+        ogs_assert(mBS_ServiceAreaCellList);
+        mBS_ServiceAreaInformation->mBS_ServiceAreaCellList = mBS_ServiceAreaCellList;
+
+                    // Uses mbs_context's NCGI-TAI list when present, rather than every connected gNB's own NR-CGI,
+                    // as ngap_build_broadcast_session_setup_request() does.
+        if (mbs_context->mbs_service_area && mbs_context->mbs_service_area->ncgi_tai_list) {
+            ogs_ncgi_tai_t *ncgi_tai;
+            ogs_list_for_each(mbs_context->mbs_service_area->ncgi_tai_list, ncgi_tai) {
+                ogs_ncgi_t *ncgi_entry;
+                ogs_list_for_each(&ncgi_tai->cell_list, ncgi_entry) {
+                    ogs_nr_cgi_t nr_cgi;
+
+                    nR_CGI = CALLOC(1, sizeof(NGAP_NR_CGI_t));
+                    ogs_assert(nR_CGI);
+                    ASN_SEQUENCE_ADD(mBS_ServiceAreaCellList, nR_CGI);
+
+                    nr_cgi.plmn_id = ncgi_entry->plmn_id;
+                    nr_cgi.cell_id = ncgi_entry->nr_cell_id ?
+                        ogs_uint64_from_string(ncgi_entry->nr_cell_id) : 0;
+
+                    ogs_ngap_nr_cgi_to_ASN(&nr_cgi, nR_CGI);
+                }
+            }
+        } else {
+            ogs_list_for_each(&amf_self()->gnb_list, gnb) {
+                nR_CGI = CALLOC(1, sizeof(NGAP_NR_CGI_t));
+                ogs_assert(nR_CGI);
+                ASN_SEQUENCE_ADD(mBS_ServiceAreaCellList, nR_CGI);
+
+                ogs_nr_cgi_t nr_cgi;
+                ogs_plmn_id_build(&nr_cgi.plmn_id, ogs_plmn_id_mcc(&gnb->plmn_id), ogs_plmn_id_mnc(&gnb->plmn_id),
+                    ogs_plmn_id_mnc_len(&gnb->plmn_id));
+
+                nr_cgi.cell_id = gnb->gnb_id << 14;
+
+                ogs_ngap_nr_cgi_to_ASN(&nr_cgi, nR_CGI);
+            }
+        }
+    }
+
+    // MBS Session Modification Request Transfer - OCTET STRING (O)
+    if (pkbuf) {
+        ie = CALLOC(1, sizeof(NGAP_BroadcastSessionModificationRequestIEs_t));
+        ogs_assert(ie);
+        ASN_SEQUENCE_ADD(&BroadcastSessionModificationRequest->protocolIEs, ie);
+
+        ie->id = NGAP_ProtocolIE_ID_id_MBSSessionModificationRequestTransfer;
+        ie->criticality = NGAP_Criticality_reject;
+        ie->value.present =
+            NGAP_BroadcastSessionModificationRequestIEs__value_PR_OCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer_;
+
+        oCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer =
+            &ie->value.choice.OCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer_;
+        oCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer->buf = CALLOC(pkbuf->len, sizeof(uint8_t));
+        oCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer->size = pkbuf->len;
+
+        memcpy(oCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer->buf, pkbuf->data, pkbuf->len);
+    }
+
+    return ogs_ngap_encode(&pdu);
+}
+
+/*
+ * Namf_MBSCommunication_N2MessageTransfer relays (TS 29.518 cl.5.7.2.2, ngapIeType MBS_SES_ACT_REQ): the
+ * caller (MB-SMF) has already ASN.1-encoded MulticastSessionActivationRequestTransfer's own content into
+ * \p pkbuf (an opaque octet string to this function); this only wraps it into a complete top-level NGAP
+ * PDU with the MBS Session ID, mirroring ngap_build_broadcast_session_modification_request()'s own
+ * OCTET-STRING-embedding pattern. TS 38.413's own IE list (MulticastSessionActivationRequestIEs):
+ * MBS-SessionID (M), MulticastSessionActivationRequestTransfer (M).
+ */
+ogs_pkbuf_t *ngap_build_multicast_session_activation_request(
+        ogs_tmgi_t *tmgi, ogs_pkbuf_t *pkbuf)
+{
+    NGAP_NGAP_PDU_t pdu;
+    NGAP_InitiatingMessage_t *initiatingMessage = NULL;
+    NGAP_MulticastSessionActivationRequest_t *MulticastSessionActivationRequest = NULL;
+
+    NGAP_MulticastSessionActivationRequestIEs_t *ie = NULL;
+
+    NGAP_MBS_SessionID_t *mBS_SessionID = NULL;
+    OCTET_STRING_t *oCTET_STRING_CONTAINING_MulticastSessionActivationRequestTransfer = NULL;
+
+    ogs_assert(tmgi);
+    ogs_assert(pkbuf);
+
+    ogs_debug("MULTICAST SESSION ACTIVATION REQUEST");
+
+    memset(&pdu, 0, sizeof(NGAP_NGAP_PDU_t));
+    pdu.present = NGAP_NGAP_PDU_PR_initiatingMessage;
+    pdu.choice.initiatingMessage = CALLOC(1, sizeof(NGAP_InitiatingMessage_t));
+
+    initiatingMessage = pdu.choice.initiatingMessage;
+    initiatingMessage->procedureCode = NGAP_ProcedureCode_id_MulticastSessionActivation;
+    initiatingMessage->criticality = NGAP_Criticality_reject;
+    initiatingMessage->value.present =
+        NGAP_InitiatingMessage__value_PR_MulticastSessionActivationRequest;
+
+    MulticastSessionActivationRequest =
+        &initiatingMessage->value.choice.MulticastSessionActivationRequest;
+
+    // MBS Session ID (M)
+    ie = CALLOC(1, sizeof(NGAP_MulticastSessionActivationRequestIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(&MulticastSessionActivationRequest->protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_MBS_SessionID;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present = NGAP_MulticastSessionActivationRequestIEs__value_PR_MBS_SessionID;
+
+    mBS_SessionID = &ie->value.choice.MBS_SessionID;
+    ogs_ngap_5gs_tmgi_to_ASN(tmgi, &mBS_SessionID->tMGI);
+
+    // Multicast Session Activation Request Transfer (M)
+    ie = CALLOC(1, sizeof(NGAP_MulticastSessionActivationRequestIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(&MulticastSessionActivationRequest->protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_MulticastSessionActivationRequestTransfer;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present =
+        NGAP_MulticastSessionActivationRequestIEs__value_PR_OCTET_STRING_CONTAINING_MulticastSessionActivationRequestTransfer_;
+
+    oCTET_STRING_CONTAINING_MulticastSessionActivationRequestTransfer =
+        &ie->value.choice.OCTET_STRING_CONTAINING_MulticastSessionActivationRequestTransfer_;
+    oCTET_STRING_CONTAINING_MulticastSessionActivationRequestTransfer->buf =
+        CALLOC(pkbuf->len, sizeof(uint8_t));
+    oCTET_STRING_CONTAINING_MulticastSessionActivationRequestTransfer->size = pkbuf->len;
+    memcpy(oCTET_STRING_CONTAINING_MulticastSessionActivationRequestTransfer->buf,
+            pkbuf->data, pkbuf->len);
+
+    return ogs_ngap_encode(&pdu);
+}
+
+/*
+ * Namf_MBSCommunication_N2MessageTransfer relays (TS 29.518 cl.5.7.2.2, ngapIeType MBS_SES_DEACT_REQ).
+ * TS 38.413's own IE list (MulticastSessionDeactivationRequestIEs): MBS-SessionID (M),
+ * MulticastSessionDeactivationRequestTransfer (M). Same shape and reasoning as the Activation builder
+ * above.
+ */
+ogs_pkbuf_t *ngap_build_multicast_session_deactivation_request(
+        ogs_tmgi_t *tmgi, ogs_pkbuf_t *pkbuf)
+{
+    NGAP_NGAP_PDU_t pdu;
+    NGAP_InitiatingMessage_t *initiatingMessage = NULL;
+    NGAP_MulticastSessionDeactivationRequest_t *MulticastSessionDeactivationRequest = NULL;
+
+    NGAP_MulticastSessionDeactivationRequestIEs_t *ie = NULL;
+
+    NGAP_MBS_SessionID_t *mBS_SessionID = NULL;
+    OCTET_STRING_t *oCTET_STRING_CONTAINING_MulticastSessionDeactivationRequestTransfer = NULL;
+
+    ogs_assert(tmgi);
+    ogs_assert(pkbuf);
+
+    ogs_debug("MULTICAST SESSION DEACTIVATION REQUEST");
+
+    memset(&pdu, 0, sizeof(NGAP_NGAP_PDU_t));
+    pdu.present = NGAP_NGAP_PDU_PR_initiatingMessage;
+    pdu.choice.initiatingMessage = CALLOC(1, sizeof(NGAP_InitiatingMessage_t));
+
+    initiatingMessage = pdu.choice.initiatingMessage;
+    initiatingMessage->procedureCode = NGAP_ProcedureCode_id_MulticastSessionDeactivation;
+    initiatingMessage->criticality = NGAP_Criticality_reject;
+    initiatingMessage->value.present =
+        NGAP_InitiatingMessage__value_PR_MulticastSessionDeactivationRequest;
+
+    MulticastSessionDeactivationRequest =
+        &initiatingMessage->value.choice.MulticastSessionDeactivationRequest;
+
+    // MBS Session ID (M)
+    ie = CALLOC(1, sizeof(NGAP_MulticastSessionDeactivationRequestIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(&MulticastSessionDeactivationRequest->protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_MBS_SessionID;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present = NGAP_MulticastSessionDeactivationRequestIEs__value_PR_MBS_SessionID;
+
+    mBS_SessionID = &ie->value.choice.MBS_SessionID;
+    ogs_ngap_5gs_tmgi_to_ASN(tmgi, &mBS_SessionID->tMGI);
+
+    // Multicast Session Deactivation Request Transfer (M)
+    ie = CALLOC(1, sizeof(NGAP_MulticastSessionDeactivationRequestIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(&MulticastSessionDeactivationRequest->protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_MulticastSessionDeactivationRequestTransfer;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present =
+        NGAP_MulticastSessionDeactivationRequestIEs__value_PR_OCTET_STRING_CONTAINING_MulticastSessionDeactivationRequestTransfer_;
+
+    oCTET_STRING_CONTAINING_MulticastSessionDeactivationRequestTransfer =
+        &ie->value.choice.OCTET_STRING_CONTAINING_MulticastSessionDeactivationRequestTransfer_;
+    oCTET_STRING_CONTAINING_MulticastSessionDeactivationRequestTransfer->buf =
+        CALLOC(pkbuf->len, sizeof(uint8_t));
+    oCTET_STRING_CONTAINING_MulticastSessionDeactivationRequestTransfer->size = pkbuf->len;
+    memcpy(oCTET_STRING_CONTAINING_MulticastSessionDeactivationRequestTransfer->buf,
+            pkbuf->data, pkbuf->len);
+
+    return ogs_ngap_encode(&pdu);
+}
+
+/*
+ * Namf_MBSCommunication_N2MessageTransfer relays (TS 29.518 cl.5.7.2.2, ngapIeType MBS_SES_UPD_REQ).
+ * TS 38.413's own IE list (MulticastSessionUpdateRequestIEs): MBS-SessionID (M), MBS-AreaSessionID (O,
+ * location-dependent multicast sessions only), MulticastSessionUpdateRequestTransfer (M).
+ */
+ogs_pkbuf_t *ngap_build_multicast_session_update_request(
+        ogs_tmgi_t *tmgi, bool has_area_session_id, uint16_t area_session_id, ogs_pkbuf_t *pkbuf)
+{
+    NGAP_NGAP_PDU_t pdu;
+    NGAP_InitiatingMessage_t *initiatingMessage = NULL;
+    NGAP_MulticastSessionUpdateRequest_t *MulticastSessionUpdateRequest = NULL;
+
+    NGAP_MulticastSessionUpdateRequestIEs_t *ie = NULL;
+
+    NGAP_MBS_SessionID_t *mBS_SessionID = NULL;
+    NGAP_MBS_AreaSessionID_t *mBS_AreaSessionID = NULL;
+    OCTET_STRING_t *oCTET_STRING_CONTAINING_MulticastSessionUpdateRequestTransfer = NULL;
+
+    ogs_assert(tmgi);
+    ogs_assert(pkbuf);
+
+    ogs_debug("MULTICAST SESSION UPDATE REQUEST");
+
+    memset(&pdu, 0, sizeof(NGAP_NGAP_PDU_t));
+    pdu.present = NGAP_NGAP_PDU_PR_initiatingMessage;
+    pdu.choice.initiatingMessage = CALLOC(1, sizeof(NGAP_InitiatingMessage_t));
+
+    initiatingMessage = pdu.choice.initiatingMessage;
+    initiatingMessage->procedureCode = NGAP_ProcedureCode_id_MulticastSessionUpdate;
+    initiatingMessage->criticality = NGAP_Criticality_reject;
+    initiatingMessage->value.present =
+        NGAP_InitiatingMessage__value_PR_MulticastSessionUpdateRequest;
+
+    MulticastSessionUpdateRequest =
+        &initiatingMessage->value.choice.MulticastSessionUpdateRequest;
+
+    // MBS Session ID (M)
+    ie = CALLOC(1, sizeof(NGAP_MulticastSessionUpdateRequestIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(&MulticastSessionUpdateRequest->protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_MBS_SessionID;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present = NGAP_MulticastSessionUpdateRequestIEs__value_PR_MBS_SessionID;
+
+    mBS_SessionID = &ie->value.choice.MBS_SessionID;
+    ogs_ngap_5gs_tmgi_to_ASN(tmgi, &mBS_SessionID->tMGI);
+
+    // MBS Area Session ID (O) -- location-dependent multicast sessions only
+    if (has_area_session_id) {
+        ie = CALLOC(1, sizeof(NGAP_MulticastSessionUpdateRequestIEs_t));
+        ogs_assert(ie);
+        ASN_SEQUENCE_ADD(&MulticastSessionUpdateRequest->protocolIEs, ie);
+
+        ie->id = NGAP_ProtocolIE_ID_id_MBS_AreaSessionID;
+        ie->criticality = NGAP_Criticality_reject;
+        ie->value.present = NGAP_MulticastSessionUpdateRequestIEs__value_PR_MBS_AreaSessionID;
+
+        mBS_AreaSessionID = &ie->value.choice.MBS_AreaSessionID;
+        *mBS_AreaSessionID = area_session_id;
+    }
+
+    // Multicast Session Update Request Transfer (M)
+    ie = CALLOC(1, sizeof(NGAP_MulticastSessionUpdateRequestIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(&MulticastSessionUpdateRequest->protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_MulticastSessionUpdateRequestTransfer;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present =
+        NGAP_MulticastSessionUpdateRequestIEs__value_PR_OCTET_STRING_CONTAINING_MulticastSessionUpdateRequestTransfer_;
+
+    oCTET_STRING_CONTAINING_MulticastSessionUpdateRequestTransfer =
+        &ie->value.choice.OCTET_STRING_CONTAINING_MulticastSessionUpdateRequestTransfer_;
+    oCTET_STRING_CONTAINING_MulticastSessionUpdateRequestTransfer->buf =
+        CALLOC(pkbuf->len, sizeof(uint8_t));
+    oCTET_STRING_CONTAINING_MulticastSessionUpdateRequestTransfer->size = pkbuf->len;
+    memcpy(oCTET_STRING_CONTAINING_MulticastSessionUpdateRequestTransfer->buf,
+            pkbuf->data, pkbuf->len);
 
     return ogs_ngap_encode(&pdu);
 }

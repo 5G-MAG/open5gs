@@ -1690,3 +1690,30 @@ OpenAPI_ssm_t *ogs_sbi_build_ssm(ogs_ssm_t *ssm)
 
     return Ssm;
 }
+
+/* TAI-list-only: this codebase's own MBS-service-area-reduction use (TS 29.532 V18.6.0
+ * cl.5.3.2.3.1 step 2b) never carries an ncgi_tai_list -- MB-SMF coverage is configured as a TAI
+ * list only (see smf_mbs_service_area_reduce()'s own scope note) -- so this does not build one.
+ * The existing, separate NCGI-list conversion in src/smf/namf-build.c is not consolidated into
+ * this helper; that path has its own caller and is out of scope for this addition. */
+OpenAPI_mbs_service_area_t *ogs_sbi_build_mbs_service_area(ogs_mbs_service_area_t *area)
+{
+    OpenAPI_list_t *tai_list = NULL;
+    ogs_tai_t *tai = NULL;
+
+    ogs_assert(area);
+
+    if (area->tai_list) {
+        tai_list = OpenAPI_list_create();
+        ogs_list_for_each(area->tai_list, tai) {
+            OpenAPI_list_add(tai_list, OpenAPI_tai_create(
+                    OpenAPI_plmn_id_create(
+                            ogs_plmn_id_mcc_string(&tai->plmn_id),
+                            ogs_plmn_id_mnc_string(&tai->plmn_id)),
+                    tai->tac ? ogs_strdup(tai->tac) : NULL,
+                    tai->nid ? ogs_strdup(tai->nid) : NULL));
+        }
+    }
+
+    return OpenAPI_mbs_service_area_create(NULL, tai_list);
+}

@@ -31,6 +31,13 @@ ogs_sbi_request_t *amf_namf_comm_build_ue_context_transfer(
 ogs_sbi_request_t *amf_namf_comm_build_registration_status_update(
         amf_ue_t *amf_ue, void *data);
 
+/* Namf_MBSBroadcast Service - shared helpers */
+OpenAPI_mbs_session_id_t *amf_namf_build_mbs_session_id(const ogs_tmgi_t *tmgi);
+
+/* Namf_MBSBroadcast Service - ContextStatusNotify service operation (TS 29.518 cl.5.6.2.5) */
+ogs_sbi_request_t *amf_namf_build_mbs_broadcast_context_status_notify(
+        amf_mbs_context_t *mbs_context, ogs_pkbuf_t *n2mbssmbuf, bool completed);
+
 #ifdef __cplusplus
 }
 #endif

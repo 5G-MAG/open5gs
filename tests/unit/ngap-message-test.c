@@ -372,6 +372,55 @@ static void ngap_message_test5_issues2934(abts_case *tc, void *data)
     ogs_pkbuf_free(ngapbuf);
 }
 
+/*
+ * Regression test for ogs_ngap_ASN_to_5gs_tmgi() (lib/ngap/conv.c), the inverse of the pre-existing
+ * ogs_ngap_5gs_tmgi_to_ASN() -- added to correlate an incoming NGAP BROADCAST SESSION SETUP RESPONSE's
+ * MBS-SessionID IE back to the AMF's own pending amf_mbs_context_t (see
+ * ngap_handle_broadcast_session_setup_response(), src/amf/ngap-handler.c). Exercises only the
+ * encode/decode round trip, which is independently testable without the full AMF/SBI stack; the
+ * deferred-response completion itself is covered by this project's own DB-backed integration tests
+ * (item B-1, Standards2Deployments/projects/rt-mbs/open5gs.md).
+ */
+static void ngap_message_test6_tmgi_conv(abts_case *tc, void *data)
+{
+    ogs_tmgi_t tmgi;
+    ogs_tmgi_t decoded;
+    NGAP_TMGI_t asn_tmgi;
+
+    memset(&tmgi, 0, sizeof(tmgi));
+    memset(&decoded, 0, sizeof(decoded));
+    memset(&asn_tmgi, 0, sizeof(asn_tmgi));
+
+    tmgi.mbs_service_id = "012345";
+    tmgi.plmn_id.mcc1 = 0x1;
+    tmgi.plmn_id.mcc2 = 0x2;
+    tmgi.plmn_id.mcc3 = 0x3;
+    tmgi.plmn_id.mnc1 = 0x4;
+    tmgi.plmn_id.mnc2 = 0x5;
+    tmgi.plmn_id.mnc3 = 0x6;
+
+    ogs_ngap_5gs_tmgi_to_ASN(&tmgi, &asn_tmgi);
+    ABTS_INT_EQUAL(tc, 6, asn_tmgi.size);
+
+        /* Assert the actual wire bytes, not only the round trip. Encode and decode share the same layout, so
+         * a round-trip assertion passes even when both sides swap the nibbles of every PLMN byte; only a peer
+         * decoding the octets independently, such as srsRAN_Project_mbs's plmn_identity::from_bytes(), would
+         * reject it. Per ogs_plmn_id_t's declared layout (ED2() declarations, lib/proto/types.h):
+         * byte0 = mcc2<<4|mcc1, byte1 = mnc1<<4|mcc3, byte2 = mnc3<<4|mnc2. */
+    ABTS_INT_EQUAL(tc, 0x21, asn_tmgi.buf[3]);
+    ABTS_INT_EQUAL(tc, 0x43, asn_tmgi.buf[4]);
+    ABTS_INT_EQUAL(tc, 0x65, asn_tmgi.buf[5]);
+
+    ogs_ngap_ASN_to_5gs_tmgi(&asn_tmgi, &decoded);
+
+    ABTS_STR_EQUAL(tc, tmgi.mbs_service_id, decoded.mbs_service_id);
+    ABTS_TRUE(tc, memcmp(&tmgi.plmn_id, &decoded.plmn_id, sizeof(tmgi.plmn_id)) == 0);
+    ABTS_PTR_EQUAL(tc, NULL, decoded.expiration_time);
+
+    ogs_free(decoded.mbs_service_id);
+    ogs_free(asn_tmgi.buf);
+}
+
 abts_suite *test_ngap_message(abts_suite *suite)
 {
     suite = ADD_SUITE(suite)
@@ -383,6 +432,7 @@ abts_suite *test_ngap_message(abts_suite *suite)
     abts_run_test(suite, ngap_message_test3, NULL);
     abts_run_test(suite, ngap_message_test4, NULL);
     abts_run_test(suite, ngap_message_test5_issues2934, NULL);
+    abts_run_test(suite, ngap_message_test6_tmgi_conv, NULL);
 
     return suite;
 }

@@ -151,6 +151,11 @@ extern "C" {
 #define OGS_SBI_RESOURCE_NAME_TMGI                  "tmgi"
 #define OGS_SBI_RESOURCE_NAME_MBS_SESSIONS          "mbs-sessions"
 #define OGS_SBI_RESOURCE_NAME_MBS_CONTEXTS          "mbs-contexts"
+#define OGS_SBI_RESOURCE_NAME_N2_MESSAGES           "n2-messages"
+/* This SMF's own callback resource for Namf_MBSBroadcast_ContextStatusNotify (TS 29.518 cl.5.6.2.5) --
+ * the notifyUri is caller-defined (this SMF's own choice, per namf-build.c), named to match
+ * OGS_SBI_RESOURCE_NAME_NF_STATUS_NOTIFY's own "<subject>-notify" convention. */
+#define OGS_SBI_RESOURCE_NAME_MBS_CONTEXT_STATUS_NOTIFY "mbs-context-status-notify"
 
 #define OGS_SBI_PATCH_PATH_NF_STATUS                "/nfStatus"
 #define OGS_SBI_PATCH_PATH_LOAD                     "/load"
@@ -572,8 +577,14 @@ typedef struct ogs_sbi_message_s {
     OpenAPI_tmgi_allocated_t *TmgiAllocated;
     OpenAPI_create_req_data_t *CreateReqData;
     OpenAPI_create_rsp_data_t *CreateRspData;
+    OpenAPI_update_rsp_data_t *UpdateRspData;
     OpenAPI_context_create_req_data_t *ContextCreateReqData;
     OpenAPI_context_create_rsp_data_t *ContextCreateRspData;
+    OpenAPI_context_status_notification_t *ContextStatusNotification;
+    OpenAPI_context_update_req_data_t *ContextUpdateReqData;
+    OpenAPI_context_update_rsp_data_t *ContextUpdateRspData;
+    OpenAPI_mbs_n2_message_transfer_req_data_t *MbsN2MessageTransferReqData;
+    OpenAPI_mbs_n2_message_transfer_rsp_data_t *MbsN2MessageTransferRspData;
 
     ogs_sbi_links_t *links;
 

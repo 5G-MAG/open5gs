@@ -563,21 +563,12 @@ ogs_pkbuf_t *ngap_build_mbs_session_setup_or_modification_request_transfer(smf_m
     maxnoofMBSFSAs - Maximum no. of FSA IDs for one MBS session. Value is 64.
     */
 
-    ogs_uint24_t mbs_session_FSA_id;
-
     NGAP_MBSSessionSetupOrModRequestTransfer_t message;
 
     NGAP_MBSSessionSetupOrModRequestTransferIEs_t *ie = NULL;
 
     // MBS Session TNL Information 5GC
     NGAP_MBS_SessionTNLInfo5GC_t *mBS_SessionTNLInfo5GC = NULL;
-
-    // Broadcast service is location dependent
-    NGAP_MBS_SessionTNLInfo5GCList_t *mBS_SessionTNLInfo5GCList = NULL;
-
-    NGAP_MBS_SessionTNLInfo5GCItem_t *mBS_SessionTNLInfo5GCItem = NULL;
-
-    NGAP_MBS_AreaSessionID_t *mBS_AreaSessionID = NULL;
 
     NGAP_SharedNGU_MulticastTNLInformation_t *sharedNGU_MulticastTNLInformation = NULL;
     NGAP_TransportLayerAddress_t *iP_MulticastAddress = NULL;
@@ -597,10 +588,6 @@ ogs_pkbuf_t *ngap_build_mbs_session_setup_or_modification_request_transfer(smf_m
 
     NGAP_AllocationAndRetentionPriority_t *allocationAndRetentionPriority = NULL;
 
-    // MBS Session FSA ID List (MBS Frequency Selection Area Identity)
-    NGAP_MBS_SessionFSAIDList_t *mBS_SessionFSAIDList = NULL;
-    NGAP_MBS_SessionFSAID_t *mBS_SessionFSAID = NULL;
-
     ogs_assert(mbs_sess);
 
     ogs_debug("MBSSessionSetupOrModRequestTransfer");
@@ -617,23 +604,15 @@ ogs_pkbuf_t *ngap_build_mbs_session_setup_or_modification_request_transfer(smf_m
 
     mBS_SessionTNLInfo5GC = &ie->value.choice.MBS_SessionTNLInfo5GC;
 
-    mBS_SessionTNLInfo5GCList = CALLOC(1, sizeof(NGAP_MBS_SessionTNLInfo5GCList_t));
-    ogs_assert(mBS_SessionTNLInfo5GCList);
+        // The "locationindependent" CHOICE arm is the one that matches: this SMF models no per-area session
+        // concept in mbs_sess at all, carrying a single Shared NG-U Multicast TNL Information per session, and
+        // TS29571_CommonData.yaml's MbsServiceAreaInfo/areaSessionId is not represented here. The
+        // "locationdependent" arm (TS 38.413 cl.9.3.2.15) would require a real per-area MBS Area Session ID.
+    sharedNGU_MulticastTNLInformation = CALLOC(1, sizeof(NGAP_SharedNGU_MulticastTNLInformation_t));
+    ogs_assert(sharedNGU_MulticastTNLInformation);
 
-    mBS_SessionTNLInfo5GC->present = NGAP_MBS_SessionTNLInfo5GC_PR_locationdependent;
-    mBS_SessionTNLInfo5GC->choice.locationdependent = mBS_SessionTNLInfo5GCList;
-
-    mBS_SessionTNLInfo5GCItem = CALLOC(1, sizeof(NGAP_MBS_SessionTNLInfo5GCItem_t));
-    ogs_assert(mBS_SessionTNLInfo5GCItem);
-    ASN_SEQUENCE_ADD(&mBS_SessionTNLInfo5GCList->list, mBS_SessionTNLInfo5GCItem);
-
-    // MBS Area Session ID - 9.3.1.207 (M)
-    mBS_AreaSessionID = &mBS_SessionTNLInfo5GCItem->mBS_AreaSessionID;
-    // TODO (borieher): Fill the MBS Area Session ID without hardcoded values
-    *mBS_AreaSessionID = 13;
-
-    // Shared NG-U Multicast TNL Information - 9.3.2.16 (M)
-    sharedNGU_MulticastTNLInformation = &mBS_SessionTNLInfo5GCItem->sharedNGU_MulticastTNLInformation;
+    mBS_SessionTNLInfo5GC->present = NGAP_MBS_SessionTNLInfo5GC_PR_locationindependent;
+    mBS_SessionTNLInfo5GC->choice.locationindependent = sharedNGU_MulticastTNLInformation;
 
     // Transport Layer Address - 9.3.2.4 (M)
     iP_MulticastAddress = &sharedNGU_MulticastTNLInformation->iP_MulticastAddress;
@@ -658,64 +637,97 @@ ogs_pkbuf_t *ngap_build_mbs_session_setup_or_modification_request_transfer(smf_m
 
     mBS_QoSFlowsToBeSetupList = &ie->value.choice.MBS_QoSFlowsToBeSetupList;
 
-    // Generate 3 MBS QoS Flows, 5QI: 7, 8 and 9
-    for (uint8_t i = 1; i <= 3; i++) {
-        mBS_QoSFlowsToBeSetupItem = CALLOC(1, sizeof(struct NGAP_MBS_QoSFlowsToBeSetupItem));
-        ogs_assert(mBS_QoSFlowsToBeSetupItem);
-        ASN_SEQUENCE_ADD(&mBS_QoSFlowsToBeSetupList->list, mBS_QoSFlowsToBeSetupItem);
+        // The QoS flows come from what the AF requested: TS 29.571 MbsSession.mbsServInfo.mbsMediaComps[*].
+        // mbsQoSReq, which smf_nmbsmf_handle_mbs_session_create() parses into mbs_sess->mbs_qos_flow_list.
+        // The Allocation and Retention Priority fields have no per-flow source in this SMF's schema, MbsQoSReq
+        // carrying a 5QI and bit rates but no ARP, so fixed priority and pre-emption defaults are used for every
+        // flow.
+    {
+        smf_mbs_qos_flow_t *qos_flow = NULL;
+        ogs_list_for_each(&mbs_sess->mbs_qos_flow_list, qos_flow) {
+            mBS_QoSFlowsToBeSetupItem = CALLOC(1, sizeof(struct NGAP_MBS_QoSFlowsToBeSetupItem));
+            ogs_assert(mBS_QoSFlowsToBeSetupItem);
+            ASN_SEQUENCE_ADD(&mBS_QoSFlowsToBeSetupList->list, mBS_QoSFlowsToBeSetupItem);
 
-        // QoS Flow Identifier - 9.3.1.51 (M)
-        mBS_QoSFlowIdentifier = &mBS_QoSFlowsToBeSetupItem->mBSqosFlowIdentifier;
+            // QoS Flow Identifier - 9.3.1.51 (M)
+            mBS_QoSFlowIdentifier = &mBS_QoSFlowsToBeSetupItem->mBSqosFlowIdentifier;
 
-        // QoS Flow Level QoS Parameters - 9.3.1.12 (M)
-        mBS_QoSFlowLevelQoSParameters =
-            &mBS_QoSFlowsToBeSetupItem->mBSqosFlowLevelQosParameters;
+            // QoS Flow Level QoS Parameters - 9.3.1.12 (M)
+            mBS_QoSFlowLevelQoSParameters =
+                &mBS_QoSFlowsToBeSetupItem->mBSqosFlowLevelQosParameters;
 
-        // Allocation and Retention Priority - 9.3.1.19 (M)
-        allocationAndRetentionPriority =
-            &mBS_QoSFlowLevelQoSParameters->allocationAndRetentionPriority;
-        qoSCharacteristics = &mBS_QoSFlowLevelQoSParameters->qosCharacteristics;
+            // Allocation and Retention Priority - 9.3.1.19 (M)
+            allocationAndRetentionPriority =
+                &mBS_QoSFlowLevelQoSParameters->allocationAndRetentionPriority;
+            qoSCharacteristics = &mBS_QoSFlowLevelQoSParameters->qosCharacteristics;
 
-        // Non Dynamic 5QI Descriptor - 9.3.1.28 (M)
-        nonDynamic5QIDescriptor = CALLOC(1, sizeof(struct NGAP_NonDynamic5QIDescriptor));
-        ogs_assert(nonDynamic5QIDescriptor);
-        qoSCharacteristics->choice.nonDynamic5QI = nonDynamic5QIDescriptor;
-        qoSCharacteristics->present = NGAP_QosCharacteristics_PR_nonDynamic5QI;
+            // Non Dynamic 5QI Descriptor - 9.3.1.28 (M)
+            nonDynamic5QIDescriptor = CALLOC(1, sizeof(struct NGAP_NonDynamic5QIDescriptor));
+            ogs_assert(nonDynamic5QIDescriptor);
+            qoSCharacteristics->choice.nonDynamic5QI = nonDynamic5QIDescriptor;
+            qoSCharacteristics->present = NGAP_QosCharacteristics_PR_nonDynamic5QI;
 
-        *mBS_QoSFlowIdentifier = i;
+            *mBS_QoSFlowIdentifier = qos_flow->qfi;
 
-        // 5QI - INTEGER (M)
-        nonDynamic5QIDescriptor->fiveQI = 6+i;
+            // 5QI - INTEGER (M)
+            nonDynamic5QIDescriptor->fiveQI = qos_flow->five_qi;
 
-        // Priority Level - INTEGER (M)
-        allocationAndRetentionPriority->priorityLevelARP = 8;
+            // Priority Level - INTEGER (M)
+            allocationAndRetentionPriority->priorityLevelARP = 8;
 
-        // Pre-emption Capability - ENUMERATED (M)
-        allocationAndRetentionPriority->pre_emptionCapability = NGAP_Pre_emptionCapability_shall_not_trigger_pre_emption;
+            // Pre-emption Capability - ENUMERATED (M)
+            allocationAndRetentionPriority->pre_emptionCapability = NGAP_Pre_emptionCapability_shall_not_trigger_pre_emption;
 
-        // Pre-emption Vulnerability - ENUMERATED (M)
-        allocationAndRetentionPriority->pre_emptionVulnerability = NGAP_Pre_emptionVulnerability_not_pre_emptable;
+            // Pre-emption Vulnerability - ENUMERATED (M)
+            allocationAndRetentionPriority->pre_emptionVulnerability = NGAP_Pre_emptionVulnerability_not_pre_emptable;
+        }
     }
 
-    // MBS Frequency Selection Area Identity - OCTET STRING (SIZE(3)) (M)
-    ie = CALLOC(1, sizeof(NGAP_MBSSessionSetupOrModRequestTransferIEs_t));
-    ogs_assert(ie);
-    ASN_SEQUENCE_ADD(&message.protocolIEs, ie);
+        // MBS Session FSA ID List (MBS Frequency Selection Area Identity, 9.3.2.16) is Optional per
+        // 38413-h30.asn's "{ ID id-MBS-SessionFSAIDList ... PRESENCE optional }". It is sent when the AF supplies
+        // one: TS 29.532 MbsSession.mbsFsaIdList is a real field, which rt-mbs-function builds through
+        // MBSMFMBSSession::setFsaId() and smf_nmbsmf_handle_mbs_session_create() parses into
+        // mbs_sess->mbs_fsa_id_list. It is omitted, not fabricated, when the AF supplies none, which remains the
+        // common case while the USD source for MBS Interest Indication is absent.
+    if (ogs_list_count(&mbs_sess->mbs_fsa_id_list) > 0) {
+        NGAP_MBS_SessionFSAIDList_t *mBS_SessionFSAIDList = NULL;
+        NGAP_MBS_SessionFSAID_t *mBS_SessionFSAID = NULL;
+        smf_mbs_fsa_id_t *fsa_id = NULL;
 
-    ie->id = NGAP_ProtocolIE_ID_id_MBS_SessionFSAIDList;
-    ie->criticality = NGAP_Criticality_ignore;
-    ie->value.present = NGAP_MBSSessionSetupOrModRequestTransferIEs__value_PR_MBS_SessionFSAIDList;
+        ie = CALLOC(1, sizeof(NGAP_MBSSessionSetupOrModRequestTransferIEs_t));
+        ogs_assert(ie);
+        ASN_SEQUENCE_ADD(&message.protocolIEs, ie);
 
-    mBS_SessionFSAIDList = &ie->value.choice.MBS_SessionFSAIDList;
+        ie->id = NGAP_ProtocolIE_ID_id_MBS_SessionFSAIDList;
+        ie->criticality = NGAP_Criticality_ignore;
+        ie->value.present = NGAP_MBSSessionSetupOrModRequestTransferIEs__value_PR_MBS_SessionFSAIDList;
 
-    mBS_SessionFSAID = CALLOC(1, sizeof(NGAP_MBS_SessionFSAID_t));
-    ogs_assert(mBS_SessionFSAID);
-    ASN_SEQUENCE_ADD(&mBS_SessionFSAIDList->list, mBS_SessionFSAID);
+        mBS_SessionFSAIDList = &ie->value.choice.MBS_SessionFSAIDList;
 
-    // MBS Frequency Selection Area Identity - OCTET STRING (M)
-    // TODO (borieher): Fill MBS Frequency Selection Area Identity without hardcoded values
-    mbs_session_FSA_id = ogs_uint24_from_string(ogs_strdup("13"));
-    ogs_asn_uint24_to_OCTET_STRING(mbs_session_FSA_id, mBS_SessionFSAID);
+        // 38413-h30.asn: "MBS-SessionFSAIDList ::= SEQUENCE (SIZE(1.. maxnoofMBSFSAs)) OF
+        // MBS-SessionFSAID", and "maxnoofMBSFSAs INTEGER ::= 64" -- a real, quoted bound (rule 12),
+        // not invented here. The AF-supplied list is otherwise unbounded (nothing at parse time in
+        // smf_nmbsmf_handle_mbs_session_create() enforces this either); logging and clamping rather
+        // than silently truncating or asserting mid-encode.
+        {
+            int count = 0;
+            const int kMaxNgapFsaIds = 64;
+            int total = ogs_list_count(&mbs_sess->mbs_fsa_id_list);
+            if (total > kMaxNgapFsaIds) {
+                ogs_warn("MBS Session Create: AF supplied %d MBS FSA IDs, NGAP "
+                    "MBS-SessionFSAIDList allows at most %d (38413-h30.asn maxnoofMBSFSAs) -- "
+                    "sending only the first %d", total, kMaxNgapFsaIds, kMaxNgapFsaIds);
+            }
+            ogs_list_for_each(&mbs_sess->mbs_fsa_id_list, fsa_id) {
+                if (count >= kMaxNgapFsaIds) break;
+                mBS_SessionFSAID = CALLOC(1, sizeof(NGAP_MBS_SessionFSAID_t));
+                ogs_assert(mBS_SessionFSAID);
+                ogs_asn_uint24_to_OCTET_STRING(fsa_id->id, (OCTET_STRING_t *)mBS_SessionFSAID);
+                ASN_SEQUENCE_ADD(&mBS_SessionFSAIDList->list, mBS_SessionFSAID);
+                count++;
+            }
+        }
+    }
 
     return ogs_asn_encode(
             &asn_DEF_NGAP_MBSSessionSetupOrModRequestTransfer, &message);
