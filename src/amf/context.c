@@ -44,7 +44,6 @@ static void stats_add_amf_session(void);
 static void stats_remove_amf_session(void);
 static bool amf_namf_comm_parse_guti(ogs_nas_5gs_guti_t *guti, char *ue_context_id);
 
-static void amf_mbs_context_remove(amf_mbs_context_t *amf_mbs_context);
 static void amf_mbs_context_remove_all(void);
 
 void amf_context_init(void)
@@ -3096,11 +3095,25 @@ static amf_mbs_context_t *amf_mbs_context_add(void)
     return amf_mbs_context;
 }
 
-static void amf_mbs_context_remove(amf_mbs_context_t *amf_mbs_context)
+// Non-static, and paired with amf_mbs_context_find_by_ref() below, so a ContextDelete handler can locate an
+// amf_mbs_context_t from the mbsContextRef path segment the DELETE request addresses, and remove it.
+void amf_mbs_context_remove(amf_mbs_context_t *amf_mbs_context)
 {
     ogs_assert(amf_mbs_context);
 
     ogs_list_remove(&self.amf_mbs_context_list, amf_mbs_context);
+
+        // Free the owned copies made in amf_mbs_context_create() (see the note on the copies there).
+    if (amf_mbs_context->tmgi.mbs_service_id)
+        ogs_free(amf_mbs_context->tmgi.mbs_service_id);
+    if (amf_mbs_context->tmgi.expiration_time)
+        ogs_free(amf_mbs_context->tmgi.expiration_time);
+        // mbs_context_ref is ogs_msprintf()'d in amf_mbs_context_add(), so it is owned here and freed on
+        // removal.
+    if (amf_mbs_context->mbs_context_ref)
+        ogs_free(amf_mbs_context->mbs_context_ref);
+    if (amf_mbs_context->mbs_service_area)
+        ogs_mbs_service_area_free(amf_mbs_context->mbs_service_area);
 
     ogs_pool_free(&amf_mbs_context_pool, amf_mbs_context);
 
@@ -3127,10 +3140,59 @@ amf_mbs_context_t *amf_mbs_context_create(ogs_tmgi_t *tmgi)
         return NULL;
     }
 
-    amf_mbs_context->tmgi.mbs_service_id = tmgi->mbs_service_id;
+        // mbs_service_id and expiration_time are char* (ogs_tmgi_t, lib/proto/types.h) and are copied by value
+        // here, not by pointer. The `tmgi` argument is a short-lived caller-owned struct whose string fields
+        // point into the incoming ContextCreateReqData: ogs_sbi_parse_tmgi() assigns
+        // "tmgi->mbs_service_id = Tmgi->mbs_service_id;", a raw pointer. Once
+        // amf_namf_handle_mbs_broadcast_context_create() returns and that request data is freed, a pointer copy
+        // would leave amf_mbs_context->tmgi.mbs_service_id dangling, and the NGAP
+        // BroadcastSessionReleaseRequest built from it later would carry a TMGI the gNB cannot match
+        // ("Dropping ... Cause: NGAP MBS Session context does not exist").
+    amf_mbs_context->tmgi.mbs_service_id = ogs_strdup(tmgi->mbs_service_id);
     amf_mbs_context->tmgi.plmn_id = tmgi->plmn_id;
     if (tmgi->expiration_time)
-        amf_mbs_context->tmgi.expiration_time = tmgi->expiration_time;
+        amf_mbs_context->tmgi.expiration_time = ogs_strdup(tmgi->expiration_time);
+
+    amf_mbs_context->stream_id = OGS_INVALID_POOL_ID;
 
     return amf_mbs_context;
+}
+
+// Locates the context a DELETE addresses by its mbsContextRef
+// (/namf-mbs-bc/v1/mbs-contexts/{mbsContextRef}, TS 29.518 cl.5.6.2.4), so it can be released.
+amf_mbs_context_t *amf_mbs_context_find_by_ref(const char *mbs_context_ref)
+{
+    amf_mbs_context_t *amf_mbs_context = NULL;
+
+    ogs_assert(mbs_context_ref);
+
+    ogs_list_for_each(&self.amf_mbs_context_list, amf_mbs_context) {
+        if (amf_mbs_context->mbs_context_ref &&
+                strcmp(amf_mbs_context->mbs_context_ref, mbs_context_ref) == 0)
+            return amf_mbs_context;
+    }
+
+    return NULL;
+}
+
+// Finds an existing context by TMGI, so ContextCreate can deduplicate rather than always allocating.
+// A retried or duplicate ContextCreate for the same broadcast session, after a lost response say, would
+// otherwise consume another slot in the fixed-size pool (OGS_MAX_NUM_OF_MBS_SESSIONS) and orphan the
+// earlier context: the SMF tracks only the last mbsContextRef it received, so it can never reach the
+// earlier one through ContextDelete. Mirrors amf_mbs_context_find_by_ref() above.
+amf_mbs_context_t *amf_mbs_context_find_by_tmgi(const ogs_tmgi_t *tmgi)
+{
+    amf_mbs_context_t *amf_mbs_context = NULL;
+
+    ogs_assert(tmgi);
+    ogs_assert(tmgi->mbs_service_id);
+
+    ogs_list_for_each(&self.amf_mbs_context_list, amf_mbs_context) {
+        if (amf_mbs_context->tmgi.mbs_service_id &&
+                strcmp(amf_mbs_context->tmgi.mbs_service_id, tmgi->mbs_service_id) == 0 &&
+                memcmp(&amf_mbs_context->tmgi.plmn_id, &tmgi->plmn_id, sizeof(tmgi->plmn_id)) == 0)
+            return amf_mbs_context;
+    }
+
+    return NULL;
 }

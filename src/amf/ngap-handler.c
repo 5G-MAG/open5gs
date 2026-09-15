@@ -21,6 +21,7 @@
 #include "ngap-path.h"
 #include "sbi-path.h"
 #include "nas-path.h"
+#include "namf-handler.h"
 
 static bool maximum_number_of_gnbs_is_reached(void)
 {
@@ -4800,11 +4801,25 @@ void ngap_handle_error_indication(amf_gnb_t *gnb, ogs_ngap_message_t *message)
     }
 }
 
+/*
+ * BUG FIX: this handler used to do nothing but log a warning -- see amf_namf_handle_mbs_broadcast_context_create()'s
+ * own "BUG FIX" comment (namf-handler.c) for the SBI-side half of the same defect. Parse the mandatory
+ * MBS-SessionID IE (TS 38.413 clause 9.3.1.213), correlate it back to the AMF's own pending
+ * amf_mbs_context_t by TMGI, and complete the deferred Namf_MBSBroadcast_ContextCreate response there.
+ */
 void ngap_handle_broadcast_session_setup_response(
         amf_gnb_t *gnb, ogs_ngap_message_t *message)
 {
+    int i;
+
     NGAP_SuccessfulOutcome_t *successfulOutcome = NULL;
     NGAP_BroadcastSessionSetupResponse_t *BroadcastSessionSetupResponse = NULL;
+    NGAP_BroadcastSessionSetupResponseIEs_t *ie = NULL;
+    NGAP_MBS_SessionID_t *MBS_SessionID = NULL;
+    OCTET_STRING_t *transfer = NULL;
+
+    ogs_tmgi_t tmgi;
+    amf_mbs_context_t *mbs_context = NULL;
 
     ogs_assert(gnb);
     ogs_assert(gnb->sctp.sock);
@@ -4819,5 +4834,340 @@ void ngap_handle_broadcast_session_setup_response(
 
     ogs_warn("BROADCAST SESSION SETUP RESPONSE");
 
-    // TODO (borieher): Parse NGAP IEs
+    for (i = 0; i < BroadcastSessionSetupResponse->protocolIEs.list.count; i++) {
+        ie = BroadcastSessionSetupResponse->protocolIEs.list.array[i];
+        switch (ie->value.present) {
+        case NGAP_BroadcastSessionSetupResponseIEs__value_PR_MBS_SessionID:
+            MBS_SessionID = &ie->value.choice.MBS_SessionID;
+            break;
+        case NGAP_BroadcastSessionSetupResponseIEs__value_PR_OCTET_STRING_CONTAINING_MBSSessionSetupOrModResponseTransfer_:
+            transfer = &ie->value.choice.OCTET_STRING_CONTAINING_MBSSessionSetupOrModResponseTransfer_;
+            break;
+        default:
+            break;
+        }
+    }
+
+    if (!MBS_SessionID) {
+        // Mandatory IE missing -- malformed response, nothing to correlate against.
+        ogs_error("BROADCAST SESSION SETUP RESPONSE: No MBS-SessionID IE");
+        return;
+    }
+
+    memset(&tmgi, 0, sizeof(tmgi));
+    ogs_ngap_ASN_to_5gs_tmgi(&MBS_SessionID->tMGI, &tmgi);
+
+    mbs_context = amf_mbs_context_find_by_tmgi(&tmgi);
+    if (mbs_context) {
+        mbs_context->gnb_response_count++;
+
+        if (mbs_context->stream_id != OGS_INVALID_POOL_ID) {
+            // First response for this session -- complete the deferred SBI ContextCreate response.
+            amf_namf_send_mbs_broadcast_context_create_response(mbs_context);
+        } else {
+            // B-2: not the first gNB to respond -- the ContextCreate response was already sent, so
+            // any further information (or the operationStatus completion indication once every gNB
+            // this request was sent to has replied) is transferred via ContextStatusNotify instead
+            // (TS 29.518 V18.14.0 cl.5.6.2.5).
+            ogs_pkbuf_t *n2mbssmbuf = NULL;
+            bool completed = mbs_context->gnb_response_count >= mbs_context->gnb_request_count;
+
+            if (transfer) {
+                n2mbssmbuf = ogs_pkbuf_alloc(NULL, OGS_MAX_SDU_LEN);
+                ogs_assert(n2mbssmbuf);
+                ogs_pkbuf_put_data(n2mbssmbuf, transfer->buf, transfer->size);
+            }
+
+            if (transfer || completed) {
+                amf_sbi_send_mbs_broadcast_context_status_notify(mbs_context, n2mbssmbuf, completed);
+            } else {
+                ogs_debug("BROADCAST SESSION SETUP RESPONSE: additional response carries nothing new "
+                        "to notify, ignored");
+            }
+
+            if (n2mbssmbuf)
+                ogs_pkbuf_free(n2mbssmbuf);
+        }
+    } else {
+        // No pending context for this TMGI -- e.g. a very late response after ContextDelete already
+        // ran, or a response naming a TMGI this AMF never allocated. Not a crash, just unexpected.
+        ogs_warn("BROADCAST SESSION SETUP RESPONSE: no MBS context found for the given TMGI");
+    }
+
+    ogs_free(tmgi.mbs_service_id);
+}
+
+/*
+ * BUG FIX: NGAP_ProcedureCode_id_BroadcastSessionSetup had no unsuccessfulOutcome handler at all -- a
+ * BroadcastSessionSetupFailure fell to ngap-sm.c's unhandled default case (logged, nothing else), leaving
+ * B-1's deferred SBI ContextCreate response (mbs_context->stream_id) to time out silently instead of being
+ * told the gNB actually rejected the session. Mirrors ngap_handle_broadcast_session_modification_failure()'s
+ * own shape exactly, adjusted for ContextCreate's own deferred-response semantics (no ContextStatusNotify
+ * counterpart is defined for a Setup failure on its own -- cl.5.6.2.5 only covers subsequent *responses*
+ * after the first, not a subsequent failure).
+ */
+void ngap_handle_broadcast_session_setup_failure(
+        amf_gnb_t *gnb, ogs_ngap_message_t *message)
+{
+    int i;
+
+    NGAP_UnsuccessfulOutcome_t *unsuccessfulOutcome = NULL;
+    NGAP_BroadcastSessionSetupFailure_t *BroadcastSessionSetupFailure = NULL;
+    NGAP_BroadcastSessionSetupFailureIEs_t *ie = NULL;
+    NGAP_MBS_SessionID_t *MBS_SessionID = NULL;
+    NGAP_Cause_t *Cause = NULL;
+
+    ogs_tmgi_t tmgi;
+    amf_mbs_context_t *mbs_context = NULL;
+
+    ogs_assert(gnb);
+    ogs_assert(gnb->sctp.sock);
+
+    ogs_assert(message);
+    unsuccessfulOutcome = message->choice.unsuccessfulOutcome;
+    ogs_assert(unsuccessfulOutcome);
+
+    BroadcastSessionSetupFailure =
+        &unsuccessfulOutcome->value.choice.BroadcastSessionSetupFailure;
+    ogs_assert(BroadcastSessionSetupFailure);
+
+    ogs_warn("BROADCAST SESSION SETUP FAILURE");
+
+    for (i = 0; i < BroadcastSessionSetupFailure->protocolIEs.list.count; i++) {
+        ie = BroadcastSessionSetupFailure->protocolIEs.list.array[i];
+        switch (ie->value.present) {
+        case NGAP_BroadcastSessionSetupFailureIEs__value_PR_MBS_SessionID:
+            MBS_SessionID = &ie->value.choice.MBS_SessionID;
+            break;
+        case NGAP_BroadcastSessionSetupFailureIEs__value_PR_Cause:
+            Cause = &ie->value.choice.Cause;
+            break;
+        default:
+            break;
+        }
+    }
+
+    if (!MBS_SessionID) {
+        ogs_error("BROADCAST SESSION SETUP FAILURE: No MBS-SessionID IE");
+        return;
+    }
+
+    if (Cause) {
+        ogs_warn("    Cause[Group:%d Cause:%d]", Cause->present, (int)Cause->choice.radioNetwork);
+    }
+
+    memset(&tmgi, 0, sizeof(tmgi));
+    ogs_ngap_ASN_to_5gs_tmgi(&MBS_SessionID->tMGI, &tmgi);
+
+    mbs_context = amf_mbs_context_find_by_tmgi(&tmgi);
+    if (mbs_context) {
+        mbs_context->gnb_response_count++;
+
+        if (mbs_context->stream_id != OGS_INVALID_POOL_ID) {
+            ogs_sbi_stream_t *stream = ogs_sbi_stream_find_by_id(mbs_context->stream_id);
+            mbs_context->stream_id = OGS_INVALID_POOL_ID;
+
+            if (stream) {
+                ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR, NULL,
+                        "Requested MBS Broadcast ContextCreate failed",
+                        "NG-RAN reported a Broadcast Session Setup Failure", NULL);
+            } else {
+                ogs_warn("BROADCAST SESSION SETUP FAILURE: stream [%d] no longer exists, "
+                        "response not sent", (int)mbs_context->stream_id);
+            }
+        } else {
+            // Not the first gNB to reply -- no ContextStatusNotify semantics are defined for a per-gNB
+            // Setup Failure on its own (cl.5.6.2.5 only covers the maxResponseTime-elapsed case, same as
+            // Modification's own identical note); logged above, not otherwise acted on.
+            ogs_debug("BROADCAST SESSION SETUP FAILURE: additional failure after the first response, "
+                    "no further action defined");
+        }
+    } else {
+        ogs_warn("BROADCAST SESSION SETUP FAILURE: no MBS context found for the given TMGI");
+    }
+
+    ogs_free(tmgi.mbs_service_id);
+}
+
+/*
+ * Item B-3: Namf_MBSBroadcast_ContextUpdate (TS 29.518 cl.5.6.2.3). Mirrors
+ * ngap_handle_broadcast_session_setup_response()'s own first-response-completes,
+ * subsequent-responses-go-to-ContextStatusNotify shape exactly -- the deferred-response mechanism
+ * (mbs_context->stream_id) and the completion-tracking counters (gnb_request_count/gnb_response_count)
+ * are the same fields, reset by amf_namf_handle_mbs_broadcast_context_update() before sending, since
+ * ContextCreate's own use of them has already completed by the time an Update can happen.
+ */
+void ngap_handle_broadcast_session_modification_response(
+        amf_gnb_t *gnb, ogs_ngap_message_t *message)
+{
+    int i;
+
+    NGAP_SuccessfulOutcome_t *successfulOutcome = NULL;
+    NGAP_BroadcastSessionModificationResponse_t *BroadcastSessionModificationResponse = NULL;
+    NGAP_BroadcastSessionModificationResponseIEs_t *ie = NULL;
+    NGAP_MBS_SessionID_t *MBS_SessionID = NULL;
+    OCTET_STRING_t *transfer = NULL;
+
+    ogs_tmgi_t tmgi;
+    amf_mbs_context_t *mbs_context = NULL;
+
+    ogs_assert(gnb);
+    ogs_assert(gnb->sctp.sock);
+
+    ogs_assert(message);
+    successfulOutcome = message->choice.successfulOutcome;
+    ogs_assert(successfulOutcome);
+
+    BroadcastSessionModificationResponse =
+        &successfulOutcome->value.choice.BroadcastSessionModificationResponse;
+    ogs_assert(BroadcastSessionModificationResponse);
+
+    ogs_warn("BROADCAST SESSION MODIFICATION RESPONSE");
+
+    for (i = 0; i < BroadcastSessionModificationResponse->protocolIEs.list.count; i++) {
+        ie = BroadcastSessionModificationResponse->protocolIEs.list.array[i];
+        switch (ie->value.present) {
+        case NGAP_BroadcastSessionModificationResponseIEs__value_PR_MBS_SessionID:
+            MBS_SessionID = &ie->value.choice.MBS_SessionID;
+            break;
+        case NGAP_BroadcastSessionModificationResponseIEs__value_PR_OCTET_STRING_CONTAINING_MBSSessionSetupOrModResponseTransfer_:
+            transfer = &ie->value.choice.OCTET_STRING_CONTAINING_MBSSessionSetupOrModResponseTransfer_;
+            break;
+        default:
+            break;
+        }
+    }
+
+    if (!MBS_SessionID) {
+        ogs_error("BROADCAST SESSION MODIFICATION RESPONSE: No MBS-SessionID IE");
+        return;
+    }
+
+    memset(&tmgi, 0, sizeof(tmgi));
+    ogs_ngap_ASN_to_5gs_tmgi(&MBS_SessionID->tMGI, &tmgi);
+
+    mbs_context = amf_mbs_context_find_by_tmgi(&tmgi);
+    if (mbs_context) {
+        mbs_context->gnb_response_count++;
+
+        if (mbs_context->stream_id != OGS_INVALID_POOL_ID) {
+            // First response for this Modification -- complete the deferred SBI ContextUpdate response.
+            amf_namf_send_mbs_broadcast_context_update_response(mbs_context);
+        } else {
+            // Not the first gNB to respond -- the ContextUpdate response was already sent; any further
+            // information is transferred via ContextStatusNotify instead (cl.5.6.2.5), same as Setup.
+            ogs_pkbuf_t *n2mbssmbuf = NULL;
+            bool completed = mbs_context->gnb_response_count >= mbs_context->gnb_request_count;
+
+            if (transfer) {
+                n2mbssmbuf = ogs_pkbuf_alloc(NULL, OGS_MAX_SDU_LEN);
+                ogs_assert(n2mbssmbuf);
+                ogs_pkbuf_put_data(n2mbssmbuf, transfer->buf, transfer->size);
+            }
+
+            if (transfer || completed) {
+                amf_sbi_send_mbs_broadcast_context_status_notify(mbs_context, n2mbssmbuf, completed);
+            } else {
+                ogs_debug("BROADCAST SESSION MODIFICATION RESPONSE: additional response carries nothing "
+                        "new to notify, ignored");
+            }
+
+            if (n2mbssmbuf)
+                ogs_pkbuf_free(n2mbssmbuf);
+        }
+    } else {
+        ogs_warn("BROADCAST SESSION MODIFICATION RESPONSE: no MBS context found for the given TMGI");
+    }
+
+    ogs_free(tmgi.mbs_service_id);
+}
+
+/*
+ * Item B-3. Setup's own NGAP_ProcedureCode_id_BroadcastSessionSetup has no unsuccessfulOutcome handler
+ * at all in this AMF (BroadcastSessionSetupFailure falls to ngap-sm.c's unhandled default case) -- an
+ * existing, separately-tracked gap, not something this commit fixes for Setup. Modification gets a real
+ * one here: if this was the deferred ContextUpdate's first response, the SBI caller is still waiting and
+ * must be told it failed, not left to time out silently.
+ */
+void ngap_handle_broadcast_session_modification_failure(
+        amf_gnb_t *gnb, ogs_ngap_message_t *message)
+{
+    int i;
+
+    NGAP_UnsuccessfulOutcome_t *unsuccessfulOutcome = NULL;
+    NGAP_BroadcastSessionModificationFailure_t *BroadcastSessionModificationFailure = NULL;
+    NGAP_BroadcastSessionModificationFailureIEs_t *ie = NULL;
+    NGAP_MBS_SessionID_t *MBS_SessionID = NULL;
+    NGAP_Cause_t *Cause = NULL;
+
+    ogs_tmgi_t tmgi;
+    amf_mbs_context_t *mbs_context = NULL;
+
+    ogs_assert(gnb);
+    ogs_assert(gnb->sctp.sock);
+
+    ogs_assert(message);
+    unsuccessfulOutcome = message->choice.unsuccessfulOutcome;
+    ogs_assert(unsuccessfulOutcome);
+
+    BroadcastSessionModificationFailure =
+        &unsuccessfulOutcome->value.choice.BroadcastSessionModificationFailure;
+    ogs_assert(BroadcastSessionModificationFailure);
+
+    ogs_warn("BROADCAST SESSION MODIFICATION FAILURE");
+
+    for (i = 0; i < BroadcastSessionModificationFailure->protocolIEs.list.count; i++) {
+        ie = BroadcastSessionModificationFailure->protocolIEs.list.array[i];
+        switch (ie->value.present) {
+        case NGAP_BroadcastSessionModificationFailureIEs__value_PR_MBS_SessionID:
+            MBS_SessionID = &ie->value.choice.MBS_SessionID;
+            break;
+        case NGAP_BroadcastSessionModificationFailureIEs__value_PR_Cause:
+            Cause = &ie->value.choice.Cause;
+            break;
+        default:
+            break;
+        }
+    }
+
+    if (!MBS_SessionID) {
+        ogs_error("BROADCAST SESSION MODIFICATION FAILURE: No MBS-SessionID IE");
+        return;
+    }
+
+    if (Cause) {
+        ogs_warn("    Cause[Group:%d Cause:%d]", Cause->present, (int)Cause->choice.radioNetwork);
+    }
+
+    memset(&tmgi, 0, sizeof(tmgi));
+    ogs_ngap_ASN_to_5gs_tmgi(&MBS_SessionID->tMGI, &tmgi);
+
+    mbs_context = amf_mbs_context_find_by_tmgi(&tmgi);
+    if (mbs_context) {
+        mbs_context->gnb_response_count++;
+
+        if (mbs_context->stream_id != OGS_INVALID_POOL_ID) {
+            ogs_sbi_stream_t *stream = ogs_sbi_stream_find_by_id(mbs_context->stream_id);
+            mbs_context->stream_id = OGS_INVALID_POOL_ID;
+
+            if (stream) {
+                ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR, NULL,
+                        "Requested MBS Broadcast ContextUpdate failed",
+                        "NG-RAN reported a Broadcast Session Modification Failure", NULL);
+            } else {
+                ogs_warn("BROADCAST SESSION MODIFICATION FAILURE: stream [%d] no longer exists, "
+                        "response not sent", (int)mbs_context->stream_id);
+            }
+        } else {
+            // Not the first gNB to reply -- no ContextStatusNotify semantics are defined for a per-gNB
+            // Modification Failure on its own (cl.5.6.2.5 only covers the maxResponseTime-elapsed case);
+            // logged above, not otherwise acted on.
+            ogs_debug("BROADCAST SESSION MODIFICATION FAILURE: additional failure after the first "
+                    "response, no further action defined");
+        }
+    } else {
+        ogs_warn("BROADCAST SESSION MODIFICATION FAILURE: no MBS context found for the given TMGI");
+    }
+
+    ogs_free(tmgi.mbs_service_id);
 }

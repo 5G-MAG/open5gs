@@ -94,8 +94,14 @@
 #include "model/tmgi_allocated.h"
 #include "model/create_req_data.h"
 #include "model/create_rsp_data.h"
+#include "model/update_rsp_data.h"
 #include "model/context_create_req_data.h"
 #include "model/context_create_rsp_data.h"
+#include "model/context_status_notification.h"
+#include "model/context_update_req_data.h"
+#include "model/context_update_rsp_data.h"
+#include "model/mbs_n2_message_transfer_req_data.h"
+#include "model/mbs_n2_message_transfer_rsp_data.h"
 
 #include "custom/links.h"
 

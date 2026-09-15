@@ -1371,6 +1371,7 @@ libsbi_openapi_sources = files('''
     model/tmgi_allocated.c
     model/create_req_data.c
     model/create_rsp_data.c
+    model/update_rsp_data.c
     model/ext_mbs_session.c
     model/mbs_service_info.c
     model/mbs_service_type.c
@@ -1393,9 +1394,22 @@ libsbi_openapi_sources = files('''
     model/n2_mbs_sm_info.c
     model/context_create_rsp_data.c
     model/operation_status.c
+    model/context_status_notification.c
+    model/operation_event.c
+    model/ngran_failure_event.c
+    model/ngran_failure_indication.c
+    model/op_event_type.c
+    model/context_update_req_data.c
+    model/context_update_rsp_data.c
+    model/mbs_comm_n2_mbs_sm_info.c
+    model/mbs_n2_message_transfer_req_data.c
+    model/mbs_n2_message_transfer_rsp_data.c
+    model/mbs_ngap_ie_type.c
+    model/n2_message_transfer_request.c
 '''.split())
 
 libsbi_openapi_inc = include_directories('.')
+libsbi_openapi_model_inc = include_directories('model')
 
 sbi_openapi_cc_flags = ['-DOGS_SBI_COMPILATION']
 

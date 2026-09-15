@@ -83,6 +83,10 @@ uint8_t smf_n4mb_handle_session_establishment_response(
     }
 
     if (cause_value != OGS_PFCP_CAUSE_REQUEST_ACCEPTED) {
+        // NOTE: _pfcp_cause_to_problem_cause() (below) already maps the specific PFCP cause the UPF
+        // returned to the correct TS 29.500 value (MANDATORY_IE_MISSING/INCORRECT_LENGTH/
+        // INSUFFICIENT_RESOURCES/SYSTEM_FAILURE) -- more precise than a blanket SYSTEM_FAILURE for
+        // every rejection, so kept in preference to that when the two approaches collided here.
         ogs_assert(true == ogs_sbi_server_send_error(sbi_stream, 500, NULL, "Unable to establish MBS session", "MBS Session establishment with UPF rejected", _pfcp_cause_to_problem_cause(cause_value)));
         return cause_value;
     }
@@ -151,7 +155,7 @@ uint8_t smf_n4mb_handle_session_establishment_response(
 
     if (mbs_sess->upf_n3mb_addr == NULL && mbs_sess->upf_n3mb_addr6 == NULL) {
         ogs_error("No UP F-TEID");
-        ogs_assert(true == ogs_sbi_server_send_error(sbi_stream, 500, NULL, "No UP F-TEID", "Session Context not found", "Unknown"));
+        ogs_assert(true == ogs_sbi_server_send_error(sbi_stream, 500, NULL, "No UP F-TEID", "Session Context not found", N4MB_CAUSE_CONTEXT_NOT_FOUND));
         return OGS_PFCP_CAUSE_SESSION_CONTEXT_NOT_FOUND;
     }
 
@@ -234,17 +238,34 @@ uint8_t smf_n4mb_handle_session_establishment_response(
         expiration_time = ogs_strdup(mbs_sess->tmgi->expiration_time);
     }
 
+    // TS 29.532 V18.6.0 cl.5.3.2.2.1 step 2b: if this session's own requested MBS service area is
+    // not entirely covered by this MB-SMF's own configured coverage (smf.yaml mbsServiceArea,
+    // unconfigured means no restriction -- rule 12), report the reduced area back in
+    // redMbsServArea. See smf_mbs_service_area_reduce()'s own scope note (TAI-list coverage only).
+    OpenAPI_mbs_service_area_t *Red_mbs_service_area = NULL;
+    ogs_mbs_service_area_t *reduced_mbs_service_area = NULL;
+    if (mbs_sess->mbs_service_area &&
+            smf_mbs_service_area_reduce(mbs_sess->mbs_service_area, &reduced_mbs_service_area)) {
+        Red_mbs_service_area = ogs_sbi_build_mbs_service_area(reduced_mbs_service_area);
+        ogs_mbs_service_area_free(reduced_mbs_service_area);
+    }
+
     Ext_mbs_session = OpenAPI_ext_mbs_session_create(Mbs_session_id   /* mbs_session_id */,
                                                      false            /* is_tmgi_alloc_req */, 0 /* tmgi_alloc_req */,
                                                      Tmgi             /* tmgi */,
                                                      expiration_time  /* expiration_time */,
                                                      Mbs_service_type /* service_type */,
-                                                     false            /* is_location_dependent */, 0 /* location_dependent */,
-                                                     false            /* is_area_session_id */, 0 /* area_session_id */,
+                                                                                                          // These report the allocation actually made, not a
+                                                                                                          // fixed false/0; see
+                                                                                                          // smf_nmbsmf_handle_mbs_session_create()
+                                                                                                          // (TS 29.532 cl.5.3.2.2.1).
+                                                     mbs_sess->location_dependent /* is_location_dependent */, mbs_sess->location_dependent /* location_dependent */,
+                                                     mbs_sess->location_dependent /* is_area_session_id */, mbs_sess->area_session_id /* area_session_id */,
                                                      false            /* is_ingress_tun_addr_req */, 0 /* ingress_tun_addr_req */,
                                                      ingress_tunnel_list /* ingress_tun_addr */,
                                                      Ssm              /* ssm */,
                                                      NULL             /* mbs_service_area */,
+                                                     Red_mbs_service_area /* red_mbs_service_area */,
                                                      NULL             /* ext_mbs_service_area */,
                                                      NULL             /* dnn */,
                                                      NULL             /* snssai */,
@@ -260,8 +281,6 @@ uint8_t smf_n4mb_handle_session_establishment_response(
                                                      false            /* is_contact_pcf_ind */, 0 /* contact_pcf_ind */);
 
     CreateRspData = OpenAPI_create_rsp_data_create(Ext_mbs_session, NULL);
-
-    // TODO (borieher): Check the TMGIs in the already created MBS Sessions to avoid collisions
 
     /*********************************************************************
      * Send OGS_SBI_HTTP_STATUS_CREATED (/nmbsmf-mbssession/v1/mbs-sessions) to the consumer NF
@@ -295,14 +314,19 @@ uint8_t smf_n4mb_handle_session_establishment_response(
         ogs_free(sendmsg.http.location);
 
 
-    // TODO (borieher): Remove this after testing
-    r = smf_sbi_old_discover_and_send(
-    OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC, NULL,
-    smf_namf_build_mbs_broadcast_context_create_request,
-    mbs_sess, NULL, 0, (char *) OGS_SBI_RESOURCE_NAME_MBS_CONTEXTS);
+        // Gated on service_type. Namf_MBSBroadcast is a Broadcast-only service (TS 23.247 cl.7.3.1 step 2 sends
+        // it "if the service type is broadcast service"); a Multicast session has no TMGI-centric broadcast
+        // context to create here and instead uses Namf_MBSCommunication at UE-join time, a separate procedure
+        // that is NOT IMPLEMENTED.
+    if (ogs_strcasecmp(mbs_sess->service_type, "BROADCAST") == 0) {
+        r = smf_sbi_old_discover_and_send(
+        OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC, NULL,
+        smf_namf_build_mbs_broadcast_context_create_request,
+        mbs_sess, NULL, 0, (char *) OGS_SBI_RESOURCE_NAME_MBS_CONTEXTS);
 
-    ogs_expect(r == OGS_OK);
-    ogs_assert(r != OGS_ERROR);
+        ogs_expect(r == OGS_OK);
+        ogs_assert(r != OGS_ERROR);
+    }
 
     return OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
 }
@@ -321,4 +345,48 @@ static const char *_pfcp_cause_to_problem_cause(uint8_t pfcp_cause)
         break;
     }
     return "SYSTEM_FAILURE";
+}
+
+/*
+ * BUG FIX: this response handler did not exist before -- no N4mb Session Deletion Request was ever sent
+ * (see smf_5gc_pfcp_n4mb_send_session_deletion_request() in pfcp-path.c), so there was nothing to
+ * respond to. This is what actually completes the release chain: it releases the local smf_mbs_sess_t
+ * (freeing the local PFCP bookkeeping via smf_mbs_sess_release()) only once the UPF has genuinely
+ * acknowledged (or rejected) tearing down its own session, instead of the caller
+ * (smf_nmbsmf_handle_mbs_session_release()) freeing it eagerly before the UPF was ever told.
+ */
+uint8_t smf_n4mb_handle_session_deletion_response(
+        smf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
+        ogs_pfcp_session_deletion_response_t *rsp)
+{
+    uint8_t cause_value = OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
+
+    ogs_assert(mbs_sess);
+    ogs_assert(xact);
+    ogs_assert(rsp);
+
+    ogs_debug("N4mb Session Deletion Response");
+
+    ogs_pfcp_xact_commit(xact);
+
+    if (rsp->cause.presence) {
+        if (rsp->cause.u8 != OGS_PFCP_CAUSE_REQUEST_ACCEPTED) {
+            ogs_error("PFCP Cause [%d] : Not Accepted", rsp->cause.u8);
+            cause_value = rsp->cause.u8;
+        }
+    } else {
+        ogs_error("No Cause");
+        cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+    }
+
+    if (cause_value != OGS_PFCP_CAUSE_REQUEST_ACCEPTED) {
+        // An UPF-side rejection (or malformed response) shouldn't leak the SMF's own bookkeeping
+        // forever -- there is no northbound caller left waiting; the 204 response was already sent by
+        // smf_nmbsmf_handle_mbs_session_release() before this request was even dispatched.
+        ogs_error("MBS Session N4mb deletion rejected by UPF, releasing local state anyway");
+    }
+
+    smf_mbs_sess_release(mbs_sess);
+
+    return cause_value;
 }

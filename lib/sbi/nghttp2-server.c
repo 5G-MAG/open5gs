@@ -1180,7 +1180,19 @@ static int on_frame_recv(nghttp2_session *session,
             }
 
             if (stream->memory_overflow == true) {
+                /* BUG FIX (M8): this used to drop the connection with no HTTP response at all on
+                 * overflow, regardless of whether the overflow was the new OGS_MAX_SDU_LEN check
+                 * above (a real request that is genuinely too large) or a real allocation
+                 * failure (the pre-existing behaviour for that case, unchanged in kind, now also
+                 * answered rather than silently dropped). TS 29.500 V18.10.0 clause 5.2.7.1:
+                 * "If the received HTTP request contains content larger than the NF is able to
+                 * process, the NF shall reject the HTTP request with the HTTP status code"
+                 * 413 Content Too Large. Table 5.2.7.1-1 marks 413 mandatory for PATCH/POST. */
                 ogs_error("[DROP] Overflow");
+                ogs_assert(true ==
+                    ogs_sbi_server_send_error(stream,
+                        OGS_SBI_HTTP_STATUS_PAYLOAD_TOO_LARGE, NULL,
+                        "Payload Too Large", "Request body exceeds the maximum size this server accepts", NULL));
                 break;
             }
 
@@ -1413,6 +1425,28 @@ static int on_data_chunk_recv(nghttp2_session *session, uint8_t flags,
 
     ogs_assert(data);
     ogs_assert(len);
+
+    /* BUG FIX (M8): this function had no request-body size bound at all -- unlike the disabled
+     * mhd-server.c code path (server.c's own server-selection switch picks this nghttp2 path
+     * unconditionally; mhd-server.c is compiled but never invoked), which does check against
+     * OGS_MAX_SDU_LEN, just responds to an overflow by silently discarding bytes rather than
+     * rejecting. This path grew the buffer via ogs_realloc with no upper bound, relying only on
+     * genuine allocation failure (a real, but attacker-uncontrolled and very late, backstop) to
+     * ever set stream->memory_overflow. TS 29.500 V18.10.0 table 5.2.7.1-1 marks 413 mandatory
+     * for PATCH/POST; the existing memory_overflow path already drops the connection with no
+     * response at all on overflow (see the NGHTTP2_FLAG_END_STREAM handling below) -- this adds
+     * the missing bound check itself, reusing that existing flag and response path rather than
+     * only reacting after an allocation has already been attempted. OGS_MAX_SDU_LEN is the same,
+     * already-documented bound mhd-server.c uses for the identical purpose (rule 12: not a new,
+     * invented value). */
+    if (request->http.content_length + len > OGS_MAX_SDU_LEN) {
+        stream->memory_overflow = true;
+
+        ogs_error("Overflow : Content-Length[%d], len[%d]",
+                    (int)request->http.content_length, (int)len);
+
+        return 0;
+    }
 
     if (request->http.content == NULL) {
         ogs_assert(request->http.content_length == 0);

@@ -116,23 +116,41 @@ bool smf_nmbsmf_handle_tmgi_allocate(
 
     // Error checking for TmgiAllocate->tmgi_number
     if (TmgiAllocate->tmgi_number) {
-        if (TmgiAllocate->tmgi_number >= NMBSMF_TMGI_MIN_TMGI_NUMBER && \
-                TmgiAllocate->tmgi_number <= NMBSMF_TMGI_MAX_TMGI_NUMBER) {
+        /* The ceiling is the smaller of what the attribute may carry and what this MB-SMF could ever
+         * hold: a tmgiNumber above either is a request that no amount of waiting would satisfy, which
+         * is what TS 29.532 V18.6.0 table 6.1.3.2.3.1-3 answers with 403 MANDATORY_IE_INCORRECT in the
+         * else branch below. Being merely unsatisfiable right now is a different answer, handled inside. */
+        if (TmgiAllocate->tmgi_number >= NMBSMF_TMGI_MIN_TMGI_NUMBER &&
+                TmgiAllocate->tmgi_number <=
+                    ogs_min(NMBSMF_TMGI_MAX_TMGI_NUMBER, OGS_MAX_NUM_OF_TMGI)) {
 
-            // Check the number of TMGIs available
+            // Check the number of TMGIs available, after releasing any whose advertised
+            // expiration time has passed -- see smf_tmgi_reclaim_expired().
+            if ((smf_tmgi_count() + TmgiAllocate->tmgi_number) > OGS_MAX_NUM_OF_TMGI)
+                smf_tmgi_reclaim_expired();
+
             if ((smf_tmgi_count() + TmgiAllocate->tmgi_number) > OGS_MAX_NUM_OF_TMGI) {
                 ogs_error("TMGI Allocate: Cannot allocate %d TMGIs", TmgiAllocate->tmgi_number);
-                // Custom error handling, not the 3GPP TS
-                // Avoid reaching the maximum number of TMGI, send error (500)
-                ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
-                    message, "Forbidden", "Cannot allocate [tmgiNumber] of TMGIs", NMBSMF_TMGI_INSUFFICIENT_RESOURCES);
+                /* 500, not 403: the request is within the ceiling checked above, so it is a valid request
+                 * that cannot be met at this moment, and repeating it later may succeed once TMGIs are
+                 * released. TS 29.532 V18.6.0 table 6.1.3.2.3.1-3 lists no application error for this
+                 * case, so the status comes from the common table.
+                 *
+                 * TS 29.500 V18.10.0 table 5.2.7.2-1, row INSUFFICIENT_RESOURCES, gives "500 Internal
+                 * Server Error" for "The request is rejected due to insufficient resources." */
+                ogs_sbi_server_send_error(stream,
+                    OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+                    message, "Insufficient resources", "Cannot allocate [tmgiNumber] of TMGIs",
+                    NMBSMF_TMGI_INSUFFICIENT_RESOURCES);
                 rv = OGS_ERROR;
                 goto cleanup;
             }
         } else {
             ogs_error("TMGI Allocate: allocate error, incorrect number in tmgi_number");
-            // tmgi_number needs to be between 1 and 255, send error (400 + MANDATORY_IE_INCORRECT)
-            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            /* 403 Forbidden, not 400: TS 29.532 V18.6.0 table 6.1.3.2.3.1-3, the POST /tmgi response
+             * table, maps MANDATORY_IE_INCORRECT, "if the required TMGI number for TMGI allocation is
+             * not valid," to 403 Forbidden. */
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
                 message, "Mandatory IE incorrect", "Requested TMGI Allocate failed, incorrect number in [tmgiNumber]",
                 NMBSMF_TMGI_MANDATORY_IE_INCORRECT);
             rv = OGS_ERROR;
@@ -158,8 +176,15 @@ bool smf_nmbsmf_handle_tmgi_allocate(
                 // TMGI present, refresh the expiration_time
                 ogs_free(tmgi_found->expiration_time);
                 tmgi_found->expiration_time = ogs_strdup(expiration_time);
+
+                                // Refreshed TMGIs go into the outgoing tmgi_list too. TmgiAllocated.tmgiList is required
+                                // with minItems: 1, and TS 29.532 Table 6.1.3.2.3.1-3 says the response "shall contain the
+                                // list of the TMGI(s) and their new expiration time" for refresh flows as well, so a
+                                // pure-refresh request carrying no tmgiNumber would otherwise return an empty, schema-
+                                // invalid list and drop the refresh confirmation.
+                Tmgi_copy = ogs_sbi_build_tmgi(tmgi_found);
+                OpenAPI_list_add(tmgi_list, Tmgi_copy);
             }
-            // TODO (borieher): Add the refreshed TMGIs to the tmgi_list
         }
     }
 
@@ -235,11 +260,20 @@ bool smf_nmbsmf_handle_tmgi_deallocate(
     tmgi_list = message->param.tmgi_list;
 
     if (!tmgi_list) {
-        // Extracted from the OpenAPI spec, not the 3GPP TS
-        // tmgi_list not present, send error (400)
-        ogs_error("TMGI Deallocate: No tmgi_list");
+                // A Deallocate with no tmgi-list is rejected rather than treated as "deallocate all".
+                // TS 29.532 V19.3.0 Table 6.1.3.2.3.2-1 marks tmgi-list Presence "M" for this operation, and clause
+                // 5.2.2.3.1's prose does not license omitting it: "Query parameters shall be used to indicate the
+                // TMGI(s) to be deallocated. The NF Service Consumer may request to deallocate all previously
+                // allocated TMGIs, or one or more specific TMGIs previously allocated". The first sentence requires
+                // the query parameter to carry the indication; the second only chooses between "all" and "specific"
+                // within it, deallocating all by enumerating every currently-allocated TMGI.
+                //
+                // NOTE: TS29532_Nmbsmf_TMGI.yaml, which this build's DELETE handler is generated against, has no
+                // "required: true" on the parameter, contradicting its own governing table. The YAML is the defect.
+        ogs_error("TMGI Deallocate: mandatory tmgi-list query parameter missing");
         ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
-            message, "Bad Request", "Requested TMGI Deallocate failed, no tmgi-list", NMBSMF_TMGI_MANDATORY_IE_MISSING);
+            message, "Bad Request", "Requested TMGI Deallocate failed, no tmgi-list",
+            NMBSMF_TMGI_MANDATORY_QUERY_PARAM_MISSING);
         return false;
     }
 
@@ -258,6 +292,24 @@ bool smf_nmbsmf_handle_tmgi_deallocate(
             ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_NOT_FOUND,
                 message, "Unknown TMGI", "Requested TMGI Deallocate failed, TMGI expired or cannot be found",
                 NMBSMF_TMGI_UNKNOWN_TMGI);
+            return false;
+        }
+
+                // A TMGI still referenced by a live MBS session is not freed. smf_mbs_sess_create() stores the same
+                // ogs_tmgi_t pointer in smf_mbs_sess_t rather than a copy, so freeing it here would leave that
+                // session holding a dangling pointer that a later, unrelated TMGI allocation could recycle and
+                // overwrite, corrupting the live session's identity as it feeds PFCP N4mb, Namf_MBSBroadcast and
+                // NGAP signalling. See smf_mbs_sess_find_by_tmgi().
+        if (smf_mbs_sess_find_by_tmgi(tmgi_found)) {
+            ogs_error("TMGI Deallocate: deallocate error, TMGI still in use by an MBS session");
+                        // No cause is sent with this 403. TS 29.532 defines only UNKNOWN_TMGI for this service
+                        // (Table 6.1.7.3-1), which describes a TMGI that expired or cannot be found rather than one
+                        // present and in use, and TS 29.500 Table 5.2.7.2-1's common 403 causes do not cover it either.
+                        // ProblemDetails.cause is optional, so omitting it is conformant where inventing a value is not.
+                        // 403 itself is a mandated generic status code for DELETE (TS 29.500 Table 5.2.7.1-1).
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
+                message, "Forbidden", "Requested TMGI Deallocate failed, TMGI still in use by an MBS session",
+                NULL);
             return false;
         }
     }
@@ -415,7 +467,11 @@ bool smf_nmbsmf_handle_mbs_session_create(
             }
         }
 
-        // Error checking, check the number of TMGIs available
+        // Error checking, check the number of TMGIs available, after releasing any whose
+        // advertised expiration time has passed -- see smf_tmgi_reclaim_expired().
+        if (smf_tmgi_count() >= OGS_MAX_NUM_OF_TMGI)
+            smf_tmgi_reclaim_expired();
+
         if (smf_tmgi_count() >= OGS_MAX_NUM_OF_TMGI) {
             ogs_error("MBS Session Create: Cannot allocate TMGI");
             // Custom error handling, not the 3GPP TS
@@ -568,7 +624,23 @@ bool smf_nmbsmf_handle_mbs_session_create(
         }
     }
 
-    // TODO (borieher): Check provided TMGI is not added to an existing MBS Session
+        // An explicitly-provided TMGI is checked against MBS Sessions already using it; a freshly
+        // tmgi_alloc_req'd one is unused by construction and needs no check.
+        // smf_mbs_sess_create()'s smf_context_have_matching_mbs_session_id() check catches this only when the
+        // TMGI is itself the MBS Session ID (is_tmgi), so a MULTICAST session using SSM as its MBS Session ID
+        // alongside a separate explicit TMGI would go unchecked.
+    if (tmgi && (!CreateReqData->mbs_session->is_tmgi_alloc_req ||
+                CreateReqData->mbs_session->tmgi_alloc_req == 0)) {
+        if (smf_mbs_sess_find_by_tmgi(tmgi)) {
+            ogs_error("MBS Session Create: provided TMGI is already in use by an existing MBS Session");
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
+                message, "Forbidden",
+                "MBS Session Create failed, provided TMGI is already in use by an existing MBS Session",
+                NMBSMF_MBSSESSION_MBS_SESSION_ALREADY_CREATED);
+            rv = OGS_ERROR;
+            goto cleanup;
+        }
+    }
 
     // MBS Session create
     mbs_sess = smf_mbs_sess_create(tmgi, ssm, service_type, mbs_service_area, ext_mbs_service_area);
@@ -589,8 +661,79 @@ bool smf_nmbsmf_handle_mbs_session_create(
     mbs_sess->ingress_tun_addr_req = (CreateReqData->mbs_session->is_ingress_tun_addr_req &&
                                       CreateReqData->mbs_session->ingress_tun_addr_req != 0);
 
+        // locationDependent and areaSessionId in the response reflect what was requested rather than a fixed
+        // false/0; see smf_n4mb_handle_session_establishment_response(). TS 29.532 V17.5.0 cl.5.3.2.2.1: "For a
+        // location dependent MBS service, the MB-SMF shall allocate a unique Area Session ID within the MBS
+        // session for the MBS Service Area." areaSessionId is readOnly in this schema, so server-allocated and
+        // never client-supplied, and this northbound schema carries at most one per session, so any fixed value
+        // satisfies "unique within the MBS session" when only one such ID exists in that scope.
+    if (CreateReqData->mbs_session->is_location_dependent && CreateReqData->mbs_session->location_dependent) {
+        mbs_sess->location_dependent = true;
+        mbs_sess->area_session_id = 1;
+    }
+
     if (is_multicast_service) {
         mbs_sess->activity_status = CreateReqData->mbs_session->activity_status;
+    }
+
+        // MBS QoS Flow information supplied by the AF is read here: TS 29.571
+        // MbsSession.mbsServInfo.mbsMediaComps, each carrying an mbsQoSReq. It is the only real per-flow QoS
+        // data this SMF receives, and without reading it
+        // ngap_build_mbs_session_setup_or_modification_request_transfer() has nothing to build from. The AF
+        // interface does supply it: rt-mbs-function's MediaComp.cc and QoSReq.cc forward exactly this data.
+        // QFI is not part of the schema, so one is assigned sequentially per media component present, matching
+        // this SMF's existing convention for regular-PDU-session QFIs.
+    ogs_list_init(&mbs_sess->mbs_qos_flow_list);
+    if (CreateReqData->mbs_session->mbs_serv_info &&
+            CreateReqData->mbs_session->mbs_serv_info->mbs_media_comps) {
+        // mbsMediaComps is a map (TS 29.571: "the key ... is the mbsMedCompNum attribute"); the
+        // generator represents a map as a list of OpenAPI_map_t key/value pairs, not a list of the
+        // value type directly -- confirmed against OpenAPI_mbs_service_info_parseFromJSON()'s own
+        // parsing code before writing this, not assumed from the header alone.
+        OpenAPI_lnode_t *node;
+        uint8_t next_qfi = 1;
+        OpenAPI_list_for_each(CreateReqData->mbs_session->mbs_serv_info->mbs_media_comps, node) {
+            OpenAPI_map_t *pair = (OpenAPI_map_t *)node->data;
+            OpenAPI_mbs_media_comp_rm_t *media_comp = pair ? (OpenAPI_mbs_media_comp_rm_t *)pair->value : NULL;
+            if (media_comp && media_comp->mbs_qo_s_req) {
+                smf_mbs_qos_flow_t *qos_flow = (smf_mbs_qos_flow_t *)ogs_calloc(1, sizeof(*qos_flow));
+                ogs_assert(qos_flow);
+                qos_flow->qfi = next_qfi++;
+                qos_flow->five_qi = (uint8_t)media_comp->mbs_qo_s_req->_5qi;
+                ogs_list_add(&mbs_sess->mbs_qos_flow_list, qos_flow);
+            }
+        }
+    }
+    if (ogs_list_count(&mbs_sess->mbs_qos_flow_list) == 0) {
+        // No clause, configuration option or documented default names what a single QoS flow should
+        // be when the AF supplies none at all (rule 12) -- 5QI 9 is TS 23.501 table 5.7.4-1's own
+        // standardised non-GBR default, used here as a stated, labelled engineering choice rather than
+        // silently repeating the old fabricated three-flow behaviour. Not claimed as spec-derived.
+        smf_mbs_qos_flow_t *qos_flow = (smf_mbs_qos_flow_t *)ogs_calloc(1, sizeof(*qos_flow));
+        ogs_assert(qos_flow);
+        qos_flow->qfi = 1;
+        qos_flow->five_qi = 9;
+        ogs_list_add(&mbs_sess->mbs_qos_flow_list, qos_flow);
+        ogs_warn("MBS Session Create: no mbsServInfo/mbsMediaComps QoS supplied, "
+                 "using a single default QoS flow (5QI 9)");
+    }
+
+        // MBS FSA ID (MBS Frequency Selection Area Identity) is read from TS 29.532
+        // MbsSession.mbsFsaIdList, which the AF supplies and rt-mbs-function's MBSMFMBSSession::setFsaId()
+        // builds when it does. ngap_build_mbs_session_setup_or_modification_request_transfer() populates the
+        // corresponding Optional NGAP IE whenever this list is non-empty, and omits it otherwise.
+    ogs_list_init(&mbs_sess->mbs_fsa_id_list);
+    if (CreateReqData->mbs_session->mbs_fsa_id_list) {
+        OpenAPI_lnode_t *node;
+        OpenAPI_list_for_each(CreateReqData->mbs_session->mbs_fsa_id_list, node) {
+            const char *hex_id = (const char *)node->data;
+            if (hex_id) {
+                smf_mbs_fsa_id_t *fsa_id = (smf_mbs_fsa_id_t *)ogs_calloc(1, sizeof(*fsa_id));
+                ogs_assert(fsa_id);
+                fsa_id->id = ogs_uint24_from_string(hex_id);
+                ogs_list_add(&mbs_sess->mbs_fsa_id_list, fsa_id);
+            }
+        }
     }
 
     /*********************************************************************
@@ -659,13 +802,71 @@ bool smf_nmbsmf_handle_mbs_session_release(
     ogs_assert(message);
     ogs_assert(mbs_sess);
 
-    // TODO (borieher): Send here the MBS Broadcast Context Release (handle the response and perform the PFCP Release)
+        // Idempotent: only the first Release call triggers the AMF and UPF release chain, and a duplicate
+        // replies 204 without touching mbs_sess again, which may already be mid-teardown or freed by then.
+        // MBSF's delete-cascade can send up to three Nmbsmf_MBSSession Release requests for the same session
+        // at the same instant, and without this they run concurrently against one still-live mbs_sess.
+    if (mbs_sess->release_triggered) {
+        ogs_warn("MBS Session release requested again for an already-releasing session -- ignoring "
+                "duplicate (mbsSessionRef[%s])", mbs_sess->mbs_session_ref);
+        memset(&sendmsg, 0, sizeof(sendmsg));
+        response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
+        ogs_assert(response);
+        ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+        return true;
+    }
+    mbs_sess->release_triggered = true;
 
-    // NOTE (borieher): Currently the response is right after the request, but in the call flow is after the PFCP Session Deletion
-    //                  separate this in request and response
+        // Fires both real release triggers, to the AMF and the UPF, while mbs_sess is still valid; releasing
+        // the local smf_mbs_sess_t here instead would make the release chain local bookkeeping only and fill
+        // the UPF's fixed-size MBS session pool (OGS_MAX_NUM_OF_MBS_SESSIONS) across create and delete cycles.
+        // This mirrors the create path, where smf_n4mb_handle_session_establishment_response() answers its
+        // northbound caller before its own follow-on Namf_MBSBroadcast create completes. The local
+        // smf_mbs_sess_t is freed only once the UPF's N4mb Session Deletion Response arrives, in
+        // smf_n4mb_handle_session_deletion_response() (n4mb-handler.c).
 
-    // MBS Session release
-    smf_mbs_sess_release(mbs_sess);
+    // Release the AMF/NGAP broadcast context, if one was ever actually created for this session (a
+    // Multicast session, or a Broadcast session that never got far enough to receive a mbsContextRef,
+    // has nothing to release here).
+    if (mbs_sess->mbs_context_ref) {
+                // The cached nf_instance is cleared before this call. mbs_sess->sbi holds whatever instance the
+                // first namf-mbs-bc call for this session resolved (OGS_SBI_SETUP_NF_INSTANCE in
+                // ogs_sbi_discover_and_send()) and is reused for every later call to that service: ContextCreate at
+                // session-create time, then this ContextDelete. By delete time that cached instance's
+                // nf_service_list has no "namf-mbs-bc" entry, so ogs_sbi_client_find_by_service_name() falls back
+                // to the NF-instance-level default client, which carries no port. The request then goes out with a
+                // portless 3gpp-Sbi-Target-apiRoot ("http://<amf-ip>"), the SCP fails the downstream HTTP/2
+                // connection ("Remote peer returned unexpected data while we expected SETTINGS frame") and returns
+                // 500, so the AMF's ContextDelete, and the NGAP Broadcast Session Release it would trigger, never
+                // happen and the gNB never frees the session's MRB and LCID.
+                //
+                // ContextCreate does not hit this because it starts from an empty cache slot, being the session's
+                // first namf-mbs-bc call, and goes through the SCP's own fresh discovery, which resolves the
+                // complete profile. Clearing the slot puts this call on that same path.
+        mbs_sess->sbi.service_type_array[OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC].nf_instance = NULL;
+        mbs_sess->sbi.service_type_array[OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC].validity_timeout = 0;
+
+        int r = smf_sbi_old_discover_and_send(
+                OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC, NULL,
+                smf_namf_build_mbs_broadcast_context_delete_request,
+                mbs_sess, NULL, 0, NULL);
+        if (r != OGS_OK)
+            ogs_error("Failed to send MBS Broadcast ContextDelete for mbsContextRef[%s]",
+                    mbs_sess->mbs_context_ref);
+    }
+
+    // Release the UPF-side N4mb PFCP session. If no PFCP peer was ever associated (e.g. the session
+    // never got far enough to be established), there is nothing to tell the UPF -- release local state
+    // directly instead of waiting for a response that will never come.
+    if (mbs_sess->pfcp_node) {
+        int r = smf_5gc_pfcp_n4mb_send_session_deletion_request(mbs_sess);
+        if (r != OGS_OK) {
+            ogs_error("Failed to send N4mb Session Deletion Request, releasing local state anyway");
+            smf_mbs_sess_release(mbs_sess);
+        }
+    } else {
+        smf_mbs_sess_release(mbs_sess);
+    }
 
     /*********************************************************************
      * Send HTTP_STATUS_NO_CONTENT (/nmbsmf-mbssession/v1/mbs-sessions) to the consumer NF
@@ -700,6 +901,14 @@ bool smf_nmbsmf_handle_mbs_session_patch(smf_mbs_sess_t *mbs_sess,
     ogs_assert(stream);
     ogs_assert(message);
     ogs_assert(mbs_sess);
+
+    /* code-derived, no spec claim: sendmsg was previously used uninitialized -- harmless while
+     * every path here only ever built a bodyless 204, but this function now also builds a 200
+     * response carrying sendmsg.UpdateRspData, and ogs_sbi_build_response()'s own serialiser
+     * (lib/sbi/message.c) picks its response body by checking each OpenAPI_*_t field on this
+     * struct in turn, so stack garbage in an unrelated field could otherwise be mistaken for a
+     * different response type. */
+    memset(&sendmsg, 0, sizeof(sendmsg));
 
     if (!message->PatchItemList) {
         ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
@@ -785,8 +994,6 @@ bool smf_nmbsmf_handle_mbs_session_patch(smf_mbs_sess_t *mbs_sess,
         CASE("/mbsSessionSubsc/mbsSessionId/ssm/destIpAddr/ipv6Addr")
         CASE("/mbsSessionSubsc/mbsSessionId/ssm/destIpAddr/ipv6Prefix")
         CASE("/anyUeInd")
-        CASE("/mbsSecurityContext")
-        CASE("/mbsSecurityContext/keyList")
             ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN, message, "Update forbidden",
                     "Requested MBS Session Update failed, update not allowed for one or more field paths",
                     "MODIFICATION_NOT_ALLOWED");
@@ -802,6 +1009,13 @@ bool smf_nmbsmf_handle_mbs_session_patch(smf_mbs_sess_t *mbs_sess,
         CASE("/mbsServInfo/mbsSdfResPrio")
         CASE("/mbsServInfo/afAppId")
         CASE("/mbsServInfo/mbsSessionAmbr")
+        /* TS 29.532 clause 5.3.2.3.1 lists mbsSecurityContext (MSK/MTK key rotation) as modifiable for a
+         * multicast session, unlike the fields above this block, which the same clause never lists as
+         * updatable at all. This SMF has no multicast security-context state to update (mbsSecurityContext
+         * is stubbed NULL throughout -- see this file's own Multicast-scope survey), so the honest response
+         * is "not implemented", not "forbidden". */
+        CASE("/mbsSecurityContext")
+        CASE("/mbsSecurityContext/keyList")
             ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_NOT_IMPLEMENTED, message, "Update not implemented",
                     "Requested MBS Session Update failed, update for requested field path is not implemented", NULL);
             return false;
@@ -822,51 +1036,118 @@ bool smf_nmbsmf_handle_mbs_session_patch(smf_mbs_sess_t *mbs_sess,
             }
         END
     }
-#if 1
-    response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
-#else /* for Rel 18 we can return 200 + UpdateRspData JSON */
-    OpenAPI_mbs_session_id_t *mbs_session_id = NULL;
-    OpenAPI_tmgi_t *tmgi = NULL;
-    char *expiration_time = NULL;
-    OpenAPI_mbs_service_type_e service_type = OpenAPI_mbs_service_type_NULL;
-    OpenAPI_list_t *ingress_tun_addr = NULL;
-    OpenAPI_ssm_t *ssm = NULL;
-    char *dnn = NULL;
-    OpenAPI_snssai_t *snssai = NULL;
-    OpenAPI_mbs_session_activity_status_e activity_status = OpenAPI_mbs_session_activity_status_NULL;
-    bool is_any_ue_ind = false;
-    int any_ue_ind = 0;
+    /* TS 29.532 V18.6.0 clause 5.3.2.3.1 step 2b: "If the MBS service area received in the
+     * request cannot be entirely covered by the MB-SMF service area, the MB-SMF shall reduce the
+     * MBS service area to be within the MB-SMF service area and continue the Update service
+     * operation using the reduced MBS service area."  The step then returns 200 OK and requires
+     * the MB-SMF to "provide in the response the representation of the updated MBS session
+     * including the reduced MBS service area in the redMbsServArea attribute set to the part of
+     * the requested MBS service area that is within the MB-SMF service area in which the MBS
+     * session has been updated".  Step 2a, unchanged and still the default, returns 204 No
+     * Content.  (Status codes are named without quotation marks here: the specification writes
+     * them inside its own quotation marks, which cannot be nested inside a quoted sentence.)
+     *
+     * Mirrors smf_n4mb_handle_session_establishment_response()'s own Create-side check
+     * (n4mb-handler.c) against the same smf_mbs_service_area_reduce() -- see that function's own
+     * scope note (TAI-list coverage only, S12). `mbs_sess->mbs_service_area` is this session's own
+     * requested area. PATCH `/mbsServiceArea` is answered 501 above and so never mutates it yet
+     * (a separate, unimplemented item -- not this one); this branch is therefore unreachable live
+     * until that is done, but is wired unconditionally on smf_mbs_service_area_reduce()'s own
+     * result so the reporting is already correct once it is. */
+    OpenAPI_mbs_service_area_t *Red_mbs_service_area = NULL;
+    ogs_mbs_service_area_t *reduced_mbs_service_area = NULL;
+    bool area_reduced = mbs_sess->mbs_service_area &&
+            smf_mbs_service_area_reduce(mbs_sess->mbs_service_area, &reduced_mbs_service_area);
 
-    /* TODO (davidjw): fill in mbs session fields from mbs_sess */
+    if (!area_reduced) {
+        response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
+    } else {
+        OpenAPI_mbs_session_id_t *Mbs_session_id = NULL;
+        OpenAPI_tmgi_t *Tmgi = NULL;
+        OpenAPI_tmgi_t *Tmgi_copy = NULL;
+        OpenAPI_ssm_t *Ssm = NULL;
+        OpenAPI_ssm_t *Ssm_copy = NULL;
+        char *expiration_time = NULL;
+        OpenAPI_mbs_service_type_e Mbs_service_type = OpenAPI_mbs_service_type_NULL;
+        OpenAPI_list_t *ingress_tun_addr = NULL;
+        OpenAPI_ext_mbs_session_t *Ext_mbs_session = NULL;
+        OpenAPI_update_rsp_data_t *UpdateRspData = NULL;
 
-    sendmsg.UpdateRspData = OpenAPI_update_rsp_data_create(
-            OpenAPI_ext_mbs_session_create(mbs_session_id, /* mbsSessionId */
-                                           false, 0, /* tmgiAllocReq */
-                                           tmgi, /* tmgi */
-                                           expiration_time, /* expirationTime */
-                                           service_type, /* serviceType */
-                                           false, 0, /* locationDependent */
-                                           false, 0, /* areaSessionId */
-                                           false, 0, /* ingressTunAddrReq */
-                                           ingress_tun_addr, /* ingressTunAddr */
-                                           ssm, /* ssm */
-                                           NULL, /* mbsServiceArea */
-                                           NULL, /* extMbsServiceArea */
-                                           dnn, /* dnn */
-                                           snssai, /* snssai */
-                                           NULL, /* activationTime */
-                                           NULL, /* startTime */
-                                           NULL, /* terminationTime */
-                                           NULL, /* mbsServInfo */
-                                           NULL, /* mbsSessionSubsc */
-                                           activity_status, /* activityStatus */
-                                           is_any_ue_ind, any_ue_ind,
-                                           NULL, /* mbsFsaIdList */
-                                           NULL, /* mbsSecurityContext */
-                                           false, 0 /* contactPcfInd */
-                                          ));
-    response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_OK);
-#endif
+        Red_mbs_service_area = ogs_sbi_build_mbs_service_area(reduced_mbs_service_area);
+        ogs_mbs_service_area_free(reduced_mbs_service_area);
+
+        /* Same field population as smf_n4mb_handle_session_establishment_response()'s own Create
+         * response (n4mb-handler.c) -- kept identical rather than inventing new field coverage
+         * this item does not need; see that function's own comments for why each field is (or is
+         * not) populated. */
+        Tmgi = ogs_sbi_build_tmgi(mbs_sess->tmgi);
+        if (mbs_sess->mbs_session_id.is_tmgi) {
+            Tmgi_copy = OpenAPI_tmgi_copy(Tmgi_copy, Tmgi);
+            Mbs_session_id = OpenAPI_mbs_session_id_create(Tmgi_copy, NULL, mbs_sess->mbs_session_id.nid);
+        }
+        if (mbs_sess->mbs_session_id.is_ssm) {
+            Ssm = ogs_sbi_build_ssm(mbs_sess->mbs_session_id.ssm);
+            Ssm_copy = OpenAPI_ssm_copy(Ssm_copy, Ssm);
+            Mbs_session_id = OpenAPI_mbs_session_id_create(NULL, Ssm_copy, NULL /* nid */);
+        }
+
+        Mbs_service_type = OpenAPI_mbs_service_type_FromString(mbs_sess->service_type);
+
+        if (mbs_sess->ingress_tun_addr) {
+            char *ipv4_str = NULL;
+            char *ipv6_str = NULL;
+            int port;
+            ingress_tun_addr = OpenAPI_list_create();
+            if (mbs_sess->ingress_tun_addr->ogs_sa_family == AF_INET) {
+                char buf[OGS_ADDRSTRLEN];
+                ipv4_str = ogs_strdup(OGS_ADDR(mbs_sess->ingress_tun_addr, buf));
+            } else if (mbs_sess->ingress_tun_addr->ogs_sa_family == AF_INET6) {
+                char buf[OGS_ADDRSTRLEN];
+                ipv6_str = ogs_strdup(OGS_ADDR(mbs_sess->ingress_tun_addr, buf));
+            }
+            port = OGS_PORT(mbs_sess->ingress_tun_addr);
+            OpenAPI_list_add(ingress_tun_addr, OpenAPI_tunnel_address_create(ipv4_str, ipv6_str, port));
+        }
+
+        if (mbs_sess->tmgi)
+            expiration_time = ogs_strdup(mbs_sess->tmgi->expiration_time);
+
+        Ext_mbs_session = OpenAPI_ext_mbs_session_create(
+                Mbs_session_id  /* mbs_session_id */,
+                false, 0        /* tmgi_alloc_req */,
+                Tmgi            /* tmgi */,
+                expiration_time /* expiration_time */,
+                Mbs_service_type /* service_type */,
+                mbs_sess->location_dependent, mbs_sess->location_dependent /* location_dependent */,
+                mbs_sess->location_dependent, mbs_sess->area_session_id /* area_session_id */,
+                false, 0        /* ingress_tun_addr_req */,
+                ingress_tun_addr /* ingress_tun_addr */,
+                Ssm             /* ssm */,
+                NULL            /* mbs_service_area, writeOnly, unaffected -- see redMbsServArea's
+                                   own Create-side commit for this choice */,
+                Red_mbs_service_area /* red_mbs_service_area */,
+                NULL            /* ext_mbs_service_area */,
+                NULL            /* dnn */,
+                NULL            /* snssai */,
+                NULL            /* activation_time */,
+                NULL            /* start_time */,
+                NULL            /* termination_time */,
+                NULL            /* mbs_serv_info */,
+                NULL            /* mbs_session_subsc */,
+                mbs_sess->activity_status /* activity_status */,
+                false, 0        /* any_ue_ind */,
+                NULL            /* mbs_fsa_id_list */,
+                NULL            /* mbs_security_context */,
+                false, 0        /* contact_pcf_ind */);
+
+        UpdateRspData = OpenAPI_update_rsp_data_create(Ext_mbs_session);
+        sendmsg.UpdateRspData = UpdateRspData;
+
+        response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_OK);
+
+        if (UpdateRspData)
+            OpenAPI_update_rsp_data_free(UpdateRspData);
+    }
 
     ogs_assert(response);
 
