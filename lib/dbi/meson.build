@@ -47,20 +47,26 @@ else
     error('mongoc header not found')
 endif
 
+# The macro rides on the mongoc dependency rather than being appended to this library's c_args.
+# ogs-mongoc.h is public, so every consumer needs it, and carrying it here means the library() and
+# declare_dependency() calls below keep the exact argument lines that consumers of this tree patch
+# against: rt-mbs-function's open5gs.patch adds a soversion line using 'c_args :
+# '-DOGS_DBI_COMPILATION',' as context, and editing that line makes the patch fail to apply.
+libmongoc_dep = declare_dependency(
+    dependencies : libmongoc_dep,
+    compile_args : libdbi_public_c_args)
+
 libdbi_inc = include_directories('.')
 
 libdbi = library('ogsdbi',
     sources : libdbi_sources,
     version : libogslib_version,
-    c_args : ['-DOGS_DBI_COMPILATION'] + libdbi_public_c_args,
+    c_args : '-DOGS_DBI_COMPILATION',
     include_directories : [libdbi_inc, libinc],
     dependencies : [libproto_dep, libmongoc_dep],
     install : true)
 
-# The header macro is public: ogs-mongoc.h selects its include with it, so every consumer of this
-# library needs it defined too, not just this library's own translation units.
 libdbi_dep = declare_dependency(
     link_with : libdbi,
-    compile_args : libdbi_public_c_args,
     include_directories : [libdbi_inc, libinc],
     dependencies : [libproto_dep, libmongoc_dep])
