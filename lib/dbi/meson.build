@@ -29,7 +29,32 @@ libdbi_sources = files('''
     timer.c
 '''.split())
 
-libmongoc_dep = dependency('libmongoc-1.0')
+# mongo-c-driver 2.x renamed its pkg-config module from libmongoc-1.0 to mongoc2 and moved the
+# public header from <mongoc.h> to <mongoc/mongoc.h>. Distributions have begun shipping only 2.x:
+# Ubuntu 26.04's libmongoc-dev is 2.2.2 and installs mongoc2.pc alone, so requiring libmongoc-1.0
+# outright fails at configure time there. Both modules are accepted, and the header actually
+# present is detected rather than assumed. This matches upstream open5gs.
+libmongoc_dep = dependency('libmongoc-1.0', required : false)
+if not libmongoc_dep.found()
+    libmongoc_dep = dependency('mongoc2')
+endif
+
+libdbi_public_c_args = []
+if cc.has_header('mongoc/mongoc.h', dependencies : libmongoc_dep)
+    libdbi_public_c_args += '-DOGS_HAVE_MONGOC_MONGOC_H'
+elif cc.has_header('mongoc.h', dependencies : libmongoc_dep)
+    libdbi_public_c_args += '-DOGS_HAVE_MONGOC_H'
+else
+    error('mongoc header not found')
+endif
+
+# The macro rides on the mongoc dependency rather than being appended to this library's c_args, so
+# that the library() and declare_dependency() calls below keep the exact argument lines a consumer
+# may patch against. rt-mbs-function's open5gs.patch does exactly that on the sibling branch, using
+# 'c_args : '-DOGS_DBI_COMPILATION',' as context, and editing that line stops the patch applying.
+libmongoc_dep = declare_dependency(
+    dependencies : libmongoc_dep,
+    compile_args : libdbi_public_c_args)
 
 libdbi_inc = include_directories('.')
 
