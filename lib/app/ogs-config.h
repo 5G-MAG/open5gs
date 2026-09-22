@@ -79,6 +79,10 @@ typedef struct ogs_global_conf_s {
         uint64_t ue;
         uint64_t peer;
         uint64_t gtp_peer;
+	struct {
+           uint64_t tmgis;
+           uint64_t mbs_sessions;
+        } mbs;
     } max;
 
     struct {

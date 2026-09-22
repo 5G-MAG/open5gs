@@ -122,14 +122,14 @@ bool smf_nmbsmf_handle_tmgi_allocate(
          * else branch below. Being merely unsatisfiable right now is a different answer, handled inside. */
         if (TmgiAllocate->tmgi_number >= NMBSMF_TMGI_MIN_TMGI_NUMBER &&
                 TmgiAllocate->tmgi_number <=
-                    ogs_min(NMBSMF_TMGI_MAX_TMGI_NUMBER, OGS_MAX_NUM_OF_TMGI)) {
+                    ogs_min(NMBSMF_TMGI_MAX_TMGI_NUMBER, ogs_global_conf()->max.mbs.tmgis)) {
 
             // Check the number of TMGIs available, after releasing any whose advertised
             // expiration time has passed -- see smf_tmgi_reclaim_expired().
-            if ((smf_tmgi_count() + TmgiAllocate->tmgi_number) > OGS_MAX_NUM_OF_TMGI)
+            if ((smf_tmgi_count() + TmgiAllocate->tmgi_number) > ogs_global_conf()->max.mbs.tmgis)
                 smf_tmgi_reclaim_expired();
 
-            if ((smf_tmgi_count() + TmgiAllocate->tmgi_number) > OGS_MAX_NUM_OF_TMGI) {
+            if ((smf_tmgi_count() + TmgiAllocate->tmgi_number) > ogs_global_conf()->max.mbs.tmgis) {
                 ogs_error("TMGI Allocate: Cannot allocate %d TMGIs", TmgiAllocate->tmgi_number);
                 /* 500, not 403: the request is within the ceiling checked above, so it is a valid request
                  * that cannot be met at this moment, and repeating it later may succeed once TMGIs are
@@ -377,6 +377,7 @@ bool smf_nmbsmf_handle_mbs_session_create(
     char *service_type = NULL;
 
     bool is_multicast_service = false;
+    bool tmgi_allocated = false;
 
     int rv = OGS_OK;
 
@@ -441,7 +442,7 @@ bool smf_nmbsmf_handle_mbs_session_create(
     }
 
     // Perform the TMGI allocate operation
-    if (CreateReqData->mbs_session->is_tmgi_alloc_req && CreateReqData->mbs_session->tmgi_alloc_req > 0) {
+    if (CreateReqData->mbs_session->is_tmgi_alloc_req && CreateReqData->mbs_session->tmgi_alloc_req != 0) {
         if (CreateReqData->mbs_session->mbs_session_id) {
             // For multicast, SSM can be provided as MBS Session ID. But TMGI must be allocated too
             if (CreateReqData->mbs_session->mbs_session_id->ssm) {
@@ -469,10 +470,10 @@ bool smf_nmbsmf_handle_mbs_session_create(
 
         // Error checking, check the number of TMGIs available, after releasing any whose
         // advertised expiration time has passed -- see smf_tmgi_reclaim_expired().
-        if (smf_tmgi_count() >= OGS_MAX_NUM_OF_TMGI)
+        if (smf_tmgi_count() >= ogs_global_conf()->max.mbs.tmgis)
             smf_tmgi_reclaim_expired();
 
-        if (smf_tmgi_count() >= OGS_MAX_NUM_OF_TMGI) {
+        if (smf_tmgi_count() >= ogs_global_conf()->max.mbs.tmgis) {
             ogs_error("MBS Session Create: Cannot allocate TMGI");
             // Custom error handling, not the 3GPP TS
             // Avoid reaching the maximum number of TMGI, send error (403)
@@ -485,6 +486,7 @@ bool smf_nmbsmf_handle_mbs_session_create(
         // TMGI allocate
         expiration_time = smf_tmgi_gen_expiration_time(OGS_DEFAULT_EXPIRATION_TIME_VALIDITY);
         tmgi = smf_tmgi_allocate(expiration_time);
+        tmgi_allocated = true;
     }
 
     // Grab the provided TMGI as MBS Session ID
@@ -643,7 +645,7 @@ bool smf_nmbsmf_handle_mbs_session_create(
     }
 
     // MBS Session create
-    mbs_sess = smf_mbs_sess_create(tmgi, ssm, service_type, mbs_service_area, ext_mbs_service_area);
+    mbs_sess = smf_mbs_sess_create(tmgi, tmgi_allocated, ssm, service_type, mbs_service_area, ext_mbs_service_area);
     tmgi = NULL; // tmgi passed to mbs_sess
     ssm = NULL; // ssm passed to mbs_sess
     mbs_service_area = NULL; // mbs_service_area passed to mbs_sess
@@ -777,6 +779,9 @@ cleanup:
 
     if (service_type)
         ogs_free(service_type);
+
+    if (tmgi_allocated && tmgi)
+        smf_tmgi_deallocate(tmgi);
 
     if (rv == OGS_OK)
         return true;
