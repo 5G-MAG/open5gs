@@ -1393,8 +1393,15 @@ int test_db_insert_ue(test_ue_t *test_ue, bson_t *doc)
     key = BCON_NEW("imsi", BCON_UTF8(test_ue->imsi));
     ogs_assert(key);
 
+    /* mongo-c-driver 1.11 and newer, including 2.x: mongoc_collection_count_documents().
+     * Older: the legacy mongoc_collection_count(). */
+#if MONGOC_CHECK_VERSION(1, 11, 0)
+    count = mongoc_collection_count_documents(
+        collection, key, NULL, NULL, NULL, &error);
+#else
     count = mongoc_collection_count (
         collection, MONGOC_QUERY_NONE, key, 0, 0, NULL, &error);
+#endif
     if (count) {
         if (mongoc_collection_remove(collection,
                 MONGOC_REMOVE_SINGLE_REMOVE, key, NULL, &error) != true) {
@@ -1416,8 +1423,13 @@ int test_db_insert_ue(test_ue_t *test_ue, bson_t *doc)
     key = BCON_NEW("imsi", BCON_UTF8(test_ue->imsi));
     ogs_assert(key);
     do {
+#if MONGOC_CHECK_VERSION(1, 11, 0)
+        count = mongoc_collection_count_documents(
+            collection, key, NULL, NULL, NULL, &error);
+#else
         count = mongoc_collection_count(
             collection, MONGOC_QUERY_NONE, key, 0, 0, NULL, &error);
+#endif
     } while (count == 0);
     bson_destroy(key);
 

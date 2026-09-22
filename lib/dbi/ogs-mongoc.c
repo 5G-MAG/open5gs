@@ -17,8 +17,6 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#include <mongoc.h>
-
 #include "ogs-dbi.h"
 
 int __ogs_dbi_domain;
@@ -104,7 +102,7 @@ int ogs_mongoc_init(const char *db_uri)
         return OGS_ERROR;
     }
 
-#if MONGOC_MAJOR_VERSION >= 1 && MONGOC_MINOR_VERSION >= 4
+#if MONGOC_CHECK_VERSION(1, 4, 0)
     mongoc_client_set_error_api(self.client, 2);
 #endif
 
@@ -182,7 +180,7 @@ void ogs_dbi_final(void)
         mongoc_collection_destroy(self.collection.subscriber);
     }
 
-#if MONGOC_MAJOR_VERSION >= 1 && MONGOC_MINOR_VERSION >= 9
+#if MONGOC_CHECK_VERSION(1, 9, 0)
     if (self.stream) {
         mongoc_change_stream_destroy(self.stream);
     }
@@ -193,7 +191,7 @@ void ogs_dbi_final(void)
 
 int ogs_dbi_collection_watch_init(void)
 {
-#if MONGOC_MAJOR_VERSION >= 1 && MONGOC_MINOR_VERSION >= 9
+#if MONGOC_CHECK_VERSION(1, 9, 0)
     bson_t empty = BSON_INITIALIZER;    
     const bson_t *err_doc;
     bson_error_t error;
@@ -223,7 +221,7 @@ int ogs_dbi_collection_watch_init(void)
 
 int ogs_dbi_poll_change_stream(void)
 {
-#if MONGOC_MAJOR_VERSION >= 1 && MONGOC_MINOR_VERSION >= 9
+#if MONGOC_CHECK_VERSION(1, 9, 0)
     int rv;
     
     const bson_t *document;
