@@ -202,13 +202,13 @@ paths:
         content:
           application/json:   # message without binary body part
             schema:
-              $ref: '#/components/schemas/ContextUpdateReqData'
+              $ref: '#/components/schemas/NmbsmfContextUpdateReqData'
           multipart/related:  # message with binary body part
             schema:
               type: object
               properties: # Request parts
                 jsonData:
-                  $ref: '#/components/schemas/ContextUpdateReqData'
+                  $ref: '#/components/schemas/NmbsmfContextUpdateReqData'
                 binaryDataN2Information:
                   type: string
                   format: binary
@@ -227,13 +227,13 @@ paths:
           content:
             application/json:   # message without binary body part
               schema:
-                $ref: '#/components/schemas/ContextUpdateRspData'
+                $ref: '#/components/schemas/NmbsmfContextUpdateRspData'
             multipart/related:   # message with binary body part
               schema:
                 type: object
                 properties:
                   jsonData:
-                    $ref: '#/components/schemas/ContextUpdateRspData'
+                    $ref: '#/components/schemas/NmbsmfContextUpdateRspData'
                   binaryDataN2Information:
                     type: string
                     format: binary
@@ -817,7 +817,7 @@ components:
     #       type: boolean
     #       default: false
 
-    ContextUpdateReqData:
+    NmbsmfContextUpdateReqData:
       description: Data within ContextUpdate Request
       type: object
       properties:
@@ -832,7 +832,7 @@ components:
         dlTunnelInfo:
           $ref: 'TS29571_CommonData.yaml#/components/schemas/Bytes'
         n2MbsSmInfo:
-          $ref: '#/components/schemas/N2MbsSmInfo'
+          $ref: '#/components/schemas/NmbsmfN2MbsSmInfo'
         ranNodeId:
           $ref: 'TS29571_CommonData.yaml#/components/schemas/GlobalRanNodeId'
         leaveInd:
@@ -843,7 +843,7 @@ components:
         - nfcInstanceId
         - mbsSessionId
 
-    ContextUpdateRspData:
+    NmbsmfContextUpdateRspData:
       description: Data within ContextUpdate Response
       type: object
       properties:
@@ -852,7 +852,7 @@ components:
         cTeid:
           $ref: 'TS29571_CommonData.yaml#/components/schemas/Uint32'
         n2MbsSmInfo:
-          $ref: '#/components/schemas/N2MbsSmInfo'
+          $ref: '#/components/schemas/NmbsmfN2MbsSmInfo'
 
 
     ContextStatusSubscribeReqData:
@@ -1016,7 +1016,7 @@ components:
         - eventList
 
 
-    N2MbsSmInfo:
+    NmbsmfN2MbsSmInfo:
       description: N2 MBS Session Management information
       type: object
       properties:

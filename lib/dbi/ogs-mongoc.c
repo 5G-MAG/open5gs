@@ -17,8 +17,9 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#include <mongoc.h>
-
+/* mongoc is reached through ogs-dbi.h -> ogs-mongoc.h, which selects <mongoc/mongoc.h> or
+ * <mongoc.h> according to which the installed driver provides. Including it directly here
+ * hardcoded the 1.x spelling and broke against mongo-c-driver 2.x. */
 #include "ogs-dbi.h"
 
 int __ogs_dbi_domain;

@@ -12,6 +12,7 @@
 #include "../include/list.h"
 #include "../include/keyValuePair.h"
 #include "../include/binary.h"
+#include "global_ran_node_id.h"
 #include "ngap_ie_type.h"
 #include "ref_to_binary_data.h"
 
@@ -23,11 +24,13 @@ typedef struct OpenAPI_n2_mbs_sm_info_s OpenAPI_n2_mbs_sm_info_t;
 typedef struct OpenAPI_n2_mbs_sm_info_s {
     OpenAPI_ngap_ie_type_e ngap_ie_type;
     struct OpenAPI_ref_to_binary_data_s *ngap_data;
+    struct OpenAPI_global_ran_node_id_s *rand_id;
 } OpenAPI_n2_mbs_sm_info_t;
 
 OpenAPI_n2_mbs_sm_info_t *OpenAPI_n2_mbs_sm_info_create(
     OpenAPI_ngap_ie_type_e ngap_ie_type,
-    OpenAPI_ref_to_binary_data_t *ngap_data
+    OpenAPI_ref_to_binary_data_t *ngap_data,
+    OpenAPI_global_ran_node_id_t *rand_id
 );
 void OpenAPI_n2_mbs_sm_info_free(OpenAPI_n2_mbs_sm_info_t *n2_mbs_sm_info);
 OpenAPI_n2_mbs_sm_info_t *OpenAPI_n2_mbs_sm_info_parseFromJSON(cJSON *n2_mbs_sm_infoJSON);

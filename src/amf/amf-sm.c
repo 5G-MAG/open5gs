@@ -284,13 +284,61 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
             CASE(OGS_SBI_RESOURCE_NAME_MBS_CONTEXTS)
                 SWITCH(sbi_message.h.method)
                 CASE(OGS_SBI_HTTP_METHOD_POST)
-                    amf_namf_handle_mbs_broadcast_context_create(
+                                        // component[1], the {mbsContextRef} path segment, decides between ContextCreate and
+                                        // Namf_MBSBroadcast_ContextUpdate (TS 29.518 cl.5.6.2.3, which targets
+                                        // /mbs-contexts/{mbsContextRef}).  Routing every POST to
+                                        // amf_namf_handle_mbs_broadcast_context_create() would reject a genuine ContextUpdate
+                                        // there for carrying the wrong body shape.
+                    if (sbi_message.h.resource.component[1]) {
+                        amf_namf_handle_mbs_broadcast_context_update(
+                                stream, &sbi_message);
+                    } else {
+                        amf_namf_handle_mbs_broadcast_context_create(
+                                stream, &sbi_message);
+                    }
+                    break;
+
+                                // DELETE is dispatched here for Namf_MBSBroadcast ContextDelete
+                                // (DELETE /namf-mbs-bc/v1/mbs-contexts/{mbsContextRef}, TS 29.518 cl.5.6.2.4,
+                                // ContextRelease; cl.5.6.2.3 is ContextUpdate, handled above).  Without this branch it
+                                // falls to the DEFAULT case below and is answered 403 Forbidden, so the NGAP
+                                // BroadcastSessionRelease it triggers is never sent.
+                CASE(OGS_SBI_HTTP_METHOD_DELETE)
+                    amf_namf_handle_mbs_broadcast_context_delete(
                             stream, &sbi_message);
                     break;
 
                 DEFAULT
                     ogs_error("Invalid HTTP method [%s]", sbi_message.h.method);
                     // NOTE (borieher): Should send HTTP 405 Method Not Allowed?
+                    ogs_assert(true ==
+                        ogs_sbi_server_send_error(stream,
+                            OGS_SBI_HTTP_STATUS_FORBIDDEN, &sbi_message,
+                            "Invalid HTTP method", sbi_message.h.method, NULL));
+                END
+                break;
+
+            DEFAULT
+                ogs_error("Invalid resource name [%s]",
+                        sbi_message.h.resource.component[0]);
+                ogs_assert(true ==
+                    ogs_sbi_server_send_error(stream,
+                        OGS_SBI_HTTP_STATUS_BAD_REQUEST, &sbi_message,
+                        "Invalid resource name",
+                        sbi_message.h.resource.component[0], NULL));
+            END
+            break;
+
+        CASE(OGS_SBI_SERVICE_NAME_NAMF_MBS_COMM)
+            SWITCH(sbi_message.h.resource.component[0])
+            CASE(OGS_SBI_RESOURCE_NAME_N2_MESSAGES)
+                SWITCH(sbi_message.h.method)
+                CASE(OGS_SBI_HTTP_METHOD_POST)
+                    amf_namf_mbs_comm_handle_n2_message_transfer(stream, &sbi_message);
+                    break;
+
+                DEFAULT
+                    ogs_error("Invalid HTTP method [%s]", sbi_message.h.method);
                     ogs_assert(true ==
                         ogs_sbi_server_send_error(stream,
                             OGS_SBI_HTTP_STATUS_FORBIDDEN, &sbi_message,

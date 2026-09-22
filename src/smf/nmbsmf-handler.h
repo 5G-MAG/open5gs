@@ -34,6 +34,22 @@ extern "C" {
 #define NMBSMF_TMGI_MANDATORY_IE_INCORRECT  "MANDATORY_IE_INCORRECT"
 #define NMBSMF_TMGI_INSUFFICIENT_RESOURCES  "INSUFFICIENT_RESOURCES"
 #define NMBSMF_TMGI_UNKNOWN_TMGI            "UNKNOWN_TMGI"
+/* The generic cause for a missing mandatory query parameter, which is this operation's tmgi-list on
+ * DELETE (see smf_nmbsmf_handle_tmgi_deallocate()).
+ *
+ * TS 29.500 V18.10.0 table 5.2.7.2-1, row MANDATORY_QUERY_PARAM_MISSING: "Query parameter which is
+ * defined as mandatory, or as conditional but mandatory required, for an HTTP method is not included
+ * in the URI of the request."
+ *
+ * It is deliberately not from TS 29.532's own operation-specific list: table 6.1.3.2.3.2-3 defines
+ * one application error for this operation, UNKNOWN_TMGI with 404, and none for a malformed
+ * request, so the common table above is where this case is answered from. */
+#define NMBSMF_TMGI_MANDATORY_QUERY_PARAM_MISSING "MANDATORY_QUERY_PARAM_MISSING"
+/* There is deliberately no cause here for deallocating a TMGI that is still referenced. TS 29.532
+ * V18.6.0 table 6.1.3.2.3.2-3 defines one application error for this operation, UNKNOWN_TMGI with
+ * 404, and no 403 row; the generic 403 causes in TS 29.500 V18.10.0 table 5.2.7.2-1 describe
+ * authorisation and modification failures, not a resource still in use. Neither level defines one,
+ * so none is invented. The call site in nmbsmf-handler.c says what it does instead. */
 
 /* TMGI API constants */
 #define NMBSMF_TMGI_MIN_TMGI_NUMBER 1

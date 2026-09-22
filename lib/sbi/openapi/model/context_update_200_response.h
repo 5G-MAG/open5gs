@@ -21,12 +21,30 @@ extern "C" {
 typedef struct OpenAPI_context_update_200_response_s OpenAPI_context_update_200_response_t;
 typedef struct OpenAPI_context_update_200_response_s {
     struct OpenAPI_context_update_rsp_data_s *json_data;
-    OpenAPI_binary_t* binary_data_n2_information;
+    OpenAPI_binary_t* binary_data_n2_information1;
+    OpenAPI_binary_t* binary_data_n2_information2;
+    OpenAPI_binary_t* binary_data_n2_information3;
+    OpenAPI_binary_t* binary_data_n2_information4;
+    OpenAPI_binary_t* binary_data_n2_information5;
+    OpenAPI_binary_t* binary_data_n2_information6;
+    OpenAPI_binary_t* binary_data_n2_information7;
+    OpenAPI_binary_t* binary_data_n2_information8;
+    OpenAPI_binary_t* binary_data_n2_information9;
+    OpenAPI_binary_t* binary_data_n2_information10;
 } OpenAPI_context_update_200_response_t;
 
 OpenAPI_context_update_200_response_t *OpenAPI_context_update_200_response_create(
     OpenAPI_context_update_rsp_data_t *json_data,
-    OpenAPI_binary_t* binary_data_n2_information
+    OpenAPI_binary_t* binary_data_n2_information1,
+    OpenAPI_binary_t* binary_data_n2_information2,
+    OpenAPI_binary_t* binary_data_n2_information3,
+    OpenAPI_binary_t* binary_data_n2_information4,
+    OpenAPI_binary_t* binary_data_n2_information5,
+    OpenAPI_binary_t* binary_data_n2_information6,
+    OpenAPI_binary_t* binary_data_n2_information7,
+    OpenAPI_binary_t* binary_data_n2_information8,
+    OpenAPI_binary_t* binary_data_n2_information9,
+    OpenAPI_binary_t* binary_data_n2_information10
 );
 void OpenAPI_context_update_200_response_free(OpenAPI_context_update_200_response_t *context_update_200_response);
 OpenAPI_context_update_200_response_t *OpenAPI_context_update_200_response_parseFromJSON(cJSON *context_update_200_responseJSON);

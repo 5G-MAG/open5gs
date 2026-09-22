@@ -5,19 +5,15 @@
 #include "context_update_rsp_data.h"
 
 OpenAPI_context_update_rsp_data_t *OpenAPI_context_update_rsp_data_create(
-    OpenAPI_ssm_t *ll_ssm,
-    bool is_c_teid,
-    int c_teid,
-    OpenAPI_n2_mbs_sm_info_t *n2_mbs_sm_info
+    OpenAPI_list_t *n2_mbs_sm_info_list,
+    OpenAPI_operation_status_e operation_status
 )
 {
     OpenAPI_context_update_rsp_data_t *context_update_rsp_data_local_var = ogs_malloc(sizeof(OpenAPI_context_update_rsp_data_t));
     ogs_assert(context_update_rsp_data_local_var);
 
-    context_update_rsp_data_local_var->ll_ssm = ll_ssm;
-    context_update_rsp_data_local_var->is_c_teid = is_c_teid;
-    context_update_rsp_data_local_var->c_teid = c_teid;
-    context_update_rsp_data_local_var->n2_mbs_sm_info = n2_mbs_sm_info;
+    context_update_rsp_data_local_var->n2_mbs_sm_info_list = n2_mbs_sm_info_list;
+    context_update_rsp_data_local_var->operation_status = operation_status;
 
     return context_update_rsp_data_local_var;
 }
@@ -29,13 +25,12 @@ void OpenAPI_context_update_rsp_data_free(OpenAPI_context_update_rsp_data_t *con
     if (NULL == context_update_rsp_data) {
         return;
     }
-    if (context_update_rsp_data->ll_ssm) {
-        OpenAPI_ssm_free(context_update_rsp_data->ll_ssm);
-        context_update_rsp_data->ll_ssm = NULL;
-    }
-    if (context_update_rsp_data->n2_mbs_sm_info) {
-        OpenAPI_n2_mbs_sm_info_free(context_update_rsp_data->n2_mbs_sm_info);
-        context_update_rsp_data->n2_mbs_sm_info = NULL;
+    if (context_update_rsp_data->n2_mbs_sm_info_list) {
+        OpenAPI_list_for_each(context_update_rsp_data->n2_mbs_sm_info_list, node) {
+            OpenAPI_n2_mbs_sm_info_free(node->data);
+        }
+        OpenAPI_list_free(context_update_rsp_data->n2_mbs_sm_info_list);
+        context_update_rsp_data->n2_mbs_sm_info_list = NULL;
     }
     ogs_free(context_update_rsp_data);
 }
@@ -51,35 +46,25 @@ cJSON *OpenAPI_context_update_rsp_data_convertToJSON(OpenAPI_context_update_rsp_
     }
 
     item = cJSON_CreateObject();
-    if (context_update_rsp_data->ll_ssm) {
-    cJSON *ll_ssm_local_JSON = OpenAPI_ssm_convertToJSON(context_update_rsp_data->ll_ssm);
-    if (ll_ssm_local_JSON == NULL) {
-        ogs_error("OpenAPI_context_update_rsp_data_convertToJSON() failed [ll_ssm]");
+    if (context_update_rsp_data->n2_mbs_sm_info_list) {
+    cJSON *n2_mbs_sm_info_listList = cJSON_AddArrayToObject(item, "n2MbsSmInfoList");
+    if (n2_mbs_sm_info_listList == NULL) {
+        ogs_error("OpenAPI_context_update_rsp_data_convertToJSON() failed [n2_mbs_sm_info_list]");
         goto end;
     }
-    cJSON_AddItemToObject(item, "llSsm", ll_ssm_local_JSON);
-    if (item->child == NULL) {
-        ogs_error("OpenAPI_context_update_rsp_data_convertToJSON() failed [ll_ssm]");
-        goto end;
+    OpenAPI_list_for_each(context_update_rsp_data->n2_mbs_sm_info_list, node) {
+        cJSON *itemLocal = OpenAPI_n2_mbs_sm_info_convertToJSON(node->data);
+        if (itemLocal == NULL) {
+            ogs_error("OpenAPI_context_update_rsp_data_convertToJSON() failed [n2_mbs_sm_info_list]");
+            goto end;
+        }
+        cJSON_AddItemToArray(n2_mbs_sm_info_listList, itemLocal);
     }
     }
 
-    if (context_update_rsp_data->is_c_teid) {
-    if (cJSON_AddNumberToObject(item, "cTeid", context_update_rsp_data->c_teid) == NULL) {
-        ogs_error("OpenAPI_context_update_rsp_data_convertToJSON() failed [c_teid]");
-        goto end;
-    }
-    }
-
-    if (context_update_rsp_data->n2_mbs_sm_info) {
-    cJSON *n2_mbs_sm_info_local_JSON = OpenAPI_n2_mbs_sm_info_convertToJSON(context_update_rsp_data->n2_mbs_sm_info);
-    if (n2_mbs_sm_info_local_JSON == NULL) {
-        ogs_error("OpenAPI_context_update_rsp_data_convertToJSON() failed [n2_mbs_sm_info]");
-        goto end;
-    }
-    cJSON_AddItemToObject(item, "n2MbsSmInfo", n2_mbs_sm_info_local_JSON);
-    if (item->child == NULL) {
-        ogs_error("OpenAPI_context_update_rsp_data_convertToJSON() failed [n2_mbs_sm_info]");
+    if (context_update_rsp_data->operation_status != OpenAPI_operation_status_NULL) {
+    if (cJSON_AddStringToObject(item, "operationStatus", OpenAPI_operation_status_ToString(context_update_rsp_data->operation_status)) == NULL) {
+        ogs_error("OpenAPI_context_update_rsp_data_convertToJSON() failed [operation_status]");
         goto end;
     }
     }
@@ -92,53 +77,56 @@ OpenAPI_context_update_rsp_data_t *OpenAPI_context_update_rsp_data_parseFromJSON
 {
     OpenAPI_context_update_rsp_data_t *context_update_rsp_data_local_var = NULL;
     OpenAPI_lnode_t *node = NULL;
-    cJSON *ll_ssm = NULL;
-    OpenAPI_ssm_t *ll_ssm_local_nonprim = NULL;
-    cJSON *c_teid = NULL;
-    cJSON *n2_mbs_sm_info = NULL;
-    OpenAPI_n2_mbs_sm_info_t *n2_mbs_sm_info_local_nonprim = NULL;
-    ll_ssm = cJSON_GetObjectItemCaseSensitive(context_update_rsp_dataJSON, "llSsm");
-    if (ll_ssm) {
-    ll_ssm_local_nonprim = OpenAPI_ssm_parseFromJSON(ll_ssm);
-    if (!ll_ssm_local_nonprim) {
-        ogs_error("OpenAPI_ssm_parseFromJSON failed [ll_ssm]");
-        goto end;
-    }
+    cJSON *n2_mbs_sm_info_list = NULL;
+    OpenAPI_list_t *n2_mbs_sm_info_listList = NULL;
+    cJSON *operation_status = NULL;
+    OpenAPI_operation_status_e operation_statusVariable = 0;
+    n2_mbs_sm_info_list = cJSON_GetObjectItemCaseSensitive(context_update_rsp_dataJSON, "n2MbsSmInfoList");
+    if (n2_mbs_sm_info_list) {
+        cJSON *n2_mbs_sm_info_list_local = NULL;
+        if (!cJSON_IsArray(n2_mbs_sm_info_list)) {
+            ogs_error("OpenAPI_context_update_rsp_data_parseFromJSON() failed [n2_mbs_sm_info_list]");
+            goto end;
+        }
+
+        n2_mbs_sm_info_listList = OpenAPI_list_create();
+
+        cJSON_ArrayForEach(n2_mbs_sm_info_list_local, n2_mbs_sm_info_list) {
+            if (!cJSON_IsObject(n2_mbs_sm_info_list_local)) {
+                ogs_error("OpenAPI_context_update_rsp_data_parseFromJSON() failed [n2_mbs_sm_info_list]");
+                goto end;
+            }
+            OpenAPI_n2_mbs_sm_info_t *n2_mbs_sm_info_listItem = OpenAPI_n2_mbs_sm_info_parseFromJSON(n2_mbs_sm_info_list_local);
+            if (!n2_mbs_sm_info_listItem) {
+                ogs_error("No n2_mbs_sm_info_listItem");
+                goto end;
+            }
+            OpenAPI_list_add(n2_mbs_sm_info_listList, n2_mbs_sm_info_listItem);
+        }
     }
 
-    c_teid = cJSON_GetObjectItemCaseSensitive(context_update_rsp_dataJSON, "cTeid");
-    if (c_teid) {
-    if (!cJSON_IsNumber(c_teid)) {
-        ogs_error("OpenAPI_context_update_rsp_data_parseFromJSON() failed [c_teid]");
+    operation_status = cJSON_GetObjectItemCaseSensitive(context_update_rsp_dataJSON, "operationStatus");
+    if (operation_status) {
+    if (!cJSON_IsString(operation_status)) {
+        ogs_error("OpenAPI_context_update_rsp_data_parseFromJSON() failed [operation_status]");
         goto end;
     }
-    }
-
-    n2_mbs_sm_info = cJSON_GetObjectItemCaseSensitive(context_update_rsp_dataJSON, "n2MbsSmInfo");
-    if (n2_mbs_sm_info) {
-    n2_mbs_sm_info_local_nonprim = OpenAPI_n2_mbs_sm_info_parseFromJSON(n2_mbs_sm_info);
-    if (!n2_mbs_sm_info_local_nonprim) {
-        ogs_error("OpenAPI_n2_mbs_sm_info_parseFromJSON failed [n2_mbs_sm_info]");
-        goto end;
-    }
+    operation_statusVariable = OpenAPI_operation_status_FromString(operation_status->valuestring);
     }
 
     context_update_rsp_data_local_var = OpenAPI_context_update_rsp_data_create (
-        ll_ssm ? ll_ssm_local_nonprim : NULL,
-        c_teid ? true : false,
-        c_teid ? c_teid->valuedouble : 0,
-        n2_mbs_sm_info ? n2_mbs_sm_info_local_nonprim : NULL
+        n2_mbs_sm_info_list ? n2_mbs_sm_info_listList : NULL,
+        operation_status ? operation_statusVariable : 0
     );
 
     return context_update_rsp_data_local_var;
 end:
-    if (ll_ssm_local_nonprim) {
-        OpenAPI_ssm_free(ll_ssm_local_nonprim);
-        ll_ssm_local_nonprim = NULL;
-    }
-    if (n2_mbs_sm_info_local_nonprim) {
-        OpenAPI_n2_mbs_sm_info_free(n2_mbs_sm_info_local_nonprim);
-        n2_mbs_sm_info_local_nonprim = NULL;
+    if (n2_mbs_sm_info_listList) {
+        OpenAPI_list_for_each(n2_mbs_sm_info_listList, node) {
+            OpenAPI_n2_mbs_sm_info_free(node->data);
+        }
+        OpenAPI_list_free(n2_mbs_sm_info_listList);
+        n2_mbs_sm_info_listList = NULL;
     }
     return NULL;
 }

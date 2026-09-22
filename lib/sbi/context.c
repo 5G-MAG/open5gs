@@ -2193,6 +2193,34 @@ bool ogs_sbi_discovery_option_target_plmn_list_is_matched(
     ogs_assert(nf_instance);
     ogs_assert(discovery_option);
 
+    /*
+     * BUG FIX (code-derived, source-derived basis below): TS 29.510 V18.11.0's own NFProfile
+     * plmnList field description: "If neither the plmnList IE nor the snpnList IE are provided,
+     * PLMN ID(s) of the PLMN of the NRF are assumed for the NF." An NF that registered with no
+     * plmnList at all (nf_instance->num_of_plmn_id == 0) must therefore be treated as belonging to
+     * the NRF's own configured PLMN, not as matching nothing.
+     * ogs_sbi_discovery_param_serving_plmn_list_is_matched() (this file) already implements this
+     * exact fallback for the target-plmn-list-ABSENT case (see its own comment, quoting the same
+     * clause for target-plmn-list itself); this function, used when target-plmn-list IS present,
+     * had no equivalent, so a same-PLMN NF with no registered plmnList was wrongly excluded from
+     * every target-plmn-list-filtered discovery, regardless of whether its PLMN was in fact the
+     * one requested.
+     */
+    if (nf_instance->num_of_plmn_id == 0) {
+        if (ogs_local_conf()->num_of_serving_plmn_id == 0)
+            return true; /* nothing configured to assume either; do not filter this NF out */
+        for (i = 0; i < ogs_local_conf()->num_of_serving_plmn_id; i++) {
+            for (j = 0; j < discovery_option->num_of_target_plmn_list; j++) {
+                if (memcmp(&ogs_local_conf()->serving_plmn_id[i],
+                           &discovery_option->target_plmn_list[j],
+                           OGS_PLMN_ID_LEN) == 0) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     for (i = 0; i < nf_instance->num_of_plmn_id; i++) {
         for (j = 0; j < discovery_option->num_of_target_plmn_list; j++) {
             if (memcmp(&nf_instance->plmn_id[i],
