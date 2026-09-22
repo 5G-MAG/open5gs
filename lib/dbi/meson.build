@@ -31,11 +31,10 @@ libdbi_sources = files('''
 
 # Accepts either mongo-c-driver's pkg-config module name (libmongoc-1.0 for 1.x, mongoc2 for 2.x,
 # which also moved its public header from <mongoc.h> to <mongoc/mongoc.h>), and detects which
-# header is actually present rather than assuming one.
-libmongoc_dep = dependency('libmongoc-1.0', required : false)
-if not libmongoc_dep.found()
-    libmongoc_dep = dependency('mongoc2')
-endif
+# header is actually present rather than assuming one. dependency() with more than one name tries
+# each in the order given and stops at the first found (Meson FeatureNew 0.60.0, see this branch's
+# own meson_version bump).
+libmongoc_dep = dependency('libmongoc-1.0', 'mongoc2', required : true)
 
 libdbi_public_c_args = []
 if cc.has_header('mongoc/mongoc.h', dependencies : libmongoc_dep)
