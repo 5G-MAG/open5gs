@@ -157,7 +157,7 @@ ogs_hash_index_t *ogs_hash_index_make(const ogs_hash_t *ht)
     ogs_assert(ht);
 
     hi = ogs_calloc(1, sizeof(*hi));
-    hi->ht = ht;
+    hi->ht = (ogs_hash_t *)ht;
     return hi;
 }
 
