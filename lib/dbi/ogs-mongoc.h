@@ -24,7 +24,13 @@
 #ifndef OGS_MONGOC_H
 #define OGS_MONGOC_H
 
+#if defined(OGS_HAVE_MONGOC_MONGOC_H)
+#include <mongoc/mongoc.h>
+#elif defined(OGS_HAVE_MONGOC_H)
 #include <mongoc.h>
+#else
+#error "No supported mongoc header found"
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,7 +43,7 @@ typedef struct ogs_mongoc_s {
     void *client;
     void *database;
 
-#if MONGOC_MAJOR_VERSION >= 1 && MONGOC_MINOR_VERSION >= 9
+#if MONGOC_CHECK_VERSION(1, 9, 0)
     mongoc_change_stream_t *stream;
 #endif
 
