@@ -2258,6 +2258,22 @@ int amf_namf_handle_mbs_broadcast_context_create(
     // NGAP BROADCAST SESSION SETUP REQUEST message with MBS Session Setup or Modification Request Transfer IE
     n2msgreq = ngap_build_broadcast_session_setup_request(mbs_context, n2mbssmbuf);
 
+        // The 201 is deferred until an NG-RAN answers (below), so a request that reaches no NG-RAN would never
+        // be answered and its context never freed, and once the pool is exhausted every later ContextCreate
+        // fails. Two cases: the NGAP message cannot be built (with no gNB connected its MBS-ServiceAreaTAIList is
+        // empty, which the encoder rejects), checked here, and no gNB accepting it, checked after the loop. No
+        // clause names the status for this; UNSPECIFIED_NF_FAILURE is TS 29.500 Table 5.2.7.2-1's generic 500
+        // cause.
+    if (!n2msgreq) {
+        ogs_error("MBS Broadcast ContextCreate: the Broadcast Session Setup Request could not be built");
+        amf_mbs_context_remove(mbs_context);
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+            recvmsg, "Internal Server Error",
+            "Requested MBS Broadcast ContextCreate failed, no NG-RAN reachable", "UNSPECIFIED_NF_FAILURE");
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
         // Each gNB gets its own copy of the message. ngap_send_to_gnb() takes ownership of the pkbuf it is
         // given: it frees it on failure, and on success, for SOCK_STREAM gNBs, splices its embedded lnode into
         // that gNB's write_queue. Passing one buffer to every gNB in this loop would use an already-freed
@@ -2282,6 +2298,16 @@ int amf_namf_handle_mbs_broadcast_context_create(
         }
     }
     ogs_pkbuf_free(n2msgreq);
+
+    if (mbs_context->gnb_request_count == 0) {
+        ogs_error("MBS Broadcast ContextCreate: the Broadcast Session Setup Request reached no NG-RAN");
+        amf_mbs_context_remove(mbs_context);
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+            recvmsg, "Internal Server Error",
+            "Requested MBS Broadcast ContextCreate failed, no NG-RAN reachable", "UNSPECIFIED_NF_FAILURE");
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
 
     // TODO (borieher): Start timer to wait for reception?
     //ogs_timer_start(mbs_context->gnb_timer,
