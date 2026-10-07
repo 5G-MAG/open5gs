@@ -2327,6 +2327,8 @@ cleanup:
         return false;
 }
 
+static void amf_mbs_context_release(amf_mbs_context_t *mbs_context);
+
 /*
  * Builds and sends the deferred Namf_MBSBroadcast_ContextCreate response (OGS_SBI_HTTP_STATUS_CREATED),
  * once ngap_handle_broadcast_session_setup_response() has correlated the first NG-RAN response to \p
@@ -2350,10 +2352,13 @@ void amf_namf_send_mbs_broadcast_context_create_response(amf_mbs_context_t *mbs_
 
     stream = ogs_sbi_stream_find_by_id(mbs_context->stream_id);
     if (!stream) {
-        // The client's stream is gone (e.g. it gave up and disconnected) by the time the first gNB
-        // actually responded. Nothing to send a response to; the MBS context itself is unaffected.
-        ogs_warn("MBS Broadcast ContextCreate: stream [%d] no longer exists, response not sent",
-                (int)mbs_context->stream_id);
+        // The consumer's stream is gone by the time the first gNB responded: the MB-SMF released its session
+        // (or gave up) before this ContextCreate was answered, so no consumer holds this context's mbsContextRef
+        // and none can ever delete it. It is released here instead of being kept for ever.
+        ogs_warn("MBS Broadcast ContextCreate: stream [%d] no longer exists, response not sent; "
+                "releasing the context", (int)mbs_context->stream_id);
+        mbs_context->stream_id = OGS_INVALID_POOL_ID;
+        amf_mbs_context_release(mbs_context);
         return;
     }
 
@@ -2643,6 +2648,39 @@ void amf_namf_send_mbs_broadcast_context_update_response(amf_mbs_context_t *mbs_
 }
 
 /*
+ * Sends the NGAP BROADCAST SESSION RELEASE REQUEST for \p mbs_context to every connected gNB and removes the
+ * context. Used by ContextDelete and when a ContextCreate's consumer is gone before it could be answered.
+ */
+static void amf_mbs_context_release(amf_mbs_context_t *mbs_context)
+{
+    ogs_pkbuf_t *n2msgreq = NULL;
+    amf_gnb_t *gnb = NULL;
+    int gnb_rv = OGS_OK;
+
+    // NGAP BROADCAST SESSION RELEASE REQUEST message
+    n2msgreq = ngap_build_broadcast_session_release_request(mbs_context);
+
+        // Each gNB gets its own copy and the shared template is freed once after the loop, for the ownership
+        // reason given in amf_namf_handle_mbs_broadcast_context_create()'s send loop above.
+    ogs_list_for_each(&amf_self()->gnb_list, gnb) {
+        ogs_pkbuf_t *n2msgreq_copy = ogs_pkbuf_copy(n2msgreq);
+        if (!n2msgreq_copy) {
+            ogs_error("ogs_pkbuf_copy() failed");
+            break;
+        }
+        ogs_debug("Sending N2 MBS Session Release to gNB %i", gnb->gnb_id);
+        gnb_rv = ngap_send_to_gnb(gnb, n2msgreq_copy, NGAP_NON_UE_SIGNALLING);
+        if (gnb_rv != OGS_OK) {
+            ogs_error("ngap_send_to_gnb() failed");
+            break;
+        }
+    }
+    ogs_pkbuf_free(n2msgreq);
+
+    amf_mbs_context_remove(mbs_context);
+}
+
+/*
  * 3GPP TS 29.518 - Release 17.11.0
  * 5G System; Access and Mobility Management Services; Stage 3
  * Ch. 5.6.2.4 - Namf_MBSBroadcast Service API - MBS Broadcast ContextRelease service operation
@@ -2662,9 +2700,6 @@ int amf_namf_handle_mbs_broadcast_context_delete(
 
     const char *mbs_context_ref = NULL;
     amf_mbs_context_t *mbs_context = NULL;
-    ogs_pkbuf_t *n2msgreq = NULL;
-    amf_gnb_t *gnb = NULL;
-    int gnb_rv = OGS_OK;
 
     ogs_sbi_message_t sendmsg;
     ogs_sbi_response_t *response = NULL;
@@ -2688,27 +2723,7 @@ int amf_namf_handle_mbs_broadcast_context_delete(
         return OGS_ERROR;
     }
 
-    // NGAP BROADCAST SESSION RELEASE REQUEST message
-    n2msgreq = ngap_build_broadcast_session_release_request(mbs_context);
-
-        // Each gNB gets its own copy and the shared template is freed once after the loop, for the ownership
-        // reason given in amf_namf_handle_mbs_broadcast_context_create()'s send loop above.
-    ogs_list_for_each(&amf_self()->gnb_list, gnb) {
-        ogs_pkbuf_t *n2msgreq_copy = ogs_pkbuf_copy(n2msgreq);
-        if (!n2msgreq_copy) {
-            ogs_error("ogs_pkbuf_copy() failed");
-            break;
-        }
-        ogs_debug("Sending N2 MBS Session Release to gNB %i", gnb->gnb_id);
-        gnb_rv = ngap_send_to_gnb(gnb, n2msgreq_copy, NGAP_NON_UE_SIGNALLING);
-        if (gnb_rv != OGS_OK) {
-            ogs_error("ngap_send_to_gnb() failed");
-            break;
-        }
-    }
-    ogs_pkbuf_free(n2msgreq);
-
-    amf_mbs_context_remove(mbs_context);
+    amf_mbs_context_release(mbs_context);
 
     /*********************************************************************
      * Send OGS_SBI_HTTP_STATUS_NO_CONTENT (/namf-mbs-bc/v1/mbs-contexts/{mbsContextRef}) to the consumer NF

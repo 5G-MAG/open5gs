@@ -4964,16 +4964,24 @@ void ngap_handle_broadcast_session_setup_failure(
         mbs_context->gnb_response_count++;
 
         if (mbs_context->stream_id != OGS_INVALID_POOL_ID) {
-            ogs_sbi_stream_t *stream = ogs_sbi_stream_find_by_id(mbs_context->stream_id);
-            mbs_context->stream_id = OGS_INVALID_POOL_ID;
+            // No NG-RAN has succeeded yet, so the ContextCreate is still unanswered. It fails only once every
+            // NG-RAN it reached has failed; until then a later success is still answered 201 (TS 29.518 cl.5.6.2.2
+            // step 2a). A ContextCreate that fails leaves the consumer no mbsContextRef to delete, so the context
+            // is removed here rather than kept.
+            if (mbs_context->gnb_response_count >= mbs_context->gnb_request_count) {
+                ogs_pool_id_t stream_id = mbs_context->stream_id;
+                ogs_sbi_stream_t *stream = ogs_sbi_stream_find_by_id(stream_id);
+                mbs_context->stream_id = OGS_INVALID_POOL_ID;
 
-            if (stream) {
-                ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR, NULL,
-                        "Requested MBS Broadcast ContextCreate failed",
-                        "NG-RAN reported a Broadcast Session Setup Failure", NULL);
-            } else {
-                ogs_warn("BROADCAST SESSION SETUP FAILURE: stream [%d] no longer exists, "
-                        "response not sent", (int)mbs_context->stream_id);
+                if (stream) {
+                    ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR, NULL,
+                            "Requested MBS Broadcast ContextCreate failed",
+                            "NG-RAN reported a Broadcast Session Setup Failure", NULL);
+                } else {
+                    ogs_warn("BROADCAST SESSION SETUP FAILURE: stream [%d] no longer exists, "
+                            "response not sent", (int)stream_id);
+                }
+                amf_mbs_context_remove(mbs_context);
             }
         } else {
             // Not the first gNB to reply -- no ContextStatusNotify semantics are defined for a per-gNB
