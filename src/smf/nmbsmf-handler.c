@@ -552,7 +552,7 @@ bool smf_nmbsmf_handle_mbs_session_create(
                     goto cleanup;
                 }
                 OpenAPI_list_for_each(api_ncgi_tai->cell_list, cell_node) {
-                    OpenAPI_ncgi_t *api_ncgi = (OpenAPI_ncgi_t*)node->data;
+                    OpenAPI_ncgi_t *api_ncgi = (OpenAPI_ncgi_t*)cell_node->data;
                     ncgi = (ogs_ncgi_t*)ogs_calloc(1, sizeof(*ncgi));
                     if (!smf_nmbsmf_parse_ncgi(stream, message, ncgi, api_ncgi)) {
                         rv = OGS_ERROR;
