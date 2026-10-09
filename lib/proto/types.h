@@ -1211,6 +1211,7 @@ void ogs_geographic_area_free(ogs_geographic_area_t *geographic_area);
  * 3GPP TS 29.572 Ch. 6.1.6.2.14 - CivicAddress
  */
 typedef struct ogs_civic_address_s {
+    ogs_lnode_t lnode;           /* A node of list_t */
     char *country;
     char *a[6];
     char *prd;

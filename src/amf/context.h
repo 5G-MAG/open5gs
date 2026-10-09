@@ -848,6 +848,61 @@ typedef struct amf_mbs_context_s {
     ogs_tmgi_t tmgi; /* Only TMGI is needed */
     char *service_type; /* To differenciate between BROADCAST and MULTICAST sessions */
 
+    /*
+     * ContextCreateReqData's own S-NSSAI and MBS Service Area (both TAI list and NCGI-TAI list), as
+     * actually received from the MB-SMF -- both mandatory fields of the request
+     * (amf_namf_handle_mbs_broadcast_context_create() already validates their presence). Used by
+     * ngap_build_broadcast_session_setup_request() instead of the hardcoded values it used before.
+     */
+    ogs_s_nssai_t s_nssai;
+    ogs_mbs_service_area_t *mbs_service_area; /* NULL if the request instead used mbsServiceAreaInfoList */
+
+    /*
+     * mbsServiceAreaInfoList's own single entry -- this MB-SMF's northbound schema carries at most one
+     * Area Session ID per session (see that repo's own smf_nmbsmf_handle_mbs_session_create() comment,
+     * TS 29.532 cl.5.3.2.2.1), so at most one entry is ever forwarded here. location_dependent is false
+     * (and this is unused) when the request instead used mbsServiceArea.
+     */
+    bool location_dependent;
+    uint16_t area_session_id;
+
+    /*
+     * BUG FIX: Namf_MBSBroadcast_ContextCreate used to send its 201 Created SBI response
+     * immediately after broadcasting the NGAP BROADCAST SESSION SETUP REQUEST to every gNB, never
+     * waiting for any of them to actually respond -- see amf_namf_handle_mbs_broadcast_context_create()'s
+     * own comment. Per TS 29.518 V18.14.0 clause 5.6.2.2 step 2a: "The AMF should respond success
+     * when it receives the first successful response from the NG-RAN(s)." stream_id holds the
+     * deferred SBI stream (looked up again via ogs_sbi_stream_find_by_id(), the same safe idiom
+     * amf-sm.c itself uses, since the raw pointer could be invalidated while we wait) until
+     * ngap_handle_broadcast_session_setup_response() completes it on the first response;
+     * OGS_INVALID_POOL_ID once the response has been sent (or never set at all, e.g. a stale
+     * context found via a late/duplicate response after the client already gave up).
+     */
+    ogs_pool_id_t stream_id;
+
+    /*
+     * B-2: Namf_MBSBroadcast_ContextStatusNotify (TS 29.518 V18.14.0 clause 5.6.2.5). Two obligations,
+     * each quoted contiguously rather than joined by elisions:
+     *
+     *   "the AMF shall transfer such information by sending one or more
+     *   Namf_MBSBroadcast_ContextStatusNotify requests to the MB-SMF"
+     *
+     *   "When the AMF receives the response from all NG-RANs, the AMF shall include an indication of
+     *   the completion of the operation in the Namf_MBSBroadcast_ContextStatusNotify request."
+     *
+     * The first applies on receipt of subsequent responses from other NG-RANs after the 201 Created
+     * response, where additional information needs transferring to the MB-SMF.
+     *
+     * notify_client is the NF Service Consumer's own caller-supplied notify_uri (ContextCreateReqData,
+     * not a discovered NF), set up the same way sess->paging.client is for N1N2MessageTransfer
+     * (namf-handler.c). gnb_request_count/gnb_response_count track completion: once
+     * gnb_response_count reaches gnb_request_count, the ContextStatusNotify carries operationStatus =
+     * COMPLETED.
+     */
+    ogs_sbi_client_t *notify_client;
+    uint32_t gnb_request_count;
+    uint32_t gnb_response_count;
+
 } amf_mbs_context_t;
 
 void amf_context_init(void);
@@ -1025,6 +1080,9 @@ int amf_instance_get_load(void);
 void amf_ue_save_to_release_session_list(amf_ue_t *amf_ue);
 
 amf_mbs_context_t *amf_mbs_context_create(ogs_tmgi_t *tmgi);
+amf_mbs_context_t *amf_mbs_context_find_by_ref(const char *mbs_context_ref);
+amf_mbs_context_t *amf_mbs_context_find_by_tmgi(const ogs_tmgi_t *tmgi);
+void amf_mbs_context_remove(amf_mbs_context_t *amf_mbs_context);
 
 #ifdef __cplusplus
 }

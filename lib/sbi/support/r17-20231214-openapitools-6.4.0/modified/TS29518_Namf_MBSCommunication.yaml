@@ -113,7 +113,7 @@ components:
         areaSessionId:
           $ref: 'TS29571_CommonData.yaml#/components/schemas/AreaSessionId'
         n2MbsSmInfo:
-          $ref: '#/components/schemas/N2MbsSmInfo'
+          $ref: '#/components/schemas/MBSCommN2MbsSmInfo'
         supportedFeatures:
           $ref: 'TS29571_CommonData.yaml#/components/schemas/SupportedFeatures'
       required:
@@ -136,7 +136,7 @@ components:
 
 
 
-    N2MbsSmInfo:
+    MBSCommN2MbsSmInfo:
       description: N2 MBS Session Management information
       type: object
       properties:

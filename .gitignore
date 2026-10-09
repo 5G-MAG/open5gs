@@ -1,6 +1,7 @@
 install/
 
 # This directory is fetched during first build and is present in this directory
+subprojects/.wraplock
 subprojects/freeDiameter
 subprojects/libtins
 subprojects/prometheus-client-c

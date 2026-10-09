@@ -22,8 +22,10 @@
 
 #include "n4-handler.h"
 #include "n4mb-handler.h"
+#include "namf-build.h"
 
 static void pfcp_restoration(ogs_pfcp_node_t *node);
+static void pfcp_mbs_restoration(ogs_pfcp_node_t *node);
 static void reselect_upf(ogs_pfcp_node_t *node);
 static void node_timeout(ogs_pfcp_xact_t *xact, void *data);
 
@@ -212,6 +214,14 @@ void smf_pfcp_state_associated(ogs_fsm_t *s, smf_event_t *e)
 
         if (node->restoration_required == true) {
             pfcp_restoration(node);
+            /*
+             * BUG FIX: pfcp_restoration() only ever walked smf_ue_list/smf_sess_t (regular PDU
+             * sessions). smf_mbs_sess_t entries tied to this node had no restoration handling at all,
+             * so they lived on forever in smf_mbs_sessions_by_tmgi/smf_mbs_sessions_by_ssm after a UPF
+             * restart, causing a subsequent Create with the same TMGI/SSM to be rejected as
+             * already-existing. See pfcp_mbs_restoration() below.
+             */
+            pfcp_mbs_restoration(node);
             node->restoration_required = false;
             ogs_error("PFCP restoration");
         }
@@ -228,15 +238,30 @@ void smf_pfcp_state_associated(ogs_fsm_t *s, smf_event_t *e)
         xact = ogs_pfcp_xact_find_by_id(e->pfcp_xact_id);
         ogs_assert(xact);
 
+        /* The MBS session is looked for first, and the unicast lookup is the fallback.
+         *
+         * self.smf_n4_seid_hash is shared between smf_sess_t and smf_mbs_sess_t, both drawing their SEIDs
+         * from smf_n4_seid_pool, so a lookup by SEID alone cannot tell which type it found. An incoming
+         * PFCP response whose SEID belongs to an MBS session -- as every response to an N4mb Session
+         * Deletion Request does -- would otherwise yield a smf_mbs_sess_t mistyped as smf_sess_t, and the
+         * ogs_fsm_dispatch(&sess->sm, e) below would dispatch through unrelated memory.
+         *
+         * This ordering is only sound because the finders reject a wrong-typed hit. That check is not made
+         * here: it belongs in the finders, where pull request #47 puts it for both types. The UPF's own
+         * pfcp-sm.c pairs the same ordering with the same guard. */
         if (message->h.seid_presence && message->h.seid != 0) {
-               sess = smf_sess_find_by_seid(message->h.seid);
+            mbs_sess = smf_mbs_sess_find_by_seid(message->h.seid);
+            if (!mbs_sess)
+                sess = smf_sess_find_by_seid(message->h.seid);
         } else if (xact->local_seid) { /* rx no SEID or SEID=0 */
             /* 3GPP TS 29.244 7.2.2.4.2: we receive SEID=0 under some
              * conditions, such as cause "Session context not found". In those
              * cases, we still want to identify the local session which
              * originated the message, so try harder by using the SEID we
              * locally stored in xact when sending the original request: */
-            sess = smf_sess_find_by_seid(xact->local_seid);
+            mbs_sess = smf_mbs_sess_find_by_seid(xact->local_seid);
+            if (!mbs_sess)
+                sess = smf_sess_find_by_seid(xact->local_seid);
         }
         if (sess)
             e->sess_id = sess->id;
@@ -265,6 +290,7 @@ void smf_pfcp_state_associated(ogs_fsm_t *s, smf_event_t *e)
          * Restoration can be performed immediately.
          */
                     pfcp_restoration(node);
+                    pfcp_mbs_restoration(node);
                     node->restoration_required = false;
                     ogs_error("PFCP restoration");
                 }
@@ -292,6 +318,7 @@ void smf_pfcp_state_associated(ogs_fsm_t *s, smf_event_t *e)
          * Restoration can be performed immediately.
          */
                     pfcp_restoration(node);
+                    pfcp_mbs_restoration(node);
                     node->restoration_required = false;
                     ogs_error("PFCP restoration");
                 }
@@ -314,6 +341,20 @@ void smf_pfcp_state_associated(ogs_fsm_t *s, smf_event_t *e)
         case OGS_PFCP_SESSION_ESTABLISHMENT_RESPONSE_TYPE:
             if (!message->h.seid_presence) ogs_error("No SEID");
 
+                        // The MBS-presence check comes before the regular-session bail-out below. It is a
+                        // self-contained, message-body-driven routing decision that does not depend on `sess` at all,
+                        // and `sess` is correctly NULL for an MBS SEID (see the lookup above), so placing it after the
+                        // "if (!sess) { ... break; }" would break out of the switch on "No Session" before reaching it
+                        // and stall every N4mb Session Establishment Response. Non-MBS responses fall through to the
+                        // regular-session path below.
+            if (message->pfcp_session_establishment_response.mbs_session_n4mb_information.presence) {
+                // mbs_sess was already resolved from the same SEID at the top of this function, by the
+                // same two-way lookup, and nothing reassigns it in between.
+                smf_n4mb_handle_session_establishment_response(mbs_sess, xact,
+                    &message->pfcp_session_establishment_response);
+                break;
+            }
+
             if (!sess) {
                 ogs_gtp_xact_t *gtp_xact =
                     ogs_gtp_xact_find_by_id(xact->assoc_xact_id);
@@ -330,22 +371,6 @@ void smf_pfcp_state_associated(ogs_fsm_t *s, smf_event_t *e)
                     ogs_gtp2_send_error_message(gtp_xact, 0,
                         OGS_GTP2_CREATE_SESSION_RESPONSE_TYPE,
                         OGS_GTP2_CAUSE_CONTEXT_NOT_FOUND);
-                break;
-            }
-
-            // NOTE (borieher): Quick workaround to differentiate between N4 and N4mb
-            // the issue is that N4mb information is only present when PLLSSM flag is used
-            if (message->h.seid_presence && message->h.seid != 0) {
-                mbs_sess = smf_mbs_sess_find_by_seid(message->h.seid);
-            }
-            if (!mbs_sess && xact->local_seid && (!message->h.seid_presence || message->h.seid == 0) &&
-                message->pfcp_session_establishment_response.mbs_session_n4mb_information.presence) {
-                // Try to find MBS Session by the transaction SEID
-                mbs_sess = smf_mbs_sess_find_by_seid(xact->local_seid);
-            }
-            if (mbs_sess) {
-                smf_n4mb_handle_session_establishment_response(mbs_sess, xact,
-                    &message->pfcp_session_establishment_response);
                 break;
             }
 
@@ -368,6 +393,16 @@ void smf_pfcp_state_associated(ogs_fsm_t *s, smf_event_t *e)
             if (!message->h.seid_presence) ogs_error("No SEID");
 
             if (!sess) {
+                                // Handles an MBS N4mb session's deletion response, for which `sess`, looked up from the
+                                // regular smf_sess_t pool at the top of this function, is always NULL. Mirrors the
+                                // OGS_PFCP_SESSION_ESTABLISHMENT_RESPONSE_TYPE case above.
+                // mbs_sess was already resolved from the same SEID at the top of this function, as above.
+                if (mbs_sess) {
+                    smf_n4mb_handle_session_deletion_response(mbs_sess, xact,
+                        &message->pfcp_session_deletion_response);
+                    break;
+                }
+
                 ogs_gtp_xact_t *gtp_xact =
                     ogs_gtp_xact_find_by_id(xact->assoc_xact_id);
                 ogs_error("No Session");
@@ -518,6 +553,63 @@ static void pfcp_restoration(ogs_pfcp_node_t *node)
                 }
             }
         }
+    }
+}
+
+/*
+ * BUG FIX: pfcp_restoration() above only re-establishes regular smf_sess_t PDU sessions tied to the
+ * restarted node; it had no knowledge whatsoever of smf_mbs_sess_t (N4mb / MBS sessions). Root cause
+ * (audit ~2026-08): when a UPF restarts, its own smf_mbs_sess pool and PFCP state are wiped, but the
+ * SMF-side smf_mbs_sess_t (and its smf_mbs_sessions_by_tmgi / smf_mbs_sessions_by_ssm
+ * collision-tracking hash entries) were never released, since the only path that releases them is an
+ * explicit, successful Nmbsmf_MBSSession Release from the MBSF/AF. This meant a subsequent Create
+ * reusing the same TMGI/SSM (e.g. after test churn or a real UPF restart) was rejected as
+ * already-existing, surfacing upstream as a recurring 502.
+ *
+ * Unlike regular PDU sessions, MBS sessions are not re-established here: the UPF has lost all state for
+ * them, and (unlike a single-UE PDU session) MBS session re-creation is driven by the MBSF/AF via
+ * Nmbsmf_MBSSession, not something the SMF can safely reconstruct unilaterally. Instead, mirror the
+ * "no PFCP peer" branch of the already-correct explicit release chain
+ * (smf_nmbsmf_handle_mbs_session_release() in nmbsmf-handler.c): notify the AMF of the lost broadcast
+ * context, if any, then release local SMF-side state directly so the TMGI/SSM become free again. There
+ * is nothing left to tell the UPF (no valid N4mb session exists there for us to delete).
+ */
+static void pfcp_mbs_restoration(ogs_pfcp_node_t *node)
+{
+    smf_mbs_sess_t *mbs_sess = NULL, *next_mbs_sess = NULL;
+
+    ogs_assert(node);
+
+    ogs_list_for_each_safe(&smf_self()->smf_mbs_sess_list, next_mbs_sess, mbs_sess) {
+        if (node != mbs_sess->pfcp_node)
+            continue;
+
+        if (mbs_sess->release_triggered) {
+            /* Already being torn down via an explicit release in flight -- don't double-release. */
+            continue;
+        }
+        mbs_sess->release_triggered = true;
+
+        ogs_error("MBS Session mbsSessionRef[%s] lost on restarted UPF -- "
+                "releasing stale SMF-side state so its TMGI/SSM can be reused",
+                mbs_sess->mbs_session_ref);
+
+        if (mbs_sess->mbs_context_ref) {
+                        // Clear the cached nf_instance so this call takes the fresh-discovery path, for the reason
+                        // given at the matching ContextDelete in nmbsmf-handler.c.
+            mbs_sess->sbi.service_type_array[OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC].nf_instance = NULL;
+            mbs_sess->sbi.service_type_array[OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC].validity_timeout = 0;
+
+            int r = smf_sbi_old_discover_and_send(
+                    OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC, NULL,
+                    smf_namf_build_mbs_broadcast_context_delete_request,
+                    mbs_sess, NULL, 0, NULL);
+            if (r != OGS_OK)
+                ogs_error("Failed to send MBS Broadcast ContextDelete for "
+                        "mbsSessionRef[%s]", mbs_sess->mbs_session_ref);
+        }
+
+        smf_mbs_sess_release(mbs_sess);
     }
 }
 

@@ -680,12 +680,16 @@ components:
           $ref: '#/components/schemas/NgapIeType'
         ngapData:
           $ref: 'TS29571_CommonData.yaml#/components/schemas/RefToBinaryData'
+        # TS 29.518 table 6.5.6.2.7-1: conditionally mandatory, not unconditional -- present only
+        # on a ContextCreate/ContextUpdate Response or a ContextStatusNotify Request/Response
+        # (i.e. a message naming the NG-RAN node that generated an N2 container). A ContextCreate
+        # Request carries no such node yet and correctly omits it; it must stay out of `required`
+        # below for that message to be representable at all.
         randId:
           $ref: 'TS29571_CommonData.yaml#/components/schemas/GlobalRanNodeId'
       required:
         - ngapIeType
         - ngapData
-        - randId
 
     OperationEvent:
       description: Operation Event for a Broadcast MBS Session.
