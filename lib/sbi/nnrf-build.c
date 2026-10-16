@@ -115,6 +115,7 @@ OpenAPI_nf_profile_t *ogs_nnrf_nfm_build_nf_profile(
     OpenAPI_map_t *NFServiceMap = NULL;
     OpenAPI_list_t *InfoList = NULL;
     OpenAPI_map_t *InfoMap = NULL;
+    OpenAPI_list_t *CollocatedNfInstances = NULL;
     int InfoMapKey;
 
     OpenAPI_lnode_t *node = NULL;
@@ -144,6 +145,21 @@ OpenAPI_nf_profile_t *ogs_nnrf_nfm_build_nf_profile(
                 OpenAPI_nf_type_ToString(nf_instance->nf_type),
                 OpenAPI_nf_status_ToString(nf_instance->nf_status),
                 nf_instance->num_of_ipv4, nf_instance->num_of_ipv6);
+
+    if (!ogs_list_empty(&nf_instance->collocated_nf_list)) {
+        ogs_collocated_nf_instance_t *collocated_nf_instance = NULL;
+
+        CollocatedNfInstances = OpenAPI_list_create();
+        ogs_assert(CollocatedNfInstances);
+        ogs_list_for_each(&nf_instance->collocated_nf_list,
+                collocated_nf_instance) {
+            OpenAPI_list_add(CollocatedNfInstances,
+                    OpenAPI_collocated_nf_instance_create(
+                        ogs_strdup(collocated_nf_instance->nf_instance_id),
+                        collocated_nf_instance->nf_type));
+        }
+        NFProfile->collocated_nf_instances = CollocatedNfInstances;
+    }
 
     if (nf_instance->time.heartbeat_interval) {
         NFProfile->is_heart_beat_timer = true;
@@ -463,6 +479,12 @@ void ogs_nnrf_nfm_free_nf_profile(OpenAPI_nf_profile_t *NFProfile)
 
     if (NFProfile->fqdn)
         ogs_free(NFProfile->fqdn);
+
+    if (NFProfile->collocated_nf_instances) {
+        OpenAPI_list_for_each(NFProfile->collocated_nf_instances, node)
+            OpenAPI_collocated_nf_instance_free(node->data);
+        OpenAPI_list_free(NFProfile->collocated_nf_instances);
+    }
 
     OpenAPI_list_for_each(NFProfile->ipv4_addresses, node)
         ogs_free(node->data);

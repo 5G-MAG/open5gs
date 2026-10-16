@@ -88,6 +88,23 @@ bool ogs_nnrf_nfm_handle_nf_profile(
 
     nf_instance->nf_type = NFProfile->nf_type;
     nf_instance->nf_status = NFProfile->nf_status;
+
+    OpenAPI_list_for_each(NFProfile->collocated_nf_instances, node) {
+        OpenAPI_collocated_nf_instance_t *CollocatedNfInstance = node->data;
+
+        if (!CollocatedNfInstance || !CollocatedNfInstance->nf_instance_id ||
+            !CollocatedNfInstance->nf_type) {
+            ogs_error("[%s] Invalid CollocatedNfInstance in NFProfile",
+                    NFProfile->nf_instance_id);
+            continue;
+        }
+
+        ogs_list_add(&nf_instance->collocated_nf_list,
+                ogs_collocated_nf_instance_create(
+                    CollocatedNfInstance->nf_instance_id,
+                    CollocatedNfInstance->nf_type));
+    }
+
     if (NFProfile->is_heart_beat_timer == true)
         nf_instance->time.heartbeat_interval = NFProfile->heart_beat_timer;
 

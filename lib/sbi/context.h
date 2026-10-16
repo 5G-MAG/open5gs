@@ -110,6 +110,14 @@ typedef struct ogs_sbi_context_s {
     OpenAPI_service_name_e service_name[OGS_SBI_MAX_NUM_OF_SERVICE_NAME];
 } ogs_sbi_context_t;
 
+/* TS29.510 6.1.6.2.99 CollocatedNfInstance */
+typedef struct ogs_collocated_nf_instance_s {
+    ogs_lnode_t lnode;
+
+    char *nf_instance_id;
+    OpenAPI_collocated_nf_type_e nf_type;
+} ogs_collocated_nf_instance_t;
+
 typedef struct ogs_sbi_nf_instance_s {
     ogs_lnode_t lnode;
 
@@ -198,6 +206,7 @@ typedef struct ogs_sbi_nf_instance_s {
 
     ogs_list_t nf_service_list;
     ogs_list_t nf_info_list;
+    ogs_list_t collocated_nf_list;
 
 #define NF_INSTANCE_CLIENT(__nFInstance) \
     ((__nFInstance) ? ((__nFInstance)->client) : NULL)
@@ -516,6 +525,11 @@ ogs_sbi_client_t *ogs_sbi_context_parse_client_config(
 
 bool ogs_sbi_nf_service_is_available(const OpenAPI_service_name_e name);
 
+ogs_collocated_nf_instance_t *ogs_collocated_nf_instance_create(
+        const char *nf_instance_id, OpenAPI_collocated_nf_type_e nf_type);
+void ogs_collocated_nf_instance_free(
+        ogs_collocated_nf_instance_t *collocated_nf_instance);
+
 ogs_sbi_nf_instance_t *ogs_sbi_nf_instance_add(void);
 void ogs_sbi_nf_instance_set_id(ogs_sbi_nf_instance_t *nf_instance, char *id);
 void ogs_sbi_nf_instance_set_type(
@@ -524,6 +538,9 @@ void ogs_sbi_nf_instance_set_status(
         ogs_sbi_nf_instance_t *nf_instance, OpenAPI_nf_status_e nf_status);
 void ogs_sbi_nf_instance_add_allowed_nf_type(
         ogs_sbi_nf_instance_t *nf_instance, OpenAPI_nf_type_e allowed_nf_type);
+void ogs_sbi_nf_instance_add_collocated_nf_type(
+        ogs_sbi_nf_instance_t *nf_instance,
+        OpenAPI_collocated_nf_type_e collocated_nf_type);
 bool ogs_sbi_nf_instance_is_allowed_nf_type(
         ogs_sbi_nf_instance_t *nf_instance, OpenAPI_nf_type_e allowed_nf_type);
 void ogs_sbi_nf_instance_clear(ogs_sbi_nf_instance_t *nf_instance);
