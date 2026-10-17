@@ -25,7 +25,7 @@
 
 static bool amf_nnrf_try_old_amf_discovery_fallback(
         amf_ue_t *amf_ue, OpenAPI_nf_type_e requester_nf_type,
-        ogs_sbi_discovery_option_t *discovery_option)
+        bool guami_presence)
 {
     int r;
 
@@ -42,7 +42,7 @@ static bool amf_nnrf_try_old_amf_discovery_fallback(
             amf_ue->nas.registration.value !=
                 OGS_NAS_5GS_REGISTRATION_TYPE_INITIAL ||
             requester_nf_type != OpenAPI_nf_type_AMF ||
-            !discovery_option || !discovery_option->guami_presence)
+            !guami_presence)
         return false;
 
     /*
@@ -128,6 +128,7 @@ void amf_nnrf_handle_nf_discover(
     OpenAPI_nf_type_e target_nf_type = OpenAPI_nf_type_NULL;
     OpenAPI_nf_type_e requester_nf_type = OpenAPI_nf_type_NULL;
     ogs_sbi_discovery_option_t *discovery_option = NULL;
+    bool guami_presence = false;
 
     amf_ue_t *amf_ue = NULL;
     amf_sess_t *sess = NULL;
@@ -202,6 +203,12 @@ void amf_nnrf_handle_nf_discover(
     nf_instance = ogs_sbi_nf_instance_find_by_discovery_param(
                     target_nf_type, requester_nf_type, discovery_option);
     if (!nf_instance) {
+        /*
+         * ogs_sbi_xact_remove() frees xact->discovery_option, so read
+         * what the fallback needs from it before the transaction goes.
+         */
+        guami_presence = discovery_option && discovery_option->guami_presence;
+
         ogs_sbi_xact_remove(xact);
 
         switch(sbi_object->type) {
@@ -210,7 +217,7 @@ void amf_nnrf_handle_nf_discover(
                     OpenAPI_service_name_ToString(service_name));
 
             if (amf_nnrf_try_old_amf_discovery_fallback(
-                    amf_ue, requester_nf_type, discovery_option))
+                    amf_ue, requester_nf_type, guami_presence))
                 break;
 
             if (amf_ue->nas.message_type ==
@@ -254,6 +261,7 @@ void amf_nnrf_handle_failed_amf_discovery(
 
     OpenAPI_nf_type_e requester_nf_type = OpenAPI_nf_type_NULL;
     ogs_sbi_discovery_option_t *discovery_option = NULL;
+    bool guami_presence = false;
     OpenAPI_service_name_e service_name = OpenAPI_service_name_NULL;
     ogs_sbi_object_t *sbi_object = NULL;
     ogs_pool_id_t sbi_object_id = OGS_INVALID_POOL_ID;
@@ -274,7 +282,12 @@ void amf_nnrf_handle_failed_amf_discovery(
     ogs_assert(sbi_object_id >= OGS_MIN_POOL_ID &&
             sbi_object_id <= OGS_MAX_POOL_ID);
 
+    /*
+     * ogs_sbi_xact_remove() below frees sbi_xact->discovery_option, so read
+     * what the fallback needs from it first.
+     */
     discovery_option = sbi_xact->discovery_option;
+    guami_presence = discovery_option && discovery_option->guami_presence;
 
     if (sbi_xact->user_data) {
         amf_sbi_xact_ctx_t *ctx = sbi_xact->user_data;
@@ -302,7 +315,7 @@ void amf_nnrf_handle_failed_amf_discovery(
                 amf_ue->nas.registration.value);
 
         if (amf_nnrf_try_old_amf_discovery_fallback(
-                amf_ue, requester_nf_type, discovery_option))
+                amf_ue, requester_nf_type, guami_presence))
             break;
 
         if (amf_ue->nas.message_type ==
