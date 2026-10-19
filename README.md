@@ -1,5 +1,5 @@
 <p align="center">
-  <img src=".github/banner.svg" width="100%" alt="Reference Tools · 3GPP RAN and Core Platforms: 5G-MAG's fork of Open5GS">
+  <img src=".github/banner.svg" width="100%" alt="Reference Tools · 5G Multicast Broadcast Services (MBS): 5G Core with MBS components">
 </p>
 
 <p align="center">
@@ -29,7 +29,7 @@
 |---|---|
 | **Implements** | 3GPP TS 23.247, *Architectural enhancements for 5G multicast-broadcast services*, and the MBS parts of TS 29.532 and TS 29.518 |
 | **Based on** | [Open5GS](https://github.com/open5gs/open5gs) ([open5gs.org](https://open5gs.org/)) |
-| **Part of** | [3GPP RAN and Core Platforms](https://www.5g-mag.com/reference-tools/3gpp-platforms/), alongside [rt-5gc-service-consumers](https://github.com/5G-MAG/rt-5gc-service-consumers), [rt-srsRAN_Project](https://github.com/5G-MAG/rt-srsRAN_Project), [srsRAN](https://github.com/5G-MAG/srsRAN), [srsRAN_4G](https://github.com/5G-MAG/srsRAN_4G) |
+| **Part of** | [5G Multicast Broadcast Services (MBS)](https://www.5g-mag.com/reference-tools/5g-mbs/), alongside [rt-5gc-service-consumers](https://github.com/5G-MAG/rt-5gc-service-consumers), [rt-libflute](https://github.com/5G-MAG/rt-libflute), [rt-mbs-application](https://github.com/5G-MAG/rt-mbs-application), [rt-mbs-application-provider](https://github.com/5G-MAG/rt-mbs-application-provider), [rt-mbs-client](https://github.com/5G-MAG/rt-mbs-client), [rt-mbs-examples](https://github.com/5G-MAG/rt-mbs-examples), [rt-mbs-function](https://github.com/5G-MAG/rt-mbs-function), [rt-mbs-transport-function](https://github.com/5G-MAG/rt-mbs-transport-function), [rt-media-origin](https://github.com/5G-MAG/rt-media-origin), [srsRAN_4G_mbs](https://github.com/5G-MAG/srsRAN_4G_mbs), [srsRAN_Project_mbs](https://github.com/5G-MAG/srsRAN_Project_mbs) |
 
 ## Introduction
 
