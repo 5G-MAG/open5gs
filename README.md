@@ -8,8 +8,7 @@
 </p>
 
 <p align="center">
-  <img alt="Status: under development"
-    src="https://img.shields.io/badge/Status-Under%20Development-e67e22">
+  <img alt="Status" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fwww.5g-mag.com%2Fbadges%2Fstatus%2Fopen5gs.json">
   <a href="https://github.com/5G-MAG/open5gs/releases"><img alt="Version"
     src="https://img.shields.io/github/v/release/5G-MAG/open5gs?label=Version"></a>
   <a href="LICENSE"><img alt="License: GNU AGPL v3.0"
@@ -30,7 +29,7 @@
 |---|---|
 | **Implements** | 3GPP TS 23.247, *Architectural enhancements for 5G multicast-broadcast services*, and the MBS parts of TS 29.532 and TS 29.518 |
 | **Based on** | [Open5GS](https://github.com/open5gs/open5gs) ([open5gs.org](https://open5gs.org/)) |
-| **Part of** | [3GPP RAN and Core Platforms](https://www.5g-mag.com/reference-tools/3gpp-platforms/), alongside [rt-srsRAN_Project](https://github.com/5G-MAG/rt-srsRAN_Project), [srsRAN](https://github.com/5G-MAG/srsRAN), [srsRAN_4G](https://github.com/5G-MAG/srsRAN_4G) |
+| **Part of** | [3GPP RAN and Core Platforms](https://www.5g-mag.com/reference-tools/3gpp-platforms/), alongside [rt-5gc-service-consumers](https://github.com/5G-MAG/rt-5gc-service-consumers), [rt-srsRAN_Project](https://github.com/5G-MAG/rt-srsRAN_Project), [srsRAN](https://github.com/5G-MAG/srsRAN), [srsRAN_4G](https://github.com/5G-MAG/srsRAN_4G) |
 
 ## Introduction
 
