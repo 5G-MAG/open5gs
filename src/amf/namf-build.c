@@ -151,3 +151,103 @@ ogs_sbi_request_t *amf_namf_comm_build_registration_status_update(
 
     return request;
 }
+
+/* Namf_MBSBroadcast Service - shared helpers */
+
+OpenAPI_mbs_session_id_t *amf_namf_build_mbs_session_id(const ogs_tmgi_t *tmgi)
+{
+    char *mcc, *mnc;
+    OpenAPI_plmn_id_t *plmn_id = NULL;
+    OpenAPI_tmgi_t *Tmgi = NULL;
+
+    ogs_assert(tmgi);
+    ogs_assert(tmgi->mbs_service_id);
+
+    mcc = ogs_plmn_id_mcc_string(&tmgi->plmn_id);
+    mnc = ogs_plmn_id_mnc_string(&tmgi->plmn_id);
+    plmn_id = OpenAPI_plmn_id_create(mcc, mnc);
+
+    Tmgi = OpenAPI_tmgi_create(ogs_strdup(tmgi->mbs_service_id), plmn_id);
+
+    // TODO: fill NID when present (see the ContextCreate request builder's own identical TODO)
+    return OpenAPI_mbs_session_id_create(Tmgi, NULL, NULL);
+}
+
+/*
+ * 3GPP TS 29.518 - V18.14.0
+ * Ch. 5.6.2.5 - Namf_MBSBroadcast Service API - ContextStatusNotify service operation
+ *
+ * BUG FIX: this operation did not exist at all -- see amf_mbs_context_t.notify_client's own comment
+ * (context.h) and item B-2 (Standards2Deployments/projects/rt-mbs/open5gs.md) for the full account.
+ * Builds the POST request; the caller (amf_sbi_send_mbs_broadcast_context_status_notify(), sbi-path.c)
+ * sends it to mbs_context->notify_client.
+ *
+ * NOTE: cl.5.6.2.5 requires "the AMF shall insert the identifier of the NG-RAN node that generated
+ * [each container] in the corresponding entry of the n2MbsSmInfoList attribute" (randId in the
+ * TS29518_Namf_MBSBroadcast.yaml schema). OpenAPI_n2_mbs_sm_info_t now has a rand_id field (fixed by
+ * regenerating the model, see the schema-collision fix this session -- TS29532_Nmbsmf_MBSSession.yaml's
+ * own N2MbsSmInfo schema had the same name and no randId, and its generation pass was silently clobbering
+ * this one's output). Passing NULL here for now regardless: populating a real GlobalRanNodeId needs the
+ * responding gNB's own gnb_id/gnb_id_len, which nothing in this AMF currently tracks per-gNB -- a
+ * follow-up item, not folded into the model fix itself.
+ */
+ogs_sbi_request_t *amf_namf_build_mbs_broadcast_context_status_notify(
+        amf_mbs_context_t *mbs_context, ogs_pkbuf_t *n2mbssmbuf, bool completed)
+{
+    ogs_sbi_message_t message;
+    ogs_sbi_request_t *request = NULL;
+
+    OpenAPI_context_status_notification_t ContextStatusNotification;
+    OpenAPI_list_t *n2_mbs_sm_info_list = NULL;
+    OpenAPI_n2_mbs_sm_info_t *n2_mbs_sm_info = NULL;
+    OpenAPI_ref_to_binary_data_t *ngap_data = NULL;
+    OpenAPI_lnode_t *node = NULL;
+
+    ogs_assert(mbs_context);
+
+    memset(&message, 0, sizeof(message));
+    message.h.method = (char *) OGS_SBI_HTTP_METHOD_POST;
+
+    memset(&ContextStatusNotification, 0, sizeof(ContextStatusNotification));
+    ContextStatusNotification.mbs_session_id = amf_namf_build_mbs_session_id(&mbs_context->tmgi);
+
+    if (n2mbssmbuf) {
+        n2_mbs_sm_info_list = OpenAPI_list_create();
+
+        ngap_data = OpenAPI_ref_to_binary_data_create(ogs_strdup((char *) OGS_SBI_CONTENT_NGAP_SM_ID));
+        n2_mbs_sm_info = OpenAPI_n2_mbs_sm_info_create(OpenAPI_ngap_ie_type_MBS_SES_RSP, ngap_data, NULL);
+        OpenAPI_list_add(n2_mbs_sm_info_list, n2_mbs_sm_info);
+
+        ContextStatusNotification.n2_mbs_sm_info_list = n2_mbs_sm_info_list;
+
+        message.part[message.num_of_part].pkbuf = n2mbssmbuf;
+        message.part[message.num_of_part].content_id = (char *) OGS_SBI_CONTENT_NGAP_SM_ID;
+        message.part[message.num_of_part].content_type = (char *) OGS_SBI_CONTENT_NGAP_TYPE;
+        message.num_of_part++;
+    }
+
+    // cl.5.6.2.5: "the operationStatus IE indicating the completion of the Broadcast MBS session
+    // establishment or update, if ... a response has been received from all NG-RANs."
+    if (completed) {
+        ContextStatusNotification.operation_status =
+                OpenAPI_operation_status_MBS_SESSION_START_COMPLETE;
+    }
+
+    message.ContextStatusNotification = &ContextStatusNotification;
+
+    message.http.accept = (char *) (OGS_SBI_CONTENT_JSON_TYPE ","
+        OGS_SBI_CONTENT_NGAP_TYPE "," OGS_SBI_CONTENT_PROBLEM_TYPE);
+
+    request = ogs_sbi_build_request(&message);
+    ogs_expect(request);
+
+    if (ContextStatusNotification.mbs_session_id)
+        OpenAPI_mbs_session_id_free(ContextStatusNotification.mbs_session_id);
+    if (n2_mbs_sm_info_list) {
+        OpenAPI_list_for_each(n2_mbs_sm_info_list, node)
+            OpenAPI_n2_mbs_sm_info_free(node->data);
+        OpenAPI_list_free(n2_mbs_sm_info_list);
+    }
+
+    return request;
+}

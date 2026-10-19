@@ -28,6 +28,9 @@ extern "C" {
 ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
         smf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact);
 
+ogs_pkbuf_t *smf_n4mb_build_session_deletion_request(
+        uint8_t type, smf_mbs_sess_t *mbs_sess);
+
 #ifdef __cplusplus
 }
 #endif

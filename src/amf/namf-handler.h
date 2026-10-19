@@ -55,6 +55,33 @@ int amf_namf_comm_handle_registration_status_update_response(
 int amf_namf_handle_mbs_broadcast_context_create(
         ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg);
 
+/* Namf_MBSBroadcast Service - MBS Broadcast ContextDelete service operation */
+int amf_namf_handle_mbs_broadcast_context_delete(
+        ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg);
+
+/*
+ * Completes the deferred Namf_MBSBroadcast_ContextCreate response once the first NG-RAN response has been
+ * correlated to \p mbs_context. Called from ngap_handle_broadcast_session_setup_response(); see
+ * amf_mbs_context_t.stream_id (context.h) for why the response cannot be sent synchronously from
+ * amf_namf_handle_mbs_broadcast_context_create() itself.
+ */
+void amf_namf_send_mbs_broadcast_context_create_response(amf_mbs_context_t *mbs_context);
+
+/* Item B-3: Namf_MBSBroadcast Service - MBS Broadcast ContextUpdate service operation (TS 29.518 cl.5.6.2.3) */
+int amf_namf_handle_mbs_broadcast_context_update(
+        ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg);
+
+/*
+ * Completes the deferred Namf_MBSBroadcast_ContextUpdate response once the first NG-RAN response has been
+ * correlated to \p mbs_context. Called from ngap_handle_broadcast_session_modification_response(); mirrors
+ * amf_namf_send_mbs_broadcast_context_create_response()'s own reasoning exactly.
+ */
+void amf_namf_send_mbs_broadcast_context_update_response(amf_mbs_context_t *mbs_context);
+
+/* Namf_MBSCommunication Service - N2MessageTransfer service operation (TS 29.518 cl.5.7.2.2) */
+int amf_namf_mbs_comm_handle_n2_message_transfer(
+        ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg);
+
 #ifdef __cplusplus
 }
 #endif

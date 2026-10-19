@@ -13,7 +13,7 @@
 #include "../include/keyValuePair.h"
 #include "../include/binary.h"
 #include "n2_mbs_sm_info.h"
-#include "ssm.h"
+#include "operation_status.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -21,17 +21,13 @@ extern "C" {
 
 typedef struct OpenAPI_context_update_rsp_data_s OpenAPI_context_update_rsp_data_t;
 typedef struct OpenAPI_context_update_rsp_data_s {
-    struct OpenAPI_ssm_s *ll_ssm;
-    bool is_c_teid;
-    int c_teid;
-    struct OpenAPI_n2_mbs_sm_info_s *n2_mbs_sm_info;
+    OpenAPI_list_t *n2_mbs_sm_info_list;
+    OpenAPI_operation_status_e operation_status;
 } OpenAPI_context_update_rsp_data_t;
 
 OpenAPI_context_update_rsp_data_t *OpenAPI_context_update_rsp_data_create(
-    OpenAPI_ssm_t *ll_ssm,
-    bool is_c_teid,
-    int c_teid,
-    OpenAPI_n2_mbs_sm_info_t *n2_mbs_sm_info
+    OpenAPI_list_t *n2_mbs_sm_info_list,
+    OpenAPI_operation_status_e operation_status
 );
 void OpenAPI_context_update_rsp_data_free(OpenAPI_context_update_rsp_data_t *context_update_rsp_data);
 OpenAPI_context_update_rsp_data_t *OpenAPI_context_update_rsp_data_parseFromJSON(cJSON *context_update_rsp_dataJSON);

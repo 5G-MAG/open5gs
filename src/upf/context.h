@@ -205,11 +205,13 @@ void upf_sess_urr_acc_snapshot(upf_sess_t *sess, ogs_pfcp_urr_t *urr);
 void upf_sess_urr_acc_timers_setup(upf_sess_t *sess, ogs_pfcp_urr_t *urr);
 
 upf_mbs_sess_t *upf_mbs_sess_find_by_smf_n4mb_f_seid(ogs_pfcp_f_seid_t *f_seid);
+upf_mbs_sess_t *upf_mbs_sess_find_by_seid(uint64_t seid);
 upf_mbs_sess_t *upf_mbs_sess_add_by_message(ogs_pfcp_message_t *message);
 upf_mbs_sess_t *upf_mbs_sess_find_by_ipv4(uint32_t addr);
 upf_mbs_sess_t *upf_mbs_sess_find_by_ipv6(uint32_t *addr6);
 void upf_mbs_sess_set_ssm(upf_mbs_sess_t *mbs_sess);
 void upf_mbs_sess_set_llssm(upf_mbs_sess_t *mbs_sess);
+void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess);
 
 #ifdef __cplusplus
 }

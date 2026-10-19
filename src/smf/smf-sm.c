@@ -761,6 +761,34 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
                         sbi_message.h.resource.component[0], NULL));
             END
 	    break;
+
+        CASE(OGS_SBI_SERVICE_NAME_NAMF_MBS_BC)
+            SWITCH(sbi_message.h.resource.component[0])
+            CASE(OGS_SBI_RESOURCE_NAME_MBS_CONTEXT_STATUS_NOTIFY)
+                SWITCH(sbi_message.h.method)
+                CASE(OGS_SBI_HTTP_METHOD_POST)
+                    smf_namf_handle_mbs_broadcast_context_status_notify(
+                            stream, &sbi_message);
+                    break;
+                DEFAULT
+                    ogs_error("Invalid HTTP method [%s]", sbi_message.h.method);
+                    ogs_assert(true ==
+                        ogs_sbi_server_send_error(stream,
+                            OGS_SBI_HTTP_STATUS_FORBIDDEN, &sbi_message,
+                            "Invalid HTTP method", sbi_message.h.method, NULL));
+                END
+                break;
+            DEFAULT
+                ogs_error("Invalid resource name [%s]",
+                        sbi_message.h.resource.component[0]);
+                ogs_assert(true ==
+                    ogs_sbi_server_send_error(stream,
+                        OGS_SBI_HTTP_STATUS_BAD_REQUEST, &sbi_message,
+                        "Invalid resource name",
+                        sbi_message.h.resource.component[0], NULL));
+            END
+            break;
+
         DEFAULT
             ogs_error("Invalid API name [%s]", sbi_message.h.service.name);
             ogs_assert(true ==
@@ -1051,18 +1079,35 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
                 break;
             }
 
+            /* BUG FIX: sbi_object_id (== mbs_sess->id, set by smf_sbi_old_discover_and_send() via
+             * ogs_sbi_xact_add(mbs_sess->id, ...)) was never used to look the session back up here, so
+             * the response handlers had no way to record anything against it (e.g. the mbsContextRef
+             * needed later to release the context). Mirrors the NUDM_UECM case above. */
+            mbs_sess = smf_mbs_sess_find_by_id(sbi_xact->sbi_object_id);
+
             ogs_sbi_xact_remove(sbi_xact);
+
+            if (!mbs_sess) {
+                ogs_error("MBS Session has already been removed");
+                break;
+            }
 
             SWITCH(sbi_message.h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_MBS_CONTEXTS)
                 SWITCH(sbi_message.h.method)
                 CASE(OGS_SBI_HTTP_METHOD_POST)
                     if (sbi_message.res_status == OGS_SBI_HTTP_STATUS_CREATED) {
-                        smf_namf_handle_mbs_broadcast_context_create_response(&sbi_message);
+                        smf_namf_handle_mbs_broadcast_context_create_response(
+                                mbs_sess, &sbi_message);
                     } else {
                         ogs_error("HTTP response error : %d",
                                 sbi_message.res_status);
                     }
+                    break;
+
+                CASE(OGS_SBI_HTTP_METHOD_DELETE)
+                    smf_namf_handle_mbs_broadcast_context_delete_response(
+                            mbs_sess, &sbi_message);
                     break;
 
                 DEFAULT

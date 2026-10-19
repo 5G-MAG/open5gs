@@ -17,6 +17,8 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <ctype.h>
+
 #include "ogs-ngap.h"
 
 void ogs_ngap_uint32_to_GNB_ID(
@@ -158,7 +160,14 @@ void ogs_ngap_ASN_to_5gs_tai(NGAP_TAI_t *tAI, ogs_5gs_tai_t *tai)
     ogs_asn_OCTET_STRING_to_uint24(&tAI->tAC, &tai->tac);
 }
 
-// TODO (borieher): Needs checking
+// mbs_service_id is parsed with ogs_ascii_to_hex() (lib/core/ogs-conv.c), the general-purpose
+// hex-string-to-bytes helper used elsewhere in this codebase, which handles '0'-'9', 'a'-'f' and 'A'-'F'.
+// Masking each ASCII character with 0x0F would not do: that recovers a decimal digit's value only because
+// '0'-'9' happen to carry it in their low nibble, while a hex letter yields its ASCII low nibble instead
+// ('A' = 0x41 -> 0x1, not 0xA). This deployment's generator, smf_tmgi_gen_random_mbs_service_id()
+// (src/smf/context.c), emits six uppercase hex characters via ogs_msprintf("%06X", ...), so letters are
+// routine: "C3A505" masked that way becomes "331505", the AMF sends a corrupted TMGI, and correlating the
+// gNB's correctly echoed-back response through amf_mbs_context_find_by_tmgi() fails every time.
 void ogs_ngap_5gs_tmgi_to_ASN(ogs_tmgi_t *tmgi, NGAP_TMGI_t *tMGI)
 {
     ogs_assert(tmgi);
@@ -170,13 +179,48 @@ void ogs_ngap_5gs_tmgi_to_ASN(ogs_tmgi_t *tmgi, NGAP_TMGI_t *tMGI)
     octet_string->size = 6;
     octet_string->buf = CALLOC(octet_string->size, sizeof(uint8_t));
 
-    // Encode the MBS Service ID
-    octet_string->buf[0] = (tmgi->mbs_service_id[0] & 0x0F) << 4 | (tmgi->mbs_service_id[1] & 0x0F);
-    octet_string->buf[1] = (tmgi->mbs_service_id[2] & 0x0F) << 4 | (tmgi->mbs_service_id[3] & 0x0F);
-    octet_string->buf[2] = (tmgi->mbs_service_id[4] & 0x0F) << 4 | (tmgi->mbs_service_id[5] & 0x0F);
+    // Encode the MBS Service ID: 6 hex characters -> 3 bytes.
+    ogs_ascii_to_hex(tmgi->mbs_service_id, (int)strlen(tmgi->mbs_service_id), octet_string->buf, 3);
 
-    // Encode PLMN ID
-    octet_string->buf[3] = (tmgi->plmn_id.mcc1) << 4 | (tmgi->plmn_id.mcc2);
-    octet_string->buf[4] = (tmgi->plmn_id.mcc3) << 4 | (tmgi->plmn_id.mnc1);
-    octet_string->buf[5] = (tmgi->plmn_id.mnc2) << 4 | (tmgi->plmn_id.mnc3);
+        // The PLMN Identity is copied whole, the same memcpy idiom ngap_ASN_to_TAI() above uses.
+        // ogs_plmn_id_t is already packed as exactly OGS_PLMN_ID_LEN wire bytes on any host endianness (ED2()
+        // declarations, lib/proto/types.h), which is the 3GPP TS 24.008 PLMN-Identity encoding.  Packing the
+        // nibble pairs by hand (mcc1<<4|mcc2, mcc3<<4|mnc1, mnc2<<4|mnc3) swaps the two nibbles of every byte
+        // against that layout: MCC=001/MNC=01 becomes 00 1f 01 rather than 00 f1 10, which a peer decoding the
+        // octets independently rejects -- srsRAN_Project_mbs's plmn_identity::from_bytes() asserts "Invalid
+        // PLMN Identity" in tmgi_to_rrc_nr_asn1() (rrc_asn1_converters.cpp) and the gNB process ends.
+    memcpy(&octet_string->buf[3], &tmgi->plmn_id, OGS_PLMN_ID_LEN);
+}
+
+// Inverse of ogs_ngap_5gs_tmgi_to_ASN(), used to correlate an incoming NGAP BROADCAST SESSION SETUP
+// RESPONSE's mandatory MBS-SessionID IE back to the AMF's pending amf_mbs_context_t (see
+// ngap_handle_broadcast_session_setup_response()).  ogs_hex_to_ascii() (lib/core/ogs-conv.c) produces
+// lowercase hex, uppercased here to match this deployment's generator, which uses "%06X":
+// amf_mbs_context_find_by_tmgi() compares with a case-sensitive strcmp(), so the decoded string must match
+// the stored case, not merely be hex-equivalent.
+void ogs_ngap_ASN_to_5gs_tmgi(NGAP_TMGI_t *tMGI, ogs_tmgi_t *tmgi)
+{
+    OCTET_STRING_t *octet_string = NULL;
+    char mbs_service_id[7];
+    int i;
+
+    ogs_assert(tMGI);
+    ogs_assert(tmgi);
+
+    octet_string = (OCTET_STRING_t *) tMGI;
+    ogs_assert(octet_string->size == 6);
+    ogs_assert(octet_string->buf);
+
+        // Decode the MBS Service ID: 3 bytes -> 6 hex characters, uppercased (see the note on this function).
+    ogs_hex_to_ascii(octet_string->buf, 3, mbs_service_id, sizeof(mbs_service_id));
+    for (i = 0; mbs_service_id[i]; i++)
+        mbs_service_id[i] = (char)toupper((unsigned char)mbs_service_id[i]);
+    tmgi->mbs_service_id = ogs_strdup(mbs_service_id);
+
+        // Decode PLMN ID: exact inverse of the encoding above, the same memcpy idiom ngap_ASN_to_TAI() uses.
+    memcpy(&tmgi->plmn_id, &octet_string->buf[3], OGS_PLMN_ID_LEN);
+
+    // TMGI IE (TS 38.413 9.3.1.213) carries no expiration time; that is a separate, optional SBI-level
+    // field with no NGAP representation.
+    tmgi->expiration_time = NULL;
 }

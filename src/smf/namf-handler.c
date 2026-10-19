@@ -250,16 +250,147 @@ bool smf_namf_comm_handle_n1_n2_message_transfer_failure_notify(
 /* Namf_MBSBroadcast Service API */
 
 bool smf_namf_handle_mbs_broadcast_context_create_response(
-        ogs_sbi_message_t *recvmsg)
+        smf_mbs_sess_t *mbs_sess, ogs_sbi_message_t *recvmsg)
 {
-    // TODO (borieher): Handle MBS Broadcast ContextCreate response
-    ogs_warn("Handling MBS Broadcast ContextCreate response");
+    ogs_debug("Handling MBS Broadcast ContextCreate response");
 
-    int rv = OGS_OK;
+    ogs_sbi_message_t location_message;
+    ogs_sbi_header_t header;
+    int rv;
 
-cleanup:
-    if (rv == OGS_OK)
-        return true;
-    else
+    ogs_assert(mbs_sess);
+    ogs_assert(recvmsg);
+
+        // Stores the AMF-assigned mbsContextRef from the Location header of the 201 Created response
+        // (TS 29.518 cl.5.6.2.2). Without it there is no way to address this context later for release
+        // (DELETE /namf-mbs-bc/v1/mbs-contexts/{mbsContextRef}, TS 29.518 cl.5.6.2.4).
+    if (!recvmsg->http.location) {
+        ogs_error("MBS Broadcast ContextCreate response: No http.location, cannot capture mbsContextRef");
         return false;
+    }
+
+    memset(&header, 0, sizeof(header));
+    header.uri = recvmsg->http.location;
+
+    rv = ogs_sbi_parse_header(&location_message, &header);
+    if (rv != OGS_OK) {
+        ogs_error("MBS Broadcast ContextCreate response: Cannot parse http.location [%s]",
+                recvmsg->http.location);
+        return false;
+    }
+
+    if (!location_message.h.resource.component[1]) {
+        ogs_sbi_header_free(&header);
+        ogs_error("MBS Broadcast ContextCreate response: No mbsContextRef in Location [%s]",
+                recvmsg->http.location);
+        return false;
+    }
+
+    if (mbs_sess->mbs_context_ref)
+        ogs_free(mbs_sess->mbs_context_ref);
+    mbs_sess->mbs_context_ref = ogs_strdup(location_message.h.resource.component[1]);
+    ogs_assert(mbs_sess->mbs_context_ref);
+
+    ogs_sbi_header_free(&header);
+
+    ogs_info("MBS Broadcast ContextCreate: mbsContextRef[%s]", mbs_sess->mbs_context_ref);
+
+    return true;
+}
+
+bool smf_namf_handle_mbs_broadcast_context_delete_response(
+        smf_mbs_sess_t *mbs_sess, ogs_sbi_message_t *recvmsg)
+{
+    ogs_assert(mbs_sess);
+    ogs_assert(recvmsg);
+
+    if (recvmsg->res_status != OGS_SBI_HTTP_STATUS_NO_CONTENT) {
+        ogs_error("MBS Broadcast ContextDelete: unexpected HTTP response [%d] for mbsContextRef[%s]",
+                recvmsg->res_status, mbs_sess->mbs_context_ref);
+        return false;
+    }
+
+    ogs_info("MBS Broadcast ContextDelete: mbsContextRef[%s] released", mbs_sess->mbs_context_ref);
+
+    return true;
+}
+
+/*
+ * BUG FIX: this receiving-side handler and its own callback resource
+ * (OGS_SBI_RESOURCE_NAME_MBS_CONTEXT_STATUS_NOTIFY, smf-sm.c's own dispatch case) did not previously exist
+ * at all -- the SMF sends a real notifyUri when it calls ContextCreate (namf-build.c), but nothing in this
+ * SMF was listening at any URI for the AMF's own Namf_MBSBroadcast_ContextStatusNotify callback (TS 29.518
+ * cl.5.6.2.5), so every such notification the AMF ever sent would have hit the generic
+ * unrecognised-resource path and been rejected. Mirrors smf_namf_comm_handle_n1_n2_message_transfer_failure_
+ * notify()'s own shape (a flat NSMF_CALLBACK-style resource, correlated by body content rather than a URL
+ * path parameter, acknowledged with 204 No Content) and ogs_nnrf_nfm_handle_nf_status_notify()'s own
+ * mandatory-IE-then-204 pattern.
+ *
+ * Scope: parses and logs everything TS 29.518 cl.5.6.2.5 defines for this notification (MBS Session ID,
+ * Area Session ID, N2 MBS SM Info presence, operationStatus, operationEvents, releasedInd) and correlates
+ * it to the right smf_mbs_sess_t by TMGI. Does not yet act on operationStatus/releasedInd beyond logging:
+ * this SMF has no established behaviour anywhere else for "an MBS session is now known complete/released
+ * from a second notification path" to extend (ContextCreate's own response already reports completion for
+ * the common single-gNB case), so inventing one here would be new policy without a clause requiring it --
+ * recorded as a follow-up, not attempted in this pass (rule 12).
+ */
+bool smf_namf_handle_mbs_broadcast_context_status_notify(
+        ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg)
+{
+    OpenAPI_context_status_notification_t *ContextStatusNotification = NULL;
+    OpenAPI_mbs_session_id_t *MbsSessionId = NULL;
+    ogs_tmgi_t tmgi;
+    smf_mbs_sess_t *mbs_sess = NULL;
+    ogs_sbi_response_t *response = NULL;
+
+    ogs_assert(stream);
+    ogs_assert(recvmsg);
+
+    ContextStatusNotification = recvmsg->ContextStatusNotification;
+    if (!ContextStatusNotification) {
+        ogs_error("MBS Broadcast ContextStatusNotify: No ContextStatusNotification");
+        ogs_assert(true ==
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                recvmsg, "No ContextStatusNotification", NULL, NULL));
+        return false;
+    }
+
+    MbsSessionId = ContextStatusNotification->mbs_session_id;
+    if (!MbsSessionId || !MbsSessionId->tmgi) {
+        ogs_error("MBS Broadcast ContextStatusNotify: No mbsSessionId.tmgi");
+        ogs_assert(true ==
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                recvmsg, "No mbsSessionId.tmgi", NULL, NULL));
+        return false;
+    }
+
+    memset(&tmgi, 0, sizeof(tmgi));
+    ogs_sbi_parse_tmgi(&tmgi, MbsSessionId->tmgi);
+
+    mbs_sess = smf_mbs_sess_find_by_tmgi(&tmgi);
+    if (!mbs_sess) {
+        ogs_warn("MBS Broadcast ContextStatusNotify: no MBS session found for the given TMGI");
+        /* TS 29.518 defines no specific error cause for this case; a genuine race (e.g. very late
+         * notification after this SMF already released the session locally) is not itself malformed. */
+        ogs_assert(true ==
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_NOT_FOUND,
+                recvmsg, "No MBS session found for the given TMGI", NULL, NULL));
+        return false;
+    }
+
+    ogs_info("MBS Broadcast ContextStatusNotify: mbsContextRef[%s] "
+            "operationStatus[%s] areaSessionId%s n2MbsSmInfo[%s] releasedInd[%s]",
+            mbs_sess->mbs_context_ref ? mbs_sess->mbs_context_ref : "(none)",
+            OpenAPI_operation_status_ToString(ContextStatusNotification->operation_status),
+            ContextStatusNotification->is_area_session_id ? "[present]" : "[absent]",
+            (ContextStatusNotification->n2_mbs_sm_info_list &&
+             ContextStatusNotification->n2_mbs_sm_info_list->count > 0) ? "present" : "absent",
+            ContextStatusNotification->released_ind ==
+                    OpenAPI_context_status_notification_RELEASEDIND__true ? "true" : "false");
+
+    response = ogs_sbi_build_response(recvmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
+    ogs_assert(response);
+    ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+
+    return true;
 }

@@ -76,6 +76,26 @@ ogs_pkbuf_t *ngap_build_downlink_ran_status_transfer(
 
 ogs_pkbuf_t *ngap_build_broadcast_session_setup_request(
     amf_mbs_context_t *mbs_context, ogs_pkbuf_t *pkbuf);
+ogs_pkbuf_t *ngap_build_broadcast_session_release_request(
+    amf_mbs_context_t *mbs_context);
+ogs_pkbuf_t *ngap_build_broadcast_session_modification_request(
+    amf_mbs_context_t *mbs_context, bool has_service_area, ogs_pkbuf_t *pkbuf);
+
+/*
+ * Namf_MBSCommunication_N2MessageTransfer relays (TS 29.518 cl.5.7.2.2): the caller (MB-SMF) has already
+ * ASN.1-encoded the transfer IE's own content into \p pkbuf; these functions only wrap it into a complete
+ * top-level NGAP PDU with the MBS Session ID (built from \p tmgi), mirroring
+ * ngap_build_broadcast_session_modification_request()'s own OCTET-STRING-embedding pattern exactly.
+ */
+ogs_pkbuf_t *ngap_build_multicast_session_activation_request(
+    ogs_tmgi_t *tmgi, ogs_pkbuf_t *pkbuf);
+ogs_pkbuf_t *ngap_build_multicast_session_deactivation_request(
+    ogs_tmgi_t *tmgi, ogs_pkbuf_t *pkbuf);
+/* has_area_session_id/area_session_id: TS 38.413's own MulticastSessionUpdateRequestIEs marks
+ * MBS-AreaSessionID Optional -- location-dependent multicast sessions carry it, non-location-dependent
+ * ones omit it. */
+ogs_pkbuf_t *ngap_build_multicast_session_update_request(
+    ogs_tmgi_t *tmgi, bool has_area_session_id, uint16_t area_session_id, ogs_pkbuf_t *pkbuf);
 
 #ifdef __cplusplus
 }

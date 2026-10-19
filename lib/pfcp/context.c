@@ -2331,7 +2331,22 @@ ogs_ssm_t *ogs_pfcp_llssm_add(void)
 
     memset(ll_ssm, 0, sizeof *ll_ssm);
 
-    offset = ogs_list_count(&self.llssm_list);
+    /*
+     * BUG FIX: this used to derive the offset from ogs_list_count(&self.llssm_list), i.e. the
+     * *current live count*, not a stable per-entry counter. Out-of-order teardown (e.g. session B
+     * at offset 1 released while sessions A at offset 0 and C at offset 2 remain active) meant the
+     * next session created got offset = ogs_list_count(...) = 2, already in use by C -- two live
+     * sessions then shared the same N3mb multicast group address.
+     *
+     * Fix: use the LL-SSM pool's own allocation-slot index (ogs_pool_index()) as the offset instead.
+     * A plain incrementing counter wrapped modulo the pool size would only reduce the odds of
+     * collision, not eliminate them (a long-lived session's offset can still be revisited by the
+     * counter while cycling through short-lived neighbours, before that long-lived session is ever
+     * freed). The pool-slot index, by construction of ogs_pool_alloc()/ogs_pool_free(), can never be
+     * held by two simultaneously-allocated entries -- the same mechanism already relied on elsewhere
+     * in this codebase for collision-free per-entry indices (e.g. smf_mbs_sess->index).
+     */
+    offset = ogs_pool_index(&ogs_pfcp_llssm_pool, ll_ssm) - 1;
 
     // N3mb address:
     ogs_ipv4_from_string(&ll_ssm->dest_ip_addr.addr, "239.0.0.4");
@@ -2339,8 +2354,20 @@ ogs_ssm_t *ogs_pfcp_llssm_add(void)
     ll_ssm->dest_ip_addr.ipv4 = 1;
     ll_ssm->dest_ip_addr.len = OGS_IPV4_LEN;
 
-    // UPF address:
-    ll_ssm->src_ip_addr.addr = htobe32(3232249605);
+    // UPF address: use the UPF's own configured N3 GTP-U address, so the SSM source the
+    // gNB is told to join on (S,G) actually matches the address packets are transmitted
+    // from. This was previously a hardcoded placeholder (192.168.1.5) that didn't match
+    // any real deployment's N3 address -- since the (S,G) join fails silently at the
+    // multicast-routing layer with no visibility in any application log on either side,
+    // that mismatch alone is enough to make MBS content vanish end-to-end (MCCH/E1AP/F1AP
+    // all still succeed, PDCCH just never gets a G-RNTI grant because zero bytes ever
+    // arrive at RLC).
+    if (ogs_gtp_self()->gtpu_addr) {
+        ll_ssm->src_ip_addr.addr = ogs_gtp_self()->gtpu_addr->sin.sin_addr.s_addr;
+    } else {
+        ogs_error("LL-SSM: no GTP-U address configured, cannot set SSM source address");
+        ll_ssm->src_ip_addr.addr = 0;
+    }
     ll_ssm->src_ip_addr.ipv4 = 1;
     ll_ssm->src_ip_addr.len = OGS_IPV4_LEN;
 

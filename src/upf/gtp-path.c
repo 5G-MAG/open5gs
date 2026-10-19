@@ -237,9 +237,15 @@ void upf_gtpv1_receive_buffer_for_mbs_sess(ogs_pkbuf_t *recvbuf, upf_mbs_sess_t 
         return;
     }
 
-    /* Increment total & dl octets + pkts */
-    for (i = 0; i < pdr->num_of_urr; i++)
-        upf_sess_urr_acc_add(sess, pdr->urr[i], recvbuf->len, false);
+        // Skipped on the MBS-session branch, where sess is NULL (see the top of this function):
+        // upf_sess_urr_acc_add() dereferences sess->urr_acc[...] with no NULL check, and an MBS PDR can carry a
+        // non-zero URR count through the generic Create PDR URR-ID association path. NOT IMPLEMENTED: charging
+        // and URR accounting for MBS sessions, upf_mbs_sess_t having no urr_acc storage.
+    if (sess) {
+        /* Increment total & dl octets + pkts */
+        for (i = 0; i < pdr->num_of_urr; i++)
+            upf_sess_urr_acc_add(sess, pdr->urr[i], recvbuf->len, false);
+    }
 
     ogs_assert(true == ogs_pfcp_up_handle_pdr(
                 pdr, OGS_GTPU_MSGTYPE_GPDU, NULL, recvbuf, &report));
@@ -258,16 +264,23 @@ void upf_gtpv1_receive_buffer_for_mbs_sess(ogs_pkbuf_t *recvbuf, upf_mbs_sess_t 
 #endif
 
     if (report.type.downlink_data_report) {
-        ogs_assert(pdr->sess);
-        sess = UPF_SESS(pdr->sess);
-        ogs_assert(sess);
+                // Skipped on the MBS-session branch. UPF_SESS() is ogs_container_of(pdr->sess, upf_sess_t, pfcp),
+                // valid only when the embedded ogs_pfcp_sess_t belongs to a real upf_sess_t; here pdr->sess is
+                // embedded in a differently-laid-out upf_mbs_sess_t, so it would yield a mistyped pointer and read
+                // and write SEID, PFCP node and session id at the wrong offsets, on a path shared with ordinary UE
+                // sessions. NOT IMPLEMENTED: the MBS-session Downlink Data Report.
+                // upf_pfcp_send_session_report_request() has no upf_mbs_sess_t-typed counterpart, needing a pool id
+                // to box into the PFCP transaction's timeout callback data that upf_mbs_sess_t does not have.
+        if (sess) {
+            report.downlink_data.pdr_id = pdr->id;
+            if (pdr->qer && pdr->qer->qfi)
+                report.downlink_data.qfi = pdr->qer->qfi; /* for 5GC */
 
-        report.downlink_data.pdr_id = pdr->id;
-        if (pdr->qer && pdr->qer->qfi)
-            report.downlink_data.qfi = pdr->qer->qfi; /* for 5GC */
-
-        ogs_assert(OGS_OK ==
-            upf_pfcp_send_session_report_request(sess, &report));
+            ogs_assert(OGS_OK ==
+                upf_pfcp_send_session_report_request(sess, &report));
+        } else {
+            ogs_warn("Downlink Data Report requested for an MBS session -- not yet implemented, skipping");
+        }
     }
 
     /*
