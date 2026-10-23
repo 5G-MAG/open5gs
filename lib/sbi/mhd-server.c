@@ -334,12 +334,17 @@ static int server_start(ogs_sbi_server_t *server,
 
     addr = server->node.addr;
     ogs_assert(addr);
-    if (addr->ogs_sa_family == AF_INET6)
-        mhd_flags |= MHD_USE_IPv6;
-    mhd_ops[index].option = MHD_OPTION_SOCK_ADDR;
-    mhd_ops[index].value = 0;
-    mhd_ops[index].ptr_value = (void *)&addr->sa;
-    index++;
+    if (server->no_listen) {
+        /* the connections are accepted by the HTTP/2 server of ogs_sbi_server_add_dual() */
+        mhd_flags |= MHD_USE_NO_LISTEN_SOCKET;
+    } else {
+        if (addr->ogs_sa_family == AF_INET6)
+            mhd_flags |= MHD_USE_IPv6;
+        mhd_ops[index].option = MHD_OPTION_SOCK_ADDR;
+        mhd_ops[index].value = 0;
+        mhd_ops[index].ptr_value = (void *)&addr->sa;
+        index++;
+    }
 
     mhd_ops[index].option = MHD_OPTION_END;
     mhd_ops[index].value = 0;
@@ -358,19 +363,37 @@ static int server_start(ogs_sbi_server_t *server,
         return OGS_ERROR;
     }
 
-    /* Setup poll for server listening socket */
-    mhd_info = MHD_get_daemon_info(server->mhd, MHD_DAEMON_INFO_LISTEN_FD);
-    ogs_assert(mhd_info);
+    if (!server->no_listen) {
+        /* Setup poll for server listening socket */
+        mhd_info = MHD_get_daemon_info(server->mhd, MHD_DAEMON_INFO_LISTEN_FD);
+        ogs_assert(mhd_info);
 
-    server->node.poll = ogs_pollset_add(ogs_app()->pollset,
-            OGS_POLLIN, mhd_info->listen_fd, run, server->mhd);
-    ogs_assert(server->node.poll);
+        server->node.poll = ogs_pollset_add(ogs_app()->pollset,
+                OGS_POLLIN, mhd_info->listen_fd, run, server->mhd);
+        ogs_assert(server->node.poll);
+    }
 
     hostname = ogs_gethostname(addr);
     if (hostname)
-        ogs_info("mhd_server() [%s]:%d", hostname, OGS_PORT(addr));
+        ogs_info("mhd_server()%s [%s]:%d", server->no_listen ? " (shared listener)" : "", hostname, OGS_PORT(addr));
     else
-        ogs_info("mhd_server() [%s]:%d", OGS_ADDR(addr, buf), OGS_PORT(addr));
+        ogs_info("mhd_server()%s [%s]:%d", server->no_listen ? " (shared listener)" : "", OGS_ADDR(addr, buf), OGS_PORT(addr));
+
+    return OGS_OK;
+}
+
+int ogs_mhd_server_add_connection(ogs_sbi_server_t *server,
+        ogs_socket_t fd, const struct sockaddr *addr, socklen_t addrlen)
+{
+    ogs_assert(server);
+    ogs_assert(server->mhd);
+
+    if (MHD_add_connection(server->mhd, fd, addr, addrlen) != MHD_YES) {
+        ogs_error("MHD_add_connection() failed");
+        return OGS_ERROR;
+    }
+    /* MHD is driven from the poll set: let it start the connection (notify_connection() registers its sockets) */
+    MHD_run(server->mhd);
 
     return OGS_OK;
 }
@@ -568,10 +591,14 @@ static int get_values(ogs_hash_t *hash,
 {
     ogs_assert(hash);
 
-    if (!key || !value)
+    if (!key)
         return MHD_YES;     //  Ignore connection value if invalid!
 
-    ogs_sbi_header_set(hash, key, value);
+    /*
+     * A query parameter without "=" (for example "?csr") has no value in
+     * libmicrohttpd. Keep it with an empty value, as the HTTP/2 server does.
+     */
+    ogs_sbi_header_set(hash, key, value ? value : "");
 
     return MHD_YES;
 }

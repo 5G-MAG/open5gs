@@ -17,6 +17,8 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <unistd.h>
+
 #include "ogs-sbi.h"
 #include "yuarel.h"
 
@@ -993,10 +995,64 @@ static void session_remove_all(ogs_sbi_server_t *server)
         session_remove(sbi_sess);
 }
 
+struct sniff {
+    ogs_sbi_server_t *server;
+    ogs_sock_t *sock;
+    ogs_poll_t *poll;
+};
+
+static void session_start(ogs_sbi_server_t *server, ogs_sock_t *new);
+static void sniff_handler(short when, ogs_socket_t fd, void *data);
+
+/*
+ * RFC 9113 section 3.4: an HTTP/2 connection starts with the 24 octets
+ * "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n". Anything else is HTTP/1.1.
+ */
+static void sniff_handler(short when, ogs_socket_t fd, void *data)
+{
+    static const char preface[] = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+    struct sniff *sniff = data;
+    ogs_sbi_server_t *server;
+    ogs_sock_t *sock;
+    char buf[sizeof(preface) - 1];
+    ssize_t n;
+    bool h2;
+
+    ogs_assert(sniff);
+    server = sniff->server;
+    sock = sniff->sock;
+    ogs_pollset_remove(sniff->poll);
+    ogs_free(sniff);
+
+    n = recv(fd, buf, sizeof(buf), MSG_PEEK);
+    if (n <= 0) {
+        /* closed before sending anything, or an error */
+        ogs_sock_destroy(sock);
+        return;
+    }
+    /* what has arrived so far is a prefix of the preface */
+    h2 = memcmp(buf, preface, (size_t)n) == 0;
+
+    if (h2) {
+        session_start(server, sock);
+    } else {
+        struct sockaddr_storage peer;
+        socklen_t peerlen = sizeof(peer);
+        int h1_fd = dup(fd);
+
+        if (h1_fd < 0 || getpeername(fd, (struct sockaddr *)&peer, &peerlen) != 0 ||
+                ogs_mhd_server_add_connection(server->h1_peer, h1_fd, (struct sockaddr *)&peer, peerlen) != OGS_OK) {
+            ogs_error("Cannot hand the connection to the HTTP/1.1 server");
+            if (h1_fd >= 0) close(h1_fd);
+        }
+        /* the dup()ed descriptor now belongs to the HTTP/1.1 server */
+        ogs_sock_destroy(sock);
+    }
+}
+
 static void accept_handler(short when, ogs_socket_t fd, void *data)
 {
     ogs_sbi_server_t *server = data;
-    ogs_sbi_session_t *sbi_sess = NULL;
     ogs_sock_t *sock = NULL;
     ogs_sock_t *new = NULL;
 
@@ -1021,6 +1077,25 @@ static void accept_handler(short when, ogs_socket_t fd, void *data)
         ogs_sock_destroy(new);
         return;
     }
+
+    if (server->h1_peer && !server->ssl_ctx) {
+        /* both protocols on this address: look at the first bytes of the connection */
+        struct sniff *sniff = ogs_calloc(1, sizeof(*sniff));
+        ogs_assert(sniff);
+        sniff->server = server;
+        sniff->sock = new;
+        sniff->poll = ogs_pollset_add(ogs_app()->pollset,
+                OGS_POLLIN, new->fd, sniff_handler, sniff);
+        ogs_assert(sniff->poll);
+        return;
+    }
+
+    session_start(server, new);
+}
+
+static void session_start(ogs_sbi_server_t *server, ogs_sock_t *new)
+{
+    ogs_sbi_session_t *sbi_sess = NULL;
 
     sbi_sess = session_add(server, new);
     ogs_assert(sbi_sess);
@@ -1464,7 +1539,8 @@ static int on_header(nghttp2_session *session, const nghttp2_frame *frame,
             yuarel_parse_query(query, '&', params, MAX_NUM_OF_PARAM_IN_QUERY+1);
 
         j = 0;
-        while(params[j].key && params[j].val) {
+        /* a parameter without "=" (for example "?csr") has no value: keep it, empty */
+        while(params[j].key) {
             if (j >= MAX_NUM_OF_PARAM_IN_QUERY) {
                 ogs_error("Too many query params (max=%d)",
                         MAX_NUM_OF_PARAM_IN_QUERY);
@@ -1482,7 +1558,7 @@ static int on_header(nghttp2_session *session, const nghttp2_frame *frame,
 
             if (strlen(params[j].key))
                 ogs_sbi_header_set(request->http.params,
-                        params[j].key, params[j].val);
+                        params[j].key, params[j].val ? params[j].val : "");
             else
                 ogs_warn("No KEY in Query-Parms");
 

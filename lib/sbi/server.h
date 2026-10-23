@@ -56,6 +56,15 @@ typedef struct ogs_sbi_server_s {
 
     /* HTTP backend (HTTP/2 nghttp2 or HTTP/1.1 MHD) serving this server */
     const ogs_sbi_server_actions_t *actions;
+
+    /*
+     * Both protocols on one address (ogs_sbi_server_add_dual()): the HTTP/2
+     * server listens, and hands the connections that do not start with the
+     * HTTP/2 connection preface (RFC 9113 section 3.4) to its HTTP/1.1 peer,
+     * which has no listening socket of its own (no_listen).
+     */
+    struct ogs_sbi_server_s *h1_peer;
+    bool no_listen;
 } ogs_sbi_server_t;
 
 typedef struct ogs_sbi_server_actions_s {
@@ -142,6 +151,20 @@ ogs_sbi_server_t *ogs_sbih1_server_add(
         const char *interface,
         OpenAPI_uri_scheme_e scheme, ogs_sockaddr_t *addr,
         ogs_sockopt_t *option);
+/*
+ * Add the HTTP/2 (nghttp2) and HTTP/1.1 (MHD) backends on the same address
+ * and port: the connection is served by the HTTP/2 backend if the client
+ * starts with the HTTP/2 connection preface (prior knowledge, RFC 9113
+ * section 3.3), and by the HTTP/1.1 backend otherwise. Cleartext only (the
+ * MHD backend has no TLS support). Returns the HTTP/2 server.
+ */
+ogs_sbi_server_t *ogs_sbi_server_add_dual(
+        const char *interface,
+        OpenAPI_uri_scheme_e scheme, ogs_sockaddr_t *addr,
+        ogs_sockopt_t *option);
+/* Hand an accepted connection to the HTTP/1.1 (MHD) backend of a server added with ogs_sbi_server_add_dual(). */
+int ogs_mhd_server_add_connection(ogs_sbi_server_t *server,
+        ogs_socket_t fd, const struct sockaddr *addr, socklen_t addrlen);
 void ogs_sbi_server_remove(ogs_sbi_server_t *server);
 void ogs_sbi_server_remove_all(void);
 

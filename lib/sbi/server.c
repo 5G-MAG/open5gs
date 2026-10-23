@@ -116,6 +116,25 @@ ogs_sbi_server_t *ogs_sbih1_server_add(
             &ogs_mhd_server_actions, interface, scheme, addr, option);
 }
 
+ogs_sbi_server_t *ogs_sbi_server_add_dual(
+        const char *interface,
+        OpenAPI_uri_scheme_e scheme, ogs_sockaddr_t *addr,
+        ogs_sockopt_t *option)
+{
+    ogs_sbi_server_t *h2, *h1;
+
+    /* The MHD backend has no TLS support */
+    ogs_assert(scheme == OpenAPI_uri_scheme_http);
+
+    /* the HTTP/1.1 peer is added first so that it is started before the HTTP/2 server accepts */
+    h1 = server_add(&ogs_mhd_server_actions, interface, scheme, addr, option);
+    h1->no_listen = true;
+    h2 = server_add(&ogs_nghttp2_server_actions, interface, scheme, addr, option);
+    h2->h1_peer = h1;
+
+    return h2;
+}
+
 void ogs_sbi_server_remove(ogs_sbi_server_t *server)
 {
     ogs_assert(server);

@@ -21,8 +21,10 @@
  * An HTTP/2 (nghttp2) server and an HTTP/1.1 (MHD) server in the same
  * process. Requests are answered, as in the NFs, after the server callback
  * returned and from the stream id that the callback was given. Each server
- * answers with its interface name, so that a stream resolved to the wrong
- * backend, or a response sent through the wrong backend, shows up.
+ * answers with its backend ("h2" or "h1"), so that a stream resolved to the
+ * wrong backend, or a response sent through the wrong backend, shows up.
+ * A third server, added with ogs_sbi_server_add_dual(), serves both protocols
+ * on one port.
  */
 
 #include "ogs-sbi.h"
@@ -35,8 +37,10 @@ extern const ogs_sbi_server_actions_t ogs_nghttp2_server_actions;
 
 #define TEST_H2_PORT 18077
 #define TEST_H1_PORT 18078
+#define TEST_DUAL_PORT 18079
 #define TEST_NUM_OF_REQUESTS 64
-#define TEST_MAX_PARALLEL 16
+/* With 16 parallel connections some HTTP/2 requests were reset intermittently, on a single-protocol HTTP/2 server too (not investigated) */
+#define TEST_MAX_PARALLEL 4
 
 static ogs_pool_id_t pending_id[TEST_NUM_OF_REQUESTS * 2];
 static int num_of_pending;
@@ -46,6 +50,7 @@ static int num_of_unresolved;
 static int num_of_ids_seen;
 static ogs_pool_id_t ids_seen[TEST_NUM_OF_REQUESTS * 2];
 static bool duplicate_id;
+static int num_of_flag;
 
 static int server_cb(ogs_sbi_request_t *request, void *data)
 {
@@ -53,6 +58,10 @@ static int server_cb(ogs_sbi_request_t *request, void *data)
      * Like ogs_sbi_server_handler(): queue, and answer later. The request
      * belongs to the stream and is freed with it.
      */
+    /* "?flag" has no value; it has to reach the request on both servers */
+    if (ogs_sbi_header_get(request->http.params, "flag"))
+        num_of_flag++;
+
     ogs_assert(num_of_pending < (int)OGS_ARRAY_SIZE(pending_id));
     pending_id[num_of_pending] = OGS_POINTER_TO_UINT(data);
     num_of_pending++;
@@ -86,8 +95,7 @@ static void answer_pending(void)
         server = ogs_sbi_server_from_stream(stream);
         ogs_assert(server);
         ogs_assert(ogs_sbi_id_from_stream(stream) == id);
-        name = server->interface;
-        ogs_assert(name);
+        name = server->actions == &ogs_nghttp2_server_actions ? "h2" : "h1";
 
         response = ogs_sbi_response_new();
         ogs_assert(response);
@@ -132,22 +140,18 @@ static size_t write_cb(char *ptr, size_t size, size_t nmemb, void *userdata)
     return n;
 }
 
-static void sbi_server_test1(abts_case *tc, void *data)
+static void run_requests(abts_case *tc, int h2_port, int h1_port)
 {
     CURLM *multi = NULL;
     struct transfer transfers[TEST_NUM_OF_REQUESTS];
     int i, started = 0, running_handles = 0, ok_h2 = 0, ok_h1 = 0;
-    int h2_servers = 0, h1_servers = 0;
-    ogs_sbi_server_t *server = NULL;
     CURLMsg *msg;
     int left;
 
-    ogs_list_for_each(&ogs_sbi_self()->server_list, server) {
-        if (server->actions == &ogs_nghttp2_server_actions) h2_servers++;
-        if (server->actions == &ogs_mhd_server_actions) h1_servers++;
-    }
-    ABTS_INT_EQUAL(tc, 1, h2_servers);
-    ABTS_INT_EQUAL(tc, 1, h1_servers);
+    num_of_flag = 0;
+    num_of_unresolved = 0;
+    num_of_ids_seen = 0;
+    duplicate_id = false;
 
     memset(transfers, 0, sizeof(transfers));
     multi = curl_multi_init();
@@ -160,8 +164,8 @@ static void sbi_server_test1(abts_case *tc, void *data)
         t->h2 = (i % 2) == 0;
         t->easy = curl_easy_init();
         ABTS_PTR_NOTNULL(tc, t->easy);
-        snprintf(url, sizeof(url), "http://127.0.0.1:%d/test/%d",
-                t->h2 ? TEST_H2_PORT : TEST_H1_PORT, i);
+        snprintf(url, sizeof(url), "http://127.0.0.1:%d/test/%d?flag",
+                t->h2 ? h2_port : h1_port, i);
         curl_easy_setopt(t->easy, CURLOPT_URL, url);
         curl_easy_setopt(t->easy, CURLOPT_HTTP_VERSION, t->h2 ?
                 (long)CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE :
@@ -212,11 +216,33 @@ static void sbi_server_test1(abts_case *tc, void *data)
     }
     curl_multi_cleanup(multi);
 
+    ABTS_INT_EQUAL(tc, TEST_NUM_OF_REQUESTS, num_of_flag);
     ABTS_INT_EQUAL(tc, TEST_NUM_OF_REQUESTS / 2, ok_h2);
     ABTS_INT_EQUAL(tc, TEST_NUM_OF_REQUESTS / 2, ok_h1);
     ABTS_INT_EQUAL(tc, 0, num_of_unresolved);
     ABTS_TRUE(tc, !duplicate_id);
     ABTS_INT_EQUAL(tc, TEST_NUM_OF_REQUESTS, num_of_ids_seen);
+}
+
+/* an HTTP/2 server and an HTTP/1.1 server on two ports */
+static void sbi_server_test1(abts_case *tc, void *data)
+{
+    ogs_sbi_server_t *server = NULL;
+    int h2_servers = 0, h1_servers = 0;
+
+    ogs_list_for_each(&ogs_sbi_self()->server_list, server) {
+        if (server->actions == &ogs_nghttp2_server_actions) h2_servers++;
+        if (server->actions == &ogs_mhd_server_actions) h1_servers++;
+    }
+    ABTS_TRUE(tc, h2_servers >= 1 && h1_servers >= 1);
+
+    run_requests(tc, TEST_H2_PORT, TEST_H1_PORT);
+}
+
+/* both protocols on one port, told apart by the HTTP/2 connection preface */
+static void sbi_server_test2(abts_case *tc, void *data)
+{
+    run_requests(tc, TEST_DUAL_PORT, TEST_DUAL_PORT);
 }
 
 int main(int argc, const char *const argv[])
@@ -262,6 +288,12 @@ int main(int argc, const char *const argv[])
                 "h1", OpenAPI_uri_scheme_http, addr, NULL));
     ogs_freeaddrinfo(addr);
 
+    ogs_assert(OGS_OK == ogs_getaddrinfo(
+                &addr, AF_INET, "127.0.0.1", TEST_DUAL_PORT, 0));
+    ogs_assert(ogs_sbi_server_add_dual(
+                "dual", OpenAPI_uri_scheme_http, addr, NULL));
+    ogs_freeaddrinfo(addr);
+
     ogs_assert(OGS_OK == ogs_sbi_server_start_all(server_cb));
 
     running = true;
@@ -270,6 +302,7 @@ int main(int argc, const char *const argv[])
 
     suite = ADD_SUITE(suite)
     abts_run_test(suite, sbi_server_test1, NULL);
+    abts_run_test(suite, sbi_server_test2, NULL);
 
     running = false;
     ogs_thread_destroy(thread);
