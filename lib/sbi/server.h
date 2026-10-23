@@ -33,6 +33,7 @@ extern "C" {
 
 typedef struct ogs_sbi_stream_s ogs_sbi_stream_t;
 typedef struct ogs_sbi_xact_s ogs_sbi_xact_t;
+typedef struct ogs_sbi_server_actions_s ogs_sbi_server_actions_t;
 
 typedef struct ogs_sbi_server_s {
     ogs_socknode_t  node;
@@ -52,6 +53,9 @@ typedef struct ogs_sbi_server_s {
     ogs_list_t      session_list;
 
     void            *mhd; /* Used by MHD */
+
+    /* HTTP backend (HTTP/2 nghttp2 or HTTP/1.1 MHD) serving this server */
+    const ogs_sbi_server_actions_t *actions;
 } ogs_sbi_server_t;
 
 typedef struct ogs_sbi_server_actions_s {
@@ -68,9 +72,6 @@ typedef struct ogs_sbi_server_actions_s {
     bool (*send_response)(
             ogs_sbi_stream_t *stream, ogs_sbi_response_t *response);
 
-    ogs_sbi_server_t *(*server_from_stream)(ogs_sbi_stream_t *stream);
-
-    ogs_pool_id_t (*id_from_stream)(ogs_sbi_stream_t *stream);
     void *(*stream_find_by_id)(ogs_pool_id_t id);
 
     /*
@@ -83,10 +84,61 @@ typedef struct ogs_sbi_server_actions_s {
     void (*xact_detach)(ogs_sbi_xact_t *xact);
 } ogs_sbi_server_actions_t;
 
+/*
+ * Header shared by the stream types of all HTTP backends. It must be the
+ * first member of the backend's stream (HTTP/2) or session (HTTP/1.1) struct,
+ * so that code outside the backend can recover the id and the server from an
+ * opaque ogs_sbi_stream_t pointer whichever backend created it.
+ *
+ * The id is allocated with ogs_sbi_stream_id_calloc() so that it is unique
+ * across all backends: the id is what the NFs carry in events and in
+ * xact->assoc_stream_id, and ogs_sbi_stream_find_by_id() has to resolve it
+ * without knowing which backend owns the stream.
+ */
+typedef struct ogs_sbi_stream_common_s {
+    ogs_lnode_t             lnode;
+    ogs_pool_id_t           id;
+    ogs_sbi_server_t       *server;
+} ogs_sbi_stream_common_t;
+
+ogs_pool_id_t ogs_sbi_server_next_stream_id(void);
+
+/*
+ * Same as ogs_pool_id_calloc() for a pool whose nodes start with an
+ * ogs_sbi_stream_common_t named "common", but takes the id from the counter
+ * shared by all HTTP backends.
+ */
+#define ogs_sbi_stream_id_calloc(pool, node) do { \
+    ogs_pool_alloc(pool, node); \
+    if (*(node)) { \
+        memset(*(node), 0, sizeof(**(node))); \
+        (*(node))->common.id = ogs_sbi_server_next_stream_id(); \
+        ogs_hash_set((pool)->id_hash, \
+                &((*(node))->common.id), sizeof(ogs_pool_id_t), *(node)); \
+    } \
+} while (0)
+
+#define ogs_sbi_stream_id_free(pool, node) do { \
+    ogs_assert(((node)->common.id) >= OGS_MIN_POOL_ID && \
+            ((node)->common.id) <= OGS_MAX_POOL_ID); \
+    ogs_hash_set((pool)->id_hash, \
+            &((node)->common.id), sizeof(ogs_pool_id_t), NULL); \
+    ogs_pool_free(pool, node); \
+} while (0)
+
 void ogs_sbi_server_init(int num_of_session_pool, int num_of_stream_pool);
 void ogs_sbi_server_final(void);
 
 ogs_sbi_server_t *ogs_sbi_server_add(
+        const char *interface,
+        OpenAPI_uri_scheme_e scheme, ogs_sockaddr_t *addr,
+        ogs_sockopt_t *option);
+/*
+ * Add a server on the HTTP/1.1 (MHD) backend, alongside servers added with
+ * ogs_sbi_server_add() on the HTTP/2 (nghttp2) backend. The MHD backend does
+ * not implement TLS: scheme must be OpenAPI_uri_scheme_http.
+ */
+ogs_sbi_server_t *ogs_sbih1_server_add(
         const char *interface,
         OpenAPI_uri_scheme_e scheme, ogs_sockaddr_t *addr,
         ogs_sockopt_t *option);

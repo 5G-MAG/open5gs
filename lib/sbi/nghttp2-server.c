@@ -38,9 +38,6 @@ static bool server_send_rspmem_persistent(
 static bool server_send_response(
         ogs_sbi_stream_t *stream, ogs_sbi_response_t *response);
 
-static ogs_sbi_server_t *server_from_stream(ogs_sbi_stream_t *stream);
-
-static ogs_pool_id_t id_from_stream(ogs_sbi_stream_t *stream);
 static void *stream_find_by_id(ogs_pool_id_t id);
 
 static void xact_attach(ogs_sbi_stream_t *stream, ogs_sbi_xact_t *xact);
@@ -57,9 +54,6 @@ const ogs_sbi_server_actions_t ogs_nghttp2_server_actions = {
     server_send_rspmem_persistent,
     server_send_response,
 
-    server_from_stream,
-
-    id_from_stream,
     stream_find_by_id,
 
     xact_attach,
@@ -93,9 +87,7 @@ typedef struct ogs_sbi_session_s {
 } ogs_sbi_session_t;
 
 typedef struct ogs_sbi_stream_s {
-    ogs_lnode_t             lnode;
-
-    ogs_pool_id_t           id;
+    ogs_sbi_stream_common_t common;
 
     int32_t                 stream_id;
     ogs_sbi_request_t       *request;
@@ -749,18 +741,6 @@ static bool server_send_response(
     return rc;
 }
 
-static ogs_sbi_server_t *server_from_stream(ogs_sbi_stream_t *stream)
-{
-    ogs_sbi_session_t *sbi_sess = NULL;
-
-    ogs_assert(stream);
-    sbi_sess = stream->session;
-    ogs_assert(sbi_sess);
-    ogs_assert(sbi_sess->server);
-
-    return sbi_sess->server;
-}
-
 static ogs_sbi_stream_t *stream_add(
         ogs_sbi_session_t *sbi_sess, int32_t stream_id)
 {
@@ -768,16 +748,16 @@ static ogs_sbi_stream_t *stream_add(
 
     ogs_assert(sbi_sess);
 
-    ogs_pool_id_calloc(&stream_pool, &stream);
+    ogs_sbi_stream_id_calloc(&stream_pool, &stream);
     if (!stream) {
-        ogs_error("ogs_pool_id_calloc() failed");
+        ogs_error("ogs_sbi_stream_id_calloc() failed");
         return NULL;
     }
 
     stream->request = ogs_sbi_request_new();
     if (!stream->request) {
         ogs_error("ogs_sbi_request_new() failed");
-        ogs_pool_id_free(&stream_pool, stream);
+        ogs_sbi_stream_id_free(&stream_pool, stream);
         return NULL;
     }
 
@@ -785,6 +765,7 @@ static ogs_sbi_stream_t *stream_add(
     sbi_sess->last_stream_id = stream_id;
 
     stream->session = sbi_sess;
+    stream->common.server = sbi_sess->server;
 
     ogs_list_init(&stream->xact_list);
 
@@ -882,7 +863,7 @@ static void stream_remove(ogs_sbi_stream_t *stream)
     ogs_assert(stream->request);
     ogs_sbi_request_free(stream->request);
 
-    ogs_pool_id_free(&stream_pool, stream);
+    ogs_sbi_stream_id_free(&stream_pool, stream);
 }
 
 static void stream_remove_all(ogs_sbi_session_t *sbi_sess)
@@ -893,12 +874,6 @@ static void stream_remove_all(ogs_sbi_session_t *sbi_sess)
 
     ogs_list_for_each_safe(&sbi_sess->stream_list, next_stream, stream)
         stream_remove(stream);
-}
-
-static ogs_pool_id_t id_from_stream(ogs_sbi_stream_t *stream)
-{
-    ogs_assert(stream);
-    return stream->id;
 }
 
 static void *stream_find_by_id(ogs_pool_id_t id)
@@ -1320,7 +1295,7 @@ static int on_frame_recv(nghttp2_session *session,
             }
 
             if (server->cb(request,
-                        OGS_UINT_TO_POINTER(stream->id)) != OGS_OK) {
+                        OGS_UINT_TO_POINTER(stream->common.id)) != OGS_OK) {
                 ogs_warn("server callback error");
                 ogs_assert(true ==
                     ogs_sbi_server_send_error(stream,

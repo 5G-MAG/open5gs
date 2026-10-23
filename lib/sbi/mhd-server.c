@@ -40,9 +40,6 @@ static bool server_send_rspmem_persistent(
 static bool server_send_response(
         ogs_sbi_stream_t *stream, ogs_sbi_response_t *response);
 
-static ogs_sbi_server_t *server_from_stream(ogs_sbi_stream_t *stream);
-
-static ogs_pool_id_t id_from_stream(ogs_sbi_stream_t *stream);
 static void *stream_find_by_id(ogs_pool_id_t id);
 
 static void xact_attach(ogs_sbi_stream_t *stream, ogs_sbi_xact_t *xact);
@@ -59,8 +56,6 @@ const ogs_sbi_server_actions_t ogs_mhd_server_actions = {
     server_send_rspmem_persistent,
     server_send_response,
 
-    server_from_stream,
-    id_from_stream,
     stream_find_by_id,
 
     xact_attach,
@@ -90,14 +85,11 @@ static void notify_completed(
 static void session_timer_expired(void *data);
 
 typedef struct ogs_sbi_session_s {
-    ogs_lnode_t             lnode;
-
-    ogs_pool_id_t           id;
+    ogs_sbi_stream_common_t common;
 
     struct MHD_Connection   *connection;
 
     ogs_sbi_request_t       *request;
-    ogs_sbi_server_t        *server;
 
     /*
      * If the HTTP client closes the socket without sending an HTTP response,
@@ -149,10 +141,10 @@ static ogs_sbi_session_t *session_add(ogs_sbi_server_t *server,
     ogs_assert(request);
     ogs_assert(connection);
 
-    ogs_pool_id_calloc(&session_pool, &sbi_sess);
+    ogs_sbi_stream_id_calloc(&session_pool, &sbi_sess);
     ogs_assert(sbi_sess);
 
-    sbi_sess->server = server;
+    sbi_sess->common.server = server;
     sbi_sess->request = request;
     sbi_sess->connection = connection;
 
@@ -160,10 +152,10 @@ static ogs_sbi_session_t *session_add(ogs_sbi_server_t *server,
 
     sbi_sess->timer = ogs_timer_add(
             ogs_app()->timer_mgr, session_timer_expired,
-            OGS_UINT_TO_POINTER(sbi_sess->id));
+            OGS_UINT_TO_POINTER(sbi_sess->common.id));
     if (!sbi_sess->timer) {
         ogs_error("ogs_timer_add() failed");
-        ogs_pool_id_free(&session_pool, sbi_sess);
+        ogs_sbi_stream_id_free(&session_pool, sbi_sess);
         return NULL;
     }
 
@@ -238,7 +230,7 @@ static void session_remove_xact_all(ogs_sbi_session_t *sbi_sess)
          */
         ogs_error("Canceling pending outbound SBI transaction "
                 "on MHD session close [xact:%d,session:%d,service:%s]",
-                (int)xact->id, (int)sbi_sess->id,
+                (int)xact->id, (int)sbi_sess->common.id,
                 OpenAPI_service_name_ToString(xact->service_name));
         ogs_sbi_xact_remove(xact);
     }
@@ -250,7 +242,7 @@ static void session_remove(ogs_sbi_session_t *sbi_sess)
     ogs_sbi_server_t *server = NULL;
 
     ogs_assert(sbi_sess);
-    server = sbi_sess->server;
+    server = sbi_sess->common.server;
     ogs_assert(server);
 
     ogs_list_remove(&server->session_list, sbi_sess);
@@ -265,7 +257,7 @@ static void session_remove(ogs_sbi_session_t *sbi_sess)
 
     MHD_resume_connection(connection);
 
-    ogs_pool_id_free(&session_pool, sbi_sess);
+    ogs_sbi_stream_id_free(&session_pool, sbi_sess);
 }
 
 static void session_timer_expired(void *data)
@@ -689,7 +681,8 @@ suspend:
     ogs_assert(sbi_sess);
 
     ogs_assert(server->cb);
-    if (server->cb(request, OGS_UINT_TO_POINTER(sbi_sess->id)) != OGS_OK) {
+    if (server->cb(request,
+                OGS_UINT_TO_POINTER(sbi_sess->common.id)) != OGS_OK) {
         ogs_warn("server callback error");
         ogs_assert(true ==
                 ogs_sbi_server_send_error((ogs_sbi_stream_t *)sbi_sess,
@@ -715,24 +708,6 @@ static void notify_completed(
         ogs_pollset_remove(request->poll.write);
 
     ogs_sbi_request_free(request);
-}
-
-static ogs_sbi_server_t *server_from_stream(ogs_sbi_stream_t *stream)
-{
-    ogs_sbi_session_t *sbi_sess = (ogs_sbi_session_t *)stream;
-
-    ogs_assert(sbi_sess);
-    ogs_assert(sbi_sess->server);
-
-    return sbi_sess->server;
-}
-
-static ogs_pool_id_t id_from_stream(ogs_sbi_stream_t *stream)
-{
-    ogs_sbi_session_t *sbi_sess = (ogs_sbi_session_t *)stream;
-
-    ogs_assert(sbi_sess);
-    return sbi_sess->id;
 }
 
 static void *stream_find_by_id(ogs_pool_id_t id)

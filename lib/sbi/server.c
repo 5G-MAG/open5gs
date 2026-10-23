@@ -22,22 +22,20 @@
 extern const ogs_sbi_server_actions_t ogs_mhd_server_actions;
 extern const ogs_sbi_server_actions_t ogs_nghttp2_server_actions;
 
-ogs_sbi_server_actions_t ogs_sbi_server_actions;
-bool ogs_sbi_server_actions_initialized = false;
-
 static OGS_POOL(server_pool, ogs_sbi_server_t);
+
+/* Last stream id handed out, shared by all HTTP backends */
+static ogs_pool_id_t stream_id;
+
+ogs_pool_id_t ogs_sbi_server_next_stream_id(void)
+{
+    return OGS_NEXT_ID(stream_id, OGS_MIN_POOL_ID, OGS_MAX_POOL_ID);
+}
 
 void ogs_sbi_server_init(int num_of_session_pool, int num_of_stream_pool)
 {
-    if (ogs_sbi_server_actions_initialized == false) {
-#if 1 /* Use HTTP2 */
-        ogs_sbi_server_actions = ogs_nghttp2_server_actions;
-#else
-        ogs_sbi_server_actions = ogs_mhd_server_actions;
-#endif
-    }
-
-    ogs_sbi_server_actions.init(num_of_session_pool, num_of_stream_pool);
+    ogs_nghttp2_server_actions.init(num_of_session_pool, num_of_stream_pool);
+    ogs_mhd_server_actions.init(num_of_session_pool, num_of_stream_pool);
 
     ogs_list_init(&ogs_sbi_self()->server_list);
     ogs_pool_init(&server_pool, ogs_app()->pool.nf);
@@ -49,21 +47,26 @@ void ogs_sbi_server_final(void)
 
     ogs_pool_final(&server_pool);
 
-    ogs_sbi_server_actions.cleanup();
+    ogs_mhd_server_actions.cleanup();
+    ogs_nghttp2_server_actions.cleanup();
 }
 
-ogs_sbi_server_t *ogs_sbi_server_add(
+static ogs_sbi_server_t *server_add(
+        const ogs_sbi_server_actions_t *actions,
         const char *interface,
         OpenAPI_uri_scheme_e scheme, ogs_sockaddr_t *addr,
         ogs_sockopt_t *option)
 {
     ogs_sbi_server_t *server = NULL;
 
+    ogs_assert(actions);
     ogs_assert(addr);
     ogs_assert(scheme);
 
     ogs_pool_id_calloc(&server_pool, &server);
     ogs_assert(server);
+
+    server->actions = actions;
 
     if (interface)
         server->interface = ogs_strdup(interface);
@@ -90,6 +93,27 @@ ogs_sbi_server_t *ogs_sbi_server_add(
     ogs_list_add(&ogs_sbi_self()->server_list, server);
 
     return server;
+}
+
+ogs_sbi_server_t *ogs_sbi_server_add(
+        const char *interface,
+        OpenAPI_uri_scheme_e scheme, ogs_sockaddr_t *addr,
+        ogs_sockopt_t *option)
+{
+    return server_add(
+            &ogs_nghttp2_server_actions, interface, scheme, addr, option);
+}
+
+ogs_sbi_server_t *ogs_sbih1_server_add(
+        const char *interface,
+        OpenAPI_uri_scheme_e scheme, ogs_sockaddr_t *addr,
+        ogs_sockopt_t *option)
+{
+    /* The MHD backend has no TLS support */
+    ogs_assert(scheme == OpenAPI_uri_scheme_http);
+
+    return server_add(
+            &ogs_mhd_server_actions, interface, scheme, addr, option);
 }
 
 void ogs_sbi_server_remove(ogs_sbi_server_t *server)
@@ -150,7 +174,7 @@ int ogs_sbi_server_start_all(
     ogs_sbi_server_t *server = NULL, *next_server = NULL;
 
     ogs_list_for_each_safe(&ogs_sbi_self()->server_list, next_server, server)
-        if (ogs_sbi_server_actions.start(server, cb) != OGS_OK)
+        if (server->actions->start(server, cb) != OGS_OK)
             return OGS_ERROR;
 
     return OGS_OK;
@@ -161,7 +185,7 @@ void ogs_sbi_server_graceful_shutdown_all(void)
     ogs_sbi_server_t *server = NULL, *next_server = NULL;
 
     ogs_list_for_each_safe(&ogs_sbi_self()->server_list, next_server, server)
-        ogs_sbi_server_actions.graceful_shutdown(server);
+        server->actions->graceful_shutdown(server);
 }
 
 void ogs_sbi_server_stop_all(void)
@@ -169,19 +193,23 @@ void ogs_sbi_server_stop_all(void)
     ogs_sbi_server_t *server = NULL, *next_server = NULL;
 
     ogs_list_for_each_safe(&ogs_sbi_self()->server_list, next_server, server)
-        ogs_sbi_server_actions.stop(server);
+        server->actions->stop(server);
 }
 
 bool ogs_sbi_server_send_rspmem_persistent(
         ogs_sbi_stream_t *stream, ogs_sbi_response_t *response)
 {
-    return ogs_sbi_server_actions.send_rspmem_persistent(stream, response);
+    ogs_sbi_server_t *server = ogs_sbi_server_from_stream(stream);
+
+    return server->actions->send_rspmem_persistent(stream, response);
 }
 
 bool ogs_sbi_server_send_response(
         ogs_sbi_stream_t *stream, ogs_sbi_response_t *response)
 {
-    return ogs_sbi_server_actions.send_response(stream, response);
+    ogs_sbi_server_t *server = ogs_sbi_server_from_stream(stream);
+
+    return server->actions->send_response(stream, response);
 }
 
 bool ogs_sbi_server_send_problem(
@@ -249,22 +277,42 @@ bool ogs_sbi_server_send_error(ogs_sbi_stream_t *stream,
 
 ogs_sbi_server_t *ogs_sbi_server_from_stream(ogs_sbi_stream_t *stream)
 {
-    return ogs_sbi_server_actions.server_from_stream(stream);
+    ogs_sbi_stream_common_t *common = (ogs_sbi_stream_common_t *)stream;
+
+    ogs_assert(common);
+    ogs_assert(common->server);
+
+    return common->server;
 }
 
 ogs_pool_id_t ogs_sbi_id_from_stream(ogs_sbi_stream_t *stream)
 {
-    return ogs_sbi_server_actions.id_from_stream(stream);
+    ogs_sbi_stream_common_t *common = (ogs_sbi_stream_common_t *)stream;
+
+    ogs_assert(common);
+
+    return common->id;
 }
 
 void *ogs_sbi_stream_find_by_id(ogs_pool_id_t id)
 {
-    return ogs_sbi_server_actions.stream_find_by_id(id);
+    void *stream = NULL;
+
+    /*
+     * Ids are unique across the HTTP backends (see
+     * ogs_sbi_stream_id_calloc()), so at most one backend finds the stream.
+     */
+    stream = ogs_nghttp2_server_actions.stream_find_by_id(id);
+    if (!stream)
+        stream = ogs_mhd_server_actions.stream_find_by_id(id);
+
+    return stream;
 }
 
 int ogs_sbi_server_attach_xact(ogs_sbi_xact_t *xact)
 {
     ogs_sbi_stream_t *stream = NULL;
+    ogs_sbi_server_t *server = NULL;
 
     ogs_assert(xact);
 
@@ -329,8 +377,9 @@ int ogs_sbi_server_attach_xact(ogs_sbi_xact_t *xact)
         return OGS_NOTFOUND;
     }
 
-    ogs_assert(ogs_sbi_server_actions.xact_attach);
-    ogs_sbi_server_actions.xact_attach(stream, xact);
+    server = ogs_sbi_server_from_stream(stream);
+    ogs_assert(server->actions->xact_attach);
+    server->actions->xact_attach(stream, xact);
 
     return OGS_OK;
 }
@@ -349,8 +398,13 @@ void ogs_sbi_server_detach_xact(ogs_sbi_xact_t *xact)
     if (!xact->to_stream_list)
         return;
 
-    ogs_assert(ogs_sbi_server_actions.xact_detach);
-    ogs_sbi_server_actions.xact_detach(xact);
+    /*
+     * Detaching only unlinks the xact from the list it was attached to,
+     * which is the same operation in every backend, so no stream (which may
+     * already be gone) is needed to select one.
+     */
+    ogs_assert(ogs_nghttp2_server_actions.xact_detach);
+    ogs_nghttp2_server_actions.xact_detach(xact);
 }
 
 static ogs_sbi_server_t *ogs_sbi_server_find_by_interface(
