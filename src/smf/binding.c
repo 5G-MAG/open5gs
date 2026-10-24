@@ -487,6 +487,33 @@ int smf_gtp2_send_update_bearer_request(smf_bearer_t *bearer)
     return rv;
 }
 
+/*
+ * The gate of a QoS flow (TS 29.512 clause 5.6.2.10 flowStatus; the QER gate status, TS 29.244 clause 8.2.7): a flow that is
+ * enabled in one direction only has the other direction closed, a disabled flow has both closed.
+ */
+static void qos_flow_gate_update(smf_bearer_t *qos_flow, int flow_status)
+{
+    ogs_assert(qos_flow);
+    if (!qos_flow->qer) return;
+
+    qos_flow->qer->gate_status.uplink = OGS_PFCP_GATE_OPEN;
+    qos_flow->qer->gate_status.downlink = OGS_PFCP_GATE_OPEN;
+    switch (flow_status) {
+    case OGS_DIAM_RX_FLOW_STATUS_ENABLED_UPLINK:
+        qos_flow->qer->gate_status.downlink = OGS_PFCP_GATE_CLOSE;
+        break;
+    case OGS_DIAM_RX_FLOW_STATUS_ENABLED_DOWNLINK:
+        qos_flow->qer->gate_status.uplink = OGS_PFCP_GATE_CLOSE;
+        break;
+    case OGS_DIAM_RX_FLOW_STATUS_DISABLED:
+        qos_flow->qer->gate_status.uplink = OGS_PFCP_GATE_CLOSE;
+        qos_flow->qer->gate_status.downlink = OGS_PFCP_GATE_CLOSE;
+        break;
+    default:
+        break;
+    }
+}
+
 void smf_qos_flow_binding(smf_sess_t *sess)
 {
     int rv;
@@ -578,6 +605,7 @@ void smf_qos_flow_binding(smf_sess_t *sess)
 
                 qos_flow->pcc_rule.id = ogs_strdup(pcc_rule->id);
                 ogs_assert(qos_flow->pcc_rule.id);
+                qos_flow->pcc_rule.flow_status = pcc_rule->flow_status;
 
                 memcpy(&qos_flow->qos, &pcc_rule->qos, sizeof(ogs_qos_t));
 
@@ -585,6 +613,12 @@ void smf_qos_flow_binding(smf_sess_t *sess)
 
             } else {
                 ogs_assert(strcmp(qos_flow->pcc_rule.id, pcc_rule->id) == 0);
+
+                /* a new gate status (TS 29.512 clause 5.6.2.10) is an update of the QER */
+                if (qos_flow->pcc_rule.flow_status != pcc_rule->flow_status) {
+                    qos_flow->pcc_rule.flow_status = pcc_rule->flow_status;
+                    qos_presence = true;
+                }
 
                 /*
                  * Check if any MBR/GBR value is non-zero. This indicates that
@@ -713,6 +747,7 @@ void smf_qos_flow_binding(smf_sess_t *sess)
             if (qos_flow_created == true) {
                 smf_bearer_tft_update(qos_flow);
                 smf_bearer_qos_update(qos_flow);
+                qos_flow_gate_update(qos_flow, pcc_rule->flow_status);
 
                 pfcp_flags |= OGS_PFCP_MODIFY_CREATE;
 
@@ -728,6 +763,7 @@ void smf_qos_flow_binding(smf_sess_t *sess)
                 if (qos_presence == true) {
                     pfcp_flags |= OGS_PFCP_MODIFY_QOS_MODIFY;
                     smf_bearer_qos_update(qos_flow);
+                    qos_flow_gate_update(qos_flow, pcc_rule->flow_status);
                 }
 
                 ogs_list_add(&sess->qos_flow_to_modify_list,

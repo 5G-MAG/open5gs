@@ -120,6 +120,21 @@ OpenAPI_pcc_rule_t *ogs_sbi_build_pcc_rule(
         ogs_pcc_rule_t *pcc_rule, int flow_presence);
 void ogs_sbi_free_pcc_rule(OpenAPI_pcc_rule_t *PccRule);
 OpenAPI_qos_data_t *ogs_sbi_build_qos_data(ogs_pcc_rule_t *pcc_rule);
+
+/*
+ * The flow status of a PCC rule (the values of the Flow-Status AVP, 3GPP TS 29.214: 0 enabled uplink, 1 enabled downlink,
+ * 2 enabled, 3 disabled, 4 removed) as the flowStatus of TrafficControlData (TS 29.512 clause 5.6.2.10) and back.
+ */
+OpenAPI_flow_status_e ogs_sbi_flow_status_from_pcc_rule(int flow_status);
+int ogs_sbi_flow_status_to_pcc_rule(OpenAPI_flow_status_e flow_status);
+
+/*
+ * Give the SM policy decision the TrafficControlData of a PCC rule (its tcId is the PCC rule id) and make the rule refer to it.
+ * The data belong to the decision until ogs_sbi_decision_free_traffic_control().
+ */
+void ogs_sbi_decision_add_traffic_control(
+        OpenAPI_sm_policy_decision_t *decision, OpenAPI_pcc_rule_t *pcc_rule_model, ogs_pcc_rule_t *pcc_rule);
+void ogs_sbi_decision_free_traffic_control(OpenAPI_sm_policy_decision_t *decision);
 void ogs_sbi_free_qos_data(OpenAPI_qos_data_t *QosData);
 
 #ifdef __cplusplus

@@ -1424,6 +1424,9 @@ ogs_pfcp_qer_t *ogs_pfcp_handle_update_qer(ogs_pfcp_sess_t *sess,
         return NULL;
     }
 
+    if (message->gate_status.presence)
+        qer->gate_status.value = message->gate_status.u8;
+
     if (message->maximum_bitrate.presence) {
         rv = ogs_pfcp_parse_bitrate(&qer->mbr, &message->maximum_bitrate);
         if (rv != OGS_PFCP_BITRATE_LEN) {

@@ -1405,6 +1405,11 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
             goto cleanup;
         }
 
+        /* fStatus of the media component: the gate of the flows (TS 29.514 clause 5.6.2.7) */
+        if (media_component->flow_status != OpenAPI_flow_status_NULL)
+            pcc_rule->flow_status =
+                ogs_sbi_flow_status_to_pcc_rule(media_component->flow_status);
+
         /* if we failed to get QoS from IMS, apply WEBUI QoS */
         if (pcc_rule->qos.mbr.downlink == 0)
             pcc_rule->qos.mbr.downlink = db_pcc_rule->qos.mbr.downlink;
@@ -1420,6 +1425,9 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
          *************************************************************/
         PccRule = ogs_sbi_build_pcc_rule(pcc_rule, flow_presence);
         ogs_assert(PccRule->pcc_rule_id);
+
+        /* the status of the flows (fStatus of the media component) goes to the SMF as TrafficControlData (TS 29.512 clause 5.6.2.10) */
+        ogs_sbi_decision_add_traffic_control(&SmPolicyDecision, PccRule, pcc_rule);
 
         PccRuleMap = OpenAPI_map_create(PccRule->pcc_rule_id, PccRule);
         ogs_assert(PccRuleMap);
@@ -1475,6 +1483,7 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
                                 sess, &SmPolicyDecision));
     }
     succ_res_alloc_request_free(&SmPolicyDecision);
+    ogs_sbi_decision_free_traffic_control(&SmPolicyDecision);
 
     OpenAPI_list_for_each(PccRuleList, node) {
         PccRuleMap = node->data;
@@ -1520,6 +1529,8 @@ cleanup:
                 cause_duplicate ? "DUPLICATED_AF_SESSION" :
                     policyauthorization_cause(status)));
     ogs_free(strerror);
+
+    ogs_sbi_decision_free_traffic_control(&SmPolicyDecision);
 
     OpenAPI_list_for_each(PccRuleList, node) {
         PccRuleMap = node->data;
@@ -1917,6 +1928,11 @@ bool pcf_npcf_policyauthorization_handle_update(
             goto cleanup;
         }
 
+        /* fStatus of the media component: the gate of the flows (TS 29.514 clause 5.6.2.7) */
+        if (media_component->flow_status != OpenAPI_flow_status_NULL)
+            pcc_rule->flow_status =
+                ogs_sbi_flow_status_to_pcc_rule(media_component->flow_status);
+
         /* if we failed to get QoS from IMS, apply WEBUI QoS */
         if (pcc_rule->qos.mbr.downlink == 0)
             pcc_rule->qos.mbr.downlink = db_pcc_rule->qos.mbr.downlink;
@@ -1932,6 +1948,9 @@ bool pcf_npcf_policyauthorization_handle_update(
          *************************************************************/
         PccRule = ogs_sbi_build_pcc_rule(pcc_rule, flow_presence);
         ogs_assert(PccRule->pcc_rule_id);
+
+        /* the status of the flows (fStatus of the media component) goes to the SMF as TrafficControlData (TS 29.512 clause 5.6.2.10) */
+        ogs_sbi_decision_add_traffic_control(&SmPolicyDecision, PccRule, pcc_rule);
 
         PccRuleMap = OpenAPI_map_create(PccRule->pcc_rule_id, PccRule);
         ogs_assert(PccRuleMap);
@@ -2040,6 +2059,7 @@ bool pcf_npcf_policyauthorization_handle_update(
                             sess, &SmPolicyDecision));
     }
     succ_res_alloc_request_free(&SmPolicyDecision);
+    ogs_sbi_decision_free_traffic_control(&SmPolicyDecision);
 
     OpenAPI_list_for_each(PccRuleList, node) {
         PccRuleMap = node->data;
@@ -2079,6 +2099,8 @@ cleanup:
         ogs_sbi_server_send_error(stream, status, recvmsg, strerror,
                 NULL, policyauthorization_cause(status)));
     ogs_free(strerror);
+
+    ogs_sbi_decision_free_traffic_control(&SmPolicyDecision);
 
     OpenAPI_list_for_each(PccRuleList, node) {
         PccRuleMap = node->data;

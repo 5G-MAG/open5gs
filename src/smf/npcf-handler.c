@@ -230,6 +230,33 @@ static void update_authorized_pcc_rule_and_qos(
             ogs_assert(pcc_rule->id);
             pcc_rule->precedence = PccRule->precedence;
 
+            /*
+             * TS 29.512 clause 5.6.2.10: the flowStatus of the TrafficControlData that the rule refers to is the gate of its
+             * flows; without it the flows are enabled.
+             */
+            pcc_rule->flow_status = OGS_DIAM_RX_FLOW_STATUS_ENABLED;
+            if (PccRule->ref_tc_data && PccRule->ref_tc_data->first &&
+                PccRule->ref_tc_data->first->data &&
+                SmPolicyDecision->traff_cont_decs) {
+                const char *TcId = PccRule->ref_tc_data->first->data;
+                OpenAPI_lnode_t *tc_node = NULL;
+
+                OpenAPI_list_for_each(SmPolicyDecision->traff_cont_decs, tc_node) {
+                    OpenAPI_map_t *TcMap = tc_node->data;
+                    OpenAPI_traffic_control_data_t *TcData =
+                        TcMap ? TcMap->value : NULL;
+
+                    if (TcData && TcData->tc_id &&
+                        strcmp(TcId, TcData->tc_id) == 0) {
+                        if (TcData->flow_status != OpenAPI_flow_status_NULL)
+                            pcc_rule->flow_status =
+                                ogs_sbi_flow_status_to_pcc_rule(
+                                        TcData->flow_status);
+                        break;
+                    }
+                }
+            }
+
             if (PccRule->flow_infos) {
                 ogs_assert(pcc_rule->num_of_flow == 0);
                 OpenAPI_list_for_each(PccRule->flow_infos, node2) {

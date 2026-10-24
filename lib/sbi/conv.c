@@ -1555,6 +1555,8 @@ void ogs_sbi_free_pcc_rule(OpenAPI_pcc_rule_t *PccRule)
 
     if (PccRule->ref_qos_data)
         OpenAPI_list_free(PccRule->ref_qos_data);
+    if (PccRule->ref_tc_data)
+        OpenAPI_list_free(PccRule->ref_tc_data);
     if (PccRule->flow_infos) {
         OpenAPI_list_for_each(PccRule->flow_infos, node) {
             FlowInformation = node->data;
@@ -1563,6 +1565,79 @@ void ogs_sbi_free_pcc_rule(OpenAPI_pcc_rule_t *PccRule)
         OpenAPI_list_free(PccRule->flow_infos);
     }
     ogs_free(PccRule);
+}
+
+OpenAPI_flow_status_e ogs_sbi_flow_status_from_pcc_rule(int flow_status)
+{
+    switch (flow_status) {
+    case 0: return OpenAPI_flow_status_ENABLED_UPLINK;
+    case 1: return OpenAPI_flow_status_ENABLED_DOWNLINK;
+    case 3: return OpenAPI_flow_status_DISABLED;
+    case 4: return OpenAPI_flow_status_REMOVED;
+    case 2:
+    default: return OpenAPI_flow_status_ENABLED;
+    }
+}
+
+int ogs_sbi_flow_status_to_pcc_rule(OpenAPI_flow_status_e flow_status)
+{
+    switch (flow_status) {
+    case OpenAPI_flow_status_ENABLED_UPLINK: return 0;
+    case OpenAPI_flow_status_ENABLED_DOWNLINK: return 1;
+    case OpenAPI_flow_status_DISABLED: return 3;
+    case OpenAPI_flow_status_REMOVED: return 4;
+    case OpenAPI_flow_status_ENABLED:
+    default: return 2;
+    }
+}
+
+void ogs_sbi_decision_add_traffic_control(
+        OpenAPI_sm_policy_decision_t *decision, OpenAPI_pcc_rule_t *pcc_rule_model, ogs_pcc_rule_t *pcc_rule)
+{
+    OpenAPI_traffic_control_data_t *TcData = NULL;
+    OpenAPI_map_t *TcMap = NULL;
+
+    ogs_assert(decision);
+    ogs_assert(pcc_rule_model);
+    ogs_assert(pcc_rule);
+
+    TcData = ogs_calloc(1, sizeof(*TcData));
+    ogs_assert(TcData);
+    /* only 1 TrafficControlData is used for a PccRule, so its id is the id of the rule */
+    TcData->tc_id = pcc_rule->id;
+    TcData->flow_status = ogs_sbi_flow_status_from_pcc_rule(pcc_rule->flow_status);
+
+    if (!decision->traff_cont_decs) {
+        decision->traff_cont_decs = OpenAPI_list_create();
+        ogs_assert(decision->traff_cont_decs);
+    }
+    TcMap = OpenAPI_map_create(TcData->tc_id, TcData);
+    ogs_assert(TcMap);
+    OpenAPI_list_add(decision->traff_cont_decs, TcMap);
+
+    if (!pcc_rule_model->ref_tc_data) {
+        pcc_rule_model->ref_tc_data = OpenAPI_list_create();
+        ogs_assert(pcc_rule_model->ref_tc_data);
+    }
+    OpenAPI_list_add(pcc_rule_model->ref_tc_data, pcc_rule->id);
+}
+
+void ogs_sbi_decision_free_traffic_control(OpenAPI_sm_policy_decision_t *decision)
+{
+    OpenAPI_lnode_t *node = NULL;
+
+    ogs_assert(decision);
+    if (!decision->traff_cont_decs) return;
+    OpenAPI_list_for_each(decision->traff_cont_decs, node) {
+        OpenAPI_map_t *TcMap = node->data;
+
+        if (TcMap) {
+            if (TcMap->value) ogs_free(TcMap->value);
+            ogs_free(TcMap);
+        }
+    }
+    OpenAPI_list_free(decision->traff_cont_decs);
+    decision->traff_cont_decs = NULL;
 }
 
 OpenAPI_qos_data_t *ogs_sbi_build_qos_data(ogs_pcc_rule_t *pcc_rule)

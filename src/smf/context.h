@@ -262,6 +262,7 @@ typedef struct smf_bearer_s {
     struct {
         char        *name;          /* EPC: PCC Rule Name */
         char        *id;            /* 5GC: PCC Rule Id */
+        int         flow_status;    /* 5GC: the gate of the flows as the Flow-Status AVP (TS 29.214) */
     } pcc_rule;
     ogs_qos_t       qos;            /* QoS Information */
 

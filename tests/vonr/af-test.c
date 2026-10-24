@@ -17,6 +17,8 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <poll.h>
+
 #include "test-common.h"
 #include "af/sbi-path.h"
 
@@ -5179,6 +5181,98 @@ static void test19_func(abts_case *tc, void *data)
     test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
 }
 
+/*
+ * TS 29.514 V19.8.0 clause 5.6.2.7 / TS 29.512 clause 5.6.2.10: the fStatus of a media component is the gate of its flows. The PCF sends it as
+ * TrafficControlData, the SMF closes the gate of the QER and the UPF drops the packets of a closed gate (TS 29.244 clause 5.4.2).
+ */
+static bool test_af_gtpu_reply(ogs_socknode_t *gtpu, int msec)
+{
+    struct pollfd fds;
+    ogs_pkbuf_t *recvbuf = NULL;
+
+    memset(&fds, 0, sizeof(fds));
+    fds.fd = gtpu->sock->fd;
+    fds.events = POLLIN;
+    if (poll(&fds, 1, msec) <= 0) return false;
+
+    recvbuf = testgnb_gtpu_read(gtpu);
+    if (!recvbuf) return false;
+    ogs_pkbuf_free(recvbuf);
+    return true;
+}
+
+static void test20_func(abts_case *tc, void *data)
+{
+    ogs_socknode_t *ngap = NULL;
+    ogs_socknode_t *gtpu = NULL;
+    test_ue_t *test_ue = NULL;
+    test_sess_t *sess = NULL;
+    test_bearer_t *qos_flow = NULL;
+    af_sess_t *af_sess = NULL;
+    af_npcf_policyauthorization_param_t af_param;
+    af_npcf_policyauthorization_raw_t raw;
+    int rv;
+
+    test_af_qos_reference_setup(tc, "0000000020",
+            &test_ue, &sess, &af_sess, &ngap, &gtpu);
+
+    memset(&af_param, 0, sizeof(af_param));
+    af_param.med_type = OpenAPI_media_type_AUDIO;
+    af_param.qos_type = 1;
+    af_param.flow_type = 99;
+    af_local_send_to_pcf(af_sess, &af_param,
+            af_npcf_policyauthorization_build_create);
+    qos_flow = test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_assert(qos_flow);
+    ogs_msleep(100);
+
+#define SET_STATUS(__status) \
+    do { \
+        raw.method = "PATCH"; raw.path = ""; \
+        raw.body = "{\"ascReqData\":{\"medComponents\":{\"0\":{\"medCompN\":0,\"medType\":\"AUDIO\",\"fStatus\":\"" __status "\"}}}}"; \
+        af_local_send_to_pcf(af_sess, &raw, \
+                af_npcf_policyauthorization_build_raw); \
+        ogs_msleep(100); \
+        ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_pcf_status); \
+        test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap); \
+        ogs_msleep(200); \
+    } while (0)
+
+    /* enabled: the ping goes through the QoS flow */
+    rv = test_gtpu_send_ping(gtpu, qos_flow, TEST_PING_IPV4);
+    ABTS_INT_EQUAL(tc, OGS_OK, rv);
+    ABTS_TRUE(tc, test_af_gtpu_reply(gtpu, 2000));
+
+    /* DISABLED: both gates are closed, the packet is dropped */
+    SET_STATUS("DISABLED");
+    rv = test_gtpu_send_ping(gtpu, qos_flow, TEST_PING_IPV4);
+    ABTS_INT_EQUAL(tc, OGS_OK, rv);
+    ABTS_TRUE(tc, !test_af_gtpu_reply(gtpu, 1000));
+
+    /* ENABLED again: the flow works */
+    SET_STATUS("ENABLED");
+    rv = test_gtpu_send_ping(gtpu, qos_flow, TEST_PING_IPV4);
+    ABTS_INT_EQUAL(tc, OGS_OK, rv);
+    ABTS_TRUE(tc, test_af_gtpu_reply(gtpu, 2000));
+
+    /* ENABLED_UPLINK: the downlink gate is closed, so the reply does not come back */
+    SET_STATUS("ENABLED-UPLINK");
+    rv = test_gtpu_send_ping(gtpu, qos_flow, TEST_PING_IPV4);
+    ABTS_INT_EQUAL(tc, OGS_OK, rv);
+    ABTS_TRUE(tc, !test_af_gtpu_reply(gtpu, 1000));
+
+    /* ENABLED_DOWNLINK: the uplink gate is closed */
+    SET_STATUS("ENABLED-DOWNLINK");
+    rv = test_gtpu_send_ping(gtpu, qos_flow, TEST_PING_IPV4);
+    ABTS_INT_EQUAL(tc, OGS_OK, rv);
+    ABTS_TRUE(tc, !test_af_gtpu_reply(gtpu, 1000));
+
+#undef SET_STATUS
+
+    test_af_qos_reference_delete(tc, test_ue, sess, af_sess, ngap);
+    test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
+}
+
 abts_suite *test_af(abts_suite *suite)
 {
     suite = ADD_SUITE(suite)
@@ -5209,6 +5303,7 @@ abts_suite *test_af(abts_suite *suite)
     abts_run_test(suite, test17_func, NULL);
     abts_run_test(suite, test18_func, NULL);
     abts_run_test(suite, test19_func, NULL);
+    abts_run_test(suite, test20_func, NULL);
 
     return suite;
 }

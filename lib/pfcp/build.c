@@ -866,6 +866,10 @@ void ogs_pfcp_build_update_qer(
     if (modify_flags &
             (OGS_PFCP_MODIFY_QOS_MODIFY|
              OGS_PFCP_MODIFY_EPC_QOS_UPDATE)) {
+        /* the gate status of the QER (TS 29.244 clause 8.2.7) goes along with the QoS */
+        message->gate_status.presence = 1;
+        message->gate_status.u8 = qer->gate_status.value;
+
         if (qer->mbr.uplink || qer->mbr.downlink) {
             message->maximum_bitrate.presence = 1;
             ogs_pfcp_build_bitrate(

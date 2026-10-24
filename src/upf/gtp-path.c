@@ -209,6 +209,12 @@ static void _gtpv1_tun_recv_common_cb(
         goto cleanup;
     }
 
+    /* TS 29.244 clause 5.4.2 and 8.2.7: a closed downlink gate of the QER drops the packet */
+    if (pdr->qer && pdr->qer->gate_status.downlink == OGS_PFCP_GATE_CLOSE) {
+        ogs_debug("DL packet dropped, the gate of QER[%d] is closed", pdr->qer->id);
+        goto cleanup;
+    }
+
     /* Increment total & dl octets + pkts */
     for (i = 0; i < pdr->num_of_urr; i++)
         upf_sess_urr_acc_add(sess, pdr->urr[i], recvbuf->len, false);
@@ -515,6 +521,13 @@ static void _gtpv1_u_recv_cb(short when, ogs_socket_t fd, void *data)
 
         far = pdr->far;
         ogs_assert(far);
+
+        /* TS 29.244 clause 5.4.2 and 8.2.7: a closed uplink gate of the QER drops the packet */
+        if (pdr->src_if == OGS_PFCP_INTERFACE_ACCESS &&
+            pdr->qer && pdr->qer->gate_status.uplink == OGS_PFCP_GATE_CLOSE) {
+            ogs_debug("UL packet dropped, the gate of QER[%d] is closed", pdr->qer->id);
+            goto cleanup;
+        }
 
         /*
          * From Issue #1354
