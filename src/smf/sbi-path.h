@@ -245,6 +245,9 @@ bool smf_sbi_send_status_notify(smf_sess_t *sess);
  * of the PDU session whose QoS flows are in the list; the rules of the list that the PCF did not ask a report for are left out
  * of a success report.
  */
+void smf_sbi_send_smpolicycontrol_usage_report(
+        smf_sess_t *sess, const char *um_id,
+        uint64_t total, uint64_t uplink, uint64_t downlink, uint32_t time);
 void smf_sbi_send_smpolicycontrol_rule_report(
         smf_sess_t *sess, bool success, smf_bearer_t **qos_flow, int num_of_qos_flow);
 

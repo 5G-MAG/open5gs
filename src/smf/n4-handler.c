@@ -253,6 +253,54 @@ uint8_t smf_5gc_n4_handle_session_establishment_response(
     return OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
 }
 
+/*
+ * A Usage Report of the UP function for a usage monitoring control instance of the PCF (TS 29.512 V19.7.0 clause 4.2.4.10): the usage
+ * is added up and reported to the PCF with US_RE. Returns false when the URR is not one of an instance. After a report of a threshold
+ * that was reached the monitoring stops until the PCF gives thresholds again; the report for a request of the PCF keeps it going.
+ */
+static bool um_usage_report(smf_sess_t *sess, uint32_t urr_id,
+        ogs_tlv_octet_t *volume_octet, uint32_t duration, bool requested)
+{
+    int idx = smf_um_find_by_urr(sess, urr_id);
+    ogs_pfcp_volume_measurement_t volume;
+
+    if (idx < 0)
+        return false;
+
+    /* the monitoring stopped with the report of the threshold that was reached: a report of the same threshold that is on its way is not
+     * the usage of a monitoring that the PCF asked for */
+    if (!requested && !sess->policy.um[idx].armed)
+        return true;
+
+    sess->policy.um[idx].query_inflight = false;
+    memset(&volume, 0, sizeof(volume));
+    if (volume_octet && volume_octet->len &&
+            ogs_pfcp_parse_volume_measurement(&volume, volume_octet) != volume_octet->len) {
+        ogs_error("Invalid Volume Measurement");
+        return true;
+    }
+    if (volume.tovol) sess->policy.um[idx].used_total += volume.total_volume;
+    if (volume.ulvol) sess->policy.um[idx].used_uplink += volume.uplink_volume;
+    if (volume.dlvol) sess->policy.um[idx].used_downlink += volume.downlink_volume;
+    sess->policy.um[idx].used_time += duration;
+
+    smf_sbi_send_smpolicycontrol_usage_report(sess, sess->policy.um[idx].id,
+            sess->policy.um[idx].used_total, sess->policy.um[idx].used_uplink,
+            sess->policy.um[idx].used_downlink, sess->policy.um[idx].used_time);
+    sess->policy.um[idx].used_total = 0;
+    sess->policy.um[idx].used_uplink = 0;
+    sess->policy.um[idx].used_downlink = 0;
+    sess->policy.um[idx].used_time = 0;
+
+    if (!requested && sess->policy.um[idx].armed) {
+        sess->policy.um[idx].armed = false;
+        smf_um_urr_update(sess, idx);
+        sess->policy.um[idx].update_pending = true;
+        ogs_assert(OGS_OK == smf_5gc_pfcp_send_usage_monitoring_request(sess));
+    }
+    return true;
+}
+
 void smf_5gc_n4_handle_session_modification_response(
         smf_sess_t *sess, ogs_pfcp_xact_t *xact,
         ogs_pfcp_session_modification_response_t *rsp)
@@ -273,6 +321,37 @@ void smf_5gc_n4_handle_session_modification_response(
     flags = xact->modify_flags;
     ogs_assert(flags);
     trigger = xact->delete_trigger;
+
+    /* A modification for the usage monitoring control instances: the answer to a Query URR carries the usage report */
+    if (flags & OGS_PFCP_MODIFY_USAGE_MONITORING) {
+        int i, k;
+
+        ogs_pfcp_xact_commit(xact);
+        if (!sess) {
+            ogs_error("No Context");
+            return;
+        }
+        if (rsp->cause.presence && rsp->cause.u8 != OGS_PFCP_CAUSE_REQUEST_ACCEPTED)
+            ogs_warn("PFCP Cause [%d] : usage monitoring not accepted", rsp->cause.u8);
+        for (i = 0; i < OGS_ARRAY_SIZE(rsp->usage_report); i++) {
+            if (!rsp->usage_report[i].presence)
+                break;
+            if (!rsp->usage_report[i].urr_id.presence)
+                continue;
+            um_usage_report(sess, rsp->usage_report[i].urr_id.u32,
+                    &rsp->usage_report[i].volume_measurement,
+                    rsp->usage_report[i].duration_measurement.presence ?
+                        rsp->usage_report[i].duration_measurement.u32 : 0, true);
+        }
+        smf_um_report_unanswered_queries(sess);
+        for (k = 0; k < sess->policy.num_of_um; k++) {
+            if (sess->policy.um[k].query_pending) {
+                ogs_assert(OGS_OK == smf_5gc_pfcp_send_usage_monitoring_request(sess));
+                break;
+            }
+        }
+        return;
+    }
 
     /* 'stream' could be NULL in smf_qos_flow_binding() */
     if (xact->assoc_stream_id >= OGS_MIN_POOL_ID &&
@@ -1726,6 +1805,8 @@ uint8_t smf_n4_handle_session_report_request(
     }
 
     if (report_type.usage_report) {
+        bool gy_report = false;
+
         bearer = smf_default_bearer_in_sess(sess);
         for (i = 0; i < OGS_ARRAY_SIZE(pfcp_req->usage_report); i++) {
             ogs_pfcp_tlv_usage_report_session_report_request_t *use_rep =
@@ -1739,8 +1820,14 @@ uint8_t smf_n4_handle_session_report_request(
             if (use_rep->urr_id.presence == 0)
                 continue;
             urr_id = use_rep->urr_id.u32;
+            /* the report of a usage monitoring control instance of the PCF goes to the PCF, not to the Gy interface */
+            if (um_usage_report(sess, urr_id, &use_rep->volume_measurement,
+                        use_rep->duration_measurement.presence ?
+                            use_rep->duration_measurement.u32 : 0, false))
+                continue;
             if (!bearer || !bearer->urr || bearer->urr->id != urr_id)
                 continue;
+            gy_report = true;
             decoded = ogs_pfcp_parse_volume_measurement(
                     &volume, &use_rep->volume_measurement);
             if (use_rep->volume_measurement.len != decoded) {
@@ -1757,7 +1844,7 @@ uint8_t smf_n4_handle_session_report_request(
             sess->gy.reporting_reason =
                 smf_pfcp_urr_usage_report_trigger2diam_gy_reporting_reason(&rep_trig);
         }
-        switch (smf_use_gy_iface()) {
+        switch (gy_report ? smf_use_gy_iface() : 0) {
         case 1:
             if (!sess->gy.final_unit) {
                 smf_gy_send_ccr(

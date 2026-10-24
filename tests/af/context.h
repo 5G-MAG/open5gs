@@ -59,6 +59,9 @@ typedef struct af_sess_s {
     int notify_count;                 /* the Npcf_PolicyAuthorization_Notify requests of the PCF (TS 29.514 V19.8.0 clause 4.2.5.2) */
     char notify_event[64];            /* the event of the first evNotifs entry of the last one */
     int notify_med_comp_n;            /* the medCompN of its first flow, -1 if none */
+    long notify_usg_total;            /* usgRep.totalVolume of the last notification that carried a usgRep, -1 if none yet */
+    int notify_usg_count;             /* the notifications of the event USAGE_REPORT */
+    long delete_usg_total;            /* usgRep.totalVolume in the answer of the last deletion, -1 if none */
     char notify_failed_status[16];    /* mcResourcStatus of its first failedResourcAllocReports entry, empty if none */  /* the cause of the ProblemDetails of the last answer of the PCF, empty if none */
 
 #define PCF_APP_SESSION_ASSOCIATED(__sESS) \

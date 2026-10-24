@@ -80,7 +80,8 @@ ogs_pkbuf_t *upf_n4_build_session_establishment_response(uint8_t type,
 }
 
 ogs_pkbuf_t *upf_n4_build_session_modification_response(uint8_t type,
-    upf_sess_t *sess, ogs_pfcp_pdr_t *created_pdr[], int num_of_created_pdr)
+    upf_sess_t *sess, ogs_pfcp_pdr_t *created_pdr[], int num_of_created_pdr,
+    ogs_pfcp_user_plane_report_t *report)
 {
     ogs_pfcp_message_t *pfcp_message = NULL;
     ogs_pfcp_session_modification_response_t *rsp = NULL;
@@ -110,6 +111,10 @@ ogs_pkbuf_t *upf_n4_build_session_modification_response(uint8_t type,
                 &rsp->created_pdr[j], i, created_pdr[i]);
         if (pdr_presence == true) j++;
     }
+
+    /* Usage Report: the answer to a Query URR */
+    if (report && report->type.usage_report)
+        ogs_pfcp_build_usage_report_modification_response(rsp, report);
 
     pfcp_message->h.type = type;
     pkbuf = ogs_pfcp_build_msg(pfcp_message);

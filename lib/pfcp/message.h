@@ -1593,7 +1593,7 @@ typedef struct ogs_pfcp_tlv_update_pdr_s {
     ogs_pfcp_tlv_precedence_t precedence;
     ogs_pfcp_tlv_pdi_t pdi;
     ogs_pfcp_tlv_far_id_t far_id;
-    ogs_pfcp_tlv_urr_id_t urr_id;
+    ogs_pfcp_tlv_urr_id_t urr_id[8];
     ogs_pfcp_tlv_qer_id_t qer_id;
     ogs_pfcp_tlv_activate_predefined_rules_t activate_predefined_rules;
     ogs_pfcp_tlv_deactivate_predefined_rules_t deactivate_predefined_rules;

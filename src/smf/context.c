@@ -20,6 +20,7 @@
 #include "context.h"
 #include "gtp-path.h"
 #include "pfcp-path.h"
+#include "sbi-path.h"
 
 static smf_context_t self;
 static ogs_diam_config_t g_diam_conf;
@@ -1704,6 +1705,10 @@ smf_sess_t *smf_sess_add_by_psi(smf_ue_t *smf_ue, uint8_t psi)
     /* SBI Features */
     OGS_SBI_FEATURES_SET(sess->smpolicycontrol_features,
             OGS_SBI_NPCF_SMPOLICYCONTROL_DN_AUTHORIZATION);
+    OGS_SBI_FEATURES_SET(sess->smpolicycontrol_features,
+            OGS_SBI_NPCF_SMPOLICYCONTROL_UMC);
+    OGS_SBI_FEATURES_SET(sess->smpolicycontrol_features,
+            OGS_SBI_NPCF_SMPOLICYCONTROL_SPONSORED_CONNECTIVITY);
 
     ogs_pfcp_pool_init(&sess->pfcp);
     smf_qfi_pool_init(sess);
@@ -2062,7 +2067,6 @@ void smf_sess_remove(smf_sess_t *sess)
     for (i = 0; i < sess->policy.num_of_succ_res_allo_rule; i++)
         ogs_free(sess->policy.succ_res_allo_rule_id[i]);
     sess->policy.num_of_succ_res_allo_rule = 0;
-
     ogs_hash_set(self.smf_n4_seid_hash, &sess->smf_n4_seid,
             sizeof(sess->smf_n4_seid), NULL);
 
@@ -2179,6 +2183,16 @@ void smf_sess_remove(smf_sess_t *sess)
         ogs_free(sess->aaa_server_identifier.realm);
 
     smf_bearer_remove_all(sess);
+
+    /* the usage monitoring control instances hold a URR each, which no bearer owns */
+    for (i = 0; i < sess->policy.num_of_um; i++) {
+        if (sess->policy.um[i].urr)
+            ogs_pfcp_urr_remove(sess->policy.um[i].urr);
+        if (sess->policy.um[i].id)
+            ogs_free(sess->policy.um[i].id);
+    }
+    memset(sess->policy.um, 0, sizeof(sess->policy.um));
+    sess->policy.num_of_um = 0;
 
     ogs_assert(sess->pfcp.bar);
     ogs_pfcp_bar_delete(sess->pfcp.bar);
@@ -2943,6 +2957,111 @@ smf_bearer_t *smf_bearer_add(smf_sess_t *sess)
     return bearer;
 }
 
+int smf_um_find(smf_sess_t *sess, const char *um_id)
+{
+    int i;
+
+    ogs_assert(sess);
+    if (!um_id) return -1;
+    for (i = 0; i < sess->policy.num_of_um; i++)
+        if (sess->policy.um[i].id && !strcmp(sess->policy.um[i].id, um_id))
+            return i;
+    return -1;
+}
+
+int smf_um_find_by_urr(smf_sess_t *sess, uint32_t urr_id)
+{
+    int i;
+
+    ogs_assert(sess);
+    for (i = 0; i < sess->policy.num_of_um; i++)
+        if (sess->policy.um[i].urr && sess->policy.um[i].urr->id == urr_id)
+            return i;
+    return -1;
+}
+
+int smf_um_add(smf_sess_t *sess, const char *um_id)
+{
+    int i;
+
+    ogs_assert(sess);
+    ogs_assert(um_id);
+    if ((i = smf_um_find(sess, um_id)) >= 0) return i;
+    if (sess->policy.num_of_um >= SMF_MAX_NUM_OF_UM) {
+        ogs_error("Too many usage monitoring control instances [%d]", SMF_MAX_NUM_OF_UM);
+        return -1;
+    }
+    i = sess->policy.num_of_um;
+    memset(&sess->policy.um[i], 0, sizeof(sess->policy.um[i]));
+    sess->policy.um[i].id = ogs_strdup(um_id);
+    ogs_assert(sess->policy.um[i].id);
+    sess->policy.um[i].urr = ogs_pfcp_urr_add(&sess->pfcp);
+    if (!sess->policy.um[i].urr) {
+        ogs_error("ogs_pfcp_urr_add() failed for the usage monitoring instance [%s]", um_id);
+        ogs_free(sess->policy.um[i].id);
+        memset(&sess->policy.um[i], 0, sizeof(sess->policy.um[i]));
+        return -1;
+    }
+    sess->policy.um[i].urr->meas_method =
+        OGS_PFCP_MEASUREMENT_METHOD_VOLUME|OGS_PFCP_MEASUREMENT_METHOD_DURATION;
+    /* the time of the usage is metered from the creation of the URR */
+    sess->policy.um[i].urr->meas_info.istm = 1;
+    sess->policy.num_of_um++;
+    return i;
+}
+
+/*
+ * A Query URR whose usage report did not come (the UP function did not answer or had no usage to report): the PCF asked for the usage
+ * and gets it as zero, so that what waits for the report (the deletion of an application session) is not left waiting.
+ */
+void smf_um_report_unanswered_queries(smf_sess_t *sess)
+{
+    int i;
+
+    ogs_assert(sess);
+    for (i = 0; i < sess->policy.num_of_um; i++) {
+        if (!sess->policy.um[i].query_inflight)
+            continue;
+        sess->policy.um[i].query_inflight = false;
+        smf_sbi_send_smpolicycontrol_usage_report(sess, sess->policy.um[i].id, 0, 0, 0, 0);
+    }
+}
+
+void smf_um_urr_update(smf_sess_t *sess, int index)
+{
+    ogs_pfcp_urr_t *urr;
+
+    ogs_assert(sess);
+    ogs_assert(index >= 0 && index < sess->policy.num_of_um);
+    urr = sess->policy.um[index].urr;
+    ogs_assert(urr);
+
+    memset(&urr->vol_threshold, 0, sizeof(urr->vol_threshold));
+    urr->time_threshold = 0;
+    memset(&urr->rep_triggers, 0, sizeof(urr->rep_triggers));
+    if (!sess->policy.um[index].armed)
+        return;
+
+    if (sess->policy.um[index].volume_threshold) {
+        urr->vol_threshold.tovol = 1;
+        urr->vol_threshold.total_volume = sess->policy.um[index].volume_threshold;
+    }
+    if (sess->policy.um[index].volume_threshold_uplink) {
+        urr->vol_threshold.ulvol = 1;
+        urr->vol_threshold.uplink_volume = sess->policy.um[index].volume_threshold_uplink;
+    }
+    if (sess->policy.um[index].volume_threshold_downlink) {
+        urr->vol_threshold.dlvol = 1;
+        urr->vol_threshold.downlink_volume = sess->policy.um[index].volume_threshold_downlink;
+    }
+    if (urr->vol_threshold.flags)
+        urr->rep_triggers.volume_threshold = 1;
+    if (sess->policy.um[index].time_threshold) {
+        urr->time_threshold = sess->policy.um[index].time_threshold;
+        urr->rep_triggers.time_threshold = 1;
+    }
+}
+
 int smf_bearer_remove(smf_bearer_t *bearer)
 {
     smf_sess_t *sess = NULL;
@@ -2969,6 +3088,8 @@ int smf_bearer_remove(smf_bearer_t *bearer)
         ogs_free(bearer->pcc_rule.name);
     if (bearer->pcc_rule.id)
         ogs_free(bearer->pcc_rule.id);
+    if (bearer->pcc_rule.um_id)
+        ogs_free(bearer->pcc_rule.um_id);
     if (bearer->pgw_s5u_addr)
         ogs_freeaddrinfo(bearer->pgw_s5u_addr);
     if (bearer->pgw_s5u_addr6)

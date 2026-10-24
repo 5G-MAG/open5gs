@@ -592,6 +592,10 @@ else:
                         if cells is None:
                             continue
 
+                        # TS 29.244 table 7.5.4.2-1: several URR IDs of a PDR may be updated (those of Create PDR may be several)
+                        if ie_name == "Update PDR" and cells["ie_type"] == "URR ID":
+                            cells["tlv_more"] = "7"
+
                         ies.append(cells)
                         write_cells_to_file("ies", cells)
 

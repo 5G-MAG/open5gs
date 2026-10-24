@@ -126,6 +126,16 @@ ogs_sbi_request_t *af_npcf_policyauthorization_build_create(
     Event->notif_method = OpenAPI_af_notif_method_ONE_TIME;
     OpenAPI_list_add(EventList, Event);
 
+    if (af_param->usage_threshold) {
+        Event = ogs_calloc(1, sizeof(*Event));
+        ogs_assert(Event);
+        Event->event = OpenAPI_npcf_af_event_USAGE_REPORT;
+        OpenAPI_list_add(EventList, Event);
+        evSubsc.usg_thres = OpenAPI_usage_threshold_create(
+                false, 0, true, af_param->usage_threshold, false, 0, false, 0);
+        ogs_assert(evSubsc.usg_thres);
+    }
+
     evSubsc.events = EventList;
     AscReqData.ev_subsc = &evSubsc;
 
@@ -134,7 +144,13 @@ ogs_sbi_request_t *af_npcf_policyauthorization_build_create(
     sNssai.sd = ogs_s_nssai_sd_to_string(sess->s_nssai.sd);
     AscReqData.slice_info = &sNssai;
 
-    AscReqData.spon_status = OpenAPI_sponsoring_status_SPONSOR_DISABLED;
+    if (af_param->sponsor_id) {
+        AscReqData.spon_id = (char *)af_param->sponsor_id;
+        AscReqData.asp_id = (char *)"test-asp";
+        AscReqData.spon_status = OpenAPI_sponsoring_status_SPONSOR_ENABLED;
+    } else {
+        AscReqData.spon_status = OpenAPI_sponsoring_status_SPONSOR_DISABLED;
+    }
 
     AscReqData.supi = sess->supi;
     AscReqData.gpsi = sess->gpsi;
@@ -306,6 +322,8 @@ ogs_sbi_request_t *af_npcf_policyauthorization_build_create(
             ogs_free(Event);
     }
     OpenAPI_list_free(EventList);
+    if (evSubsc.usg_thres)
+        OpenAPI_usage_threshold_free(evSubsc.usg_thres);
 
     if (sNssai.sd)
         ogs_free(sNssai.sd);

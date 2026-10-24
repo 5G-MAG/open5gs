@@ -262,6 +262,7 @@ typedef struct smf_bearer_s {
     struct {
         char        *name;          /* EPC: PCC Rule Name */
         char        *id;            /* 5GC: PCC Rule Id */
+        char        *um_id;         /* 5GC: the usage monitoring data of the rule */
         int         flow_status;    /* 5GC: the gate of the flows as the Flow-Status AVP (TS 29.214) */
     } pcc_rule;
     ogs_qos_t       qos;            /* QoS Information */
@@ -617,6 +618,28 @@ typedef struct smf_sess_s {
         /* The PCC rules for which the PCF asked for the report SUCC_RES_ALLO (TS 29.512 V19.7.0 clause 4.2.4.14) */
         char            *succ_res_allo_rule_id[OGS_MAX_NUM_OF_PCC_RULE];
         int             num_of_succ_res_allo_rule;
+
+        /* The usage monitoring control instances of the PCF (TS 29.512 V19.7.0 clause 4.2.4.10): one URR each */
+#define SMF_MAX_NUM_OF_UM 8
+        struct {
+            char            *id;                /* umId */
+            ogs_pfcp_urr_t  *urr;
+            uint64_t        volume_threshold;
+            uint64_t        volume_threshold_uplink;
+            uint64_t        volume_threshold_downlink;
+            uint32_t        time_threshold;
+            bool            created;            /* the URR exists at the UPF */
+            bool            armed;              /* the thresholds are given to the UPF */
+            bool            update_pending;     /* Update URR with the thresholds has to go */
+            bool            query_pending;      /* the PCF asked for the usage (lastReqUsageData) */
+            bool            query_inflight;     /* a Query URR was sent and its usage report is not in yet */
+            bool            pdr_pending;        /* the PDRs of the rules have to be told the URR */
+            uint64_t        used_total;         /* the usage reported by the UPF since the last report to the PCF */
+            uint64_t        used_uplink;
+            uint64_t        used_downlink;
+            uint32_t        used_time;
+        } um[SMF_MAX_NUM_OF_UM];
+        int             num_of_um;
     } policy; /* Saved from N7 or Gx */
 
     /* Paging */
@@ -783,6 +806,14 @@ smf_bearer_t *smf_vcn_tunnel_add(smf_sess_t *sess);
 
 smf_bearer_t *smf_bearer_add(smf_sess_t *sess);
 int smf_bearer_remove(smf_bearer_t *bearer);
+
+/* The usage monitoring control instances of the session (TS 29.512 V19.7.0 clause 4.2.4.10) */
+int smf_um_find(smf_sess_t *sess, const char *um_id);
+int smf_um_find_by_urr(smf_sess_t *sess, uint32_t urr_id);
+int smf_um_add(smf_sess_t *sess, const char *um_id);
+/* Give the URR of the instance the thresholds of the PCF (armed) or none (not armed) */
+void smf_um_urr_update(smf_sess_t *sess, int index);
+void smf_um_report_unanswered_queries(smf_sess_t *sess);
 void smf_bearer_remove_all(smf_sess_t *sess);
 smf_bearer_t *smf_bearer_find_by_pgw_s5u_teid(
         smf_sess_t *sess, uint32_t pgw_s5u_teid);

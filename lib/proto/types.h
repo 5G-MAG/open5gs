@@ -579,6 +579,8 @@ typedef struct ogs_pcc_rule_s {
     uint32_t precedence;
     uint32_t rating_group;
 
+    char *um_id; /* 5GC: the usage monitoring data that the rule refers to (TS 29.512 clause 5.6.2.2 refUmData) */
+
     ogs_qos_t  qos;
 } ogs_pcc_rule_t;
 
@@ -606,6 +608,10 @@ typedef struct ogs_pcc_rule_s {
         } \
         (__dST)->num_of_flow = (__sRC)->num_of_flow; \
         (__dST)->flow_status = (__sRC)->flow_status; \
+        if ((__sRC)->um_id) { \
+            (__dST)->um_id = ogs_strdup((__sRC)->um_id); \
+            ogs_assert((__dST)->um_id); \
+        } \
         (__dST)->precedence = (__sRC)->precedence; \
         memcpy(&(__dST)->qos, &(__sRC)->qos, sizeof(ogs_qos_t)); \
     } while(0)
@@ -618,6 +624,8 @@ typedef struct ogs_pcc_rule_s {
             ogs_free((__pCCrULE)->id); \
         if ((__pCCrULE)->name) \
             ogs_free((__pCCrULE)->name); \
+        if ((__pCCrULE)->um_id) \
+            ogs_free((__pCCrULE)->um_id); \
         for (__pCCrULE_iNDEX = 0; \
             __pCCrULE_iNDEX < (__pCCrULE)->num_of_flow; __pCCrULE_iNDEX++) { \
             OGS_FLOW_FREE(&((__pCCrULE)->flow[__pCCrULE_iNDEX])); \

@@ -34,6 +34,8 @@ typedef struct af_npcf_policyauthorization_param_s {
     bool omit_med_type;
     const char *af_charg_id;       /* the AF charging identifier (afChargId), NULL for none */
     bool ev_resources_allocation;  /* subscribe to SUCCESSFUL_RESOURCES_ALLOCATION and FAILED_RESOURCES_ALLOCATION */
+    const char *sponsor_id;        /* sponId and aspId: sponsored data connectivity (TS 29.514 V19.8.0 clause 4.2.2.5), NULL for none */
+    long usage_threshold;          /* with the event USAGE_REPORT: the totalVolume of usgThres in bytes, 0 for none */
 } af_npcf_policyauthorization_param_t;
 
 ogs_sbi_request_t *af_npcf_policyauthorization_build_create(

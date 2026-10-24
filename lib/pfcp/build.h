@@ -73,6 +73,10 @@ ogs_pkbuf_t *ogs_pfcp_build_session_report_request(
 ogs_pkbuf_t *ogs_pfcp_build_session_report_response(
         uint8_t type, uint8_t cause);
 
+void ogs_pfcp_build_usage_report_modification_response(
+        ogs_pfcp_session_modification_response_t *rsp,
+        ogs_pfcp_user_plane_report_t *report);
+
 ogs_pkbuf_t *ogs_pfcp_build_session_deletion_response( uint8_t type, uint8_t cause,
         ogs_pfcp_user_plane_report_t *report);
 

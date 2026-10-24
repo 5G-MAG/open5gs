@@ -1040,6 +1040,34 @@ ogs_pfcp_pdr_t *ogs_pfcp_handle_update_pdr(ogs_pfcp_sess_t *sess,
                 pdr->outer_header_removal_len);
     }
 
+    /* TS 29.244 table 7.5.4.2-1: URR IDs in the Update PDR replace the URRs of the PDR */
+    if (message->urr_id[0].presence) {
+        ogs_pfcp_urr_t *urr = NULL;
+
+        for (i = 0; i < OGS_ARRAY_SIZE(pdr->urr); i++)
+            pdr->urr[i] = NULL;
+        pdr->num_of_urr = 0;
+        for (i = 0; i < OGS_ARRAY_SIZE(message->urr_id); i++) {
+            if (!message->urr_id[i].presence)
+                break;
+            if (!(message->urr_id[i].u32 > 0 &&
+                    message->urr_id[i].u32 <= OGS_MAX_NUM_OF_URR)) {
+                ogs_error("Invalid URR-ID[%d]", message->urr_id[i].u32);
+                *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+                *offending_ie_value = OGS_PFCP_URR_ID_TYPE;
+                return NULL;
+            }
+            urr = ogs_pfcp_urr_find_or_add(sess, message->urr_id[i].u32);
+            if (!urr) {
+                ogs_error("ogs_pfcp_urr_find_or_add() failed");
+                *cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+                *offending_ie_value = OGS_PFCP_URR_ID_TYPE;
+                return NULL;
+            }
+            ogs_pfcp_pdr_associate_urr(pdr, urr);
+        }
+    }
+
     return pdr;
 }
 
@@ -1705,9 +1733,9 @@ ogs_pfcp_urr_t *ogs_pfcp_handle_update_urr(ogs_pfcp_sess_t *sess,
         urr->meas_method = message->measurement_method.u8;
 
     if (message->reporting_triggers.presence) {
-        urr->rep_triggers.reptri_5 = message->reporting_triggers.u24 & 0xFF;
+        urr->rep_triggers.reptri_5 = (message->reporting_triggers.u24 >> 16) & 0xFF;
         urr->rep_triggers.reptri_6 = (message->reporting_triggers.u24 >> 8) & 0xFF;
-        urr->rep_triggers.reptri_7 = (message->reporting_triggers.u24 >> 16) & 0xFF;
+        urr->rep_triggers.reptri_7 = message->reporting_triggers.u24 & 0xFF;
     }
 
     if (message->measurement_period.presence) {

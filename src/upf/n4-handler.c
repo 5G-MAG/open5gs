@@ -250,9 +250,13 @@ void upf_n4_handle_session_modification_request(
     uint8_t cause_value = 0;
     uint8_t offending_ie_value = 0;
     int i;
+    ogs_pfcp_user_plane_report_t usage;
+    ogs_pfcp_urr_t *queried = NULL;
 
     ogs_assert(xact);
     ogs_assert(req);
+
+    memset(&usage, 0, sizeof(usage));
 
     ogs_debug("Session Modification Request");
 
@@ -425,14 +429,27 @@ void upf_n4_handle_session_modification_request(
         }
     }
 
+    /* TS 29.244 clause 7.5.4.4: Query URR asks for the usage report of a URR at once, which starts a new report period */
+    if (req->query_urr.presence && req->query_urr.urr_id.presence) {
+        queried = ogs_pfcp_urr_find(&sess->pfcp, req->query_urr.urr_id.u32);
+        if (queried) {
+            upf_sess_urr_acc_fill_usage_report(sess, queried, &usage, 0);
+            usage.usage_report[0].rep_trigger.immediate_report = 1;
+            usage.num_of_usage_report = 1;
+            upf_sess_urr_acc_snapshot(sess, queried);
+        } else {
+            ogs_warn("Query URR: no URR[%d]", req->query_urr.urr_id.u32);
+        }
+    }
+
     if (ogs_pfcp_self()->up_function_features.ftup == 0)
         ogs_assert(OGS_OK ==
             upf_pfcp_send_session_modification_response(
-                xact, sess, NULL, 0));
+                xact, sess, NULL, 0, &usage));
     else
         ogs_assert(OGS_OK ==
             upf_pfcp_send_session_modification_response(
-                xact, sess, created_pdr, num_of_created_pdr));
+                xact, sess, created_pdr, num_of_created_pdr, &usage));
     return;
 
 cleanup:

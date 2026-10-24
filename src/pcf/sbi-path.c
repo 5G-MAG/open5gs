@@ -18,6 +18,7 @@
  */
 
 #include "sbi-path.h"
+#include "npcf-handler.h"
 
 int pcf_sbi_open(void)
 {
@@ -261,6 +262,33 @@ static int client_delete_notify_cb(
     client_notify_cb(status, response, data);
 
     pcf_app_remove(app_session);
+
+    return OGS_OK;
+}
+
+/*
+ * The answer of the SMF to the decision of a deletion that waits for the usage. The SMF reports the usage in a request of its own; when
+ * it does not accept the decision, no report follows and the deletion is answered without usage.
+ */
+static int client_delete_pending_cb(
+        int status, ogs_sbi_response_t *response, void *data)
+{
+    char *app_session_id = data;
+    pcf_app_t *app = NULL;
+    int rv;
+
+    bool accepted = (status == OGS_OK && response &&
+            (response->status == OGS_SBI_HTTP_STATUS_NO_CONTENT ||
+             response->status == OGS_SBI_HTTP_STATUS_OK));
+
+    ogs_assert(app_session_id);
+    rv = client_notify_cb(status, response, NULL);
+    if (rv != OGS_OK || !accepted) {
+        app = pcf_app_find_by_app_session_id(app_session_id);
+        if (app)
+            pcf_npcf_policyauthorization_delete_complete(app, NULL);
+    }
+    ogs_free(app_session_id);
 
     return OGS_OK;
 }
@@ -648,6 +676,34 @@ bool pcf_sbi_send_smpolicycontrol_update_notify(
             client, client_notify_cb, request, NULL);
     ogs_expect(rc == true);
 
+    ogs_sbi_request_free(request);
+
+    return rc;
+}
+
+bool pcf_sbi_send_smpolicycontrol_delete_pending_notify(
+        pcf_sess_t *sess, pcf_app_t *app_session,
+        OpenAPI_sm_policy_decision_t *SmPolicyDecision)
+{
+    bool rc;
+    ogs_sbi_request_t *request = NULL;
+    ogs_sbi_client_t *client = NULL;
+
+    ogs_assert(sess);
+    ogs_assert(app_session);
+    client = sess->nsmf.client;
+    ogs_assert(client);
+
+    request = pcf_nsmf_callback_build_smpolicycontrol_update(
+                sess, SmPolicyDecision);
+    if (!request) {
+        ogs_error("pcf_nsmf_callback_build_smpolicycontrol_update() failed");
+        return false;
+    }
+
+    rc = ogs_sbi_send_request_to_client(
+            client, client_delete_pending_cb, request,
+            ogs_strdup(app_session->app_session_id));
     ogs_sbi_request_free(request);
 
     return rc;

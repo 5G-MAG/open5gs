@@ -18,6 +18,7 @@
  */
 
 #include "sbi-path.h"
+#include "npcf-handler.h"
 
 static pcf_context_t self;
 
@@ -716,14 +717,17 @@ pcf_sess_t *pcf_sess_add(pcf_ue_sm_t *pcf_ue_sm, uint8_t psi)
     /* SBI Features */
     OGS_SBI_FEATURES_SET(sess->smpolicycontrol_features,
             OGS_SBI_NPCF_SMPOLICYCONTROL_DN_AUTHORIZATION);
+    OGS_SBI_FEATURES_SET(sess->smpolicycontrol_features,
+            OGS_SBI_NPCF_SMPOLICYCONTROL_UMC);
+    OGS_SBI_FEATURES_SET(sess->smpolicycontrol_features,
+            OGS_SBI_NPCF_SMPOLICYCONTROL_SPONSORED_CONNECTIVITY);
 
     OGS_SBI_FEATURES_SET(sess->management_features,
             OGS_SBI_NBSF_MANAGEMENT_BINDING_UPDATE);
 
-    /*
-     * SponsoredConnectivity is not advertised: the PCF reads no sponsor attribute and reports no usage (TS 29.514 V19.8.0 clauses 4.2.2.5 and
-     * 4.2.4.3), so the feature would be a claim without behaviour.
-     */
+    /* SponsoredConnectivity: the sponsor and the usage thresholds of the AF go to the SMF and the usage comes back (TS 29.514 V19.8.0 clauses 4.2.2.5 to 4.2.5.6) */
+    OGS_SBI_FEATURES_SET(sess->policyauthorization_features,
+            OGS_SBI_NPCF_POLICYAUTHORIZATION_SPONSORED_CONNECTIVITY);
     OGS_SBI_FEATURES_SET(sess->policyauthorization_features,
             OGS_SBI_NPCF_POLICYAUTHORIZATION_IMS_SBI);
 
@@ -1072,6 +1076,10 @@ int pcf_app_remove(pcf_app_t *app)
             if (app->outcome[i].rule_id) ogs_free(app->outcome[i].rule_id);
         app->num_of_outcome = 0;
     }
+    if (app->um_id) ogs_free(app->um_id);
+    if (app->chg_id) ogs_free(app->chg_id);
+    if (app->um_sig) ogs_free(app->um_sig);
+    if (app->delete_content) ogs_free(app->delete_content);
     if (app->ev_notif_uri)
         ogs_free(app->ev_notif_uri);
     if (app->ev_client)
@@ -1094,8 +1102,13 @@ void pcf_app_remove_all(pcf_sess_t *sess)
     pcf_app_t *app = NULL, *next_app = NULL;
 
     ogs_assert(sess);
-    ogs_list_for_each_safe(&sess->app_list, next_app, app)
-        pcf_app_remove(app);
+    ogs_list_for_each_safe(&sess->app_list, next_app, app) {
+        /* a deletion that waits for the usage of the SMF is answered when the SMF is gone: without usage */
+        if (app->delete_pending)
+            pcf_npcf_policyauthorization_delete_complete(app, NULL);
+        else
+            pcf_app_remove(app);
+    }
 }
 
 pcf_app_t *pcf_app_find(uint32_t index)

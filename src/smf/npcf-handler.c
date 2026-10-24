@@ -121,6 +121,57 @@ static void update_authorized_pcc_rule_and_qos(
         }
     }
 
+    /*
+     * TS 29.512 V19.7.0 clause 4.2.4.10: umDecs gives the usage monitoring control instances (a null value ends the monitoring) and
+     * lastReqUsageData asks for the accumulated usage of instances.
+     */
+    OpenAPI_list_for_each(SmPolicyDecision->um_decs, node) {
+        OpenAPI_map_t *UmMap = node->data;
+        OpenAPI_usage_monitoring_data_t *Um = UmMap ? UmMap->value : NULL;
+        int idx;
+
+        if (!UmMap || !UmMap->key)
+            continue;
+        idx = smf_um_find(sess, UmMap->key);
+        if (!Um) {
+            /* the monitoring ends: the usage so far is reported (clause 4.2.6.5.3.2), the instance is not armed any more */
+            if (idx >= 0) {
+                sess->policy.um[idx].query_pending = true;
+                sess->policy.um[idx].armed = false;
+                smf_um_urr_update(sess, idx);
+                sess->policy.um[idx].update_pending = true;
+            }
+            continue;
+        }
+        if (idx < 0)
+            idx = smf_um_add(sess, UmMap->key);
+        if (idx < 0)
+            continue;
+        sess->policy.um[idx].volume_threshold = Um->is_volume_threshold ? (uint64_t)Um->volume_threshold : 0;
+        sess->policy.um[idx].volume_threshold_uplink = Um->is_volume_threshold_uplink ? (uint64_t)Um->volume_threshold_uplink : 0;
+        sess->policy.um[idx].volume_threshold_downlink = Um->is_volume_threshold_downlink ? (uint64_t)Um->volume_threshold_downlink : 0;
+        sess->policy.um[idx].time_threshold = Um->is_time_threshold ? (uint32_t)Um->time_threshold : 0;
+        sess->policy.um[idx].armed =
+            sess->policy.um[idx].volume_threshold || sess->policy.um[idx].volume_threshold_uplink ||
+            sess->policy.um[idx].volume_threshold_downlink || sess->policy.um[idx].time_threshold;
+        smf_um_urr_update(sess, idx);
+        sess->policy.um[idx].update_pending = true;
+    }
+    if (SmPolicyDecision->last_req_usage_data) {
+        OpenAPI_requested_usage_data_t *Requested = SmPolicyDecision->last_req_usage_data;
+        int i;
+
+        for (i = 0; i < sess->policy.num_of_um; i++) {
+            bool wanted = Requested->is_all_um_ids && Requested->all_um_ids;
+
+            OpenAPI_list_for_each(Requested->ref_um_ids, node)
+                if (node->data && !strcmp(node->data, sess->policy.um[i].id))
+                    wanted = true;
+            if (wanted && sess->policy.um[i].created)
+                sess->policy.um[i].query_pending = true;
+        }
+    }
+
     if (SmPolicyDecision->pcc_rules) {
         OpenAPI_map_t *PccRuleMap = NULL;
         OpenAPI_pcc_rule_t *PccRule = NULL;
@@ -235,6 +286,11 @@ static void update_authorized_pcc_rule_and_qos(
              * flows; without it the flows are enabled.
              */
             pcc_rule->flow_status = OGS_DIAM_RX_FLOW_STATUS_ENABLED;
+
+            /* refUmData: the usage monitoring control instance of the rule (clause 5.6.2.2) */
+            if (PccRule->ref_um_data && PccRule->ref_um_data->first &&
+                PccRule->ref_um_data->first->data)
+                pcc_rule->um_id = ogs_strdup(PccRule->ref_um_data->first->data);
             if (PccRule->ref_tc_data && PccRule->ref_tc_data->first &&
                 PccRule->ref_tc_data->first->data &&
                 SmPolicyDecision->traff_cont_decs) {

@@ -5316,6 +5316,152 @@ static void test21_func(abts_case *tc, void *data)
     test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
 }
 
+/*
+ * TS 29.514 V19.8.0 clause 4.2.4.3: the application function enabled sponsored data connectivity and gave a usage threshold, so the
+ * answer of the deletion carries the accumulated usage (the event USAGE_REPORT and usgRep) that the PCF fetched from the SMF.
+ */
+static void test22_func(abts_case *tc, void *data)
+{
+    ogs_socknode_t *ngap = NULL;
+    ogs_socknode_t *gtpu = NULL;
+    test_ue_t *test_ue = NULL;
+    test_sess_t *sess = NULL;
+    test_bearer_t *qos_flow = NULL;
+    af_sess_t *af_sess = NULL;
+    af_npcf_policyauthorization_param_t af_param;
+    af_npcf_policyauthorization_raw_t raw;
+    int i, rv;
+
+    test_af_qos_reference_setup(tc, "0000000022",
+            &test_ue, &sess, &af_sess, &ngap, &gtpu);
+
+    memset(&af_param, 0, sizeof(af_param));
+    af_param.med_type = OpenAPI_media_type_AUDIO;
+    af_param.qos_type = 1;
+    af_param.flow_type = 99;
+    af_param.sponsor_id = "sponsor-1";
+    af_param.usage_threshold = 10000000;
+    af_local_send_to_pcf(af_sess, &af_param,
+            af_npcf_policyauthorization_build_create);
+    qos_flow = test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_assert(qos_flow);
+    ogs_msleep(500);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_CREATED, af_sess->last_pcf_status);
+
+    for (i = 0; i < 3; i++) {
+        rv = test_gtpu_send_ping(gtpu, qos_flow, TEST_PING_IPV4);
+        ABTS_INT_EQUAL(tc, OGS_OK, rv);
+        ABTS_TRUE(tc, test_af_gtpu_reply(gtpu, 2000));
+    }
+    ogs_msleep(200);
+    /* the threshold is not reached: no notification */
+    ABTS_INT_EQUAL(tc, 0, af_sess->notify_usg_count);
+
+    raw.method = "POST";
+    raw.path = "/delete";
+    raw.body = NULL;
+    af_local_send_to_pcf(af_sess, &raw, af_npcf_policyauthorization_build_raw);
+    test_af_qos_flow_release(tc, test_ue, sess, ngap);
+    ogs_msleep(500);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_pcf_status);
+    ABTS_STR_EQUAL(tc, "USAGE_REPORT", af_sess->last_pcf_asc_events);
+    ABTS_TRUE(tc, af_sess->delete_usg_total > 0);
+
+    test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
+}
+
+/*
+ * TS 29.514 V19.8.0 clause 4.2.5.6: the PCF notifies the accumulated usage when the threshold is reached and again when the
+ * application function disables sponsoring; the monitoring does not continue after a report until new thresholds are given
+ * (clause 4.2.3.5). The deletion that follows has no usage to report.
+ */
+static void test23_func(abts_case *tc, void *data)
+{
+    ogs_socknode_t *ngap = NULL;
+    ogs_socknode_t *gtpu = NULL;
+    test_ue_t *test_ue = NULL;
+    test_sess_t *sess = NULL;
+    test_bearer_t *qos_flow = NULL;
+    af_sess_t *af_sess = NULL;
+    af_npcf_policyauthorization_param_t af_param;
+    af_npcf_policyauthorization_raw_t raw;
+    int i, rv;
+
+    test_af_qos_reference_setup(tc, "0000000023",
+            &test_ue, &sess, &af_sess, &ngap, &gtpu);
+
+    memset(&af_param, 0, sizeof(af_param));
+    af_param.med_type = OpenAPI_media_type_AUDIO;
+    af_param.qos_type = 1;
+    af_param.flow_type = 99;
+    af_param.sponsor_id = "sponsor-2";
+    af_param.usage_threshold = 100;
+    af_local_send_to_pcf(af_sess, &af_param,
+            af_npcf_policyauthorization_build_create);
+    qos_flow = test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_assert(qos_flow);
+    ogs_msleep(500);
+
+#define PINGS(__n) \
+    do { \
+        for (i = 0; i < (__n); i++) { \
+            rv = test_gtpu_send_ping(gtpu, qos_flow, TEST_PING_IPV4); \
+            ABTS_INT_EQUAL(tc, OGS_OK, rv); \
+            ABTS_TRUE(tc, test_af_gtpu_reply(gtpu, 2000)); \
+        } \
+        ogs_msleep(1500); \
+    } while (0)
+
+    /* the threshold is reached: one notification with the usage */
+    PINGS(4);
+    ABTS_INT_EQUAL(tc, 1, af_sess->notify_usg_count);
+    ABTS_TRUE(tc, af_sess->notify_usg_total >= 100);
+
+    /* the monitoring stopped with the report: more traffic is not reported */
+    PINGS(4);
+    ABTS_INT_EQUAL(tc, 1, af_sess->notify_usg_count);
+
+    /* new thresholds start it again */
+    raw.method = "PATCH";
+    raw.path = "";
+    raw.body = "{\"ascReqData\":{\"evSubsc\":{\"events\":[{\"event\":\"USAGE_REPORT\"}],"
+        "\"usgThres\":{\"totalVolume\":100}}}}";
+    af_local_send_to_pcf(af_sess, &raw, af_npcf_policyauthorization_build_raw);
+    ogs_msleep(300);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_pcf_status);
+    PINGS(4);
+    ABTS_INT_EQUAL(tc, 2, af_sess->notify_usg_count);
+
+    /* thresholds that are not reached, and the application function disables sponsoring: the usage so far is reported */
+    raw.body = "{\"ascReqData\":{\"evSubsc\":{\"events\":[{\"event\":\"USAGE_REPORT\"}],"
+        "\"usgThres\":{\"totalVolume\":10000000}}}}";
+    af_local_send_to_pcf(af_sess, &raw, af_npcf_policyauthorization_build_raw);
+    ogs_msleep(300);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_pcf_status);
+    PINGS(2);
+    ABTS_INT_EQUAL(tc, 2, af_sess->notify_usg_count);
+    raw.body = "{\"ascReqData\":{\"sponStatus\":\"SPONSOR_DISABLED\"}}";
+    af_local_send_to_pcf(af_sess, &raw, af_npcf_policyauthorization_build_raw);
+    ogs_msleep(500);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_pcf_status);
+    ABTS_INT_EQUAL(tc, 3, af_sess->notify_usg_count);
+    ABTS_TRUE(tc, af_sess->notify_usg_total > 0);
+
+#undef PINGS
+
+    /* nothing is monitored any more: the deletion is answered at once, without usage */
+    raw.method = "POST";
+    raw.path = "/delete";
+    raw.body = NULL;
+    af_local_send_to_pcf(af_sess, &raw, af_npcf_policyauthorization_build_raw);
+    test_af_qos_flow_release(tc, test_ue, sess, ngap);
+    ogs_msleep(300);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_NO_CONTENT, af_sess->last_pcf_status);
+    ABTS_INT_EQUAL(tc, -1, (int)af_sess->delete_usg_total);
+
+    test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
+}
+
 abts_suite *test_af(abts_suite *suite)
 {
     suite = ADD_SUITE(suite)
@@ -5348,6 +5494,8 @@ abts_suite *test_af(abts_suite *suite)
     abts_run_test(suite, test19_func, NULL);
     abts_run_test(suite, test20_func, NULL);
     abts_run_test(suite, test21_func, NULL);
+    abts_run_test(suite, test22_func, NULL);
+    abts_run_test(suite, test23_func, NULL);
 
     return suite;
 }

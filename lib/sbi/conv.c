@@ -1557,6 +1557,10 @@ void ogs_sbi_free_pcc_rule(OpenAPI_pcc_rule_t *PccRule)
         OpenAPI_list_free(PccRule->ref_qos_data);
     if (PccRule->ref_tc_data)
         OpenAPI_list_free(PccRule->ref_tc_data);
+    if (PccRule->ref_um_data)
+        OpenAPI_list_free(PccRule->ref_um_data);
+    if (PccRule->ref_chg_data)
+        OpenAPI_list_free(PccRule->ref_chg_data);
     if (PccRule->flow_infos) {
         OpenAPI_list_for_each(PccRule->flow_infos, node) {
             FlowInformation = node->data;
@@ -1622,22 +1626,174 @@ void ogs_sbi_decision_add_traffic_control(
     OpenAPI_list_add(pcc_rule_model->ref_tc_data, pcc_rule->id);
 }
 
+static void free_map_list(OpenAPI_list_t *list, void (*free_value)(void *), bool free_key)
+{
+    OpenAPI_lnode_t *node = NULL;
+
+    if (!list) return;
+    OpenAPI_list_for_each(list, node) {
+        OpenAPI_map_t *map = node->data;
+
+        if (map) {
+            if (map->value) free_value(map->value);
+            if (free_key && map->key) ogs_free(map->key);
+            ogs_free(map);
+        }
+    }
+    OpenAPI_list_free(list);
+}
+
+static void free_plain(void *value) { ogs_free(value); }
+
+static void free_charging_data(void *value)
+{
+    OpenAPI_charging_data_t *Chg = value;
+
+    if (Chg->sponsor_id) ogs_free(Chg->sponsor_id);
+    if (Chg->app_svc_prov_id) ogs_free(Chg->app_svc_prov_id);
+    ogs_free(Chg);
+}
+
+static void free_usage_monitoring_data(void *value)
+{
+    OpenAPI_usage_monitoring_data_t *Um = value;
+
+    if (Um->um_id) ogs_free(Um->um_id);
+    ogs_free(Um);
+}
+
 void ogs_sbi_decision_free_traffic_control(OpenAPI_sm_policy_decision_t *decision)
+{
+    ogs_assert(decision);
+
+    free_map_list(decision->traff_cont_decs, free_plain, false);
+    decision->traff_cont_decs = NULL;
+    /* the keys of the usage monitoring and charging entries are the ids of their data: owned by the data */
+    free_map_list(decision->um_decs, free_usage_monitoring_data, false);
+    decision->um_decs = NULL;
+    free_map_list(decision->chg_decs, free_charging_data, false);
+    decision->chg_decs = NULL;
+}
+
+void ogs_sbi_decision_add_usage_monitoring(
+        OpenAPI_sm_policy_decision_t *decision, OpenAPI_pcc_rule_t *pcc_rule_model, const char *um_id,
+        long volume, long volume_uplink, long volume_downlink, int time)
+{
+    OpenAPI_usage_monitoring_data_t *Um = NULL;
+    OpenAPI_map_t *UmMap = NULL;
+    OpenAPI_lnode_t *node = NULL;
+    bool known = false;
+
+    ogs_assert(decision);
+    ogs_assert(pcc_rule_model);
+    ogs_assert(um_id);
+
+    if (!decision->um_decs) {
+        decision->um_decs = OpenAPI_list_create();
+        ogs_assert(decision->um_decs);
+    }
+    OpenAPI_list_for_each(decision->um_decs, node) {
+        OpenAPI_map_t *Map = node->data;
+
+        if (Map && Map->key && !strcmp(Map->key, um_id))
+            known = true;
+    }
+    if (!known) {
+        Um = ogs_calloc(1, sizeof(*Um));
+        ogs_assert(Um);
+        Um->um_id = ogs_strdup(um_id);
+        ogs_assert(Um->um_id);
+        if (volume) { Um->is_volume_threshold = true; Um->volume_threshold = volume; }
+        if (volume_uplink) { Um->is_volume_threshold_uplink = true; Um->volume_threshold_uplink = volume_uplink; }
+        if (volume_downlink) { Um->is_volume_threshold_downlink = true; Um->volume_threshold_downlink = volume_downlink; }
+        if (time) { Um->is_time_threshold = true; Um->time_threshold = time; }
+        UmMap = OpenAPI_map_create(Um->um_id, Um);
+        ogs_assert(UmMap);
+        OpenAPI_list_add(decision->um_decs, UmMap);
+    }
+
+    if (!pcc_rule_model->ref_um_data) {
+        pcc_rule_model->ref_um_data = OpenAPI_list_create();
+        ogs_assert(pcc_rule_model->ref_um_data);
+    }
+    OpenAPI_list_add(pcc_rule_model->ref_um_data, (void *)um_id);
+}
+
+void ogs_sbi_decision_end_usage_monitoring(
+        OpenAPI_sm_policy_decision_t *decision, const char *um_id)
+{
+    OpenAPI_map_t *UmMap = NULL;
+
+    ogs_assert(decision);
+    ogs_assert(um_id);
+
+    if (!decision->um_decs) {
+        decision->um_decs = OpenAPI_list_create();
+        ogs_assert(decision->um_decs);
+    }
+    UmMap = OpenAPI_map_create((char *)um_id, NULL);
+    ogs_assert(UmMap);
+    OpenAPI_list_add(decision->um_decs, UmMap);
+}
+
+void ogs_sbi_decision_add_sponsor(
+        OpenAPI_sm_policy_decision_t *decision, OpenAPI_pcc_rule_t *pcc_rule_model, const char *chg_id,
+        const char *sponsor_id, const char *asp_id)
+{
+    OpenAPI_charging_data_t *Chg = NULL;
+    OpenAPI_map_t *ChgMap = NULL;
+    OpenAPI_lnode_t *node = NULL;
+    bool known = false;
+
+    ogs_assert(decision);
+    ogs_assert(pcc_rule_model);
+    ogs_assert(chg_id);
+
+    if (!decision->chg_decs) {
+        decision->chg_decs = OpenAPI_list_create();
+        ogs_assert(decision->chg_decs);
+    }
+    OpenAPI_list_for_each(decision->chg_decs, node) {
+        OpenAPI_map_t *Map = node->data;
+
+        if (Map && Map->key && !strcmp(Map->key, chg_id))
+            known = true;
+    }
+    if (!known) {
+        Chg = ogs_calloc(1, sizeof(*Chg));
+        ogs_assert(Chg);
+        Chg->chg_id = (char *)chg_id; /* the id is the one of the caller, which outlives the decision */
+        Chg->metering_method = OpenAPI_metering_method_VOLUME;
+        Chg->reporting_level = OpenAPI_reporting_level_SPON_CON_LEVEL;
+        if (sponsor_id) Chg->sponsor_id = ogs_strdup(sponsor_id);
+        if (asp_id) Chg->app_svc_prov_id = ogs_strdup(asp_id);
+        ChgMap = OpenAPI_map_create((char *)chg_id, Chg);
+        ogs_assert(ChgMap);
+        OpenAPI_list_add(decision->chg_decs, ChgMap);
+    }
+
+    if (!pcc_rule_model->ref_chg_data) {
+        pcc_rule_model->ref_chg_data = OpenAPI_list_create();
+        ogs_assert(pcc_rule_model->ref_chg_data);
+    }
+    OpenAPI_list_add(pcc_rule_model->ref_chg_data, (void *)chg_id);
+}
+
+void ogs_sbi_decision_add_us_re_trigger(OpenAPI_sm_policy_decision_t *decision)
 {
     OpenAPI_lnode_t *node = NULL;
 
     ogs_assert(decision);
-    if (!decision->traff_cont_decs) return;
-    OpenAPI_list_for_each(decision->traff_cont_decs, node) {
-        OpenAPI_map_t *TcMap = node->data;
-
-        if (TcMap) {
-            if (TcMap->value) ogs_free(TcMap->value);
-            ogs_free(TcMap);
-        }
+    if (!decision->policy_ctrl_req_triggers) {
+        decision->policy_ctrl_req_triggers = OpenAPI_list_create();
+        ogs_assert(decision->policy_ctrl_req_triggers);
     }
-    OpenAPI_list_free(decision->traff_cont_decs);
-    decision->traff_cont_decs = NULL;
+    OpenAPI_list_for_each(decision->policy_ctrl_req_triggers, node)
+        if ((OpenAPI_policy_control_request_trigger_e)(intptr_t)node->data ==
+                OpenAPI_policy_control_request_trigger_US_RE)
+            return;
+    OpenAPI_list_add(decision->policy_ctrl_req_triggers,
+            (void *)OpenAPI_policy_control_request_trigger_US_RE);
 }
 
 OpenAPI_qos_data_t *ogs_sbi_build_qos_data(ogs_pcc_rule_t *pcc_rule)

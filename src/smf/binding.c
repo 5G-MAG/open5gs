@@ -520,12 +520,17 @@ void smf_qos_flow_binding(smf_sess_t *sess)
     int i, j;
 
     uint64_t pfcp_flags, check;
+    bool list_reset;
 
     ogs_assert(sess);
 
     pfcp_flags = OGS_PFCP_MODIFY_NETWORK_REQUESTED;
 
-    ogs_list_init(&sess->qos_flow_to_modify_list);
+    /*
+     * The list belongs to the Session Modification Request in flight until its answer is handled. A decision that changes no QoS
+     * flow leaves it alone; it is taken anew (list_reset) when this decision adds the first flow to it.
+     */
+    list_reset = false;
 
     for (i = 0; i < sess->policy.num_of_pcc_rule; i++) {
         smf_bearer_t *qos_flow = NULL;
@@ -628,11 +633,13 @@ void smf_qos_flow_binding(smf_sess_t *sess)
                     pcc_rule->qos.gbr.downlink || pcc_rule->qos.gbr.uplink) {
 
                     /*
-                     * If new packet filters are being added, or if any MBR/GBR
+                     * If the rule carries packet filters, or if any MBR/GBR
                      * field differs from what is currently set, then we must
-                     * update the QoS parameters.
+                     * update the QoS parameters. A rule without packet filters
+                     * and with the same rates (for example one that only
+                     * refers to usage monitoring data) changes no QoS flow.
                      */
-                    if ((ogs_list_count(&qos_flow->pf_to_add_list) > 0) ||
+                    if ((pcc_rule->num_of_flow > 0) ||
                         (qos_flow->qos.mbr.downlink != pcc_rule->qos.mbr.downlink) ||
                         (qos_flow->qos.mbr.uplink != pcc_rule->qos.mbr.uplink) ||
                         (qos_flow->qos.gbr.downlink != pcc_rule->qos.gbr.downlink) ||
@@ -651,6 +658,27 @@ void smf_qos_flow_binding(smf_sess_t *sess)
                          */
                         qos_presence = true;
                     }
+                }
+            }
+
+            /*
+             * TS 29.512 V19.7.0 clause 4.2.4.10: the PDRs of a rule that refers to a usage monitoring control instance report to
+             * its URR. For a flow that exists the PDRs are told in a Session Modification Request of their own.
+             */
+            if (pcc_rule->um_id) {
+                int um = smf_um_find(sess, pcc_rule->um_id);
+
+                if (um >= 0 && sess->policy.um[um].urr && qos_flow->dl_pdr && qos_flow->ul_pdr) {
+                    ogs_pfcp_pdr_associate_urr(qos_flow->dl_pdr, sess->policy.um[um].urr);
+                    ogs_pfcp_pdr_associate_urr(qos_flow->ul_pdr, sess->policy.um[um].urr);
+                    if (!qos_flow_created && (!qos_flow->pcc_rule.um_id ||
+                                strcmp(qos_flow->pcc_rule.um_id, pcc_rule->um_id)))
+                        sess->policy.um[um].pdr_pending = true;
+                    if (qos_flow->pcc_rule.um_id)
+                        ogs_free(qos_flow->pcc_rule.um_id);
+                    qos_flow->pcc_rule.um_id = ogs_strdup(pcc_rule->um_id);
+                } else if (um < 0) {
+                    ogs_warn("PCC rule [%s] refers to the unknown usage monitoring data [%s]", pcc_rule->id, pcc_rule->um_id);
                 }
             }
 
@@ -751,6 +779,10 @@ void smf_qos_flow_binding(smf_sess_t *sess)
 
                 pfcp_flags |= OGS_PFCP_MODIFY_CREATE;
 
+                if (!list_reset) {
+                    ogs_list_init(&sess->qos_flow_to_modify_list);
+                    list_reset = true;
+                }
                 ogs_list_add(&sess->qos_flow_to_modify_list,
                                 &qos_flow->to_modify_node);
             } else {
@@ -766,6 +798,10 @@ void smf_qos_flow_binding(smf_sess_t *sess)
                     qos_flow_gate_update(qos_flow, pcc_rule->flow_status);
                 }
 
+                if (!list_reset) {
+                    ogs_list_init(&sess->qos_flow_to_modify_list);
+                    list_reset = true;
+                }
                 ogs_list_add(&sess->qos_flow_to_modify_list,
                                 &qos_flow->to_modify_node);
             }
@@ -781,6 +817,10 @@ void smf_qos_flow_binding(smf_sess_t *sess)
 
             pfcp_flags |= OGS_PFCP_MODIFY_REMOVE;
 
+            if (!list_reset) {
+                ogs_list_init(&sess->qos_flow_to_modify_list);
+                list_reset = true;
+            }
             ogs_list_add(&sess->qos_flow_to_modify_list,
                             &qos_flow->to_modify_node);
 
@@ -797,12 +837,23 @@ void smf_qos_flow_binding(smf_sess_t *sess)
         ogs_assert_if_reached();
     }
 
-    if (ogs_list_count(&sess->qos_flow_to_modify_list)) {
+    if (list_reset && ogs_list_count(&sess->qos_flow_to_modify_list)) {
         ogs_assert(OGS_OK ==
                 smf_5gc_pfcp_send_qos_flow_list_modification_request(
                     sess, NULL,
                     HOME_ROUTED_ROAMING_IN_HSMF(sess) ?
                         OGS_PFCP_MODIFY_HOME_ROUTED_ROAMING|pfcp_flags :
                         pfcp_flags, 0));
+    }
+    /* what is pending for the usage monitoring control instances (create, thresholds, PDRs, query) goes to the UP function */
+    for (i = 0; i < sess->policy.num_of_um; i++) {
+        if ((sess->policy.um[i].urr && !sess->policy.um[i].created &&
+                sess->policy.um[i].pdr_pending) ||
+            sess->policy.um[i].update_pending ||
+            sess->policy.um[i].pdr_pending ||
+            (sess->policy.um[i].query_pending && sess->policy.um[i].created)) {
+            ogs_assert(OGS_OK == smf_5gc_pfcp_send_usage_monitoring_request(sess));
+            break;
+        }
     }
 }

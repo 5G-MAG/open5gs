@@ -523,6 +523,26 @@ ogs_pkbuf_t *smf_n4_build_qos_flow_to_modify_list(
                         num_of_create_urr, qos_flow->urr);
                 num_of_create_urr++;
             }
+
+            /* Create the URRs of the usage monitoring instances that the PDRs refer to and that the UP function does not have yet */
+            if (qos_flow->dl_pdr) {
+                int k, um;
+
+                for (k = 0; k < qos_flow->dl_pdr->num_of_urr; k++) {
+                    ogs_pfcp_urr_t *um_urr = qos_flow->dl_pdr->urr[k];
+
+                    if (um_urr == qos_flow->urr) continue;
+                    um = smf_um_find_by_urr(sess, um_urr->id);
+                    if (um < 0 || sess->policy.um[um].created) continue;
+                    if (num_of_create_urr >= OGS_ARRAY_SIZE(req->create_urr)) break;
+                    ogs_pfcp_build_create_urr(
+                            &req->create_urr[num_of_create_urr],
+                            num_of_create_urr, um_urr);
+                    num_of_create_urr++;
+                    sess->policy.um[um].created = true;
+                    sess->policy.um[um].update_pending = false;
+                }
+            }
         }
 
         if (modify_flags & OGS_PFCP_MODIFY_DEACTIVATE) {
@@ -649,6 +669,88 @@ ogs_pkbuf_t *smf_n4_build_qos_flow_to_modify_list(
         ogs_pfcp_pdrbuf_clear();
     }
 
+    ogs_free(pfcp_message);
+
+    return pkbuf;
+}
+
+/*
+ * The usage monitoring control instances of the PCF (TS 29.512 V19.7.0 clause 4.2.4.10) at the UP function: Create URR for an
+ * instance it does not have, Update PDR for the PDRs that report to it, Update URR for new thresholds, and Query URR (one in a
+ * message) when the PCF asks for the usage (TS 29.244 clause 7.5.4.4).
+ */
+ogs_pkbuf_t *smf_n4_build_usage_monitoring_request(
+        uint8_t type, smf_sess_t *sess, ogs_pfcp_xact_t *xact)
+{
+    ogs_pfcp_message_t *pfcp_message = NULL;
+    ogs_pfcp_session_modification_request_t *req = NULL;
+    ogs_pkbuf_t *pkbuf = NULL;
+    ogs_pfcp_pdr_t *pdr = NULL;
+    int i, n_create = 0, n_update_urr = 0, n_update_pdr = 0;
+    bool queried = false;
+
+    ogs_assert(sess);
+    ogs_assert(xact);
+
+    pfcp_message = ogs_calloc(1, sizeof(*pfcp_message));
+    if (!pfcp_message) {
+        ogs_error("ogs_calloc() failed");
+        return NULL;
+    }
+    req = &pfcp_message->pfcp_session_modification_request;
+
+    for (i = 0; i < sess->policy.num_of_um; i++) {
+        ogs_pfcp_urr_t *urr = sess->policy.um[i].urr;
+
+        if (!urr) continue;
+
+        if (!sess->policy.um[i].created) {
+            if (n_create < OGS_ARRAY_SIZE(req->create_urr)) {
+                ogs_pfcp_build_create_urr(&req->create_urr[n_create], n_create, urr);
+                n_create++;
+                sess->policy.um[i].created = true;
+                sess->policy.um[i].update_pending = false;
+                sess->policy.um[i].pdr_pending = true;
+            }
+        } else if (sess->policy.um[i].update_pending) {
+            if (n_update_urr < OGS_ARRAY_SIZE(req->update_urr)) {
+                ogs_pfcp_build_update_urr(&req->update_urr[n_update_urr], n_update_urr, urr,
+                        OGS_PFCP_MODIFY_URR_REPORT_TRIGGER|OGS_PFCP_MODIFY_URR_VOLUME_THRESH|OGS_PFCP_MODIFY_URR_TIME_THRESH);
+                n_update_urr++;
+            }
+            sess->policy.um[i].update_pending = false;
+        }
+
+        if (sess->policy.um[i].pdr_pending) {
+            ogs_list_for_each(&sess->pfcp.pdr_list, pdr) {
+                int k;
+
+                for (k = 0; k < pdr->num_of_urr; k++) {
+                    if (pdr->urr[k] == urr && n_update_pdr < OGS_ARRAY_SIZE(req->update_pdr)) {
+                        ogs_pfcp_build_update_pdr(&req->update_pdr[n_update_pdr], n_update_pdr, pdr, OGS_PFCP_MODIFY_PDR_URR);
+                        n_update_pdr++;
+                        break;
+                    }
+                }
+            }
+            sess->policy.um[i].pdr_pending = false;
+        }
+
+        if (sess->policy.um[i].query_pending && !queried && sess->policy.um[i].created) {
+            req->query_urr.presence = 1;
+            req->query_urr.urr_id.presence = 1;
+            req->query_urr.urr_id.u32 = urr->id;
+            sess->policy.um[i].query_pending = false;
+            sess->policy.um[i].query_inflight = true;
+            queried = true;
+        }
+    }
+
+    ogs_assert(n_create + n_update_urr + n_update_pdr + (queried ? 1 : 0));
+
+    pfcp_message->h.type = type;
+    pkbuf = ogs_pfcp_build_msg(pfcp_message);
+    ogs_expect(pkbuf);
     ogs_free(pfcp_message);
 
     return pkbuf;

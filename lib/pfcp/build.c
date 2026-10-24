@@ -453,11 +453,21 @@ void ogs_pfcp_build_update_pdr(
             (OGS_PFCP_MODIFY_TFT_NEW|OGS_PFCP_MODIFY_TFT_ADD|
              OGS_PFCP_MODIFY_TFT_REPLACE|OGS_PFCP_MODIFY_TFT_DELETE|
              OGS_PFCP_MODIFY_EPC_TFT_UPDATE|
-             OGS_PFCP_MODIFY_OUTER_HEADER_REMOVAL));
+             OGS_PFCP_MODIFY_OUTER_HEADER_REMOVAL|
+             OGS_PFCP_MODIFY_PDR_URR));
 
     message->presence = 1;
     message->pdr_id.presence = 1;
     message->pdr_id.u16 = pdr->id;
+
+    /* the URRs of the PDR (TS 29.244 table 7.5.4.2-1, URR ID) */
+    if (modify_flags & OGS_PFCP_MODIFY_PDR_URR) {
+        ogs_assert(pdr->num_of_urr <= OGS_ARRAY_SIZE(message->urr_id));
+        for (j = 0; j < pdr->num_of_urr; j++) {
+            message->urr_id[j].presence = 1;
+            message->urr_id[j].u32 = pdr->urr[j]->id;
+        }
+    }
 
     if (modify_flags &
             (OGS_PFCP_MODIFY_TFT_NEW|OGS_PFCP_MODIFY_TFT_ADD|
@@ -1066,6 +1076,58 @@ ogs_pkbuf_t *ogs_pfcp_build_session_report_response(
     ogs_free(pfcp_message);
 
     return pkbuf;
+}
+
+/* The usage reports of a user plane report as the Usage Report IEs of a Session Modification Response (TS 29.244 clause 7.5.5.4) */
+void ogs_pfcp_build_usage_report_modification_response(
+        ogs_pfcp_session_modification_response_t *rsp,
+        ogs_pfcp_user_plane_report_t *report)
+{
+    unsigned int i;
+
+    ogs_assert(rsp);
+    ogs_assert(report);
+
+    if (!report->type.usage_report) return;
+    for (i = 0; i < report->num_of_usage_report && i < OGS_ARRAY_SIZE(rsp->usage_report); i++) {
+        rsp->usage_report[i].presence = 1;
+        rsp->usage_report[i].urr_id.presence = 1;
+        rsp->usage_report[i].urr_id.u32 = report->usage_report[i].id;
+        rsp->usage_report[i].ur_seqn.presence = 1;
+        rsp->usage_report[i].ur_seqn.u32 = report->usage_report[i].seqn;
+        rsp->usage_report[i].usage_report_trigger.presence = 1;
+        rsp->usage_report[i].usage_report_trigger.u24 =
+            (report->usage_report[i].rep_trigger.reptri_5 << 16)
+            | (report->usage_report[i].rep_trigger.reptri_6 << 8)
+            | (report->usage_report[i].rep_trigger.reptri_7);
+
+        if (report->usage_report[i].start_time) {
+            rsp->usage_report[i].start_time.presence = 1;
+            rsp->usage_report[i].start_time.u32 = report->usage_report[i].start_time;
+        }
+        if (report->usage_report[i].end_time) {
+            rsp->usage_report[i].end_time.presence = 1;
+            rsp->usage_report[i].end_time.u32 = report->usage_report[i].end_time;
+        }
+        if (report->usage_report[i].vol_measurement.flags) {
+            rsp->usage_report[i].volume_measurement.presence = 1;
+            ogs_pfcp_build_volume_measurement(
+                    &rsp->usage_report[i].volume_measurement,
+                    &report->usage_report[i].vol_measurement,
+                    &usage_report_buf.vol_meas,
+                    sizeof(usage_report_buf.vol_meas));
+        }
+        rsp->usage_report[i].duration_measurement.presence = 1;
+        rsp->usage_report[i].duration_measurement.u32 = report->usage_report[i].dur_measurement;
+        if (report->usage_report[i].time_of_first_packet) {
+            rsp->usage_report[i].time_of_first_packet.presence = 1;
+            rsp->usage_report[i].time_of_first_packet.u32 = report->usage_report[i].time_of_first_packet;
+        }
+        if (report->usage_report[i].time_of_last_packet) {
+            rsp->usage_report[i].time_of_last_packet.presence = 1;
+            rsp->usage_report[i].time_of_last_packet.u32 = report->usage_report[i].time_of_last_packet;
+        }
+    }
 }
 
 ogs_pkbuf_t *ogs_pfcp_build_session_deletion_response( uint8_t type, uint8_t cause,

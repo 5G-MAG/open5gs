@@ -135,6 +135,23 @@ int ogs_sbi_flow_status_to_pcc_rule(OpenAPI_flow_status_e flow_status);
 void ogs_sbi_decision_add_traffic_control(
         OpenAPI_sm_policy_decision_t *decision, OpenAPI_pcc_rule_t *pcc_rule_model, ogs_pcc_rule_t *pcc_rule);
 void ogs_sbi_decision_free_traffic_control(OpenAPI_sm_policy_decision_t *decision);
+
+/*
+ * Usage monitoring (TS 29.512 V19.7.0 clause 4.2.4.10) and sponsored connectivity (TS 29.514 clause 4.2.2.5) in a decision: the
+ * UsageMonitoringData of a monitoring key with the thresholds (a threshold of 0 is left out) and the ChargingData with the sponsor,
+ * both referred to by the PCC rule. Release them with ogs_sbi_decision_free_traffic_control(), which frees them as well.
+ */
+void ogs_sbi_decision_add_usage_monitoring(
+        OpenAPI_sm_policy_decision_t *decision, OpenAPI_pcc_rule_t *pcc_rule_model, const char *um_id,
+        long volume, long volume_uplink, long volume_downlink, int time);
+/* The entry of the monitoring key with a null value ends the monitoring */
+void ogs_sbi_decision_end_usage_monitoring(
+        OpenAPI_sm_policy_decision_t *decision, const char *um_id);
+void ogs_sbi_decision_add_sponsor(
+        OpenAPI_sm_policy_decision_t *decision, OpenAPI_pcc_rule_t *pcc_rule_model, const char *chg_id,
+        const char *sponsor_id, const char *asp_id);
+/* Add US_RE to the policy control request triggers of the decision */
+void ogs_sbi_decision_add_us_re_trigger(OpenAPI_sm_policy_decision_t *decision);
 void ogs_sbi_free_qos_data(OpenAPI_qos_data_t *QosData);
 
 #ifdef __cplusplus

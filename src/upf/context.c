@@ -709,7 +709,11 @@ void upf_sess_urr_acc_add(upf_sess_t *sess, ogs_pfcp_urr_t *urr, size_t size, bo
     /* generate report if volume threshold/quota is reached */
     vol = urr_acc->total_octets - urr_acc->last_report.total_octets;
     if ((urr->rep_triggers.volume_quota && urr->vol_quota.tovol && vol >= urr->vol_quota.total_volume) ||
-        (urr->rep_triggers.volume_threshold && urr->vol_threshold.tovol && vol >= urr->vol_threshold.total_volume)) {
+        (urr->rep_triggers.volume_threshold && urr->vol_threshold.tovol && vol >= urr->vol_threshold.total_volume) ||
+        (urr->rep_triggers.volume_threshold && urr->vol_threshold.ulvol &&
+            urr_acc->ul_octets - urr_acc->last_report.ul_octets >= urr->vol_threshold.uplink_volume) ||
+        (urr->rep_triggers.volume_threshold && urr->vol_threshold.dlvol &&
+            urr_acc->dl_octets - urr_acc->last_report.dl_octets >= urr->vol_threshold.downlink_volume)) {
         ogs_pfcp_user_plane_report_t report;
         memset(&report, 0, sizeof(report));
         upf_sess_urr_acc_fill_usage_report(sess, urr, &report, 0);
@@ -739,8 +743,10 @@ void upf_sess_urr_acc_fill_usage_report(upf_sess_t *sess, const ogs_pfcp_urr_t *
 
     if (urr_acc->last_report.timestamp)
         last_report_timestamp = urr_acc->last_report.timestamp;
-    else
+    else if (urr_acc->time_start)
         last_report_timestamp = ogs_time_from_ntp32(urr_acc->time_start);
+    else
+        last_report_timestamp = now; /* the time metering has not started: no duration */
 
     report->type.usage_report = 1;
     report->usage_report[idx].id = urr->id;
@@ -784,6 +790,12 @@ void upf_sess_urr_acc_fill_usage_report(upf_sess_t *sess, const ogs_pfcp_urr_t *
         report->usage_report[idx].rep_trigger.volume_quota = 1;
     if (urr->rep_triggers.volume_threshold && urr->vol_threshold.tovol &&
             report->usage_report[idx].vol_measurement.total_volume >= urr->vol_threshold.total_volume)
+        report->usage_report[idx].rep_trigger.volume_threshold = 1;
+    if (urr->rep_triggers.volume_threshold && urr->vol_threshold.ulvol &&
+            report->usage_report[idx].vol_measurement.uplink_volume >= urr->vol_threshold.uplink_volume)
+        report->usage_report[idx].rep_trigger.volume_threshold = 1;
+    if (urr->rep_triggers.volume_threshold && urr->vol_threshold.dlvol &&
+            report->usage_report[idx].vol_measurement.downlink_volume >= urr->vol_threshold.downlink_volume)
         report->usage_report[idx].rep_trigger.volume_threshold = 1;
 }
 

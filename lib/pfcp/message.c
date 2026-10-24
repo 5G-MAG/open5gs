@@ -3977,6 +3977,7 @@ ogs_tlv_desc_t ogs_pfcp_tlv_desc_update_pdr =
         &ogs_pfcp_tlv_desc_pdi,
         &ogs_pfcp_tlv_desc_far_id,
         &ogs_pfcp_tlv_desc_urr_id,
+        &ogs_tlv_desc_more8,
         &ogs_pfcp_tlv_desc_qer_id,
         &ogs_pfcp_tlv_desc_activate_predefined_rules,
         &ogs_pfcp_tlv_desc_deactivate_predefined_rules,

@@ -56,6 +56,9 @@ bool pcf_npcf_policyauthorization_handle_delete(
         pcf_sess_t *sess, pcf_app_t *app,
         ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg,
         const char *content);
+/* Answer the deletion that waited for the accumulated usage (TS 29.514 V19.8.0 clause 4.2.4.3); usage is NULL when none arrived */
+void pcf_npcf_policyauthorization_delete_complete(
+        pcf_app_t *app, const OpenAPI_accu_usage_report_t *usage);
 
 #ifdef __cplusplus
 }

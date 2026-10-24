@@ -322,6 +322,69 @@ end:
     return request;
 }
 
+ogs_sbi_request_t *smf_npcf_smpolicycontrol_build_usage_update(
+        smf_sess_t *sess, void *data)
+{
+    ogs_sbi_message_t message;
+    ogs_sbi_request_t *request = NULL;
+    smf_npcf_smpolicycontrol_usage_report_t *report = data;
+
+    OpenAPI_sm_policy_update_context_data_t UpdateData;
+    OpenAPI_accu_usage_report_t AccuUsageReport;
+    OpenAPI_list_t *Triggers = NULL, *Reports = NULL;
+
+    ogs_assert(sess);
+    ogs_assert(sess->policy_association.resource_uri);
+    ogs_assert(report);
+
+    memset(&message, 0, sizeof(message));
+    message.h.method = (char *)OGS_SBI_HTTP_METHOD_POST;
+    message.h.uri = ogs_msprintf("%s/%s",
+            sess->policy_association.resource_uri,
+            OGS_SBI_RESOURCE_NAME_UPDATE);
+
+    memset(&UpdateData, 0, sizeof(UpdateData));
+    memset(&AccuUsageReport, 0, sizeof(AccuUsageReport));
+
+    AccuUsageReport.ref_um_ids = report->um_id;
+    AccuUsageReport.is_vol_usage = true;
+    AccuUsageReport.vol_usage = (long)report->total;
+    AccuUsageReport.is_vol_usage_uplink = true;
+    AccuUsageReport.vol_usage_uplink = (long)report->uplink;
+    AccuUsageReport.is_vol_usage_downlink = true;
+    AccuUsageReport.vol_usage_downlink = (long)report->downlink;
+    AccuUsageReport.is_time_usage = true;
+    AccuUsageReport.time_usage = (int)report->time;
+
+    Reports = OpenAPI_list_create();
+    ogs_assert(Reports);
+    OpenAPI_list_add(Reports, &AccuUsageReport);
+    UpdateData.accu_usage_reports = Reports;
+
+    /* TS 29.512 V19.7.0 clause 4.2.4.10.1: with the report the SMF includes US_RE in repPolicyCtrlReqTriggers */
+    if (report->trigger) {
+        Triggers = OpenAPI_list_create();
+        ogs_assert(Triggers);
+        OpenAPI_list_add(Triggers,
+                (void *)OpenAPI_policy_control_request_trigger_US_RE);
+        UpdateData.rep_policy_ctrl_req_triggers = Triggers;
+    }
+
+    message.SmPolicyUpdateContextData = &UpdateData;
+
+    request = ogs_sbi_build_request(&message);
+    ogs_expect(request);
+
+    OpenAPI_list_free(Reports);
+    if (Triggers)
+        OpenAPI_list_free(Triggers);
+    ogs_free(message.h.uri);
+    ogs_free(report->um_id);
+    ogs_free(report);
+
+    return request;
+}
+
 ogs_sbi_request_t *smf_npcf_smpolicycontrol_build_update(
         smf_sess_t *sess, void *data)
 {

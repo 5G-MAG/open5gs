@@ -189,6 +189,14 @@ void af_state_operational(ogs_fsm_t *s, af_event_t *e)
                         ogs_assert(cJSON_IsString(
                                     cJSON_GetObjectItem(body, "evSubsUri")));
                         app_session->notify_count++;
+                        if (cJSON_IsString(event) && !strcmp(event->valuestring, "USAGE_REPORT")) {
+                            cJSON *usg = cJSON_GetObjectItem(body, "usgRep");
+                            cJSON *total = usg ? cJSON_GetObjectItem(usg, "totalVolume") : NULL;
+
+                            ogs_assert(cJSON_IsObject(usg));
+                            app_session->notify_usg_count++;
+                            app_session->notify_usg_total = cJSON_IsNumber(total) ? (long)total->valuedouble : -1;
+                        }
                         ogs_cpystrn(app_session->notify_event,
                                 cJSON_IsString(event) ? event->valuestring : "",
                                 sizeof(app_session->notify_event));
@@ -438,12 +446,21 @@ void af_state_operational(ogs_fsm_t *s, af_event_t *e)
                         CASE(OGS_SBI_RESOURCE_NAME_DELETE)
                             /* TS 29.514 clause 5.3.3.4.2.2: a 200 carries evsNotif, whose events are recorded before the session goes */
                             sess->last_pcf_asc_events[0] = '\0';
+                            sess->delete_usg_total = -1;
                             if (message.res_status == OGS_SBI_HTTP_STATUS_OK &&
                                 e->h.sbi.response && e->h.sbi.response->http.content) {
                                 cJSON *asc = cJSON_Parse(e->h.sbi.response->http.content);
                                 cJSON *notifs = asc ? cJSON_GetObjectItemCaseSensitive(
                                         cJSON_GetObjectItemCaseSensitive(asc, "evsNotif"), "evNotifs") : NULL;
+                                cJSON *usg = asc ? cJSON_GetObjectItemCaseSensitive(
+                                        cJSON_GetObjectItemCaseSensitive(asc, "evsNotif"), "usgRep") : NULL;
                                 cJSON *notif = NULL;
+
+                                if (cJSON_IsObject(usg)) {
+                                    cJSON *total = cJSON_GetObjectItemCaseSensitive(usg, "totalVolume");
+
+                                    sess->delete_usg_total = cJSON_IsNumber(total) ? (long)total->valuedouble : -1;
+                                }
 
                                 cJSON_ArrayForEach(notif, notifs) {
                                     const cJSON *name = cJSON_GetObjectItemCaseSensitive(notif, "event");

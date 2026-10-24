@@ -22,6 +22,9 @@
 #include "npcf-handler.h"
 
 static cJSON *flows_of_rules(pcf_app_t *app, OpenAPI_list_t *rule_ids);
+static void app_usage_apply(pcf_sess_t *sess, pcf_app_t *app, bool thresholds_given);
+static bool content_has_evsubsc(const char *content);
+static bool sponsored_not_authorized(pcf_sess_t *sess, cJSON *context);
 
 static uint8_t pcf_qos_index_from_media(
         const char *qos_reference,
@@ -739,6 +742,7 @@ static void app_events_refresh(pcf_app_t *app)
 
     app->ev_succ_res_alloc = false;
     app->ev_fail_res_alloc = false;
+    app->ev_usage_report = false;
     if (app->ev_notif_uri) {
         ogs_free(app->ev_notif_uri);
         app->ev_notif_uri = NULL;
@@ -761,6 +765,8 @@ static void app_events_refresh(pcf_app_t *app)
             app->ev_succ_res_alloc = true;
         else if (!strcmp(name->valuestring, "FAILED_RESOURCES_ALLOCATION"))
             app->ev_fail_res_alloc = true;
+        else if (!strcmp(name->valuestring, "USAGE_REPORT"))
+            app->ev_usage_report = true;
     }
 
     uri = cJSON_GetObjectItem(ev_subsc, "notifUri");
@@ -842,6 +848,259 @@ static void succ_res_alloc_request_free(
     SmPolicyDecision->policy_ctrl_req_triggers = NULL;
 }
 
+/*
+ * Sponsored connectivity and usage monitoring (TS 29.514 V19.8.0 clauses 4.2.2.5, 4.2.3.5, 4.2.4.3 and 4.2.5.6; TS 29.512 V19.7.0
+ * clauses 4.2.6.2.13 and 4.2.6.2.5). What the application session asks for, read from the AppSessionContext that the resource holds.
+ */
+typedef struct usage_params_s {
+    bool sponsored;             /* aspId and sponId given and sponStatus is not SPONSOR_DISABLED */
+    const char *asp_id;
+    const char *spon_id;
+    bool usage_report;          /* the event USAGE_REPORT is subscribed */
+    bool has_thres;
+    long total, uplink, downlink;
+    int duration;
+} usage_params_t;
+
+static void app_usage_params(pcf_sess_t *sess, cJSON *context, usage_params_t *p)
+{
+    cJSON *asc = NULL, *item = NULL, *ev_subsc = NULL, *events = NULL, *event = NULL, *thres = NULL;
+
+    memset(p, 0, sizeof(*p));
+    if (!context ||
+        !OGS_SBI_FEATURES_IS_SET(sess->policyauthorization_features, OGS_SBI_NPCF_POLICYAUTHORIZATION_SPONSORED_CONNECTIVITY))
+        return;
+
+    asc = cJSON_GetObjectItem(context, "ascReqData");
+    if (!cJSON_IsObject(asc))
+        return;
+
+    item = cJSON_GetObjectItem(asc, "aspId");
+    if (cJSON_IsString(item)) p->asp_id = item->valuestring;
+    item = cJSON_GetObjectItem(asc, "sponId");
+    if (cJSON_IsString(item)) p->spon_id = item->valuestring;
+    item = cJSON_GetObjectItem(asc, "sponStatus");
+    p->sponsored = p->asp_id && p->spon_id &&
+        !(cJSON_IsString(item) && !strcmp(item->valuestring, "SPONSOR_DISABLED"));
+
+    ev_subsc = cJSON_GetObjectItem(asc, "evSubsc");
+    if (!cJSON_IsObject(ev_subsc))
+        return;
+    events = cJSON_GetObjectItem(ev_subsc, "events");
+    cJSON_ArrayForEach(event, events) {
+        item = cJSON_GetObjectItem(event, "event");
+        if (cJSON_IsString(item) && !strcmp(item->valuestring, "USAGE_REPORT"))
+            p->usage_report = true;
+    }
+    thres = cJSON_GetObjectItem(ev_subsc, "usgThres");
+    if (cJSON_IsObject(thres)) {
+        item = cJSON_GetObjectItem(thres, "totalVolume");
+        if (cJSON_IsNumber(item)) p->total = (long)item->valuedouble;
+        item = cJSON_GetObjectItem(thres, "uplinkVolume");
+        if (cJSON_IsNumber(item)) p->uplink = (long)item->valuedouble;
+        item = cJSON_GetObjectItem(thres, "downlinkVolume");
+        if (cJSON_IsNumber(item)) p->downlink = (long)item->valuedouble;
+        item = cJSON_GetObjectItem(thres, "duration");
+        if (cJSON_IsNumber(item)) p->duration = (int)item->valuedouble;
+        p->has_thres = p->total || p->uplink || p->downlink || p->duration;
+    }
+}
+
+/*
+ * TS 29.514 V19.8.0 clause 4.2.2.5: when the SMF does not support sponsored connectivity, the PCF rejects a request that enables
+ * it. The usage thresholds need the usage monitoring control of the SMF (TS 29.512 V19.7.0 clause 4.2.4.10.1).
+ */
+static bool sponsored_not_authorized(pcf_sess_t *sess, cJSON *context)
+{
+    usage_params_t p;
+
+    app_usage_params(sess, context, &p);
+    if (!p.sponsored)
+        return false;
+    if (!OGS_SBI_FEATURES_IS_SET(sess->smpolicycontrol_features, OGS_SBI_NPCF_SMPOLICYCONTROL_SPONSORED_CONNECTIVITY))
+        return true;
+    if (p.usage_report && p.has_thres &&
+        !OGS_SBI_FEATURES_IS_SET(sess->smpolicycontrol_features, OGS_SBI_NPCF_SMPOLICYCONTROL_UMC))
+        return true;
+    return false;
+}
+
+/* The event USAGE_REPORT and the usage (AccumulatedUsage, TS 29.122 V19.7.0 clause 5.2.1.2.24; the usage since the last report) in an EventsNotification */
+static void usage_report_add(cJSON *evs, const OpenAPI_accu_usage_report_t *report)
+{
+    cJSON *notifs = cJSON_GetObjectItem(evs, "evNotifs"), *notif = NULL, *usg = NULL;
+
+    ogs_assert(notifs);
+    notif = cJSON_CreateObject();
+    ogs_assert(notif);
+    cJSON_AddStringToObject(notif, "event", "USAGE_REPORT");
+    cJSON_AddItemToArray(notifs, notif);
+
+    usg = cJSON_AddObjectToObject(evs, "usgRep");
+    ogs_assert(usg);
+    if (report->is_time_usage)
+        cJSON_AddNumberToObject(usg, "duration", report->time_usage);
+    if (report->is_vol_usage)
+        cJSON_AddNumberToObject(usg, "totalVolume", (double)report->vol_usage);
+    if (report->is_vol_usage_downlink)
+        cJSON_AddNumberToObject(usg, "downlinkVolume", (double)report->vol_usage_downlink);
+    if (report->is_vol_usage_uplink)
+        cJSON_AddNumberToObject(usg, "uplinkVolume", (double)report->vol_usage_uplink);
+}
+
+/* The EventsNotification of the usage report that the SMF sends; free with cJSON_Delete() */
+static cJSON *usage_report_notif(pcf_app_t *app, const OpenAPI_accu_usage_report_t *report)
+{
+    cJSON *evs = NULL, *notifs = NULL;
+    ogs_sbi_server_t *server = ogs_sbi_server_first();
+    ogs_sbi_header_t header;
+    char *location = NULL;
+
+    evs = cJSON_CreateObject();
+    ogs_assert(evs);
+    if (server) {
+        memset(&header, 0, sizeof(header));
+        header.service.name = OpenAPI_service_name_ToString(OpenAPI_service_name_npcf_policyauthorization);
+        header.api.version = (char *)OGS_SBI_API_V1;
+        header.resource.component[0] = (char *)OGS_SBI_RESOURCE_NAME_APP_SESSIONS;
+        header.resource.component[1] = (char *)app->app_session_id;
+        header.resource.component[2] = (char *)OGS_SBI_RESOURCE_NAME_EVENTS_SUBSCRIPTION;
+        location = ogs_sbi_server_uri(server, &header);
+        ogs_assert(location);
+        cJSON_AddStringToObject(evs, "evSubsUri", location);
+        ogs_free(location);
+    }
+    notifs = cJSON_AddArrayToObject(evs, "evNotifs");
+    ogs_assert(notifs);
+    usage_report_add(evs, report);
+    return evs;
+}
+
+/*
+ * Send the SMF the PCC rules of the application session with what the sponsor and the usage thresholds change: the charging data
+ * (SPON_CON_LEVEL) and the usage monitoring data they refer to, or the end of the monitoring.
+ */
+static void app_usage_send(pcf_sess_t *sess, pcf_app_t *app, const usage_params_t *p, bool monitor, bool end_monitor)
+{
+    OpenAPI_sm_policy_decision_t SmPolicyDecision;
+    OpenAPI_list_t *PccRuleList = NULL, *QosDecisionList = NULL;
+    OpenAPI_lnode_t *node = NULL;
+    int i;
+
+    if (app->num_of_pcc_rule == 0)
+        return;
+
+    memset(&SmPolicyDecision, 0, sizeof(SmPolicyDecision));
+    PccRuleList = OpenAPI_list_create();
+    ogs_assert(PccRuleList);
+    QosDecisionList = OpenAPI_list_create();
+    ogs_assert(QosDecisionList);
+
+    for (i = 0; i < app->num_of_pcc_rule; i++) {
+        ogs_pcc_rule_t *pcc_rule = &app->pcc_rule[i];
+        OpenAPI_pcc_rule_t *PccRule = ogs_sbi_build_pcc_rule(pcc_rule, 0);
+        OpenAPI_qos_data_t *QosData = NULL;
+
+        ogs_assert(PccRule);
+        ogs_sbi_decision_add_traffic_control(&SmPolicyDecision, PccRule, pcc_rule);
+        if (p->sponsored)
+            ogs_sbi_decision_add_sponsor(&SmPolicyDecision, PccRule, app->chg_id, p->spon_id, p->asp_id);
+        if (monitor)
+            ogs_sbi_decision_add_usage_monitoring(&SmPolicyDecision, PccRule, app->um_id,
+                    p->total, p->uplink, p->downlink, p->duration);
+        OpenAPI_list_add(PccRuleList, OpenAPI_map_create(PccRule->pcc_rule_id, PccRule));
+
+        QosData = ogs_sbi_build_qos_data(pcc_rule);
+        ogs_assert(QosData);
+        OpenAPI_list_add(QosDecisionList, OpenAPI_map_create(QosData->qos_id, QosData));
+    }
+    if (end_monitor)
+        ogs_sbi_decision_end_usage_monitoring(&SmPolicyDecision, app->um_id);
+    if (monitor || end_monitor)
+        ogs_sbi_decision_add_us_re_trigger(&SmPolicyDecision);
+
+    SmPolicyDecision.pcc_rules = PccRuleList;
+    SmPolicyDecision.qos_decs = QosDecisionList;
+    ogs_assert(true == pcf_sbi_send_smpolicycontrol_update_notify(sess, &SmPolicyDecision));
+
+    ogs_sbi_decision_free_traffic_control(&SmPolicyDecision);
+    OpenAPI_list_free(SmPolicyDecision.policy_ctrl_req_triggers);
+    OpenAPI_list_for_each(PccRuleList, node) {
+        OpenAPI_map_t *Map = node->data;
+
+        if (Map) {
+            if (Map->value) ogs_sbi_free_pcc_rule(Map->value);
+            ogs_free(Map);
+        }
+    }
+    OpenAPI_list_free(PccRuleList);
+    OpenAPI_list_for_each(QosDecisionList, node) {
+        OpenAPI_map_t *Map = node->data;
+
+        if (Map) {
+            if (Map->value) ogs_sbi_free_qos_data(Map->value);
+            ogs_free(Map);
+        }
+    }
+    OpenAPI_list_free(QosDecisionList);
+}
+
+/*
+ * Bring the SMF to what the application session now asks for: the sponsor identity of the charging data, the thresholds of the usage
+ * monitoring, or the end of both. thresholds_given: the request carried the subscription, so the thresholds apply anew (a report
+ * of reached thresholds stops the monitoring until the application function provides them again, clause 4.2.5.6).
+ */
+static void app_usage_apply(pcf_sess_t *sess, pcf_app_t *app, bool thresholds_given)
+{
+    usage_params_t p;
+    bool monitor, end_monitor;
+    char *sig = NULL;
+
+    app_usage_params(sess, app->context, &p);
+
+    monitor = p.sponsored && p.usage_report && p.has_thres &&
+        OGS_SBI_FEATURES_IS_SET(sess->smpolicycontrol_features, OGS_SBI_NPCF_SMPOLICYCONTROL_UMC);
+    sig = ogs_msprintf("%d|%s|%s|%d|%ld|%ld|%ld|%d", p.sponsored, p.asp_id ? p.asp_id : "", p.spon_id ? p.spon_id : "",
+            monitor, p.total, p.uplink, p.downlink, p.duration);
+    ogs_assert(sig);
+
+    if (!app->chg_id) {
+        app->chg_id = ogs_msprintf("chg-%s", app->app_session_id);
+        app->um_id = ogs_msprintf("um-%s", app->app_session_id);
+        ogs_assert(app->chg_id && app->um_id);
+    }
+
+    /* the thresholds that are reached stay stopped until the application function gives new ones */
+    if (app->um_sig && !strcmp(app->um_sig, sig) && !(monitor && thresholds_given)) {
+        ogs_free(sig);
+        return;
+    }
+    if (!app->um_sig && !p.sponsored) {
+        /* nothing was ever configured and nothing is asked for */
+        app->um_sig = sig;
+        return;
+    }
+
+    end_monitor = app->um_active && !monitor;
+    app_usage_send(sess, app, &p, monitor, end_monitor);
+
+    app->um_active = monitor;
+    if (app->um_sig)
+        ogs_free(app->um_sig);
+    app->um_sig = sig;
+}
+
+static bool content_has_evsubsc(const char *content)
+{
+    cJSON *patch = content ? cJSON_Parse(content) : NULL;
+    cJSON *asc = patch ? cJSON_GetObjectItem(patch, "ascReqData") : NULL;
+    bool has = asc && cJSON_HasObjectItem(asc, "evSubsc");
+
+    if (patch)
+        cJSON_Delete(patch);
+    return has;
+}
+
 bool pcf_npcf_policyauthorization_handle_events_subscription_put(
         pcf_sess_t *sess, pcf_app_t *app_session, ogs_sbi_stream_t *stream,
         ogs_sbi_message_t *recvmsg, const char *content)
@@ -911,6 +1170,7 @@ bool pcf_npcf_policyauthorization_handle_events_subscription_put(
 
     if (location)
         ogs_free(location);
+    app_usage_apply(sess, app_session, true);
     return true;
 }
 
@@ -938,6 +1198,7 @@ bool pcf_npcf_policyauthorization_handle_events_subscription_delete(
     cJSON_DeleteItemFromObject(asc, "evSubsc");
     app_events_refresh(app_session);
     ogs_assert(true == ogs_sbi_send_http_status_no_content(stream));
+    app_usage_apply(sess, app_session, false);
     return true;
 }
 
@@ -1083,6 +1344,20 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
         AscReqData->supp_feat =
             ogs_uint64_to_string(sess->policyauthorization_features);
         ogs_assert(AscReqData->supp_feat);
+    }
+
+    {
+        cJSON *requested = OpenAPI_app_session_context_convertToJSON(recvmsg->AppSessionContext);
+        bool refused = requested && sponsored_not_authorized(sess, requested);
+
+        if (requested)
+            cJSON_Delete(requested);
+        if (refused) {
+            strerror = ogs_msprintf("[%s:%d] The SMF does not support the sponsored connectivity that the request enables",
+                    pcf_ue_sm->supi, sess->psi);
+            status = OGS_SBI_HTTP_STATUS_FORBIDDEN;
+            goto cleanup;
+        }
     }
 
     MediaComponentList = AscReqData->med_components;
@@ -1509,6 +1784,9 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
     }
     OpenAPI_list_free(QosDecisionList);
 
+    /* the sponsor and the usage thresholds of the application function (clause 4.2.2.5) */
+    app_usage_apply(sess, app_session, true);
+
     ogs_ims_data_free(&ims_data);
     OGS_SESSION_DATA_FREE(&session_data);
 
@@ -1641,11 +1919,36 @@ bool pcf_npcf_policyauthorization_handle_update(
 
     /* TS 29.514 V19.8.0 clause 4.2.3.2: a PATCH may carry only the events subscription (evSubsc, or null to remove it) */
     if (!AscUpdateData->med_components && !AscUpdateData->ev_subsc &&
-        !AscUpdateData->is_ev_subsc_null) {
+        !AscUpdateData->is_ev_subsc_null && !AscUpdateData->spon_id && !AscUpdateData->asp_id &&
+        AscUpdateData->spon_status == OpenAPI_sponsoring_status_NULL) {
         strerror = ogs_msprintf("[%s:%d] No AscUpdateData->MediaCompoenent",
                 pcf_ue_sm->supi, sess->psi);
         status = OGS_SBI_HTTP_STATUS_BAD_REQUEST;
         goto cleanup;
+    }
+
+    /* the context as the PATCH leaves it (clause 4.2.3.5): a sponsor that the SMF cannot serve is refused before anything changes */
+    if (content && app_session->context) {
+        cJSON *patch = cJSON_Parse(content);
+        cJSON *asc_patch = patch ? cJSON_GetObjectItem(patch, "ascReqData") : NULL;
+        cJSON *after = cJSON_Duplicate(app_session->context, 1);
+        cJSON *asc_after = after ? cJSON_GetObjectItem(after, "ascReqData") : NULL;
+        bool refused = false;
+
+        if (cJSON_IsObject(asc_patch) && cJSON_IsObject(asc_after)) {
+            json_merge_patch(asc_after, asc_patch);
+            refused = sponsored_not_authorized(sess, after);
+        }
+        if (after)
+            cJSON_Delete(after);
+        if (patch)
+            cJSON_Delete(patch);
+        if (refused) {
+            strerror = ogs_msprintf("[%s:%d] The SMF does not support the sponsored connectivity that the request enables",
+                    pcf_ue_sm->supi, sess->psi);
+            status = OGS_SBI_HTTP_STATUS_FORBIDDEN;
+            goto cleanup;
+        }
     }
 
     MediaComponentList = AscUpdateData->med_components;
@@ -2063,6 +2366,9 @@ bool pcf_npcf_policyauthorization_handle_update(
     succ_res_alloc_request_free(&SmPolicyDecision);
     ogs_sbi_decision_free_traffic_control(&SmPolicyDecision);
 
+    /* the sponsor and the usage thresholds that the PATCH changes (clause 4.2.3.5) */
+    app_usage_apply(sess, app_session, content_has_evsubsc(content));
+
     OpenAPI_list_for_each(PccRuleList, node) {
         PccRuleMap = node->data;
         if (PccRuleMap) {
@@ -2132,7 +2438,7 @@ cleanup:
     return false;
 }
 
-static cJSON *delete_events_report(pcf_app_t *app, const char *content);
+static cJSON *delete_events_report(pcf_app_t *app, const char *content, const OpenAPI_accu_usage_report_t *usage);
 
 bool pcf_npcf_policyauthorization_handle_delete(
         pcf_sess_t *sess, pcf_app_t *app_session,
@@ -2154,8 +2460,47 @@ bool pcf_npcf_policyauthorization_handle_delete(
 
     ogs_assert(app_session);
 
+    /*
+     * TS 29.514 V19.8.0 clause 4.2.4.3: while the SMF monitors the usage, the PCF immediately configures the SMF to report it (the
+     * monitoring ends together with the PCC rules, TS 29.512 V19.7.0 clause 4.2.6.5.3.2) and answers when the usage arrives.
+     */
+    if (app_session->um_active && app_session->um_id) {
+        memset(&SmPolicyDecision, 0, sizeof(SmPolicyDecision));
+        PccRuleList = OpenAPI_list_create();
+        ogs_assert(PccRuleList);
+        QosDecisionList = OpenAPI_list_create();
+        ogs_assert(QosDecisionList);
+        for (i = 0; i < app_session->num_of_pcc_rule; i++) {
+            OpenAPI_list_add(PccRuleList, OpenAPI_map_create(app_session->pcc_rule[i].id, NULL));
+            OpenAPI_list_add(QosDecisionList, OpenAPI_map_create(app_session->pcc_rule[i].id, NULL));
+        }
+        if (PccRuleList->count) SmPolicyDecision.pcc_rules = PccRuleList;
+        if (QosDecisionList->count) SmPolicyDecision.qos_decs = QosDecisionList;
+        ogs_sbi_decision_end_usage_monitoring(&SmPolicyDecision, app_session->um_id);
+        ogs_sbi_decision_add_us_re_trigger(&SmPolicyDecision);
+
+        app_session->delete_pending = true;
+        app_session->delete_stream_id = ogs_sbi_id_from_stream(stream);
+        if (content && *content)
+            app_session->delete_content = ogs_strdup(content);
+        if (!pcf_sbi_send_smpolicycontrol_delete_pending_notify(sess, app_session, &SmPolicyDecision))
+            pcf_npcf_policyauthorization_delete_complete(app_session, NULL);
+
+        ogs_sbi_decision_free_traffic_control(&SmPolicyDecision);
+        OpenAPI_list_free(SmPolicyDecision.policy_ctrl_req_triggers);
+        OpenAPI_list_for_each(PccRuleList, node) {
+            if (node->data) ogs_free(node->data);
+        }
+        OpenAPI_list_free(PccRuleList);
+        OpenAPI_list_for_each(QosDecisionList, node) {
+            if (node->data) ogs_free(node->data);
+        }
+        OpenAPI_list_free(QosDecisionList);
+        return true;
+    }
+
     /* TS 29.514 V19.8.0 clause 5.3.3.4.2.2: 200 with the events that the deletion asked for, else 204 */
-    report = delete_events_report(app_session, content);
+    report = delete_events_report(app_session, content, NULL);
     if (report) {
         ogs_sbi_response_t *response = ogs_sbi_response_new();
         char *text = cJSON_Print(report);
@@ -2255,7 +2600,7 @@ static void app_outcome_set(pcf_app_t *app, const char *rule_id, bool active)
  * the information: the outcome of the resources allocation of the rules that the application session holds. Returns the partial
  * AppSessionContext with evsNotif (clause 4.2.4.2), or NULL when there is nothing to report.
  */
-static cJSON *delete_events_report(pcf_app_t *app, const char *content)
+static cJSON *delete_events_report(pcf_app_t *app, const char *content, const OpenAPI_accu_usage_report_t *usage)
 {
     cJSON *body = NULL, *events = NULL, *event = NULL;
     cJSON *asc = NULL, *evs_notif = NULL, *notifs = NULL;
@@ -2263,10 +2608,8 @@ static cJSON *delete_events_report(pcf_app_t *app, const char *content)
     bool want_ok = false, want_failed = false;
     int i;
 
-    if (!content || !*content) return NULL;
-    body = cJSON_Parse(content);
-    if (!body) return NULL;
-    events = cJSON_GetObjectItemCaseSensitive(body, "events");
+    body = (content && *content) ? cJSON_Parse(content) : NULL;
+    events = body ? cJSON_GetObjectItemCaseSensitive(body, "events") : NULL;
     cJSON_ArrayForEach(event, events) {
         const cJSON *name = cJSON_GetObjectItemCaseSensitive(event, "event");
 
@@ -2275,8 +2618,8 @@ static cJSON *delete_events_report(pcf_app_t *app, const char *content)
             if (!strcmp(name->valuestring, "FAILED_RESOURCES_ALLOCATION")) want_failed = true;
         }
     }
-    cJSON_Delete(body);
-    if (!want_ok && !want_failed) return NULL;
+    if (body) cJSON_Delete(body);
+    if (!want_ok && !want_failed && !usage) return NULL;
 
     ok_ids = OpenAPI_list_create();
     failed_ids = OpenAPI_list_create();
@@ -2313,6 +2656,9 @@ static cJSON *delete_events_report(pcf_app_t *app, const char *content)
     OpenAPI_list_free(ok_ids);
     OpenAPI_list_free(failed_ids);
 
+    /* the accumulated usage of the sponsored data connectivity (TS 29.514 V19.8.0 clause 4.2.4.3) */
+    if (usage)
+        usage_report_add(evs_notif, usage);
     if (cJSON_GetArraySize(notifs) == 0) {
         cJSON_Delete(asc);
         return NULL;
@@ -2360,6 +2706,42 @@ static cJSON *flows_of_rules(pcf_app_t *app, OpenAPI_list_t *rule_ids)
         }
     }
     return flows;
+}
+
+/*
+ * The deletion that waited for the usage (clause 4.2.4.3): answer the application function, with the usage when the SMF reported it,
+ * and remove the application session.
+ */
+void pcf_npcf_policyauthorization_delete_complete(pcf_app_t *app, const OpenAPI_accu_usage_report_t *usage)
+{
+    ogs_sbi_stream_t *stream = NULL;
+    cJSON *report = NULL;
+
+    ogs_assert(app);
+    if (!app->delete_pending)
+        return;
+    app->delete_pending = false;
+
+    stream = ogs_sbi_stream_find_by_id(app->delete_stream_id);
+    if (stream) {
+        report = delete_events_report(app, app->delete_content, usage);
+        if (report) {
+            ogs_sbi_response_t *response = ogs_sbi_response_new();
+            char *text = cJSON_Print(report);
+
+            ogs_assert(response);
+            ogs_assert(text);
+            response->status = OGS_SBI_HTTP_STATUS_OK;
+            ogs_sbi_header_set(response->http.headers, OGS_SBI_CONTENT_TYPE, OGS_SBI_CONTENT_JSON_TYPE);
+            response->http.content = text;
+            response->http.content_length = strlen(text);
+            ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+            cJSON_Delete(report);
+        } else {
+            ogs_assert(true == ogs_sbi_send_http_status_no_content(stream));
+        }
+    }
+    pcf_app_remove(app);
 }
 
 static bool app_owns_rule(pcf_app_t *app, const char *id)
@@ -2473,6 +2855,37 @@ bool pcf_npcf_smpolicycontrol_handle_update(pcf_sess_t *sess,
             }
 
             pcf_sbi_send_policyauthorization_event_notify(app, notification);
+            cJSON_Delete(notification);
+        }
+    }
+
+    /*
+     * accuUsageReports (clause 4.2.4.10): the usage of the sponsored data connectivity goes to the application function, in the
+     * answer of its deletion when that waits for it (TS 29.514 V19.8.0 clause 4.2.4.3), else as a notification (clause 4.2.5.6).
+     * The monitoring does not continue: the response carries no thresholds.
+     */
+    OpenAPI_list_for_each(UpdateData->accu_usage_reports, node) {
+        OpenAPI_accu_usage_report_t *usage = node->data;
+        pcf_app_t *owner = NULL;
+
+        if (!usage || !usage->ref_um_ids)
+            continue;
+        ogs_list_for_each(&sess->app_list, app) {
+            if (app->um_id && !strcmp(app->um_id, usage->ref_um_ids)) {
+                owner = app;
+                break;
+            }
+        }
+        if (!owner)
+            continue;
+
+        owner->um_active = false;
+        if (owner->delete_pending) {
+            pcf_npcf_policyauthorization_delete_complete(owner, usage);
+        } else if (owner->ev_usage_report && owner->ev_notif_uri) {
+            cJSON *notification = usage_report_notif(owner, usage);
+
+            pcf_sbi_send_policyauthorization_event_notify(owner, notification);
             cJSON_Delete(notification);
         }
     }

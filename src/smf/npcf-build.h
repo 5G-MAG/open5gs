@@ -36,6 +36,18 @@ typedef struct smf_npcf_smpolicycontrol_rule_report_s {
     char *rule_id[OGS_MAX_NUM_OF_PCC_RULE];
 } smf_npcf_smpolicycontrol_rule_report_t;
 
+/* An accumulated usage report of a usage monitoring control instance (TS 29.512 V19.7.0 clause 4.2.4.10) */
+typedef struct smf_npcf_smpolicycontrol_usage_report_s {
+    char *um_id;
+    bool trigger; /* US_RE: the thresholds were reached or the last rule is gone; false when the PCF asked for the usage */
+    uint64_t total;
+    uint64_t uplink;
+    uint64_t downlink;
+    uint32_t time;
+} smf_npcf_smpolicycontrol_usage_report_t;
+
+ogs_sbi_request_t *smf_npcf_smpolicycontrol_build_usage_update(
+        smf_sess_t *sess, void *data);
 ogs_sbi_request_t *smf_npcf_smpolicycontrol_build_update(
         smf_sess_t *sess, void *data);
 ogs_sbi_request_t *smf_npcf_smpolicycontrol_build_delete(

@@ -313,6 +313,9 @@ static void sess_5gc_timeout(ogs_pfcp_xact_t *xact, void *data)
         ogs_assert(strerror);
 
         ogs_error("%s", strerror);
+        /* a usage query that is not answered is reported to the PCF as no usage (TS 29.512 V19.7.0 clause 4.2.4.10.1) */
+        if (xact->modify_flags & OGS_PFCP_MODIFY_USAGE_MONITORING)
+            smf_um_report_unanswered_queries(sess);
         if (stream) {
             smf_sbi_send_sm_context_update_error_log(
                 stream, OGS_SBI_HTTP_STATUS_GATEWAY_TIMEOUT, strerror, NULL);
@@ -676,6 +679,33 @@ int smf_5gc_pfcp_send_qos_flow_list_modification_request(
 
     rv = smf_pfcp_send_modify_list(
             sess, smf_n4_build_qos_flow_to_modify_list, xact, duration);
+    ogs_expect(rv == OGS_OK);
+
+    return rv;
+}
+
+/*
+ * Send what is pending for the usage monitoring control instances (create, update, query) in one Session Modification Request.
+ * The answer carries the usage report of a Query URR.
+ */
+int smf_5gc_pfcp_send_usage_monitoring_request(smf_sess_t *sess)
+{
+    int rv;
+    ogs_pfcp_xact_t *xact = NULL;
+
+    ogs_assert(sess);
+
+    xact = ogs_pfcp_xact_local_create(
+            sess->pfcp_node, sess_5gc_timeout, OGS_UINT_TO_POINTER(sess->id));
+    if (!xact) {
+        ogs_error("ogs_pfcp_xact_local_create() failed");
+        return OGS_ERROR;
+    }
+
+    xact->local_seid = sess->smf_n4_seid;
+    xact->modify_flags = OGS_PFCP_MODIFY_USAGE_MONITORING;
+
+    rv = smf_pfcp_send_modify_list(sess, smf_n4_build_usage_monitoring_request, xact, 0);
     ogs_expect(rv == OGS_OK);
 
     return rv;

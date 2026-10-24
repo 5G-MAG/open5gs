@@ -216,6 +216,7 @@ typedef struct pcf_app_s {
     /* The events of ascReqData.evSubsc that the PCF acts on (TS 29.514 V19.8.0 clause 4.2.2.10) and where it notifies them */
     bool ev_succ_res_alloc;
     bool ev_fail_res_alloc;
+    bool ev_usage_report;
     char *ev_notif_uri;
     ogs_sbi_client_t *ev_client; /* the client of ev_notif_uri when it is not the one of notif_uri */
 
@@ -223,6 +224,19 @@ typedef struct pcf_app_s {
     int num_of_pcc_rule;
     /* The medCompN of the media component that each PCC rule serves (TS 29.514 V19.8.0 clause 5.6.2.3: the key of the map of media components) */
     int med_comp_n[OGS_MAX_NUM_OF_PCC_RULE];
+
+    /*
+     * Usage monitoring for sponsored connectivity (TS 29.514 V19.8.0 clause 4.2.2.5; TS 29.512 V19.7.0 clause 4.2.4.10): the monitoring
+     * key and the charging data at the SMF, the thresholds the SMF has (to see a change) and whether it is monitoring.
+     */
+    char *um_id;
+    char *chg_id;
+    char *um_sig;
+    bool um_active;
+    /* A deletion that waits for the accumulated usage from the SMF (clause 4.2.4.3) */
+    bool delete_pending;
+    ogs_pool_id_t delete_stream_id;
+    char *delete_content;
 
     /* The outcome of the last resources allocation that the SMF reported for each PCC rule (TS 29.512 V19.7.0 clause 4.2.4.14) */
     struct {

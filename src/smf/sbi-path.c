@@ -1171,6 +1171,35 @@ bool smf_sbi_send_status_notify(smf_sess_t *sess)
     return rc;
 }
 
+void smf_sbi_send_smpolicycontrol_usage_report(
+        smf_sess_t *sess, const char *um_id,
+        uint64_t total, uint64_t uplink, uint64_t downlink, uint32_t time)
+{
+    smf_npcf_smpolicycontrol_usage_report_t *report = NULL;
+    int r;
+
+    ogs_assert(sess);
+    ogs_assert(um_id);
+
+    if (!PCF_SM_POLICY_ASSOCIATED(sess))
+        return;
+
+    report = ogs_calloc(1, sizeof(*report));
+    ogs_assert(report);
+    report->um_id = ogs_strdup(um_id);
+    ogs_assert(report->um_id);
+    report->trigger = true;
+    report->total = total;
+    report->uplink = uplink;
+    report->downlink = downlink;
+    report->time = time;
+
+    r = smf_sbi_discover_and_send(
+            OpenAPI_service_name_npcf_smpolicycontrol, NULL,
+            smf_npcf_smpolicycontrol_build_usage_update, sess, NULL, 0, report);
+    ogs_expect(r == OGS_OK);
+}
+
 void smf_sbi_send_smpolicycontrol_rule_report(
         smf_sess_t *sess, bool success, smf_bearer_t **qos_flow, int num_of_qos_flow)
 {
