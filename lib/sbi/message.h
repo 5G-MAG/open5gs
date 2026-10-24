@@ -597,9 +597,11 @@ typedef struct ogs_sbi_message_s {
     OpenAPI_sm_policy_delete_data_t *SmPolicyDeleteData;
     OpenAPI_authorized_network_slice_info_t *AuthorizedNetworkSliceInfo;
     OpenAPI_pcf_binding_t *PcfBinding;
+    OpenAPI_pcf_binding_patch_t *PcfBindingPatch;
     OpenAPI_app_session_context_t *AppSessionContext;
     OpenAPI_app_session_context_update_data_patch_t
         *AppSessionContextUpdateDataPatch;
+    OpenAPI_termination_info_t *TerminationInfo;
     OpenAPI_sm_policy_notification_t *SmPolicyNotification;
     OpenAPI_termination_notification_t *TerminationNotification;
     OpenAPI_deregistration_data_t *DeregistrationData;

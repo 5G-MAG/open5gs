@@ -143,9 +143,17 @@ void bsf_state_operational(ogs_fsm_t *s, bsf_event_t *e)
                 } else {
                     SWITCH(message.h.method)
                     CASE(OGS_SBI_HTTP_METHOD_POST)
-                        if (message.PcfBinding &&
-                            (message.PcfBinding->ipv4_addr ||
-                             message.PcfBinding->ipv6_prefix)) {
+                        if (!message.PcfBinding) {
+                            /* TS 29.521 table 5.3.2.3.1-2: the request carries a PcfBinding */
+                            ogs_error("No PcfBinding in the request");
+                            ogs_assert(true ==
+                                ogs_sbi_server_send_error(stream,
+                                    OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                                    &message, "No PcfBinding", NULL, NULL));
+                            goto cleanup;
+                        }
+                        if (message.PcfBinding->ipv4_addr ||
+                            message.PcfBinding->ipv6_prefix) {
 
                             if (message.PcfBinding->ipv4_addr) {
                                 sess = bsf_sess_find_by_ipv4addr(
@@ -197,6 +205,22 @@ void bsf_state_operational(ogs_fsm_t *s, bsf_event_t *e)
                         }
                         break;
                     CASE(OGS_SBI_HTTP_METHOD_GET)
+                        if (!message.param.ipv4addr &&
+                            !message.param.ipv6prefix) {
+                            /*
+                             * TS 29.521 V19.7.0 clause 4.2.4.2: a combination of query parameters without a UE address is
+                             * answered 400 with MANDATORY_QUERY_PARAM_MISSING.
+                             */
+                            ogs_error("No UE address in the query [%s]",
+                                    message.h.uri);
+                            ogs_assert(true ==
+                                ogs_sbi_server_send_error(stream,
+                                    OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                                    &message, "No UE address in the query",
+                                    message.h.uri,
+                                    "MANDATORY_QUERY_PARAM_MISSING"));
+                            goto cleanup;
+                        }
                         if (message.param.ipv4addr) {
                             sess = bsf_sess_find_by_ipv4addr(
                                         message.param.ipv4addr, &invalid);
@@ -225,10 +249,36 @@ void bsf_state_operational(ogs_fsm_t *s, bsf_event_t *e)
                                 goto cleanup;
                             }
                         }
+                        /*
+                         * TS 29.521 V19.7.0 table 5.3.2.3.2-1: dnn and snssai narrow the match; a binding of another DNN or
+                         * slice does not match the query.
+                         */
+                        if (sess && message.param.dnn &&
+                            (!sess->dnn ||
+                             ogs_strcasecmp(message.param.dnn, sess->dnn)))
+                            sess = NULL;
+                        if (sess && message.param.snssai_presence &&
+                            (message.param.s_nssai.sst != sess->s_nssai.sst ||
+                             message.param.s_nssai.sd.v != sess->s_nssai.sd.v))
+                            sess = NULL;
                         break;
                     DEFAULT
                         ogs_error("Invalid HTTP method [%s]", message.h.method);
                     END
+                }
+
+                if (!sess && !message.h.resource.component[1] &&
+                        !strcmp(message.h.method, OGS_SBI_HTTP_METHOD_GET)) {
+                    /* TS 29.521 table 5.3.2.3.2-3: 204 when no binding matches the query parameters */
+                    ogs_sbi_message_t sendmsg;
+                    ogs_sbi_response_t *response;
+
+                    memset(&sendmsg, 0, sizeof(sendmsg));
+                    response = ogs_sbi_build_response(
+                                &sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
+                    ogs_assert(response);
+                    ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+                    break;
                 }
 
                 if (!sess) {

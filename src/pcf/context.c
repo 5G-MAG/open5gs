@@ -99,8 +99,11 @@ static void pcf_qos_profile_clear(void)
 {
     int i;
 
-    for (i = 0; i < self.num_of_qos_profile; i++)
+    for (i = 0; i < self.num_of_qos_profile; i++) {
         ogs_free(self.qos_profile[i].reference);
+        if (self.qos_profile[i].dynamic_rule.id)
+            ogs_free(self.qos_profile[i].dynamic_rule.id);
+    }
 
     memset(self.qos_profile, 0, sizeof(self.qos_profile));
     self.num_of_qos_profile = 0;
@@ -219,6 +222,29 @@ static int policy_conf_validation(void)
     return OGS_OK;
 }
 
+ogs_pcc_rule_t *pcf_qos_profile_dynamic_pcc_rule(const char *reference)
+{
+    int i;
+
+    if (!reference) return NULL;
+    for (i = 0; i < self.num_of_qos_profile; i++) {
+        if (self.qos_profile[i].dynamic && !strcmp(self.qos_profile[i].reference, reference))
+            return &self.qos_profile[i].dynamic_rule;
+    }
+    return NULL;
+}
+
+ogs_pcc_rule_t *pcf_qos_profile_dynamic_pcc_rule_by_index(uint8_t qos_index)
+{
+    int i;
+
+    for (i = 0; i < self.num_of_qos_profile; i++) {
+        if (self.qos_profile[i].dynamic && self.qos_profile[i].qos_index == qos_index)
+            return &self.qos_profile[i].dynamic_rule;
+    }
+    return NULL;
+}
+
 static bool pcf_qos_profile_reference_exists(const char *reference)
 {
     int i;
@@ -329,6 +355,8 @@ static int parse_qos_profiles_conf(ogs_yaml_iter_t *parent)
         const char *qos_index_string = NULL;
         char *end = NULL;
         long qos_index = 0;
+        bool has_arp = false, has_precedence = false;
+        long arp_priority = 0, arp_capability = 0, arp_vulnerability = 0, precedence = 0;
 
         OGS_YAML_ARRAY_NEXT(&profile_array, &profile_iter);
         while (ogs_yaml_iter_next(&profile_iter)) {
@@ -339,6 +367,30 @@ static int parse_qos_profiles_conf(ogs_yaml_iter_t *parent)
                 reference = ogs_yaml_iter_value(&profile_iter);
             } else if (!strcmp(profile_key, "qos_index")) {
                 qos_index_string = ogs_yaml_iter_value(&profile_iter);
+            } else if (!strcmp(profile_key, "precedence")) {
+                precedence = strtol(ogs_yaml_iter_value(&profile_iter), NULL, 10);
+                has_precedence = precedence > 0;
+            } else if (!strcmp(profile_key, "arp")) {
+                ogs_yaml_iter_t arp_iter;
+
+                ogs_yaml_iter_recurse(&profile_iter, &arp_iter);
+                while (ogs_yaml_iter_next(&arp_iter)) {
+                    const char *arp_key = ogs_yaml_iter_key(&arp_iter);
+                    const char *arp_value = ogs_yaml_iter_value(&arp_iter);
+
+                    ogs_assert(arp_key);
+                    if (!arp_value) continue;
+                    if (!strcmp(arp_key, "priority_level")) {
+                        arp_priority = strtol(arp_value, NULL, 10);
+                        has_arp = true;
+                    } else if (!strcmp(arp_key, "pre_emption_capability")) {
+                        arp_capability = strtol(arp_value, NULL, 10);
+                    } else if (!strcmp(arp_key, "pre_emption_vulnerability")) {
+                        arp_vulnerability = strtol(arp_value, NULL, 10);
+                    } else {
+                        ogs_warn("unknown qos_profiles arp key `%s`", arp_key);
+                    }
+                }
             } else {
                 ogs_warn("unknown qos_profiles key `%s`", profile_key);
             }
@@ -377,6 +429,26 @@ static int parse_qos_profiles_conf(ogs_yaml_iter_t *parent)
         ogs_assert(self.qos_profile[self.num_of_qos_profile].reference);
         self.qos_profile[self.num_of_qos_profile].qos_index =
             (uint8_t)qos_index;
+        if (has_arp && has_precedence &&
+                arp_priority >= 1 && arp_priority <= 15 &&
+                (arp_capability == OGS_5GC_PRE_EMPTION_DISABLED || arp_capability == OGS_5GC_PRE_EMPTION_ENABLED) &&
+                (arp_vulnerability == OGS_5GC_PRE_EMPTION_DISABLED || arp_vulnerability == OGS_5GC_PRE_EMPTION_ENABLED)) {
+            ogs_pcc_rule_t *rule = &self.qos_profile[self.num_of_qos_profile].dynamic_rule;
+
+            self.qos_profile[self.num_of_qos_profile].dynamic = true;
+            rule->id = ogs_msprintf("dynamic-%s", reference);
+            ogs_assert(rule->id);
+            rule->qos.index = (uint8_t)qos_index;
+            rule->qos.arp.priority_level = (uint8_t)arp_priority;
+            rule->qos.arp.pre_emption_capability = (uint8_t)arp_capability;
+            rule->qos.arp.pre_emption_vulnerability = (uint8_t)arp_vulnerability;
+            rule->flow_status = 2; /* enabled (OGS_DIAM_RX_FLOW_STATUS_ENABLED) */
+            rule->precedence = (uint32_t)precedence;
+        } else if (has_arp || has_precedence) {
+            ogs_warn("qos_profiles[%s]: arp (priority_level 1 to 15, pre_emption_capability and "
+                    "pre_emption_vulnerability 1 or 2) and precedence have to be given together, no "
+                    "dynamic PCC rule", reference);
+        }
         self.num_of_qos_profile++;
 
 next:
@@ -954,6 +1026,8 @@ int pcf_app_remove(pcf_app_t *app)
         OGS_PCC_RULE_FREE(&app->pcc_rule[i]);
     }
 
+    if (app->context)
+        cJSON_Delete(app->context);
     if (app->notif_uri)
         ogs_free(app->notif_uri);
     if (app->naf.client)

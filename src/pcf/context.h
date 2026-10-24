@@ -42,6 +42,14 @@ extern int __pcf_log_domain;
 typedef struct pcf_qos_profile_s {
     char    *reference;
     uint8_t  qos_index;
+
+    /*
+     * Operator-defined parameters of the PCC rule that the PCF creates for an AF request that cites this reference
+     * when the subscriber's session data holds no PCC rule with the QoS index (TS 29.514: the PCF derives the
+     * PCC rules from the service information). Present only when the profile carries both arp and precedence.
+     */
+    bool           dynamic;
+    ogs_pcc_rule_t dynamic_rule;
 } pcf_qos_profile_t;
 
 typedef struct pcf_context_s {
@@ -202,8 +210,13 @@ typedef struct pcf_app_s {
         ogs_sbi_client_t *client;
     } naf;
 
+    /* The AppSessionContext as the resource now reads (TS 29.514 V19.8.0 clause 5.3.3.3.1): the creation request with the modifications applied */
+    cJSON *context;
+
     ogs_pcc_rule_t pcc_rule[OGS_MAX_NUM_OF_PCC_RULE];
     int num_of_pcc_rule;
+    /* The medCompN of the media component that each PCC rule serves (TS 29.514 V19.8.0 clause 5.6.2.3: the key of the map of media components) */
+    int med_comp_n[OGS_MAX_NUM_OF_PCC_RULE];
 
     pcf_sess_t *sess;
 } pcf_app_t;
@@ -211,6 +224,12 @@ typedef struct pcf_app_s {
 void pcf_context_init(void);
 void pcf_context_final(void);
 pcf_context_t *pcf_self(void);
+
+/* The PCC rule template of the qos_profiles entry with this reference, or NULL if the entry has none */
+ogs_pcc_rule_t *pcf_qos_profile_dynamic_pcc_rule(const char *reference);
+
+/* The same for a request without a reference: the first qos_profiles entry with this QoS index that has a template */
+ogs_pcc_rule_t *pcf_qos_profile_dynamic_pcc_rule_by_index(uint8_t qos_index);
 
 int pcf_context_parse_config(void);
 

@@ -205,10 +205,14 @@ void ogs_sbi_message_free(ogs_sbi_message_t *message)
                 message->AuthorizedNetworkSliceInfo);
     if (message->PcfBinding)
         OpenAPI_pcf_binding_free(message->PcfBinding);
+    if (message->PcfBindingPatch)
+        OpenAPI_pcf_binding_patch_free(message->PcfBindingPatch);
     if (message->AppSessionContext)
         OpenAPI_app_session_context_free(message->AppSessionContext);
     if (message->AppSessionContextUpdateDataPatch)
         OpenAPI_app_session_context_update_data_patch_free(message->AppSessionContextUpdateDataPatch);
+    if (message->TerminationInfo)
+        OpenAPI_termination_info_free(message->TerminationInfo);
     if (message->SmPolicyNotification)
         OpenAPI_sm_policy_notification_free(message->SmPolicyNotification);
     if (message->TerminationNotification)
@@ -1696,6 +1700,10 @@ static char *build_json(ogs_sbi_message_t *message)
     } else if (message->PcfBinding) {
         item = OpenAPI_pcf_binding_convertToJSON(message->PcfBinding);
         ogs_assert(item);
+    } else if (message->PcfBindingPatch) {
+        item = OpenAPI_pcf_binding_patch_convertToJSON(
+                message->PcfBindingPatch);
+        ogs_assert(item);
     } else if (message->AppSessionContext) {
         item = OpenAPI_app_session_context_convertToJSON(
                 message->AppSessionContext);
@@ -1703,6 +1711,9 @@ static char *build_json(ogs_sbi_message_t *message)
     } else if (message->AppSessionContextUpdateDataPatch) {
         item = OpenAPI_app_session_context_update_data_patch_convertToJSON(
                 message->AppSessionContextUpdateDataPatch);
+        ogs_assert(item);
+    } else if (message->TerminationInfo) {
+        item = OpenAPI_termination_info_convertToJSON(message->TerminationInfo);
         ogs_assert(item);
     } else if (message->SmPolicyNotification) {
         item = OpenAPI_sm_policy_notification_convertToJSON(
@@ -2840,6 +2851,17 @@ static int parse_json(ogs_sbi_message_t *message,
                             rv = OGS_ERROR;
                             ogs_error("JSON parse error");
                         }
+                    } else if (message->res_status == 0 &&
+                            message->h.method &&
+                            !strcmp(message->h.method,
+                                OGS_SBI_HTTP_METHOD_PATCH)) {
+                        /* the request of an update of a binding (TS 29.521 clause 5.3.3.3.2) */
+                        message->PcfBindingPatch =
+                            OpenAPI_pcf_binding_patch_parseFromJSON(item);
+                        if (!message->PcfBindingPatch) {
+                            rv = OGS_ERROR;
+                            ogs_error("JSON parse error");
+                        }
                     }
                     break;
                 } else {
@@ -2890,12 +2912,35 @@ static int parse_json(ogs_sbi_message_t *message,
                         CASE(OGS_SBI_RESOURCE_NAME_DELETE)
                             /* Nothing */
                             break;
+                        CASE(OGS_SBI_RESOURCE_NAME_TERMINATE)
+                            /* TS 29.514 clause 4.2.5.3: the PCF's request carries TerminationInfo */
+                            message->TerminationInfo =
+                                OpenAPI_termination_info_parseFromJSON(item);
+                            if (!message->TerminationInfo) {
+                                rv = OGS_ERROR;
+                                ogs_error("JSON parse error");
+                            }
+                            break;
                         DEFAULT
                             rv = OGS_ERROR;
                             ogs_error("JSON parse error");
                         END
                     } else {
                         SWITCH(message->h.method)
+                        CASE(OGS_SBI_HTTP_METHOD_GET)
+                            /* TS 29.514 clause 5.3.3.3.1: the 200 carries the AppSessionContext */
+                            if (message->res_status == OGS_SBI_HTTP_STATUS_OK) {
+                                message->AppSessionContext =
+                                    OpenAPI_app_session_context_parseFromJSON(item);
+                                if (!message->AppSessionContext) {
+                                    rv = OGS_ERROR;
+                                    ogs_error("JSON parse error");
+                                }
+                            } else {
+                                ogs_error("HTTP ERROR Status : %d",
+                                        message->res_status);
+                            }
+                            break;
                         CASE(OGS_SBI_HTTP_METHOD_PATCH)
                             if (message->res_status < 300) {
                                 message->AppSessionContextUpdateDataPatch =

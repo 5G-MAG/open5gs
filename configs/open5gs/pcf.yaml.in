@@ -43,6 +43,21 @@ pcf:
 #      qos_index: 9
 #    - reference: "low-latency"
 #      qos_index: 3
+#
+# An entry may also carry the parameters of the PCC rule that the PCF creates when an AF request cites its reference
+# and the subscriber's session data has no PCC rule with the QoS index (TS 29.514 clause 4.2.2.2: the PCF derives PCC
+# rules from the service information). Both arp and precedence have to be given; without them such a request is
+# rejected with 403 ("No PCC Rule in DB"). pre_emption_capability and pre_emption_vulnerability: 1 disabled, 2 enabled.
+# Bit rates are taken from the AF request.
+#
+#  qos_profiles:
+#    - reference: "hd-video"
+#      qos_index: 2
+#      precedence: 100
+#      arp:
+#        priority_level: 4
+#        pre_emption_capability: 1
+#        pre_emption_vulnerability: 1
 
 ################################################################################
 # PCF Policy Configuration: UE Home PLMN and SUPI Range Based Policies

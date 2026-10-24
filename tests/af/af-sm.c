@@ -165,6 +165,16 @@ void af_state_operational(ogs_fsm_t *s, af_event_t *e)
 
                 SWITCH(message.h.resource.component[2])
                 CASE(OGS_SBI_RESOURCE_NAME_TERMINATE)
+                    /*
+                     * TS 29.514 clause 4.2.5.3: the PCF provides TerminationInfo
+                     * with resUri and termCause
+                     */
+                    ogs_assert(message.TerminationInfo);
+                    ogs_assert(message.TerminationInfo->res_uri);
+                    ogs_assert(strstr(message.TerminationInfo->res_uri,
+                                message.h.resource.component[1]));
+                    ogs_assert(message.TerminationInfo->term_cause ==
+                            OpenAPI_termination_cause_PDU_SESSION_TERMINATION);
                     ogs_assert(true ==
                             ogs_sbi_send_http_status_no_content(stream));
                     af_sess_remove(app_session);
@@ -378,6 +388,10 @@ void af_state_operational(ogs_fsm_t *s, af_event_t *e)
                 sess = e->h.sbi.data;
                 ogs_assert(sess);
                 sess->last_pcf_status = message.res_status;
+                sess->last_pcf_cause[0] = '\0';
+                if (message.ProblemDetails && message.ProblemDetails->cause)
+                    ogs_cpystrn(sess->last_pcf_cause, message.ProblemDetails->cause,
+                            sizeof(sess->last_pcf_cause));
 
                 if (message.h.resource.component[1]) {
                     if (message.h.resource.component[2]) {
@@ -392,6 +406,34 @@ void af_state_operational(ogs_fsm_t *s, af_event_t *e)
                         END
                     } else {
                         SWITCH(message.h.method)
+                        CASE(OGS_SBI_HTTP_METHOD_GET)
+                            sess->last_pcf_asc_af_app_id[0] = '\0';
+                            sess->last_pcf_asc_qos_ref[0] = '\0';
+                            if (message.res_status == OGS_SBI_HTTP_STATUS_OK &&
+                                message.AppSessionContext &&
+                                message.AppSessionContext->asc_req_data) {
+                                OpenAPI_app_session_context_req_data_t *asc =
+                                    message.AppSessionContext->asc_req_data;
+                                OpenAPI_lnode_t *node = NULL;
+
+                                if (asc->af_app_id)
+                                    ogs_cpystrn(sess->last_pcf_asc_af_app_id,
+                                            asc->af_app_id,
+                                            sizeof(sess->last_pcf_asc_af_app_id));
+                                OpenAPI_list_for_each(asc->med_components, node) {
+                                    OpenAPI_map_t *map = node->data;
+                                    OpenAPI_media_component_t *mc =
+                                        map ? map->value : NULL;
+
+                                    if (mc && mc->qos_reference) {
+                                        ogs_cpystrn(sess->last_pcf_asc_qos_ref,
+                                                mc->qos_reference,
+                                                sizeof(sess->last_pcf_asc_qos_ref));
+                                        break;
+                                    }
+                                }
+                            }
+                            break;
                         CASE(OGS_SBI_HTTP_METHOD_PATCH)
                             if (message.res_status == OGS_SBI_HTTP_STATUS_OK)
                                 af_npcf_policyauthorization_handle_update(
@@ -413,10 +455,12 @@ void af_state_operational(ogs_fsm_t *s, af_event_t *e)
                             af_npcf_policyauthorization_handle_create(
                                     sess, &message);
                         else if (message.res_status ==
-                                OGS_SBI_HTTP_STATUS_FORBIDDEN)
+                                OGS_SBI_HTTP_STATUS_FORBIDDEN ||
+                                message.res_status ==
+                                OGS_SBI_HTTP_STATUS_BAD_REQUEST)
         /*
-         * 403 may be expected in negative tests, such as unknown qosReference.
-         * Do not report it as an AF test error here.
+         * 400 and 403 may be expected in negative tests, such as unknown
+         * qosReference. Do not report them as an AF test error here.
          */
                             ogs_warn("HTTP response error [%d]",
                                     message.res_status);

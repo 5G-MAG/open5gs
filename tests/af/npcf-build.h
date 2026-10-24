@@ -38,6 +38,10 @@ ogs_sbi_request_t *af_npcf_policyauthorization_build_create(
         af_sess_t *sess, void *data);
 ogs_sbi_request_t *af_npcf_policyauthorization_build_update(
         af_sess_t *sess, void *data);
+ogs_sbi_request_t *af_npcf_policyauthorization_build_remove_media(
+        af_sess_t *sess, void *data);
+ogs_sbi_request_t *af_npcf_policyauthorization_build_get(
+        af_sess_t *sess, void *data);
 ogs_sbi_request_t *af_npcf_policyauthorization_build_delete(
         af_sess_t *sess, void *data);
 

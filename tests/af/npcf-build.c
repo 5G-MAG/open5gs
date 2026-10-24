@@ -626,6 +626,79 @@ ogs_sbi_request_t *af_npcf_policyauthorization_build_delete(
     return request;
 }
 
+/* PATCH that removes the media component with the number in the parameter: its key in medComponents with the value null */
+ogs_sbi_request_t *af_npcf_policyauthorization_build_remove_media(
+        af_sess_t *sess, void *data)
+{
+    ogs_sbi_message_t message;
+    ogs_sbi_request_t *request = NULL;
+
+    OpenAPI_app_session_context_update_data_patch_t
+        AppSessionContextUpdateDataPatch;
+    OpenAPI_app_session_context_update_data_t AscUpdateData;
+    OpenAPI_list_t *MediaComponentList = NULL;
+    OpenAPI_map_t *MediaComponentMap = NULL;
+    OpenAPI_lnode_t *node = NULL;
+
+    const int *med_comp_n = data;
+
+    ogs_assert(sess);
+    ogs_assert(sess->app_session.pcf.resource_uri);
+    ogs_assert(med_comp_n);
+
+    memset(&message, 0, sizeof(message));
+    message.h.method = (char *)OGS_SBI_HTTP_METHOD_PATCH;
+    message.h.uri = sess->app_session.pcf.resource_uri;
+    message.AppSessionContextUpdateDataPatch =
+        &AppSessionContextUpdateDataPatch;
+
+    memset(&AppSessionContextUpdateDataPatch, 0,
+            sizeof(AppSessionContextUpdateDataPatch));
+    AppSessionContextUpdateDataPatch.asc_req_data = &AscUpdateData;
+    memset(&AscUpdateData, 0, sizeof(AscUpdateData));
+
+    MediaComponentList = OpenAPI_list_create();
+    ogs_assert(MediaComponentList);
+    MediaComponentMap = OpenAPI_map_create(
+            ogs_msprintf("%d", *med_comp_n), NULL);
+    ogs_assert(MediaComponentMap);
+    OpenAPI_list_add(MediaComponentList, MediaComponentMap);
+    AscUpdateData.med_components = MediaComponentList;
+
+    request = ogs_sbi_build_request(&message);
+    ogs_expect(request);
+
+    OpenAPI_list_for_each(MediaComponentList, node) {
+        MediaComponentMap = node->data;
+        if (MediaComponentMap) {
+            ogs_free(MediaComponentMap->key);
+            ogs_free(MediaComponentMap);
+        }
+    }
+    OpenAPI_list_free(MediaComponentList);
+
+    return request;
+}
+
+ogs_sbi_request_t *af_npcf_policyauthorization_build_get(
+        af_sess_t *sess, void *data)
+{
+    ogs_sbi_message_t message;
+    ogs_sbi_request_t *request = NULL;
+
+    ogs_assert(sess);
+    ogs_assert(sess->app_session.pcf.resource_uri);
+
+    memset(&message, 0, sizeof(message));
+    message.h.method = (char *)OGS_SBI_HTTP_METHOD_GET;
+    message.h.uri = sess->app_session.pcf.resource_uri;
+
+    request = ogs_sbi_build_request(&message);
+    ogs_expect(request);
+
+    return request;
+}
+
 ogs_sbi_request_t *af_npcf_policyauthorization_build_create_video(
         af_sess_t *sess, void *data)
 {

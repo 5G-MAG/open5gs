@@ -52,6 +52,9 @@ typedef struct af_sess_s {
 
     uint64_t policyauthorization_features;
     int last_pcf_status;
+    char last_pcf_asc_af_app_id[64]; /* afAppId and the qosRef of the first media component of the last AppSessionContext that the PCF returned */
+    char last_pcf_asc_qos_ref[64];
+    char last_pcf_cause[64];  /* the cause of the ProblemDetails of the last answer of the PCF, empty if none */
 
 #define PCF_APP_SESSION_ASSOCIATED(__sESS) \
     ((__sESS) && ((__sESS)->app_session.pcf_id))

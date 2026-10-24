@@ -623,7 +623,9 @@ bool pcf_npcf_smpolicycontrol_handle_delete(pcf_sess_t *sess,
     }
 
     ogs_list_for_each(&sess->app_list, app_session) {
-        pcf_sbi_send_policyauthorization_terminate_notify(app_session);
+        /* the SMF indicated the termination of the SM Policy Context (TS 29.514 clause 4.2.5.3) */
+        pcf_sbi_send_policyauthorization_terminate_notify(app_session,
+                OpenAPI_termination_cause_PDU_SESSION_TERMINATION);
     }
 
     if (pcf_sessions_number_by_snssai_and_dnn(
@@ -653,6 +655,94 @@ cleanup:
     ogs_free(strerror);
 
     return false;
+}
+
+/*
+ * TS 29.514 V19.8.0 clause 5.7.3: the application error (the "cause" of the ProblemDetails) of the status codes that this
+ * PCF sends to an Npcf_PolicyAuthorization client.
+ */
+static const char *policyauthorization_cause(int status)
+{
+    switch (status) {
+    case OGS_SBI_HTTP_STATUS_BAD_REQUEST:
+        return "INVALID_SERVICE_INFORMATION";
+    case OGS_SBI_HTTP_STATUS_FORBIDDEN:
+        return "REQUESTED_SERVICE_NOT_AUTHORIZED";
+    default:
+        return NULL;
+    }
+}
+
+/* RFC 7396 JSON Merge Patch: the way TS 29.514 V19.8.0 clause 5.3.3.3.2 modifies the resource */
+static void json_merge_patch(cJSON *target, const cJSON *patch)
+{
+    cJSON *item = NULL, *existing = NULL;
+
+    cJSON_ArrayForEach(item, patch) {
+        if (cJSON_IsNull(item)) {
+            cJSON_DeleteItemFromObject(target, item->string);
+        } else if (cJSON_IsObject(item)) {
+            existing = cJSON_GetObjectItem(target, item->string);
+            if (!cJSON_IsObject(existing)) {
+                cJSON_DeleteItemFromObject(target, item->string);
+                existing = cJSON_AddObjectToObject(target, item->string);
+                ogs_assert(existing);
+            }
+            json_merge_patch(existing, item);
+        } else {
+            cJSON_DeleteItemFromObject(target, item->string);
+            cJSON_AddItemToObject(target, item->string,
+                    cJSON_Duplicate(item, 1));
+        }
+    }
+}
+
+/* Answer with the AppSessionContext that the resource holds */
+static void send_app_session_context(
+        ogs_sbi_stream_t *stream, pcf_app_t *app_session, int status,
+        const char *location)
+{
+    ogs_sbi_message_t sendmsg;
+    ogs_sbi_response_t *response = NULL;
+    OpenAPI_app_session_context_t *AppSessionContext = NULL;
+
+    ogs_assert(app_session);
+    ogs_assert(app_session->context);
+
+    AppSessionContext =
+        OpenAPI_app_session_context_parseFromJSON(app_session->context);
+    ogs_assert(AppSessionContext);
+
+    memset(&sendmsg, 0, sizeof(sendmsg));
+    sendmsg.http.location = (char *)location;
+    sendmsg.AppSessionContext = AppSessionContext;
+
+    response = ogs_sbi_build_response(&sendmsg, status);
+    ogs_assert(response);
+    ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+
+    OpenAPI_app_session_context_free(AppSessionContext);
+}
+
+bool pcf_npcf_policyauthorization_handle_get(pcf_sess_t *sess,
+        pcf_app_t *app_session, ogs_sbi_stream_t *stream,
+        ogs_sbi_message_t *recvmsg)
+{
+    ogs_assert(sess);
+    ogs_assert(app_session);
+    ogs_assert(stream);
+    ogs_assert(recvmsg);
+
+    if (!app_session->context) {
+        ogs_assert(true ==
+            ogs_sbi_server_send_error(stream,
+                OGS_SBI_HTTP_STATUS_NOT_FOUND, recvmsg, "Not found",
+                recvmsg->h.uri, "APPLICATION_SESSION_CONTEXT_NOT_FOUND"));
+        return false;
+    }
+
+    send_app_session_context(stream, app_session, OGS_SBI_HTTP_STATUS_OK, NULL);
+    return true;
 }
 
 bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
@@ -930,9 +1020,8 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
         if (qos_index == 0) {
             strerror = ogs_msprintf("[%s:%d] %s",
                     pcf_ue_sm->supi, sess->psi, err_str);
-            status = reference ?
-                     OGS_SBI_HTTP_STATUS_FORBIDDEN :
-                     OGS_SBI_HTTP_STATUS_BAD_REQUEST;
+            /* TS 29.514 V19.8.0 clauses 4.2.2.2 and 4.2.3.2: an invalid QoS reference is 400 with INVALID_SERVICE_INFORMATION */
+            status = OGS_SBI_HTTP_STATUS_BAD_REQUEST;
             goto cleanup;
         }
 
@@ -942,6 +1031,14 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
                 break;
             }
         }
+
+        /*
+         * TS 29.514 clause 4.2.2.2: the PCF derives the PCC rules from the service information. With no PCC rule of
+         * the subscriber for the QoS index, the operator-defined parameters of the qos_profiles entry give the rule.
+         */
+        if (!db_pcc_rule)
+            db_pcc_rule = reference ? pcf_qos_profile_dynamic_pcc_rule(reference) :
+                pcf_qos_profile_dynamic_pcc_rule_by_index(qos_index);
 
         if (!db_pcc_rule && !reference &&
             (media_component->media_type == OpenAPI_media_type_CONTROL)) {
@@ -974,19 +1071,32 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
         }
 
         for (j = 0; j < app_session->num_of_pcc_rule; j++) {
-            if (app_session->pcc_rule[j].qos.index == qos_index) {
+            if (app_session->med_comp_n[j] ==
+                    media_component->media_component_number) {
                 pcc_rule = &app_session->pcc_rule[j];
                 break;
             }
+        }
+
+        if (!pcc_rule &&
+            app_session->num_of_pcc_rule >= OGS_MAX_NUM_OF_PCC_RULE) {
+            strerror = ogs_msprintf("[%s:%d] Too many media components "
+                    "in the application session [%d]",
+                    pcf_ue_sm->supi, sess->psi, OGS_MAX_NUM_OF_PCC_RULE);
+            status = OGS_SBI_HTTP_STATUS_FORBIDDEN;
+            goto cleanup;
         }
 
         if (!pcc_rule) {
             pcc_rule = &app_session->pcc_rule[app_session->num_of_pcc_rule];
             ogs_assert(pcc_rule);
 
-            pcc_rule->id = ogs_msprintf("%s-a%s",
-                            db_pcc_rule->id, app_session->app_session_id);
+            pcc_rule->id = ogs_msprintf("%s-a%s-m%d",
+                            db_pcc_rule->id, app_session->app_session_id,
+                            media_component->media_component_number);
             ogs_assert(pcc_rule->id);
+            app_session->med_comp_n[app_session->num_of_pcc_rule] =
+                media_component->media_component_number;
 
             memcpy(&pcc_rule->qos, &db_pcc_rule->qos, sizeof(ogs_qos_t));
 
@@ -1093,6 +1203,10 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
 
     sendmsg.AppSessionContext = recvmsg->AppSessionContext;
 
+    app_session->context =
+        OpenAPI_app_session_context_convertToJSON(recvmsg->AppSessionContext);
+    ogs_assert(app_session->context);
+
     response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_CREATED);
     ogs_assert(response);
     ogs_assert(true == ogs_sbi_server_send_response(stream, response));
@@ -1136,15 +1250,16 @@ cleanup:
     ogs_assert(strerror);
 
     /*
-     * Unknown qosReference is rejected with 403 in a negative test case.
+     * Unknown qosReference is rejected with 400 in a negative test case.
      * Log it as warning to avoid treating the expected rejection as an error.
      */
     ogs_log_message(
-            status == OGS_SBI_HTTP_STATUS_FORBIDDEN ?
+            (status == OGS_SBI_HTTP_STATUS_FORBIDDEN ||
+             status == OGS_SBI_HTTP_STATUS_BAD_REQUEST) ?
                 OGS_LOG_WARN : OGS_LOG_ERROR, 0, "%s", strerror);
     ogs_assert(true ==
         ogs_sbi_server_send_error(stream, status, recvmsg, strerror, NULL,
-                NULL));
+                policyauthorization_cause(status)));
     ogs_free(strerror);
 
     OpenAPI_list_for_each(PccRuleList, node) {
@@ -1180,7 +1295,8 @@ cleanup:
 
 bool pcf_npcf_policyauthorization_handle_update(
         pcf_sess_t *sess, pcf_app_t *app_session,
-        ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg)
+        ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg,
+        const char *content)
 {
     int i, j, rv, status = 0;
     char *strerror = NULL;
@@ -1199,6 +1315,11 @@ bool pcf_npcf_policyauthorization_handle_update(
     ogs_media_component_t *media_component = NULL;
     ogs_media_sub_component_t *sub = NULL;
     const char *qos_reference[OGS_MAX_NUM_OF_MEDIA_COMPONENT] = {0};
+    /* The media components that the request removes: a null value in the map of media components, or fStatus REMOVED */
+    int remove_med_comp_n[OGS_MAX_NUM_OF_MEDIA_COMPONENT];
+    int num_of_remove = 0;
+    ogs_pcc_rule_t removed_rule[OGS_MAX_NUM_OF_PCC_RULE];
+    int num_of_removed_rule = 0;
 
     OpenAPI_list_t *MediaComponentList = NULL;
     OpenAPI_map_t *MediaComponentMap = NULL;
@@ -1260,7 +1381,23 @@ bool pcf_npcf_policyauthorization_handle_update(
         MediaComponentMap = node->data;
         if (MediaComponentMap) {
             MediaComponent = MediaComponentMap->value;
-            if (MediaComponent) {
+            if (!MediaComponent || MediaComponent->f_status ==
+                    OpenAPI_flow_status_REMOVED) {
+                /*
+                 * TS 29.514 V19.8.0 clause 4.2.3.36: the media component number as the key of the map with the value set to
+                 * NULL removes the media component; clause 5.6.3.12: fStatus REMOVED removes its service data flows.
+                 */
+                if (num_of_remove < OGS_ARRAY_SIZE(remove_med_comp_n)) {
+                    remove_med_comp_n[num_of_remove++] = MediaComponent ?
+                        MediaComponent->med_comp_n :
+                        (MediaComponentMap->key ?
+                            atoi(MediaComponentMap->key) : 0);
+                } else {
+                    ogs_error("OVERFLOW remove_med_comp_n [%d]",
+                            num_of_remove);
+                    break;
+                }
+            } else if (MediaComponent) {
                 int n;
                 if (ims_data.num_of_media_component >=
                         OGS_ARRAY_SIZE(ims_data.media_component)) {
@@ -1382,9 +1519,8 @@ bool pcf_npcf_policyauthorization_handle_update(
         if (qos_index == 0) {
             strerror = ogs_msprintf("[%s:%d] %s",
                     pcf_ue_sm->supi, sess->psi, err_str);
-            status = reference ?
-                     OGS_SBI_HTTP_STATUS_FORBIDDEN :
-                     OGS_SBI_HTTP_STATUS_BAD_REQUEST;
+            /* TS 29.514 V19.8.0 clauses 4.2.2.2 and 4.2.3.2: an invalid QoS reference is 400 with INVALID_SERVICE_INFORMATION */
+            status = OGS_SBI_HTTP_STATUS_BAD_REQUEST;
             goto cleanup;
         }
 
@@ -1394,6 +1530,14 @@ bool pcf_npcf_policyauthorization_handle_update(
                 break;
             }
         }
+
+        /*
+         * TS 29.514 clause 4.2.2.2: the PCF derives the PCC rules from the service information. With no PCC rule of
+         * the subscriber for the QoS index, the operator-defined parameters of the qos_profiles entry give the rule.
+         */
+        if (!db_pcc_rule)
+            db_pcc_rule = reference ? pcf_qos_profile_dynamic_pcc_rule(reference) :
+                pcf_qos_profile_dynamic_pcc_rule_by_index(qos_index);
 
         if (!db_pcc_rule && !reference &&
             (media_component->media_type == OpenAPI_media_type_CONTROL)) {
@@ -1426,18 +1570,32 @@ bool pcf_npcf_policyauthorization_handle_update(
         }
 
         for (j = 0; j < app_session->num_of_pcc_rule; j++) {
-            if (app_session->pcc_rule[j].qos.index == qos_index) {
+            if (app_session->med_comp_n[j] ==
+                    media_component->media_component_number) {
                 pcc_rule = &app_session->pcc_rule[j];
                 break;
             }
+        }
+
+        if (!pcc_rule &&
+            app_session->num_of_pcc_rule >= OGS_MAX_NUM_OF_PCC_RULE) {
+            strerror = ogs_msprintf("[%s:%d] Too many media components "
+                    "in the application session [%d]",
+                    pcf_ue_sm->supi, sess->psi, OGS_MAX_NUM_OF_PCC_RULE);
+            status = OGS_SBI_HTTP_STATUS_FORBIDDEN;
+            goto cleanup;
         }
 
         if (!pcc_rule) {
             pcc_rule = &app_session->pcc_rule[app_session->num_of_pcc_rule];
             ogs_assert(pcc_rule);
 
-            pcc_rule->id = ogs_strdup(app_session->app_session_id);
+            pcc_rule->id = ogs_msprintf("%s-a%s-m%d",
+                            db_pcc_rule->id, app_session->app_session_id,
+                            media_component->media_component_number);
             ogs_assert(pcc_rule->id);
+            app_session->med_comp_n[app_session->num_of_pcc_rule] =
+                media_component->media_component_number;
 
             memcpy(&pcc_rule->qos, &db_pcc_rule->qos, sizeof(ogs_qos_t));
 
@@ -1459,6 +1617,13 @@ bool pcf_npcf_policyauthorization_handle_update(
 
         } else {
             int count = 0;
+
+            /* The media component names another QoS reference: the rule takes the QoS of that reference */
+            if (pcc_rule->qos.index != db_pcc_rule->qos.index) {
+                memcpy(&pcc_rule->qos, &db_pcc_rule->qos, sizeof(ogs_qos_t));
+                pcc_rule->flow_status = db_pcc_rule->flow_status;
+                pcc_rule->precedence = db_pcc_rule->precedence;
+            }
 
             /* Check Flow */
             count = ogs_pcc_rule_num_of_flow_equal_to_media(
@@ -1524,11 +1689,62 @@ bool pcf_npcf_policyauthorization_handle_update(
         OpenAPI_list_add(QosDecisionList, QosDecisionMap);
     }
 
+    for (i = 0; i < num_of_remove; i++) {
+        for (j = 0; j < app_session->num_of_pcc_rule; j++) {
+            if (app_session->med_comp_n[j] == remove_med_comp_n[i])
+                break;
+        }
+        if (j == app_session->num_of_pcc_rule)
+            continue;
+
+        /* The SMF is told to remove the PCC rule and its QoS data */
+        removed_rule[num_of_removed_rule] = app_session->pcc_rule[j];
+
+        PccRuleMap = OpenAPI_map_create(
+                removed_rule[num_of_removed_rule].id, NULL);
+        ogs_assert(PccRuleMap);
+        OpenAPI_list_add(PccRuleList, PccRuleMap);
+
+        QosDecisionMap = OpenAPI_map_create(
+                removed_rule[num_of_removed_rule].id, NULL);
+        ogs_assert(QosDecisionMap);
+        OpenAPI_list_add(QosDecisionList, QosDecisionMap);
+
+        num_of_removed_rule++;
+
+        for (; j < app_session->num_of_pcc_rule - 1; j++) {
+            app_session->pcc_rule[j] = app_session->pcc_rule[j + 1];
+            app_session->med_comp_n[j] = app_session->med_comp_n[j + 1];
+        }
+        memset(&app_session->pcc_rule[j], 0, sizeof(ogs_pcc_rule_t));
+        app_session->med_comp_n[j] = 0;
+        app_session->num_of_pcc_rule--;
+    }
+
     if (PccRuleList->count)
         SmPolicyDecision.pcc_rules = PccRuleList;
 
     if (QosDecisionList->count)
         SmPolicyDecision.qos_decs = QosDecisionList;
+
+    /* The resource now reads as the creation request with the modification applied (clause 5.3.3.3.1 GET) */
+    ogs_assert(app_session->context);
+    {
+        cJSON *patch = content ? cJSON_Parse(content) : NULL;
+        cJSON *asc_patch = patch ?
+            cJSON_GetObjectItem(patch, "ascReqData") : NULL;
+
+        if (cJSON_IsObject(asc_patch)) {
+            cJSON *asc = cJSON_GetObjectItem(app_session->context, "ascReqData");
+            if (!cJSON_IsObject(asc))
+                asc = cJSON_AddObjectToObject(app_session->context,
+                        "ascReqData");
+            ogs_assert(asc);
+            json_merge_patch(asc, asc_patch);
+        }
+        if (patch)
+            cJSON_Delete(patch);
+    }
 
     memset(&sendmsg, 0, sizeof(sendmsg));
 
@@ -1566,6 +1782,9 @@ bool pcf_npcf_policyauthorization_handle_update(
     }
     OpenAPI_list_free(QosDecisionList);
 
+    for (i = 0; i < num_of_removed_rule; i++)
+        OGS_PCC_RULE_FREE(&removed_rule[i]);
+
     ogs_ims_data_free(&ims_data);
     OGS_SESSION_DATA_FREE(&session_data);
 
@@ -1577,7 +1796,7 @@ cleanup:
     ogs_error("%s", strerror);
     ogs_assert(true ==
         ogs_sbi_server_send_error(stream, status, recvmsg, strerror,
-                NULL, NULL));
+                NULL, policyauthorization_cause(status)));
     ogs_free(strerror);
 
     OpenAPI_list_for_each(PccRuleList, node) {

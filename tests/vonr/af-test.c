@@ -296,9 +296,10 @@ static void test_af_qos_reference_setup(abts_case *tc, const char *msin,
     ogs_msleep(100);
 }
 
-static void test_af_qos_reference_delete(
+/* The SMF releases the QoS flow of the PCC rule that the PCF removed */
+static void test_af_qos_flow_release(
         abts_case *tc, test_ue_t *test_ue, test_sess_t *sess,
-        af_sess_t *af_sess, ogs_socknode_t *ngap)
+        ogs_socknode_t *ngap)
 {
     int rv;
     ogs_pkbuf_t *gmmbuf = NULL;
@@ -306,9 +307,6 @@ static void test_af_qos_reference_delete(
     ogs_pkbuf_t *sendbuf = NULL;
     ogs_pkbuf_t *recvbuf = NULL;
     test_bearer_t *qos_flow = NULL;
-
-    af_local_send_to_pcf(af_sess, NULL,
-            af_npcf_policyauthorization_build_delete);
 
     recvbuf = testgnb_ngap_read(ngap);
     ABTS_PTR_NOTNULL(tc, recvbuf);
@@ -346,6 +344,16 @@ static void test_af_qos_reference_delete(
     test_bearer_remove(qos_flow);
 
     ogs_msleep(100);
+}
+
+static void test_af_qos_reference_delete(
+        abts_case *tc, test_ue_t *test_ue, test_sess_t *sess,
+        af_sess_t *af_sess, ogs_socknode_t *ngap)
+{
+    af_local_send_to_pcf(af_sess, NULL,
+            af_npcf_policyauthorization_build_delete);
+
+    test_af_qos_flow_release(tc, test_ue, sess, ngap);
 }
 
 static void test_af_qos_reference_cleanup(
@@ -4788,8 +4796,11 @@ static void test12_func(abts_case *tc, void *data)
             af_npcf_policyauthorization_build_create);
 
     ogs_msleep(100);
-    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_FORBIDDEN,
+    /* TS 29.514 V19.8.0 clauses 4.2.2.2 and 4.2.3.2: an invalid QoS reference is 400 with the cause INVALID_SERVICE_INFORMATION */
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
             af_sess->last_pcf_status);
+    ABTS_STR_EQUAL(tc, "INVALID_SERVICE_INFORMATION",
+            af_sess->last_pcf_cause);
 
     qos_flow = test_qos_flow_find_by_qfi(sess, 2);
     ABTS_TRUE(tc, qos_flow == NULL);
@@ -4838,6 +4849,120 @@ static void test13_func(abts_case *tc, void *data)
     test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
 }
 
+static void test14_func(abts_case *tc, void *data)
+{
+    ogs_socknode_t *ngap = NULL;
+    ogs_socknode_t *gtpu = NULL;
+    test_ue_t *test_ue = NULL;
+    test_sess_t *sess = NULL;
+    test_bearer_t *qos_flow = NULL;
+    af_sess_t *af_sess = NULL;
+    af_npcf_policyauthorization_param_t af_param;
+    char *resource_uri = NULL;
+
+    test_af_qos_reference_setup(tc, "0000000014",
+            &test_ue, &sess, &af_sess, &ngap, &gtpu);
+
+    memset(&af_param, 0, sizeof(af_param));
+    af_param.med_type = OpenAPI_media_type_AUDIO;
+    af_param.qos_type = 1;
+    af_param.flow_type = 99;
+
+    af_local_send_to_pcf(af_sess, &af_param,
+            af_npcf_policyauthorization_build_create);
+
+    qos_flow = test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_assert(qos_flow);
+
+    /* TS 29.514 V19.8.0 clause 5.3.3.3.1: GET returns the AppSessionContext of the Individual Application Session Context */
+    af_local_send_to_pcf(af_sess, NULL, af_npcf_policyauthorization_build_get);
+    ogs_msleep(100);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_pcf_status);
+    ABTS_STR_EQUAL(tc, "IMS Services", af_sess->last_pcf_asc_af_app_id);
+    ABTS_STR_EQUAL(tc, "", af_sess->last_pcf_asc_qos_ref);
+
+    /* After a PATCH the resource reads with the modification applied */
+    memset(&af_param, 0, sizeof(af_param));
+    af_param.med_type = OpenAPI_media_type_AUDIO;
+    af_param.qos_reference = "test-audio";
+    af_param.qos_type = 2;
+    af_param.flow_type = 99;
+
+    af_local_send_to_pcf(af_sess, &af_param,
+            af_npcf_policyauthorization_build_update);
+
+    qos_flow = test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_assert(qos_flow);
+
+    af_local_send_to_pcf(af_sess, NULL, af_npcf_policyauthorization_build_get);
+    ogs_msleep(100);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_pcf_status);
+    ABTS_STR_EQUAL(tc, "IMS Services", af_sess->last_pcf_asc_af_app_id);
+    ABTS_STR_EQUAL(tc, "test-audio", af_sess->last_pcf_asc_qos_ref);
+
+    /* A resource that does not exist is 404 with the application error */
+    resource_uri = af_sess->app_session.pcf.resource_uri;
+    af_sess->app_session.pcf.resource_uri =
+        ogs_msprintf("%s999", resource_uri);
+    af_local_send_to_pcf(af_sess, NULL, af_npcf_policyauthorization_build_get);
+    ogs_msleep(100);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_NOT_FOUND, af_sess->last_pcf_status);
+    ABTS_STR_EQUAL(tc, "APPLICATION_SESSION_CONTEXT_NOT_FOUND",
+            af_sess->last_pcf_cause);
+    ogs_free(af_sess->app_session.pcf.resource_uri);
+    af_sess->app_session.pcf.resource_uri = resource_uri;
+
+    test_af_qos_reference_delete(tc, test_ue, sess, af_sess, ngap);
+    test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
+}
+
+static void test15_func(abts_case *tc, void *data)
+{
+    ogs_socknode_t *ngap = NULL;
+    ogs_socknode_t *gtpu = NULL;
+    test_ue_t *test_ue = NULL;
+    test_sess_t *sess = NULL;
+    test_bearer_t *qos_flow = NULL;
+    af_sess_t *af_sess = NULL;
+    af_npcf_policyauthorization_param_t af_param;
+    int med_comp_n = 0;
+
+    test_af_qos_reference_setup(tc, "0000000015",
+            &test_ue, &sess, &af_sess, &ngap, &gtpu);
+
+    memset(&af_param, 0, sizeof(af_param));
+    af_param.med_type = OpenAPI_media_type_AUDIO;
+    af_param.qos_type = 1;
+    af_param.flow_type = 99;
+
+    af_local_send_to_pcf(af_sess, &af_param,
+            af_npcf_policyauthorization_build_create);
+
+    qos_flow = test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_assert(qos_flow);
+
+    /* TS 29.514 V19.8.0 clause 4.2.3.36: the key of the media component with the value null removes it, and the SMF releases its QoS flow */
+    af_local_send_to_pcf(af_sess, &med_comp_n,
+            af_npcf_policyauthorization_build_remove_media);
+    ogs_msleep(100);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_pcf_status);
+
+    test_af_qos_flow_release(tc, test_ue, sess, ngap);
+
+    /* The resource has no media component any more: GET shows it and DELETE answers without a PDU session modification */
+    af_local_send_to_pcf(af_sess, NULL, af_npcf_policyauthorization_build_get);
+    ogs_msleep(100);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_pcf_status);
+    ABTS_STR_EQUAL(tc, "", af_sess->last_pcf_asc_qos_ref);
+
+    af_local_send_to_pcf(af_sess, NULL,
+            af_npcf_policyauthorization_build_delete);
+    ogs_msleep(100);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_NO_CONTENT,
+            af_sess->last_pcf_status);
+
+    test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
+}
 
 abts_suite *test_af(abts_suite *suite)
 {
@@ -4863,6 +4988,8 @@ abts_suite *test_af(abts_suite *suite)
     abts_run_test(suite, test11_func, NULL);
     abts_run_test(suite, test12_func, NULL);
     abts_run_test(suite, test13_func, NULL);
+    abts_run_test(suite, test14_func, NULL);
+    abts_run_test(suite, test15_func, NULL);
 
     return suite;
 }

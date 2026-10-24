@@ -323,10 +323,13 @@ void pcf_state_operational(ogs_fsm_t *s, pcf_event_t *e)
 
             if (!sess) {
                 ogs_error("Not found [%s]", message.h.uri);
+                /* TS 29.514 V19.8.0 clause 5.7.3: the application session context that the request names does not exist */
                 ogs_assert(true ==
                     ogs_sbi_server_send_error(stream,
                         OGS_SBI_HTTP_STATUS_NOT_FOUND,
-                        &message, "Not found", message.h.uri, NULL));
+                        &message, "Not found", message.h.uri,
+                        message.h.resource.component[1] ?
+                            "APPLICATION_SESSION_CONTEXT_NOT_FOUND" : NULL));
                 break;
             }
 
