@@ -156,7 +156,9 @@ void pcf_sm_state_operational(ogs_fsm_t *s, pcf_event_t *e)
                         CASE(OGS_SBI_HTTP_METHOD_POST)
                             handled =
                                 pcf_npcf_policyauthorization_handle_delete(
-                                    sess, e->app, stream, message);
+                                    sess, e->app, stream, message,
+                                    e->h.sbi.request ?
+                                        e->h.sbi.request->http.content : NULL);
                             break;
                         DEFAULT
                             ogs_error("[%s:%d] Invalid HTTP method [%s] for "

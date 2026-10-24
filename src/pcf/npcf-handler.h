@@ -54,7 +54,8 @@ bool pcf_npcf_policyauthorization_handle_events_subscription_delete(
         ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg);
 bool pcf_npcf_policyauthorization_handle_delete(
         pcf_sess_t *sess, pcf_app_t *app,
-        ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg);
+        ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg,
+        const char *content);
 
 #ifdef __cplusplus
 }

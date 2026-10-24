@@ -267,6 +267,12 @@ bool bsf_nbsf_management_handle_pcf_binding(
                 }
             }
 
+            if (!bsf_sess_index_registered(sess)) {
+                strerror = ogs_msprintf("Invalid MAC address");
+                status = OGS_SBI_HTTP_STATUS_BAD_REQUEST;
+                goto cleanup;
+            }
+
             sess->s_nssai.sst = RecvPcfBinding->snssai->sst;
             sess->s_nssai.sd =
                 ogs_s_nssai_sd_from_string(RecvPcfBinding->snssai->sd);

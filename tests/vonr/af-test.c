@@ -5273,6 +5273,49 @@ static void test20_func(abts_case *tc, void *data)
     test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
 }
 
+/*
+ * TS 29.514 V19.8.0 clause 5.3.3.4.2.2: a deletion that asks for events gets 200 with evsNotif when the PCF has the information.
+ * The SMF has confirmed the resources of the rule, so SUCCESSFUL_RESOURCES_ALLOCATION is reported; an event that did not occur is
+ * not, and a deletion without a body is 204.
+ */
+static void test21_func(abts_case *tc, void *data)
+{
+    ogs_socknode_t *ngap = NULL;
+    ogs_socknode_t *gtpu = NULL;
+    test_ue_t *test_ue = NULL;
+    test_sess_t *sess = NULL;
+    test_bearer_t *qos_flow = NULL;
+    af_sess_t *af_sess = NULL;
+    af_npcf_policyauthorization_param_t af_param;
+    af_npcf_policyauthorization_raw_t raw;
+
+    test_af_qos_reference_setup(tc, "0000000021",
+            &test_ue, &sess, &af_sess, &ngap, &gtpu);
+
+    memset(&af_param, 0, sizeof(af_param));
+    af_param.med_type = OpenAPI_media_type_AUDIO;
+    af_param.qos_type = 1;
+    af_param.flow_type = 99;
+    af_local_send_to_pcf(af_sess, &af_param,
+            af_npcf_policyauthorization_build_create);
+    qos_flow = test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_assert(qos_flow);
+    ogs_msleep(300);
+
+    raw.method = "POST";
+    raw.path = "/delete";
+    raw.body = "{\"events\":[{\"event\":\"SUCCESSFUL_RESOURCES_ALLOCATION\"},"
+        "{\"event\":\"FAILED_RESOURCES_ALLOCATION\"}],"
+        "\"notifUri\":\"http://127.0.0.1:9/af\"}";
+    af_local_send_to_pcf(af_sess, &raw, af_npcf_policyauthorization_build_raw);
+    test_af_qos_flow_release(tc, test_ue, sess, ngap);
+    ogs_msleep(100);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_pcf_status);
+    ABTS_STR_EQUAL(tc, "SUCCESSFUL_RESOURCES_ALLOCATION", af_sess->last_pcf_asc_events);
+
+    test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
+}
+
 abts_suite *test_af(abts_suite *suite)
 {
     suite = ADD_SUITE(suite)
@@ -5304,6 +5347,7 @@ abts_suite *test_af(abts_suite *suite)
     abts_run_test(suite, test18_func, NULL);
     abts_run_test(suite, test19_func, NULL);
     abts_run_test(suite, test20_func, NULL);
+    abts_run_test(suite, test21_func, NULL);
 
     return suite;
 }

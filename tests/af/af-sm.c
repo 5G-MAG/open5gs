@@ -436,6 +436,31 @@ void af_state_operational(ogs_fsm_t *s, af_event_t *e)
                     if (message.h.resource.component[2]) {
                         SWITCH(message.h.resource.component[2])
                         CASE(OGS_SBI_RESOURCE_NAME_DELETE)
+                            /* TS 29.514 clause 5.3.3.4.2.2: a 200 carries evsNotif, whose events are recorded before the session goes */
+                            sess->last_pcf_asc_events[0] = '\0';
+                            if (message.res_status == OGS_SBI_HTTP_STATUS_OK &&
+                                e->h.sbi.response && e->h.sbi.response->http.content) {
+                                cJSON *asc = cJSON_Parse(e->h.sbi.response->http.content);
+                                cJSON *notifs = asc ? cJSON_GetObjectItemCaseSensitive(
+                                        cJSON_GetObjectItemCaseSensitive(asc, "evsNotif"), "evNotifs") : NULL;
+                                cJSON *notif = NULL;
+
+                                cJSON_ArrayForEach(notif, notifs) {
+                                    const cJSON *name = cJSON_GetObjectItemCaseSensitive(notif, "event");
+
+                                    if (!cJSON_IsString(name))
+                                        continue;
+                                    if (sess->last_pcf_asc_events[0])
+                                        strncat(sess->last_pcf_asc_events, ",",
+                                                sizeof(sess->last_pcf_asc_events) -
+                                                strlen(sess->last_pcf_asc_events) - 1);
+                                    strncat(sess->last_pcf_asc_events, name->valuestring,
+                                            sizeof(sess->last_pcf_asc_events) -
+                                            strlen(sess->last_pcf_asc_events) - 1);
+                                }
+                                if (asc)
+                                    cJSON_Delete(asc);
+                            }
                             af_sess_remove(sess);
                             break;
                         CASE(OGS_SBI_RESOURCE_NAME_EVENTS_SUBSCRIPTION)

@@ -1065,6 +1065,13 @@ int pcf_app_remove(pcf_app_t *app)
 
     if (app->context)
         cJSON_Delete(app->context);
+    {
+        int i;
+
+        for (i = 0; i < app->num_of_outcome; i++)
+            if (app->outcome[i].rule_id) ogs_free(app->outcome[i].rule_id);
+        app->num_of_outcome = 0;
+    }
     if (app->ev_notif_uri)
         ogs_free(app->ev_notif_uri);
     if (app->ev_client)

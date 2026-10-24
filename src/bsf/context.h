@@ -37,6 +37,8 @@ extern int __bsf_log_domain;
 typedef struct bsf_context_s {
     ogs_hash_t          *ipv4addr_hash;
     ogs_hash_t          *ipv6prefix_hash;
+    ogs_hash_t          *mac_hash;
+    ogs_list_t          secondary_list;
 
     ogs_list_t          sess_list;
 } bsf_context_t;
@@ -79,6 +81,22 @@ typedef struct bsf_sess_s {
     /* the PcfBinding as the PCF registered it (TS 29.521 V19.7.0 clause 4.2.4.2) */
     OpenAPI_pcf_binding_t *registered;
 
+    /*
+     * Bindings of the same UE address that differ in ipDomain, supi, dnn or slice are kept in a chain per address, so a query
+     * can find that more than one binding matches (TS 29.521 V19.7.0 table 5.3.2.3.2-3).
+     */
+    struct bsf_sess_s *ipv4_next;
+    struct bsf_sess_s *ipv6_next;
+    struct bsf_sess_s *mac_next;
+
+    /* The MAC address of the UE (macAddr48), a key like the IP addresses */
+    bool mac_present;
+    uint8_t mac[6];
+
+    /* A binding with addresses beyond the first (addIpv6Prefixes, addMacAddrs, framed routes) is in the secondary list */
+    bool in_secondary_list;
+    ogs_lnode_t secondary_node;
+
     /* SBI Features */
     uint64_t management_features;
 
@@ -101,12 +119,36 @@ bool bsf_sess_set_ipv6prefix(bsf_sess_t *sess, char *ipv6prefix);
 bsf_sess_t *bsf_sess_find(uint32_t index);
 bsf_sess_t *bsf_sess_find_by_snssai_and_dnn(ogs_s_nssai_t *s_nssai, char *dnn);
 bsf_sess_t *bsf_sess_find_by_binding_id(char *binding_id);
-bsf_sess_t *bsf_sess_find_by_ipv4addr(
-        char *ipv4addr_string, bool *invalid);
-bsf_sess_t *bsf_sess_find_by_exact_ipv6prefix(
-        char *ipv6prefix_string, bool *invalid);
-bsf_sess_t *bsf_sess_find_by_ipv6prefix(
-        char *ipv6prefix_string, bool *invalid);
+/* The query of the retrieval of PCF bindings (TS 29.521 V19.7.0 table 5.3.2.3.2-1); the UE address is exactly one of the three */
+typedef struct bsf_query_s {
+    const char *ipv4addr;
+    const char *ipv6prefix;
+    const char *mac_addr48;
+    const char *dnn;
+    const char *supi;
+    const char *gpsi;
+    const char *ip_domain;
+    bool snssai_presence;
+    ogs_s_nssai_t s_nssai;
+} bsf_query_t;
+
+/*
+ * The number of bindings that match the query (the binding of the longest matching prefix or framed route when the address is
+ * not registered as such), and the first of them. *invalid is set when an address of the query cannot be parsed.
+ */
+int bsf_sess_query(const bsf_query_t *query, bsf_sess_t **found, bool *invalid);
+
+/*
+ * The binding that a registration replaces: the same UE address (IPv4 address, IPv6 prefix or MAC address) and the same ipDomain.
+ * NULL if there is none.
+ */
+bsf_sess_t *bsf_sess_find_for_registration(
+        const char *ipv4addr, const char *ipv6prefix, const char *mac_addr48,
+        const char *ip_domain, bool *invalid);
+
+/* Take the MAC address and the additional addresses of the registered binding into the indexes */
+bool bsf_sess_index_registered(bsf_sess_t *sess);
+
 int get_sess_load(void);
 
 #ifdef __cplusplus

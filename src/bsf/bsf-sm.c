@@ -153,39 +153,37 @@ void bsf_state_operational(ogs_fsm_t *s, bsf_event_t *e)
                             goto cleanup;
                         }
                         if (message.PcfBinding->ipv4_addr ||
-                            message.PcfBinding->ipv6_prefix) {
+                            message.PcfBinding->ipv6_prefix ||
+                            message.PcfBinding->mac_addr48) {
 
-                            if (message.PcfBinding->ipv4_addr) {
-                                sess = bsf_sess_find_by_ipv4addr(
+                            /* a binding of the same address and the same ipDomain is replaced, another IP domain is another binding */
+                            if (message.PcfBinding->ipv4_addr)
+                                sess = bsf_sess_find_for_registration(
                                             message.PcfBinding->ipv4_addr,
+                                            NULL, NULL,
+                                            message.PcfBinding->ip_domain,
                                             &invalid);
-                                if (invalid) {
-                                    ogs_error("Invalid IPv4 address [%s]",
-                                            message.PcfBinding->ipv4_addr);
-                                    ogs_assert(true ==
-                                        ogs_sbi_server_send_error(stream,
-                                            OGS_SBI_HTTP_STATUS_BAD_REQUEST,
-                                            &message, "Invalid IPv4 address",
-                                            message.PcfBinding->ipv4_addr,
-                                            NULL));
-                                    goto cleanup;
-                                }
-                            }
-                            if (!sess && message.PcfBinding->ipv6_prefix) {
-                                sess = bsf_sess_find_by_exact_ipv6prefix(
+                            if (!invalid && !sess && message.PcfBinding->ipv6_prefix)
+                                sess = bsf_sess_find_for_registration(
+                                            NULL,
                                             message.PcfBinding->ipv6_prefix,
+                                            NULL,
+                                            message.PcfBinding->ip_domain,
                                             &invalid);
-                                if (invalid) {
-                                    ogs_error("Invalid IPv6 prefix [%s]",
-                                            message.PcfBinding->ipv6_prefix);
-                                    ogs_assert(true ==
-                                        ogs_sbi_server_send_error(stream,
-                                            OGS_SBI_HTTP_STATUS_BAD_REQUEST,
-                                            &message, "Invalid IPv6 prefix",
-                                            message.PcfBinding->ipv6_prefix,
-                                            NULL));
-                                    goto cleanup;
-                                }
+                            if (!invalid && !sess && message.PcfBinding->mac_addr48)
+                                sess = bsf_sess_find_for_registration(
+                                            NULL, NULL,
+                                            message.PcfBinding->mac_addr48,
+                                            message.PcfBinding->ip_domain,
+                                            &invalid);
+                            if (invalid) {
+                                ogs_error("Invalid UE address in the binding");
+                                ogs_assert(true ==
+                                    ogs_sbi_server_send_error(stream,
+                                        OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                                        &message, "Invalid UE address",
+                                        NULL, NULL));
+                                goto cleanup;
                             }
 
                             if (!sess) {
@@ -223,7 +221,8 @@ void bsf_state_operational(ogs_fsm_t *s, bsf_event_t *e)
                             goto cleanup;
                         }
                         if (!message.param.ipv4addr &&
-                            !message.param.ipv6prefix) {
+                            !message.param.ipv6prefix &&
+                            !message.param.mac_addr48) {
                             /*
                              * TS 29.521 V19.7.0 clause 4.2.4.2: a combination of query parameters without a UE address is
                              * answered 400 with MANDATORY_QUERY_PARAM_MISSING.
@@ -238,59 +237,50 @@ void bsf_state_operational(ogs_fsm_t *s, bsf_event_t *e)
                                     "MANDATORY_QUERY_PARAM_MISSING"));
                             goto cleanup;
                         }
-                        if (message.param.ipv4addr) {
-                            sess = bsf_sess_find_by_ipv4addr(
-                                        message.param.ipv4addr, &invalid);
+                        {
+                            bsf_query_t query;
+                            int found;
+
+                            memset(&query, 0, sizeof(query));
+                            query.ipv4addr = message.param.ipv4addr;
+                            query.ipv6prefix = message.param.ipv6prefix;
+                            query.mac_addr48 = message.param.mac_addr48;
+                            /*
+                             * TS 29.521 V19.7.0 table 5.3.2.3.2-1: dnn, snssai, supi, gpsi and ipDomain narrow the match; a
+                             * binding of another DNN, slice, subscriber or IP domain does not match the query.
+                             */
+                            query.dnn = message.param.dnn;
+                            query.supi = message.param.bsf_supi;
+                            query.gpsi = message.param.bsf_gpsi;
+                            query.ip_domain = message.param.ip_domain;
+                            query.snssai_presence = message.param.snssai_presence;
+                            query.s_nssai = message.param.s_nssai;
+
+                            found = bsf_sess_query(&query, &sess, &invalid);
                             if (invalid) {
-                                ogs_error("Invalid IPv4 address [%s]",
-                                        message.param.ipv4addr);
+                                ogs_error("Invalid UE address in the query [%s]",
+                                        message.h.uri);
                                 ogs_assert(true ==
                                     ogs_sbi_server_send_error(stream,
                                         OGS_SBI_HTTP_STATUS_BAD_REQUEST,
-                                        &message, "Invalid IPv4 address",
-                                        message.param.ipv4addr, NULL));
+                                        &message, "Invalid UE address",
+                                        message.h.uri, NULL));
                                 goto cleanup;
                             }
-                        }
-                        if (!sess && message.param.ipv6prefix) {
-                            sess = bsf_sess_find_by_ipv6prefix(
-                                        message.param.ipv6prefix, &invalid);
-                            if (invalid) {
-                                ogs_error("Invalid IPv6 prefix [%s]",
-                                        message.param.ipv6prefix);
+                            if (found > 1) {
+                                /* TS 29.521 V19.7.0 table 5.3.2.3.2-3: more than one binding matches */
+                                ogs_error("%d bindings match the query [%s]",
+                                        found, message.h.uri);
                                 ogs_assert(true ==
                                     ogs_sbi_server_send_error(stream,
                                         OGS_SBI_HTTP_STATUS_BAD_REQUEST,
-                                        &message, "Invalid IPv6 prefix",
-                                        message.param.ipv6prefix, NULL));
+                                        &message,
+                                        "More than one binding matches the query",
+                                        message.h.uri,
+                                        "MULTIPLE_BINDING_INFO_FOUND"));
                                 goto cleanup;
                             }
                         }
-                        /*
-                         * TS 29.521 V19.7.0 table 5.3.2.3.2-1: dnn and snssai narrow the match; a binding of another DNN or
-                         * slice does not match the query.
-                         */
-                        if (sess && message.param.dnn &&
-                            (!sess->dnn ||
-                             ogs_strcasecmp(message.param.dnn, sess->dnn)))
-                            sess = NULL;
-                        /* TS 29.521 V19.7.0 table 5.3.2.3.2-1: supi, gpsi and ipDomain narrow the match as well */
-                        if (sess && message.param.bsf_supi &&
-                            (!sess->supi ||
-                             strcmp(message.param.bsf_supi, sess->supi)))
-                            sess = NULL;
-                        if (sess && message.param.bsf_gpsi &&
-                            (!sess->gpsi ||
-                             strcmp(message.param.bsf_gpsi, sess->gpsi)))
-                            sess = NULL;
-                        if (sess && message.param.ip_domain &&
-                            (!sess->ip_domain ||
-                             strcmp(message.param.ip_domain, sess->ip_domain)))
-                            sess = NULL;
-                        if (sess && message.param.snssai_presence &&
-                            (message.param.s_nssai.sst != sess->s_nssai.sst ||
-                             message.param.s_nssai.sd.v != sess->s_nssai.sd.v))
-                            sess = NULL;
                         break;
                     DEFAULT
                         ogs_error("Invalid HTTP method [%s]", message.h.method);

@@ -21,6 +21,8 @@
 
 #include "npcf-handler.h"
 
+static cJSON *flows_of_rules(pcf_app_t *app, OpenAPI_list_t *rule_ids);
+
 static uint8_t pcf_qos_index_from_media(
         const char *qos_reference,
         OpenAPI_media_type_e media_type,
@@ -1455,8 +1457,8 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
         OpenAPI_app_session_context_convertToJSON(recvmsg->AppSessionContext);
     ogs_assert(app_session->context);
     app_events_refresh(app_session);
-    if (app_session->ev_succ_res_alloc)
-        succ_res_alloc_request(&SmPolicyDecision, PccRuleList);
+    /* the outcome is asked for in every case: it answers a deletion that asks for the events, too (clause 4.2.4.2) */
+    succ_res_alloc_request(&SmPolicyDecision, PccRuleList);
 
     memset(&sendmsg, 0, sizeof(sendmsg));
 
@@ -2028,8 +2030,8 @@ bool pcf_npcf_policyauthorization_handle_update(
         if (patch_for_events)
             cJSON_Delete(patch_for_events);
     }
-    if (app_session->ev_succ_res_alloc)
-        succ_res_alloc_request(&SmPolicyDecision, PccRuleList);
+    /* the outcome is asked for in every case: it answers a deletion that asks for the events, too (clause 4.2.4.2) */
+    succ_res_alloc_request(&SmPolicyDecision, PccRuleList);
 
     /* The resource now reads as the creation request with the modification applied (clause 5.3.3.3.1 GET) */
     ogs_assert(app_session->context);
@@ -2130,9 +2132,12 @@ cleanup:
     return false;
 }
 
+static cJSON *delete_events_report(pcf_app_t *app, const char *content);
+
 bool pcf_npcf_policyauthorization_handle_delete(
         pcf_sess_t *sess, pcf_app_t *app_session,
-        ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg)
+        ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg,
+        const char *content)
 {
     int i;
 
@@ -2145,10 +2150,27 @@ bool pcf_npcf_policyauthorization_handle_delete(
     OpenAPI_map_t *QosDecisionMap = NULL;
 
     OpenAPI_lnode_t *node = NULL;
-
-    ogs_assert(true == ogs_sbi_send_http_status_no_content(stream));
+    cJSON *report = NULL;
 
     ogs_assert(app_session);
+
+    /* TS 29.514 V19.8.0 clause 5.3.3.4.2.2: 200 with the events that the deletion asked for, else 204 */
+    report = delete_events_report(app_session, content);
+    if (report) {
+        ogs_sbi_response_t *response = ogs_sbi_response_new();
+        char *text = cJSON_Print(report);
+
+        ogs_assert(response);
+        ogs_assert(text);
+        response->status = OGS_SBI_HTTP_STATUS_OK;
+        ogs_sbi_header_set(response->http.headers, OGS_SBI_CONTENT_TYPE, OGS_SBI_CONTENT_JSON_TYPE);
+        response->http.content = text;
+        response->http.content_length = strlen(text);
+        ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+        cJSON_Delete(report);
+    } else {
+        ogs_assert(true == ogs_sbi_send_http_status_no_content(stream));
+    }
 
     memset(&SmPolicyDecision, 0, sizeof(SmPolicyDecision));
 
@@ -2210,6 +2232,113 @@ bool pcf_npcf_policyauthorization_handle_delete(
  * The Flows of an EventsNotification (TS 29.514 V19.8.0 table 5.6.2.? Flows): the media components whose PCC rules the report
  * names.
  */
+/* Remember the outcome of the resources allocation of a rule (a later report replaces the earlier one). */
+static void app_outcome_set(pcf_app_t *app, const char *rule_id, bool active)
+{
+    int i;
+
+    for (i = 0; i < app->num_of_outcome; i++) {
+        if (!strcmp(app->outcome[i].rule_id, rule_id)) {
+            app->outcome[i].active = active;
+            return;
+        }
+    }
+    if (app->num_of_outcome >= OGS_MAX_NUM_OF_PCC_RULE)
+        return;
+    app->outcome[app->num_of_outcome].rule_id = ogs_strdup(rule_id);
+    app->outcome[app->num_of_outcome].active = active;
+    app->num_of_outcome++;
+}
+
+/*
+ * The events that a deletion asks for (TS 29.514 V19.8.0 clause 5.3.3.4.2.2, EventsSubscReqData in the body) and for which the PCF has
+ * the information: the outcome of the resources allocation of the rules that the application session holds. Returns the partial
+ * AppSessionContext with evsNotif (clause 4.2.4.2), or NULL when there is nothing to report.
+ */
+static cJSON *delete_events_report(pcf_app_t *app, const char *content)
+{
+    cJSON *body = NULL, *events = NULL, *event = NULL;
+    cJSON *asc = NULL, *evs_notif = NULL, *notifs = NULL;
+    OpenAPI_list_t *ok_ids = NULL, *failed_ids = NULL;
+    bool want_ok = false, want_failed = false;
+    int i;
+
+    if (!content || !*content) return NULL;
+    body = cJSON_Parse(content);
+    if (!body) return NULL;
+    events = cJSON_GetObjectItemCaseSensitive(body, "events");
+    cJSON_ArrayForEach(event, events) {
+        const cJSON *name = cJSON_GetObjectItemCaseSensitive(event, "event");
+
+        if (cJSON_IsString(name)) {
+            if (!strcmp(name->valuestring, "SUCCESSFUL_RESOURCES_ALLOCATION")) want_ok = true;
+            if (!strcmp(name->valuestring, "FAILED_RESOURCES_ALLOCATION")) want_failed = true;
+        }
+    }
+    cJSON_Delete(body);
+    if (!want_ok && !want_failed) return NULL;
+
+    ok_ids = OpenAPI_list_create();
+    failed_ids = OpenAPI_list_create();
+    for (i = 0; i < app->num_of_outcome; i++)
+        OpenAPI_list_add(app->outcome[i].active ? ok_ids : failed_ids, app->outcome[i].rule_id);
+
+    asc = cJSON_CreateObject();
+    evs_notif = cJSON_AddObjectToObject(asc, "evsNotif");
+    notifs = cJSON_AddArrayToObject(evs_notif, "evNotifs");
+    if (want_ok && ok_ids->count) {
+        cJSON *notif = cJSON_CreateObject(), *flows = flows_of_rules(app, ok_ids);
+
+        cJSON_AddStringToObject(notif, "event", "SUCCESSFUL_RESOURCES_ALLOCATION");
+        if (cJSON_GetArraySize(flows) > 0) {
+            cJSON_AddItemToObject(notif, "flows", flows);
+            cJSON_AddItemToArray(notifs, notif);
+        } else {
+            cJSON_Delete(flows);
+            cJSON_Delete(notif);
+        }
+    }
+    if (want_failed && failed_ids->count) {
+        cJSON *notif = cJSON_CreateObject(), *flows = flows_of_rules(app, failed_ids);
+
+        cJSON_AddStringToObject(notif, "event", "FAILED_RESOURCES_ALLOCATION");
+        if (cJSON_GetArraySize(flows) > 0) {
+            cJSON_AddItemToObject(notif, "flows", flows);
+            cJSON_AddItemToArray(notifs, notif);
+        } else {
+            cJSON_Delete(flows);
+            cJSON_Delete(notif);
+        }
+    }
+    OpenAPI_list_free(ok_ids);
+    OpenAPI_list_free(failed_ids);
+
+    if (cJSON_GetArraySize(notifs) == 0) {
+        cJSON_Delete(asc);
+        return NULL;
+    }
+    /* evSubsUri is mandatory in EventsNotification (table 5.6.2.5-1) */
+    {
+        ogs_sbi_server_t *server = ogs_sbi_server_first();
+        ogs_sbi_header_t header;
+        char *location;
+
+        if (server) {
+            memset(&header, 0, sizeof(header));
+            header.service.name = OpenAPI_service_name_ToString(OpenAPI_service_name_npcf_policyauthorization);
+            header.api.version = (char *)OGS_SBI_API_V1;
+            header.resource.component[0] = (char *)OGS_SBI_RESOURCE_NAME_APP_SESSIONS;
+            header.resource.component[1] = (char *)app->app_session_id;
+            header.resource.component[2] = (char *)OGS_SBI_RESOURCE_NAME_EVENTS_SUBSCRIPTION;
+            location = ogs_sbi_server_uri(server, &header);
+            ogs_assert(location);
+            cJSON_AddStringToObject(evs_notif, "evSubsUri", location);
+            ogs_free(location);
+        }
+    }
+    return asc;
+}
+
 static cJSON *flows_of_rules(pcf_app_t *app, OpenAPI_list_t *rule_ids)
 {
     cJSON *flows = cJSON_CreateArray();
@@ -2289,7 +2418,7 @@ bool pcf_npcf_smpolicycontrol_handle_update(pcf_sess_t *sess,
             OpenAPI_list_for_each(report->pcc_rule_ids, id_node) {
                 if (app_owns_rule(app, id_node->data)) {
                     owns = true;
-                    break;
+                    app_outcome_set(app, id_node->data, active);
                 }
             }
             if (!owns || !app->ev_notif_uri || !server)

@@ -224,6 +224,13 @@ typedef struct pcf_app_s {
     /* The medCompN of the media component that each PCC rule serves (TS 29.514 V19.8.0 clause 5.6.2.3: the key of the map of media components) */
     int med_comp_n[OGS_MAX_NUM_OF_PCC_RULE];
 
+    /* The outcome of the last resources allocation that the SMF reported for each PCC rule (TS 29.512 V19.7.0 clause 4.2.4.14) */
+    struct {
+        char *rule_id;
+        bool active;
+    } outcome[OGS_MAX_NUM_OF_PCC_RULE];
+    int num_of_outcome;
+
     pcf_sess_t *sess;
 } pcf_app_t;
 
