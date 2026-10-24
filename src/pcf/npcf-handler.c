@@ -724,6 +724,221 @@ static void send_app_session_context(
     OpenAPI_app_session_context_free(AppSessionContext);
 }
 
+/*
+ * The events that the PCF acts on, read from the AppSessionContext that the resource now holds: the events of the Events
+ * Subscription of TS 29.514 V19.8.0 clause 4.2.2.10 and the URI to notify them at (the notifUri of the subscription, else the
+ * one of the application session).
+ */
+static void app_events_refresh(pcf_app_t *app)
+{
+    cJSON *asc = NULL, *ev_subsc = NULL, *events = NULL, *event = NULL, *uri = NULL;
+
+    ogs_assert(app);
+
+    app->ev_succ_res_alloc = false;
+    app->ev_fail_res_alloc = false;
+    if (app->ev_notif_uri) {
+        ogs_free(app->ev_notif_uri);
+        app->ev_notif_uri = NULL;
+    }
+    if (!app->context)
+        return;
+
+    asc = cJSON_GetObjectItem(app->context, "ascReqData");
+    ev_subsc = asc ? cJSON_GetObjectItem(asc, "evSubsc") : NULL;
+    if (!cJSON_IsObject(ev_subsc))
+        return;
+
+    events = cJSON_GetObjectItem(ev_subsc, "events");
+    cJSON_ArrayForEach(event, events) {
+        cJSON *name = cJSON_GetObjectItem(event, "event");
+
+        if (!cJSON_IsString(name))
+            continue;
+        if (!strcmp(name->valuestring, "SUCCESSFUL_RESOURCES_ALLOCATION"))
+            app->ev_succ_res_alloc = true;
+        else if (!strcmp(name->valuestring, "FAILED_RESOURCES_ALLOCATION"))
+            app->ev_fail_res_alloc = true;
+    }
+
+    uri = cJSON_GetObjectItem(ev_subsc, "notifUri");
+    if (cJSON_IsString(uri))
+        app->ev_notif_uri = ogs_strdup(uri->valuestring);
+    else
+        app->ev_notif_uri = ogs_strdup(app->notif_uri);
+}
+
+/*
+ * TS 29.512 V19.7.0 clause 4.2.6.5.? (resource allocation outcome): the PCF asks the SMF to confirm that the resources of the
+ * PCC rules are allocated with the trigger SUCC_RES_ALLO and one RequestedRuleData that names the rules and carries the
+ * value SUCC_RES_ALLO in reqData. The lists belong to the decision until succ_res_alloc_request_free().
+ */
+static void succ_res_alloc_request(
+        OpenAPI_sm_policy_decision_t *SmPolicyDecision,
+        OpenAPI_list_t *PccRuleList)
+{
+    OpenAPI_list_t *triggers = NULL, *ids = NULL, *req_data = NULL;
+    OpenAPI_lnode_t *node = NULL;
+
+    ogs_assert(SmPolicyDecision);
+    ogs_assert(PccRuleList);
+
+    ids = OpenAPI_list_create();
+    ogs_assert(ids);
+    OpenAPI_list_for_each(PccRuleList, node) {
+        OpenAPI_map_t *PccRuleMap = node->data;
+
+        /* a null value removes the rule: nothing to confirm */
+        if (PccRuleMap && PccRuleMap->key && PccRuleMap->value)
+            OpenAPI_list_add(ids, ogs_strdup(PccRuleMap->key));
+    }
+    if (ids->count == 0) {
+        OpenAPI_list_free(ids);
+        return;
+    }
+
+    triggers = OpenAPI_list_create();
+    ogs_assert(triggers);
+    OpenAPI_list_add(triggers,
+            (void *)OpenAPI_policy_control_request_trigger_SUCC_RES_ALLO);
+    SmPolicyDecision->policy_ctrl_req_triggers = triggers;
+
+    req_data = OpenAPI_list_create();
+    ogs_assert(req_data);
+    OpenAPI_list_add(req_data,
+            (void *)OpenAPI_requested_rule_data_type_SUCC_RES_ALLO);
+
+    SmPolicyDecision->last_req_rule_data = OpenAPI_list_create();
+    ogs_assert(SmPolicyDecision->last_req_rule_data);
+    OpenAPI_list_add(SmPolicyDecision->last_req_rule_data,
+            OpenAPI_requested_rule_data_create(ids, req_data));
+}
+
+static void succ_res_alloc_request_free(
+        OpenAPI_sm_policy_decision_t *SmPolicyDecision)
+{
+    OpenAPI_lnode_t *node = NULL, *node2 = NULL;
+
+    ogs_assert(SmPolicyDecision);
+
+    OpenAPI_list_for_each(SmPolicyDecision->last_req_rule_data, node) {
+        OpenAPI_requested_rule_data_t *data = node->data;
+
+        if (!data)
+            continue;
+        OpenAPI_list_for_each(data->ref_pcc_rule_ids, node2) {
+            if (node2->data)
+                ogs_free(node2->data);
+        }
+        OpenAPI_list_free(data->ref_pcc_rule_ids);
+        OpenAPI_list_free(data->req_data);
+        ogs_free(data);
+    }
+    OpenAPI_list_free(SmPolicyDecision->last_req_rule_data);
+    SmPolicyDecision->last_req_rule_data = NULL;
+    OpenAPI_list_free(SmPolicyDecision->policy_ctrl_req_triggers);
+    SmPolicyDecision->policy_ctrl_req_triggers = NULL;
+}
+
+bool pcf_npcf_policyauthorization_handle_events_subscription_put(
+        pcf_sess_t *sess, pcf_app_t *app_session, ogs_sbi_stream_t *stream,
+        ogs_sbi_message_t *recvmsg, const char *content)
+{
+    cJSON *body = NULL, *events = NULL, *asc = NULL, *held = NULL;
+    bool created;
+    char *location = NULL, *text = NULL;
+    ogs_sbi_message_t sendmsg;
+    ogs_sbi_response_t *response = NULL;
+    ogs_sbi_header_t header;
+    ogs_sbi_server_t *server = NULL;
+
+    ogs_assert(sess);
+    ogs_assert(app_session);
+    ogs_assert(stream);
+    ogs_assert(recvmsg);
+
+    /* TS 29.514 V19.8.0 table 5.3.4.3.1-2: the request body is an EventsSubscReqData, whose "events" attribute is mandatory */
+    body = content ? cJSON_Parse(content) : NULL;
+    events = body ? cJSON_GetObjectItem(body, "events") : NULL;
+    if (!cJSON_IsArray(events)) {
+        if (body)
+            cJSON_Delete(body);
+        ogs_assert(true ==
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                recvmsg, "Invalid EventsSubscReqData", recvmsg->h.uri, NULL));
+        return false;
+    }
+
+    ogs_assert(app_session->context);
+    asc = cJSON_GetObjectItem(app_session->context, "ascReqData");
+    if (!cJSON_IsObject(asc))
+        asc = cJSON_AddObjectToObject(app_session->context, "ascReqData");
+    ogs_assert(asc);
+    held = cJSON_GetObjectItem(asc, "evSubsc");
+    created = !cJSON_IsObject(held);
+    cJSON_DeleteItemFromObject(asc, "evSubsc");
+    cJSON_AddItemToObject(asc, "evSubsc", body);
+    app_events_refresh(app_session);
+
+    /* EventsSubscPutData carries the properties of the EventsSubscReqData */
+    text = cJSON_Print(body);
+    ogs_assert(text);
+
+    server = ogs_sbi_server_from_stream(stream);
+    ogs_assert(server);
+    memset(&header, 0, sizeof(header));
+    header.service.name = OpenAPI_service_name_ToString(
+            OpenAPI_service_name_npcf_policyauthorization);
+    header.api.version = (char *)OGS_SBI_API_V1;
+    header.resource.component[0] = (char *)OGS_SBI_RESOURCE_NAME_APP_SESSIONS;
+    header.resource.component[1] = (char *)app_session->app_session_id;
+    header.resource.component[2] =
+        (char *)OGS_SBI_RESOURCE_NAME_EVENTS_SUBSCRIPTION;
+    location = created ? ogs_sbi_server_uri(server, &header) : NULL;
+
+    memset(&sendmsg, 0, sizeof(sendmsg));
+    sendmsg.http.location = location;
+    response = ogs_sbi_build_response(&sendmsg,
+            created ? OGS_SBI_HTTP_STATUS_CREATED : OGS_SBI_HTTP_STATUS_OK);
+    ogs_assert(response);
+    ogs_sbi_header_set(response->http.headers, OGS_SBI_CONTENT_TYPE,
+            OGS_SBI_CONTENT_JSON_TYPE);
+    response->http.content = text;
+    response->http.content_length = strlen(text);
+    ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+
+    if (location)
+        ogs_free(location);
+    return true;
+}
+
+bool pcf_npcf_policyauthorization_handle_events_subscription_delete(
+        pcf_sess_t *sess, pcf_app_t *app_session, ogs_sbi_stream_t *stream,
+        ogs_sbi_message_t *recvmsg)
+{
+    cJSON *asc = NULL;
+
+    ogs_assert(sess);
+    ogs_assert(app_session);
+    ogs_assert(stream);
+    ogs_assert(recvmsg);
+
+    asc = app_session->context ?
+        cJSON_GetObjectItem(app_session->context, "ascReqData") : NULL;
+    if (!asc || !cJSON_IsObject(cJSON_GetObjectItem(asc, "evSubsc"))) {
+        /* TS 29.514 V19.8.0 table 5.3.4.3.2-3: 404 when the Events Subscription sub-resource does not exist */
+        ogs_assert(true ==
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_NOT_FOUND,
+                recvmsg, "Not found", recvmsg->h.uri, NULL));
+        return false;
+    }
+
+    cJSON_DeleteItemFromObject(asc, "evSubsc");
+    app_events_refresh(app_session);
+    ogs_assert(true == ogs_sbi_send_http_status_no_content(stream));
+    return true;
+}
+
 bool pcf_npcf_policyauthorization_handle_get(pcf_sess_t *sess,
         pcf_app_t *app_session, ogs_sbi_stream_t *stream,
         ogs_sbi_message_t *recvmsg)
@@ -750,6 +965,7 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
 {
     bool rc;
     int i, j, rv, status = 0;
+    bool cause_duplicate = false;
     char *strerror = NULL;
     pcf_ue_sm_t *pcf_ue_sm = NULL;
     pcf_app_t *app_session = NULL;
@@ -956,6 +1172,43 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
                     }
                 }
                 ims_data.num_of_media_component++;
+            }
+        }
+    }
+
+    /*
+     * TS 29.514 V19.8.0 clause 4.2.2.2: the same AF charging identifier as that of another ongoing application session is
+     * rejected with 400 and the application error DUPLICATED_AF_SESSION.
+     */
+    if (AscReqData->af_charg_id) {
+        pcf_ue_sm_t *other_ue = NULL;
+        pcf_sess_t *other_sess = NULL;
+        pcf_app_t *other_app = NULL;
+
+        ogs_list_for_each(&pcf_self()->pcf_ue_sm_list, other_ue) {
+            ogs_list_for_each(&other_ue->sess_list, other_sess) {
+                ogs_list_for_each(&other_sess->app_list, other_app) {
+                    cJSON *asc = other_app->context ?
+                        cJSON_GetObjectItem(other_app->context, "ascReqData") :
+                        NULL;
+                    cJSON *held = asc ?
+                        cJSON_GetObjectItem(asc, "afChargId") : NULL;
+
+                    if (cJSON_IsString(held) && !strcmp(held->valuestring,
+                                AscReqData->af_charg_id)) {
+                        strerror = ogs_msprintf("[%s:%d] AF charging "
+                                "identifier [%s] is in use",
+                                pcf_ue_sm->supi, sess->psi,
+                                AscReqData->af_charg_id);
+                        status = OGS_SBI_HTTP_STATUS_BAD_REQUEST;
+                        cause_duplicate = true;
+                        ogs_freeaddrinfo(addr);
+                        ogs_freeaddrinfo(addr6);
+                        if (fqdn)
+                            ogs_free(fqdn);
+                        goto cleanup;
+                    }
+                }
             }
         }
     }
@@ -1189,6 +1442,14 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
     if (QosDecisionList->count)
         SmPolicyDecision.qos_decs = QosDecisionList;
 
+    /* a subscription to SUCCESSFUL_RESOURCES_ALLOCATION (TS 29.514 V19.8.0 clause 4.2.2.10) asks the SMF to confirm the rules */
+    app_session->context =
+        OpenAPI_app_session_context_convertToJSON(recvmsg->AppSessionContext);
+    ogs_assert(app_session->context);
+    app_events_refresh(app_session);
+    if (app_session->ev_succ_res_alloc)
+        succ_res_alloc_request(&SmPolicyDecision, PccRuleList);
+
     memset(&sendmsg, 0, sizeof(sendmsg));
 
     memset(&header, 0, sizeof(header));
@@ -1203,10 +1464,6 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
 
     sendmsg.AppSessionContext = recvmsg->AppSessionContext;
 
-    app_session->context =
-        OpenAPI_app_session_context_convertToJSON(recvmsg->AppSessionContext);
-    ogs_assert(app_session->context);
-
     response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_CREATED);
     ogs_assert(response);
     ogs_assert(true == ogs_sbi_server_send_response(stream, response));
@@ -1217,6 +1474,7 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
         ogs_assert(true == pcf_sbi_send_smpolicycontrol_update_notify(
                                 sess, &SmPolicyDecision));
     }
+    succ_res_alloc_request_free(&SmPolicyDecision);
 
     OpenAPI_list_for_each(PccRuleList, node) {
         PccRuleMap = node->data;
@@ -1259,7 +1517,8 @@ cleanup:
                 OGS_LOG_WARN : OGS_LOG_ERROR, 0, "%s", strerror);
     ogs_assert(true ==
         ogs_sbi_server_send_error(stream, status, recvmsg, strerror, NULL,
-                policyauthorization_cause(status)));
+                cause_duplicate ? "DUPLICATED_AF_SESSION" :
+                    policyauthorization_cause(status)));
     ogs_free(strerror);
 
     OpenAPI_list_for_each(PccRuleList, node) {
@@ -1306,8 +1565,6 @@ bool pcf_npcf_policyauthorization_handle_update(
         *AppSessionContextUpdateDataPatch = NULL;
     OpenAPI_app_session_context_update_data_t *AscUpdateData = NULL;
 
-    ogs_sbi_message_t sendmsg;
-    ogs_sbi_response_t *response = NULL;
 
     ogs_session_data_t session_data;
 
@@ -1369,7 +1626,9 @@ bool pcf_npcf_policyauthorization_handle_update(
         goto cleanup;
     }
 
-    if (!AscUpdateData->med_components) {
+    /* TS 29.514 V19.8.0 clause 4.2.3.2: a PATCH may carry only the events subscription (evSubsc, or null to remove it) */
+    if (!AscUpdateData->med_components && !AscUpdateData->ev_subsc &&
+        !AscUpdateData->is_ev_subsc_null) {
         strerror = ogs_msprintf("[%s:%d] No AscUpdateData->MediaCompoenent",
                 pcf_ue_sm->supi, sess->psi);
         status = OGS_SBI_HTTP_STATUS_BAD_REQUEST;
@@ -1727,6 +1986,32 @@ bool pcf_npcf_policyauthorization_handle_update(
     if (QosDecisionList->count)
         SmPolicyDecision.qos_decs = QosDecisionList;
 
+    /* the subscription may have changed with this PATCH (TS 29.514 V19.8.0 clause 4.2.3.10) */
+    {
+        cJSON *patch_for_events = content ? cJSON_Parse(content) : NULL;
+        cJSON *asc_for_events = patch_for_events ?
+            cJSON_GetObjectItem(patch_for_events, "ascReqData") : NULL;
+
+        if (asc_for_events && cJSON_HasObjectItem(asc_for_events, "evSubsc")) {
+            /* the merge below changes the stored subscription; apply it first for the decision */
+            cJSON *held_asc = app_session->context ?
+                cJSON_GetObjectItem(app_session->context, "ascReqData") : NULL;
+            cJSON *new_subsc = cJSON_GetObjectItem(asc_for_events, "evSubsc");
+
+            if (held_asc) {
+                cJSON_DeleteItemFromObject(held_asc, "evSubsc");
+                if (!cJSON_IsNull(new_subsc))
+                    cJSON_AddItemToObject(held_asc, "evSubsc",
+                            cJSON_Duplicate(new_subsc, 1));
+            }
+            app_events_refresh(app_session);
+        }
+        if (patch_for_events)
+            cJSON_Delete(patch_for_events);
+    }
+    if (app_session->ev_succ_res_alloc)
+        succ_res_alloc_request(&SmPolicyDecision, PccRuleList);
+
     /* The resource now reads as the creation request with the modification applied (clause 5.3.3.3.1 GET) */
     ogs_assert(app_session->context);
     {
@@ -1745,20 +2030,16 @@ bool pcf_npcf_policyauthorization_handle_update(
         if (patch)
             cJSON_Delete(patch);
     }
+    app_events_refresh(app_session);
 
-    memset(&sendmsg, 0, sizeof(sendmsg));
-
-    sendmsg.AppSessionContextUpdateDataPatch =
-        recvmsg->AppSessionContextUpdateDataPatch;
-
-    response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_OK);
-    ogs_assert(response);
-    ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+    /* TS 29.514 V19.8.0 table 5.3.3.3.2-3: the 200 carries the AppSessionContext after the modification */
+    send_app_session_context(stream, app_session, OGS_SBI_HTTP_STATUS_OK, NULL);
 
     if (PccRuleList->count || QosDecisionList->count) {
         ogs_assert(true == pcf_sbi_send_smpolicycontrol_update_notify(
                             sess, &SmPolicyDecision));
     }
+    succ_res_alloc_request_free(&SmPolicyDecision);
 
     OpenAPI_list_for_each(PccRuleList, node) {
         PccRuleMap = node->data;
@@ -1900,5 +2181,152 @@ bool pcf_npcf_policyauthorization_handle_delete(
     }
     OpenAPI_list_free(QosDecisionList);
 
+    return true;
+}
+
+/*
+ * The Flows of an EventsNotification (TS 29.514 V19.8.0 table 5.6.2.? Flows): the media components whose PCC rules the report
+ * names.
+ */
+static cJSON *flows_of_rules(pcf_app_t *app, OpenAPI_list_t *rule_ids)
+{
+    cJSON *flows = cJSON_CreateArray();
+    OpenAPI_lnode_t *node = NULL;
+    int i;
+
+    ogs_assert(flows);
+    OpenAPI_list_for_each(rule_ids, node) {
+        const char *id = node->data;
+
+        for (i = 0; id && i < app->num_of_pcc_rule; i++) {
+            if (app->pcc_rule[i].id && !strcmp(app->pcc_rule[i].id, id)) {
+                cJSON *flow = cJSON_CreateObject();
+
+                ogs_assert(flow);
+                cJSON_AddNumberToObject(flow, "medCompN", app->med_comp_n[i]);
+                cJSON_AddItemToArray(flows, flow);
+            }
+        }
+    }
+    return flows;
+}
+
+static bool app_owns_rule(pcf_app_t *app, const char *id)
+{
+    int i;
+
+    for (i = 0; id && i < app->num_of_pcc_rule; i++) {
+        if (app->pcc_rule[i].id && !strcmp(app->pcc_rule[i].id, id))
+            return true;
+    }
+    return false;
+}
+
+/*
+ * Npcf_SMPolicyControl_Update (TS 29.512 V19.7.0 clause 4.2.4.14 and 4.2.4.15): the SMF reports the outcome of the resource
+ * allocation of PCC rules with ruleReports (ACTIVE when the resources are allocated, INACTIVE when they are not). The PCF
+ * tells the NF service consumer that subscribed to it (TS 29.514 V19.8.0 clause 4.2.5.8).
+ */
+bool pcf_npcf_smpolicycontrol_handle_update(pcf_sess_t *sess,
+        ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg)
+{
+    OpenAPI_sm_policy_update_context_data_t *UpdateData = NULL;
+    OpenAPI_lnode_t *node = NULL;
+    pcf_app_t *app = NULL;
+
+    ogs_assert(sess);
+    ogs_assert(stream);
+    ogs_assert(recvmsg);
+
+    UpdateData = recvmsg->SmPolicyUpdateContextData;
+    if (!UpdateData) {
+        ogs_assert(true ==
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                recvmsg, "No SmPolicyUpdateContextData", recvmsg->h.uri,
+                NULL));
+        return false;
+    }
+
+    OpenAPI_list_for_each(UpdateData->rule_reports, node) {
+        OpenAPI_rule_report_t *report = node->data;
+        bool active;
+
+        if (!report || !report->pcc_rule_ids)
+            continue;
+        active = report->rule_status == OpenAPI_rule_status_ACTIVE;
+
+        ogs_list_for_each(&sess->app_list, app) {
+            cJSON *notification = NULL, *notifs = NULL, *notif = NULL;
+            cJSON *flows = NULL, *alloc = NULL, *reports = NULL;
+            OpenAPI_lnode_t *id_node = NULL;
+            bool owns = false;
+            char *location = NULL;
+            ogs_sbi_header_t header;
+            ogs_sbi_server_t *server = ogs_sbi_server_first();
+
+            OpenAPI_list_for_each(report->pcc_rule_ids, id_node) {
+                if (app_owns_rule(app, id_node->data)) {
+                    owns = true;
+                    break;
+                }
+            }
+            if (!owns || !app->ev_notif_uri || !server)
+                continue;
+            if (active ? !app->ev_succ_res_alloc : !app->ev_fail_res_alloc)
+                continue;
+
+            memset(&header, 0, sizeof(header));
+            header.service.name = OpenAPI_service_name_ToString(
+                    OpenAPI_service_name_npcf_policyauthorization);
+            header.api.version = (char *)OGS_SBI_API_V1;
+            header.resource.component[0] =
+                (char *)OGS_SBI_RESOURCE_NAME_APP_SESSIONS;
+            header.resource.component[1] = (char *)app->app_session_id;
+            header.resource.component[2] =
+                (char *)OGS_SBI_RESOURCE_NAME_EVENTS_SUBSCRIPTION;
+            location = ogs_sbi_server_uri(server, &header);
+            ogs_assert(location);
+
+            /* EventsNotification: evSubsUri and evNotifs are mandatory (TS 29.514 V19.8.0 table 5.6.2.5-1) */
+            notification = cJSON_CreateObject();
+            ogs_assert(notification);
+            cJSON_AddStringToObject(notification, "evSubsUri", location);
+            ogs_free(location);
+            notifs = cJSON_AddArrayToObject(notification, "evNotifs");
+            ogs_assert(notifs);
+            notif = cJSON_CreateObject();
+            ogs_assert(notif);
+            cJSON_AddStringToObject(notif, "event", active ?
+                    "SUCCESSFUL_RESOURCES_ALLOCATION" :
+                    "FAILED_RESOURCES_ALLOCATION");
+            flows = flows_of_rules(app, report->pcc_rule_ids);
+            if (cJSON_GetArraySize(flows) > 0)
+                cJSON_AddItemToObject(notif, "flows", flows);
+            else
+                cJSON_Delete(flows);
+            cJSON_AddItemToArray(notifs, notif);
+
+            if (!active) {
+                reports = cJSON_AddArrayToObject(notification,
+                        "failedResourcAllocReports");
+                ogs_assert(reports);
+                alloc = cJSON_CreateObject();
+                ogs_assert(alloc);
+                cJSON_AddStringToObject(alloc, "mcResourcStatus", "INACTIVE");
+                flows = flows_of_rules(app, report->pcc_rule_ids);
+                if (cJSON_GetArraySize(flows) > 0)
+                    cJSON_AddItemToObject(alloc, "flows", flows);
+                else
+                    cJSON_Delete(flows);
+                cJSON_AddItemToArray(reports, alloc);
+            }
+
+            pcf_sbi_send_policyauthorization_event_notify(app, notification);
+            cJSON_Delete(notification);
+        }
+    }
+
+    /* no change of the decision: 204 (TS 29.512 V19.7.0 table 5.2.2.3.2-3) */
+    ogs_assert(true == ogs_sbi_send_http_status_no_content(stream));
     return true;
 }

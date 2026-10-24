@@ -164,6 +164,45 @@ void af_state_operational(ogs_fsm_t *s, af_event_t *e)
                 }
 
                 SWITCH(message.h.resource.component[2])
+                CASE(OGS_SBI_RESOURCE_NAME_NOTIFY)
+                    /* TS 29.514 V19.8.0 clause 4.2.5.2: the PCF notifies an event with EventsNotification */
+                    {
+                        cJSON *body = request->http.content ?
+                            cJSON_Parse(request->http.content) : NULL;
+                        cJSON *notifs = body ?
+                            cJSON_GetObjectItem(body, "evNotifs") : NULL;
+                        cJSON *first = cJSON_GetArrayItem(notifs, 0);
+                        cJSON *event = first ?
+                            cJSON_GetObjectItem(first, "event") : NULL;
+                        cJSON *flow = first ? cJSON_GetArrayItem(
+                                cJSON_GetObjectItem(first, "flows"), 0) : NULL;
+                        cJSON *medcomp = flow ?
+                            cJSON_GetObjectItem(flow, "medCompN") : NULL;
+                        cJSON *failed = body ? cJSON_GetArrayItem(
+                                cJSON_GetObjectItem(body,
+                                    "failedResourcAllocReports"), 0) : NULL;
+                        cJSON *status = failed ?
+                            cJSON_GetObjectItem(failed, "mcResourcStatus") :
+                            NULL;
+
+                        ogs_assert(body);
+                        ogs_assert(cJSON_IsString(
+                                    cJSON_GetObjectItem(body, "evSubsUri")));
+                        app_session->notify_count++;
+                        ogs_cpystrn(app_session->notify_event,
+                                cJSON_IsString(event) ? event->valuestring : "",
+                                sizeof(app_session->notify_event));
+                        app_session->notify_med_comp_n =
+                            cJSON_IsNumber(medcomp) ? medcomp->valueint : -1;
+                        ogs_cpystrn(app_session->notify_failed_status,
+                                cJSON_IsString(status) ?
+                                    status->valuestring : "",
+                                sizeof(app_session->notify_failed_status));
+                        cJSON_Delete(body);
+                    }
+                    ogs_assert(true ==
+                            ogs_sbi_send_http_status_no_content(stream));
+                    break;
                 CASE(OGS_SBI_RESOURCE_NAME_TERMINATE)
                     /*
                      * TS 29.514 clause 4.2.5.3: the PCF provides TerminationInfo
@@ -399,6 +438,9 @@ void af_state_operational(ogs_fsm_t *s, af_event_t *e)
                         CASE(OGS_SBI_RESOURCE_NAME_DELETE)
                             af_sess_remove(sess);
                             break;
+                        CASE(OGS_SBI_RESOURCE_NAME_EVENTS_SUBSCRIPTION)
+                            /* the status is recorded above; the body is not read */
+                            break;
                         DEFAULT
                             ogs_error("Invalid resource name [%s]",
                                     message.h.resource.component[2]);
@@ -409,6 +451,7 @@ void af_state_operational(ogs_fsm_t *s, af_event_t *e)
                         CASE(OGS_SBI_HTTP_METHOD_GET)
                             sess->last_pcf_asc_af_app_id[0] = '\0';
                             sess->last_pcf_asc_qos_ref[0] = '\0';
+                            sess->last_pcf_asc_events[0] = '\0';
                             if (message.res_status == OGS_SBI_HTTP_STATUS_OK &&
                                 message.AppSessionContext &&
                                 message.AppSessionContext->asc_req_data) {
@@ -416,6 +459,26 @@ void af_state_operational(ogs_fsm_t *s, af_event_t *e)
                                     message.AppSessionContext->asc_req_data;
                                 OpenAPI_lnode_t *node = NULL;
 
+                                if (asc->ev_subsc) {
+                                    OpenAPI_list_for_each(asc->ev_subsc->events,
+                                            node) {
+                                        OpenAPI_af_event_subscription_t *ev =
+                                            node->data;
+                                        const char *name = ev ?
+                                            OpenAPI_npcf_af_event_ToString(ev->event) :
+                                            NULL;
+
+                                        if (!name)
+                                            continue;
+                                        if (sess->last_pcf_asc_events[0])
+                                            strncat(sess->last_pcf_asc_events,
+                                                    ",", sizeof(sess->last_pcf_asc_events) -
+                                                    strlen(sess->last_pcf_asc_events) - 1);
+                                        strncat(sess->last_pcf_asc_events, name,
+                                                sizeof(sess->last_pcf_asc_events) -
+                                                strlen(sess->last_pcf_asc_events) - 1);
+                                    }
+                                }
                                 if (asc->af_app_id)
                                     ogs_cpystrn(sess->last_pcf_asc_af_app_id,
                                             asc->af_app_id,

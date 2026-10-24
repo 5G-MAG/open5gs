@@ -28,6 +28,16 @@ extern "C" {
 
 ogs_sbi_request_t *smf_npcf_smpolicycontrol_build_create(
         smf_sess_t *sess, void *data);
+/* The outcome of the resource allocation of PCC rules (TS 29.512 V19.7.0 clauses 4.2.4.14 and 4.2.4.15); the builder frees it */
+typedef struct smf_npcf_smpolicycontrol_rule_report_s {
+    OpenAPI_rule_status_e status;
+    OpenAPI_failure_code_e failure_code;
+    int num_of_rule;
+    char *rule_id[OGS_MAX_NUM_OF_PCC_RULE];
+} smf_npcf_smpolicycontrol_rule_report_t;
+
+ogs_sbi_request_t *smf_npcf_smpolicycontrol_build_update(
+        smf_sess_t *sess, void *data);
 ogs_sbi_request_t *smf_npcf_smpolicycontrol_build_delete(
         smf_sess_t *sess, void *data);
 

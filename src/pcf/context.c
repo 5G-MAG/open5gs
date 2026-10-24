@@ -34,6 +34,29 @@ static void pcf_qos_profile_clear(void);
 static void clear_ipv4addr(pcf_sess_t *sess);
 static void clear_ipv6prefix(pcf_sess_t *sess);
 
+/*
+ * The IPv6 prefixes are kept by length and masked address: the key is the length byte and the bytes of the prefix, so that
+ * the longest prefix that contains an address is found by looking up its masks from the longest to the shortest.
+ */
+static int ipv6prefix_key_len(uint8_t len)
+{
+    return 1 + ((len + 7) >> 3);
+}
+
+static void ipv6prefix_mask(uint8_t *addr6, uint8_t len)
+{
+    int i;
+
+    for (i = 0; i < OGS_IPV6_LEN; i++) {
+        int bits = len - 8 * i;
+
+        if (bits >= 8)
+            continue;
+        addr6[i] = bits <= 0 ? 0 : (addr6[i] & (uint8_t)(0xff << (8 - bits)));
+    }
+}
+
+
 void pcf_context_init(void)
 {
     ogs_assert(context_initialized == 0);
@@ -697,8 +720,10 @@ pcf_sess_t *pcf_sess_add(pcf_ue_sm_t *pcf_ue_sm, uint8_t psi)
     OGS_SBI_FEATURES_SET(sess->management_features,
             OGS_SBI_NBSF_MANAGEMENT_BINDING_UPDATE);
 
-    OGS_SBI_FEATURES_SET(sess->policyauthorization_features,
-            OGS_SBI_NPCF_POLICYAUTHORIZATION_SPONSORED_CONNECTIVITY);
+    /*
+     * SponsoredConnectivity is not advertised: the PCF reads no sponsor attribute and reports no usage (TS 29.514 V19.8.0 clauses 4.2.2.5 and
+     * 4.2.4.3), so the feature would be a claim without behaviour.
+     */
     OGS_SBI_FEATURES_SET(sess->policyauthorization_features,
             OGS_SBI_NPCF_POLICYAUTHORIZATION_IMS_SBI);
 
@@ -802,7 +827,7 @@ static void clear_ipv6prefix(pcf_sess_t *sess)
 
     if (sess->ipv6prefix_string) {
         ogs_hash_set(self.ipv6prefix_hash,
-                &sess->ipv6prefix, (sess->ipv6prefix.len >> 3) + 1, NULL);
+                &sess->ipv6prefix, ipv6prefix_key_len(sess->ipv6prefix.len), NULL);
         ogs_free(sess->ipv6prefix_string);
     }
 }
@@ -850,12 +875,13 @@ bool pcf_sess_set_ipv6prefix(pcf_sess_t *sess, char *ipv6prefix_string)
         return false;
     }
 
-    if (sess->ipv6prefix.len != OGS_IPV6_128_PREFIX_LEN) {
-        ogs_error("Unsupported IPv6 prefix length [%d] in [%s]: "
-                "expected /%d", sess->ipv6prefix.len, ipv6prefix_string,
-                OGS_IPV6_128_PREFIX_LEN);
+    /* TS 29.512 V19.7.0 table 5.6.2.3-1: ipv6AddressPrefix is the prefix of the UE, of any length */
+    if (sess->ipv6prefix.len < 1 || sess->ipv6prefix.len > OGS_IPV6_128_PREFIX_LEN) {
+        ogs_error("Unsupported IPv6 prefix length [%d] in [%s]",
+                sess->ipv6prefix.len, ipv6prefix_string);
         return false;
     }
+    ipv6prefix_mask(sess->ipv6prefix.addr6, sess->ipv6prefix.len);
 
     sess->ipv6prefix_string = ogs_strdup(ipv6prefix_string);
     if (!sess->ipv6prefix_string) {
@@ -864,7 +890,7 @@ bool pcf_sess_set_ipv6prefix(pcf_sess_t *sess, char *ipv6prefix_string)
     }
 
     ogs_hash_set(self.ipv6prefix_hash,
-            &sess->ipv6prefix, (sess->ipv6prefix.len >> 3) + 1, sess);
+            &sess->ipv6prefix, ipv6prefix_key_len(sess->ipv6prefix.len), sess);
 
     return true;
 }
@@ -925,14 +951,34 @@ int pcf_sessions_number_by_snssai_and_dnn(
     return number_of_sessions;
 }
 
+/* the session whose prefix is the longest one that contains the address (or the prefix) */
+static pcf_sess_t *find_by_ipv6_longest_prefix(
+        const uint8_t *addr6, uint8_t max_len)
+{
+    struct {
+        uint8_t len;
+        uint8_t addr6[OGS_IPV6_LEN];
+    } key;
+    pcf_sess_t *sess = NULL;
+    int len;
+
+    for (len = max_len; len >= 1; len--) {
+        memset(&key, 0, sizeof(key));
+        key.len = len;
+        memcpy(key.addr6, addr6, OGS_IPV6_LEN);
+        ipv6prefix_mask(key.addr6, len);
+
+        sess = ogs_hash_get(self.ipv6prefix_hash, &key, ipv6prefix_key_len(len));
+        if (sess)
+            return sess;
+    }
+    return NULL;
+}
+
 pcf_sess_t *pcf_sess_find_by_ipv6addr(char *ipv6addr_string)
 {
     int rv;
     ogs_sockaddr_t tmp;
-    struct {
-        uint8_t len;
-        uint8_t addr6[OGS_IPV6_LEN];
-    } ipv6prefix;
 
     ogs_assert(ipv6addr_string);
 
@@ -942,39 +988,30 @@ pcf_sess_t *pcf_sess_find_by_ipv6addr(char *ipv6addr_string)
         return NULL;
     }
 
-    memcpy(ipv6prefix.addr6, tmp.sin6.sin6_addr.s6_addr, OGS_IPV6_LEN);
-    ipv6prefix.len = OGS_IPV6_128_PREFIX_LEN;
-
-    return ogs_hash_get(self.ipv6prefix_hash,
-            &ipv6prefix, (ipv6prefix.len >> 3) + 1);
+    return find_by_ipv6_longest_prefix(
+            tmp.sin6.sin6_addr.s6_addr, OGS_IPV6_128_PREFIX_LEN);
 }
 
 pcf_sess_t *pcf_sess_find_by_ipv6prefix(char *ipv6prefix_string)
 {
     int rv;
-    struct {
-        uint8_t len;
-        uint8_t addr6[OGS_IPV6_LEN];
-    } ipv6prefix;
+    uint8_t addr6[OGS_IPV6_LEN];
+    uint8_t len = 0;
 
     ogs_assert(ipv6prefix_string);
 
-    rv = ogs_ipv6prefix_from_string(
-            ipv6prefix.addr6, &ipv6prefix.len, ipv6prefix_string);
+    rv = ogs_ipv6prefix_from_string(addr6, &len, ipv6prefix_string);
     if (rv != OGS_OK) {
         ogs_error("ogs_ipv6prefix_from_string() failed");
         return NULL;
     }
-
-    if (ipv6prefix.len != OGS_IPV6_128_PREFIX_LEN) {
-        ogs_error("Unsupported IPv6 prefix length [%d] in [%s]: "
-                "expected /%d", ipv6prefix.len, ipv6prefix_string,
-                OGS_IPV6_128_PREFIX_LEN);
+    if (len < 1 || len > OGS_IPV6_128_PREFIX_LEN) {
+        ogs_error("Unsupported IPv6 prefix length [%d] in [%s]",
+                len, ipv6prefix_string);
         return NULL;
     }
 
-    return ogs_hash_get(self.ipv6prefix_hash,
-            &ipv6prefix, (ipv6prefix.len >> 3) + 1);
+    return find_by_ipv6_longest_prefix(addr6, len);
 }
 
 pcf_ue_am_t *pcf_ue_am_find_by_id(ogs_pool_id_t id)
@@ -1028,6 +1065,10 @@ int pcf_app_remove(pcf_app_t *app)
 
     if (app->context)
         cJSON_Delete(app->context);
+    if (app->ev_notif_uri)
+        ogs_free(app->ev_notif_uri);
+    if (app->ev_client)
+        ogs_sbi_client_remove(app->ev_client);
     if (app->notif_uri)
         ogs_free(app->notif_uri);
     if (app->naf.client)

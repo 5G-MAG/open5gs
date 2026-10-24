@@ -2853,6 +2853,28 @@ static ogs_pkbuf_t *testngap_build_pdu_session_resource_modify_response_trasfer(
 
     memset(&message, 0, sizeof(message));
 
+    if (sess->qos_flow_modify_failure) {
+        /* the access network could not set the QoS flows up: qosFlowFailedToAddOrModifyList instead of the response list */
+        NGAP_QosFlowWithCauseItem_t *item = NULL;
+
+        message.qosFlowFailedToAddOrModifyList =
+            CALLOC(1, sizeof(struct NGAP_QosFlowListWithCause));
+        ogs_list_for_each_entry(
+                &sess->qos_flow_to_modify_list, qos_flow, to_modify_node) {
+            item = CALLOC(1, sizeof(struct NGAP_QosFlowWithCauseItem));
+            ASN_SEQUENCE_ADD(&message.qosFlowFailedToAddOrModifyList->list,
+                    item);
+            item->qosFlowIdentifier = qos_flow->qfi;
+            item->cause = CALLOC(1, sizeof(NGAP_Cause_t));
+            item->cause->present = NGAP_Cause_PR_radioNetwork;
+            item->cause->choice.radioNetwork =
+                NGAP_CauseRadioNetwork_unspecified;
+        }
+        return ogs_asn_encode(
+                &asn_DEF_NGAP_PDUSessionResourceModifyResponseTransfer,
+                &message);
+    }
+
     message.qosFlowAddOrModifyResponseList =
         qosFlowAddOrModifyResponseList =
             CALLOC(1, sizeof(struct NGAP_QosFlowAddOrModifyResponseList));

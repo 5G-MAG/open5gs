@@ -1170,3 +1170,60 @@ bool smf_sbi_send_status_notify(smf_sess_t *sess)
 
     return rc;
 }
+
+void smf_sbi_send_smpolicycontrol_rule_report(
+        smf_sess_t *sess, bool success, smf_bearer_t **qos_flow, int num_of_qos_flow)
+{
+    smf_npcf_smpolicycontrol_rule_report_t *report = NULL;
+    int i, j, r;
+
+    ogs_assert(sess);
+
+    if (!PCF_SM_POLICY_ASSOCIATED(sess))
+        return;
+
+    report = ogs_calloc(1, sizeof(*report));
+    ogs_assert(report);
+    report->status = success ?
+        OpenAPI_rule_status_ACTIVE : OpenAPI_rule_status_INACTIVE;
+    report->failure_code = success ?
+        OpenAPI_failure_code_NULL : OpenAPI_failure_code_RES_ALLO_FAIL;
+
+    for (i = 0; i < num_of_qos_flow; i++) {
+        if (!qos_flow[i] || !qos_flow[i]->pcc_rule.id)
+            continue;
+        if (report->num_of_rule >= OGS_MAX_NUM_OF_PCC_RULE)
+            break;
+
+        for (j = 0; j < sess->policy.num_of_succ_res_allo_rule; j++) {
+            if (!strcmp(sess->policy.succ_res_allo_rule_id[j],
+                        qos_flow[i]->pcc_rule.id))
+                break;
+        }
+        /* a failure is reported for any rule (clause 4.2.4.15), a success only for the rules that the PCF asked for */
+        if (success && j == sess->policy.num_of_succ_res_allo_rule)
+            continue;
+
+        report->rule_id[report->num_of_rule++] =
+            ogs_strdup(qos_flow[i]->pcc_rule.id);
+
+        /* the report is made once */
+        if (j < sess->policy.num_of_succ_res_allo_rule) {
+            ogs_free(sess->policy.succ_res_allo_rule_id[j]);
+            for (; j < sess->policy.num_of_succ_res_allo_rule - 1; j++)
+                sess->policy.succ_res_allo_rule_id[j] =
+                    sess->policy.succ_res_allo_rule_id[j + 1];
+            sess->policy.num_of_succ_res_allo_rule--;
+        }
+    }
+
+    if (report->num_of_rule == 0) {
+        ogs_free(report);
+        return;
+    }
+
+    r = smf_sbi_discover_and_send(
+            OpenAPI_service_name_npcf_smpolicycontrol, NULL,
+            smf_npcf_smpolicycontrol_build_update, sess, NULL, 0, report);
+    ogs_expect(r == OGS_OK);
+}

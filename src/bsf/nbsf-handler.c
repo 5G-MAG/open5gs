@@ -61,6 +61,30 @@ static void set_pcf_ip_end_points(bsf_sess_t *sess, OpenAPI_list_t *PcfIpEndPoin
     }
 }
 
+/*
+ * The properties of the binding that the BSF keeps only as registered. They are borrowed from the stored copy, so the
+ * binding that is built is not to be freed through OpenAPI_pcf_binding_free().
+ */
+static void set_registered_properties(
+        OpenAPI_pcf_binding_t *dst, const bsf_sess_t *sess)
+{
+    const OpenAPI_pcf_binding_t *reg = sess->registered;
+
+    if (!reg) return;
+    dst->add_ipv6_prefixes = reg->add_ipv6_prefixes;
+    dst->mac_addr48 = reg->mac_addr48;
+    dst->add_mac_addrs = reg->add_mac_addrs;
+    dst->pcf_diam_host = reg->pcf_diam_host;
+    dst->pcf_diam_realm = reg->pcf_diam_realm;
+    dst->pcf_sm_fqdn = reg->pcf_sm_fqdn;
+    dst->pcf_sm_ip_end_points = reg->pcf_sm_ip_end_points;
+    dst->pcf_id = reg->pcf_id;
+    dst->pcf_set_id = reg->pcf_set_id;
+    dst->recovery_time = reg->recovery_time;
+    dst->para_com = reg->para_com;
+    dst->bind_level = reg->bind_level;
+}
+
 bool bsf_nbsf_management_handle_pcf_binding(
         bsf_sess_t *sess, ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg)
 {
@@ -124,6 +148,7 @@ bool bsf_nbsf_management_handle_pcf_binding(
             SendPcfBinding.snssai = &Snssai;
             if (sess->pcf_fqdn && strlen(sess->pcf_fqdn))
                 SendPcfBinding.pcf_fqdn = sess->pcf_fqdn;
+            set_registered_properties(&SendPcfBinding, sess);
 
             if (sess->num_of_pcf_ip) {
                 int i;
@@ -205,6 +230,10 @@ bool bsf_nbsf_management_handle_pcf_binding(
                 status = OGS_SBI_HTTP_STATUS_BAD_REQUEST;
                 goto cleanup;
             }
+
+            if (sess->registered)
+                OpenAPI_pcf_binding_free(sess->registered);
+            sess->registered = OpenAPI_pcf_binding_copy(NULL, RecvPcfBinding);
 
             if (RecvPcfBinding->pcf_fqdn) {
                 if (sess->pcf_fqdn)
@@ -294,6 +323,11 @@ bool bsf_nbsf_management_handle_pcf_binding(
                     ogs_free(sess->gpsi);
                 sess->gpsi = ogs_strdup(RecvPcfBinding->gpsi);
             }
+            if (RecvPcfBinding->ip_domain) {
+                if (sess->ip_domain)
+                    ogs_free(sess->ip_domain);
+                sess->ip_domain = ogs_strdup(RecvPcfBinding->ip_domain);
+            }
 
             memset(&header, 0, sizeof(header));
             header.service.name =
@@ -347,12 +381,14 @@ bool bsf_nbsf_management_handle_pcf_binding(
                 /* TS 29.521 V19.7.0 clause 4.2.4.2: the PcfBinding as the PCF registered it */
                 SendPcfBinding.supi = sess->supi;
                 SendPcfBinding.gpsi = sess->gpsi;
+                SendPcfBinding.ip_domain = sess->ip_domain;
                 SendPcfBinding.ipv4_addr = sess->ipv4addr_string;
                 SendPcfBinding.ipv6_prefix = sess->ipv6prefix_string;
                 SendPcfBinding.ipv4_frame_route_list =
                     sess->ipv4_frame_route_list;
                 SendPcfBinding.ipv6_frame_route_list =
                     sess->ipv6_frame_route_list;
+                set_registered_properties(&SendPcfBinding, sess);
                 if (sess->management_features)
                     SendPcfBinding.supp_feat =
                         ogs_uint64_to_string(sess->management_features);

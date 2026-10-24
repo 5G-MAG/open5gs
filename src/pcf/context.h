@@ -213,6 +213,12 @@ typedef struct pcf_app_s {
     /* The AppSessionContext as the resource now reads (TS 29.514 V19.8.0 clause 5.3.3.3.1): the creation request with the modifications applied */
     cJSON *context;
 
+    /* The events of ascReqData.evSubsc that the PCF acts on (TS 29.514 V19.8.0 clause 4.2.2.10) and where it notifies them */
+    bool ev_succ_res_alloc;
+    bool ev_fail_res_alloc;
+    char *ev_notif_uri;
+    ogs_sbi_client_t *ev_client; /* the client of ev_notif_uri when it is not the one of notif_uri */
+
     ogs_pcc_rule_t pcc_rule[OGS_MAX_NUM_OF_PCC_RULE];
     int num_of_pcc_rule;
     /* The medCompN of the media component that each PCC rule serves (TS 29.514 V19.8.0 clause 5.6.2.3: the key of the map of media components) */

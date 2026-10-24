@@ -1614,6 +1614,27 @@ void smf_gsm_state_operational(ogs_fsm_t *s, smf_event_t *e)
         service_name_id = ogs_sbi_service_name_id_from_string(
                 sbi_message->h.service.name);
         switch (service_name_id) {
+        case OpenAPI_service_name_npcf_smpolicycontrol:
+            /* The answer of the PCF to the report of the resource allocation outcome (TS 29.512 V19.7.0 clause 4.2.4.14) */
+            SWITCH(sbi_message->h.resource.component[2])
+            CASE(OGS_SBI_RESOURCE_NAME_UPDATE)
+                if (sbi_message->res_status !=
+                        OGS_SBI_HTTP_STATUS_NO_CONTENT &&
+                    sbi_message->res_status != OGS_SBI_HTTP_STATUS_OK)
+                    ogs_error("[%s:%d] HTTP response error [%d] to the "
+                            "SM policy update", smf_ue->supi, sess->psi,
+                            sbi_message->res_status);
+                break;
+
+            DEFAULT
+                ogs_error("[%s:%d] Invalid resource name [%s]",
+                        smf_ue->supi, sess->psi,
+                        sbi_message->h.resource.component[2] ?
+                            sbi_message->h.resource.component[2] : "");
+                ogs_assert_if_reached();
+            END
+            break;
+
         case OpenAPI_service_name_namf_comm:
             SWITCH(sbi_message->h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_UE_CONTEXTS)

@@ -190,7 +190,7 @@ ogs_sbi_request_t *smf_npcf_smpolicycontrol_build_create(
 
     if (sess->ipv6) {
         SmPolicyContextData.ipv6_address_prefix = ogs_ipv6prefix_to_string(
-                (uint8_t *)sess->ipv6->addr, OGS_IPV6_128_PREFIX_LEN);
+                (uint8_t *)sess->ipv6->addr, OGS_IPV6_DEFAULT_PREFIX_LEN);
         if (!SmPolicyContextData.ipv6_address_prefix) {
             ogs_error("No ipv6_address_prefix");
             goto end;
@@ -318,6 +318,71 @@ end:
 
     OpenAPI_clear_and_free_string_list(SmPolicyContextData.ipv4_frame_route_list);
     OpenAPI_clear_and_free_string_list(SmPolicyContextData.ipv6_frame_route_list);
+
+    return request;
+}
+
+ogs_sbi_request_t *smf_npcf_smpolicycontrol_build_update(
+        smf_sess_t *sess, void *data)
+{
+    ogs_sbi_message_t message;
+    ogs_sbi_request_t *request = NULL;
+    smf_npcf_smpolicycontrol_rule_report_t *report = data;
+
+    OpenAPI_sm_policy_update_context_data_t UpdateData;
+    OpenAPI_rule_report_t RuleReport;
+    OpenAPI_list_t *Triggers = NULL, *RuleReports = NULL, *Ids = NULL;
+    int i;
+
+    ogs_assert(sess);
+    ogs_assert(sess->policy_association.resource_uri);
+    ogs_assert(report);
+
+    memset(&message, 0, sizeof(message));
+    message.h.method = (char *)OGS_SBI_HTTP_METHOD_POST;
+    message.h.uri = ogs_msprintf("%s/%s",
+            sess->policy_association.resource_uri,
+            OGS_SBI_RESOURCE_NAME_UPDATE);
+
+    memset(&UpdateData, 0, sizeof(UpdateData));
+    memset(&RuleReport, 0, sizeof(RuleReport));
+
+    /* TS 29.512 V19.7.0 clause 4.2.4.14: SUCC_RES_ALLO in repPolicyCtrlReqTriggers with the ruleReports of the rules */
+    if (report->status == OpenAPI_rule_status_ACTIVE) {
+        Triggers = OpenAPI_list_create();
+        ogs_assert(Triggers);
+        OpenAPI_list_add(Triggers,
+                (void *)OpenAPI_policy_control_request_trigger_SUCC_RES_ALLO);
+        UpdateData.rep_policy_ctrl_req_triggers = Triggers;
+    }
+
+    Ids = OpenAPI_list_create();
+    ogs_assert(Ids);
+    for (i = 0; i < report->num_of_rule; i++)
+        OpenAPI_list_add(Ids, report->rule_id[i]);
+    RuleReport.pcc_rule_ids = Ids;
+    RuleReport.rule_status = report->status;
+    RuleReport.failure_code = report->failure_code;
+
+    RuleReports = OpenAPI_list_create();
+    ogs_assert(RuleReports);
+    OpenAPI_list_add(RuleReports, &RuleReport);
+    UpdateData.rule_reports = RuleReports;
+
+    message.SmPolicyUpdateContextData = &UpdateData;
+
+    request = ogs_sbi_build_request(&message);
+    ogs_expect(request);
+
+    OpenAPI_list_free(RuleReports);
+    OpenAPI_list_free(Ids);
+    if (Triggers)
+        OpenAPI_list_free(Triggers);
+    ogs_free(message.h.uri);
+
+    for (i = 0; i < report->num_of_rule; i++)
+        ogs_free(report->rule_id[i]);
+    ogs_free(report);
 
     return request;
 }

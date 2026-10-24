@@ -54,7 +54,12 @@ typedef struct af_sess_s {
     int last_pcf_status;
     char last_pcf_asc_af_app_id[64]; /* afAppId and the qosRef of the first media component of the last AppSessionContext that the PCF returned */
     char last_pcf_asc_qos_ref[64];
-    char last_pcf_cause[64];  /* the cause of the ProblemDetails of the last answer of the PCF, empty if none */
+    char last_pcf_asc_events[160];   /* the events of the evSubsc of the last AppSessionContext, separated by commas */
+    char last_pcf_cause[64];
+    int notify_count;                 /* the Npcf_PolicyAuthorization_Notify requests of the PCF (TS 29.514 V19.8.0 clause 4.2.5.2) */
+    char notify_event[64];            /* the event of the first evNotifs entry of the last one */
+    int notify_med_comp_n;            /* the medCompN of its first flow, -1 if none */
+    char notify_failed_status[16];    /* mcResourcStatus of its first failedResourcAllocReports entry, empty if none */  /* the cause of the ProblemDetails of the last answer of the PCF, empty if none */
 
 #define PCF_APP_SESSION_ASSOCIATED(__sESS) \
     ((__sESS) && ((__sESS)->app_session.pcf_id))

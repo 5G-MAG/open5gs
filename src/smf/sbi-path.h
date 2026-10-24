@@ -240,6 +240,14 @@ void smf_sbi_send_released_data(
 
 bool smf_sbi_send_status_notify(smf_sess_t *sess);
 
+/*
+ * Tell the PCF how the resource allocation of PCC rules ended (TS 29.512 V19.7.0 clauses 4.2.4.14 and 4.2.4.15) for the rules
+ * of the PDU session whose QoS flows are in the list; the rules of the list that the PCF did not ask a report for are left out
+ * of a success report.
+ */
+void smf_sbi_send_smpolicycontrol_rule_report(
+        smf_sess_t *sess, bool success, smf_bearer_t **qos_flow, int num_of_qos_flow);
+
 #ifdef __cplusplus
 }
 #endif

@@ -711,3 +711,61 @@ bool pcf_sbi_send_policyauthorization_terminate_notify(
 
     return rc;
 }
+
+bool pcf_sbi_send_policyauthorization_event_notify(
+        pcf_app_t *app, cJSON *events_notification)
+{
+    bool rc;
+    ogs_sbi_request_t *request = NULL;
+    ogs_sbi_client_t *client = NULL;
+    OpenAPI_uri_scheme_e scheme = OpenAPI_uri_scheme_NULL;
+    char *fqdn = NULL;
+    uint16_t fqdn_port = 0;
+    ogs_sockaddr_t *addr = NULL, *addr6 = NULL;
+
+    ogs_assert(app);
+    ogs_assert(events_notification);
+    ogs_assert(app->ev_notif_uri);
+
+    /* the URI of the subscription (the notifUri of evSubsc, or the one of the application session) */
+    client = app->naf.client;
+    if (!app->notif_uri || strcmp(app->ev_notif_uri, app->notif_uri)) {
+        if (!app->ev_client) {
+            if (ogs_sbi_getaddr_from_uri(&scheme, &fqdn, &fqdn_port,
+                        &addr, &addr6, app->ev_notif_uri) == false ||
+                scheme == OpenAPI_uri_scheme_NULL) {
+                ogs_error("Invalid URI [%s]", app->ev_notif_uri);
+                return false;
+            }
+            app->ev_client = ogs_sbi_client_add(
+                    scheme, fqdn, fqdn_port, addr, addr6);
+            if (addr)
+                ogs_freeaddrinfo(addr);
+            if (addr6)
+                ogs_freeaddrinfo(addr6);
+            if (fqdn)
+                ogs_free(fqdn);
+        }
+        client = app->ev_client;
+    }
+    if (!client) {
+        ogs_error("No client for [%s]", app->ev_notif_uri);
+        return false;
+    }
+
+    request = pcf_naf_callback_build_policyauthorization_event_notify(
+            app, events_notification);
+    if (!request) {
+        ogs_error("pcf_naf_callback_build_policyauthorization_event_notify() "
+                "failed");
+        return false;
+    }
+
+    rc = ogs_sbi_send_request_to_client(
+            client, client_notify_cb, request, NULL);
+    ogs_expect(rc == true);
+
+    ogs_sbi_request_free(request);
+
+    return rc;
+}

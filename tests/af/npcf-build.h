@@ -32,6 +32,8 @@ typedef struct af_npcf_policyauthorization_param_s {
     int qos_type;
     const char *qos_reference;
     bool omit_med_type;
+    const char *af_charg_id;       /* the AF charging identifier (afChargId), NULL for none */
+    bool ev_resources_allocation;  /* subscribe to SUCCESSFUL_RESOURCES_ALLOCATION and FAILED_RESOURCES_ALLOCATION */
 } af_npcf_policyauthorization_param_t;
 
 ogs_sbi_request_t *af_npcf_policyauthorization_build_create(
@@ -39,6 +41,15 @@ ogs_sbi_request_t *af_npcf_policyauthorization_build_create(
 ogs_sbi_request_t *af_npcf_policyauthorization_build_update(
         af_sess_t *sess, void *data);
 ogs_sbi_request_t *af_npcf_policyauthorization_build_remove_media(
+        af_sess_t *sess, void *data);
+/* A request with the given HTTP method, the path after the application session and a JSON body, as the NF service consumer may send them */
+typedef struct af_npcf_policyauthorization_raw_s {
+    const char *method;
+    const char *path;  /* appended to the URI of the application session, e.g. "/events-subscription" */
+    const char *body;  /* JSON text, or NULL */
+} af_npcf_policyauthorization_raw_t;
+
+ogs_sbi_request_t *af_npcf_policyauthorization_build_raw(
         af_sess_t *sess, void *data);
 ogs_sbi_request_t *af_npcf_policyauthorization_build_get(
         af_sess_t *sess, void *data);

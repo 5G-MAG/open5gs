@@ -127,10 +127,6 @@ cleanup:
 void af_npcf_policyauthorization_handle_update(
         af_sess_t *sess, ogs_sbi_message_t *recvmsg)
 {
-    OpenAPI_app_session_context_update_data_patch_t
-        *AppSessionContextUpdateDataPatch = NULL;
-    OpenAPI_app_session_context_update_data_t *AscUpdateData = NULL;
-
     ogs_assert(sess);
     ogs_assert(recvmsg);
 
@@ -142,20 +138,7 @@ void af_npcf_policyauthorization_handle_update(
         return;
     }
 
-    AppSessionContextUpdateDataPatch =
-        recvmsg->AppSessionContextUpdateDataPatch;
-    if (!AppSessionContextUpdateDataPatch) {
-        ogs_error("[%s:%s] No AppSessionContextUpdateDataPatch",
-                sess->ipv4addr ? sess->ipv4addr : "Unknown",
-                sess->ipv6addr ? sess->ipv6addr : "Unknown");
-        return;
-    }
-
-    AscUpdateData = AppSessionContextUpdateDataPatch->asc_req_data;
-    if (!AscUpdateData) {
-        ogs_error("[%s:%s] No AscUpdateData",
-                sess->ipv4addr ? sess->ipv4addr : "Unknown",
-                sess->ipv6addr ? sess->ipv6addr : "Unknown");
-        return;
-    }
+    /* TS 29.514 V19.8.0 table 5.3.3.3.2-3: the 200 carries the AppSessionContext after the modification */
+    ogs_assert(recvmsg->AppSessionContext);
+    ogs_assert(recvmsg->AppSessionContext->asc_req_data);
 }

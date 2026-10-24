@@ -92,6 +92,25 @@ void pcf_sm_state_operational(ogs_fsm_t *s, pcf_event_t *e)
                 }
             } else {
                 SWITCH(message->h.resource.component[2])
+                CASE(OGS_SBI_RESOURCE_NAME_UPDATE)
+                    SWITCH(message->h.method)
+                    CASE(OGS_SBI_HTTP_METHOD_POST)
+                        handled = pcf_npcf_smpolicycontrol_handle_update(
+                                sess, stream, message);
+                        break;
+
+                    DEFAULT
+                        ogs_error("[%s:%d] Invalid HTTP method [%s] for "
+                                "/update", pcf_ue_sm->supi, sess->psi,
+                                message->h.method);
+                        ogs_assert(true ==
+                            ogs_sbi_server_send_error(stream,
+                                OGS_SBI_HTTP_STATUS_METHOD_NOT_ALLOWED,
+                                message, "Invalid HTTP method",
+                                message->h.uri, NULL));
+                    END
+                    break;
+
                 CASE(OGS_SBI_RESOURCE_NAME_DELETE)
                     SWITCH(message->h.method)
                     CASE(OGS_SBI_HTTP_METHOD_POST)
@@ -143,6 +162,31 @@ void pcf_sm_state_operational(ogs_fsm_t *s, pcf_event_t *e)
                             ogs_error("[%s:%d] Invalid HTTP method [%s] for "
                                     "/delete", pcf_ue_sm->supi, sess->psi,
                                     message->h.method);
+                            ogs_assert(true ==
+                                ogs_sbi_server_send_error(stream,
+                                    OGS_SBI_HTTP_STATUS_METHOD_NOT_ALLOWED,
+                                    message, "Invalid HTTP method",
+                                    message->h.uri, NULL));
+                        END
+                        break;
+                    CASE(OGS_SBI_RESOURCE_NAME_EVENTS_SUBSCRIPTION)
+                        SWITCH(message->h.method)
+                        CASE(OGS_SBI_HTTP_METHOD_PUT)
+                            handled =
+                                pcf_npcf_policyauthorization_handle_events_subscription_put(
+                                    sess, e->app, stream, message,
+                                    e->h.sbi.request ?
+                                        e->h.sbi.request->http.content : NULL);
+                            break;
+                        CASE(OGS_SBI_HTTP_METHOD_DELETE)
+                            handled =
+                                pcf_npcf_policyauthorization_handle_events_subscription_delete(
+                                    sess, e->app, stream, message);
+                            break;
+                        DEFAULT
+                            ogs_error("[%s:%d] Invalid HTTP method [%s] for "
+                                    "/events-subscription", pcf_ue_sm->supi,
+                                    sess->psi, message->h.method);
                             ogs_assert(true ==
                                 ogs_sbi_server_send_error(stream,
                                     OGS_SBI_HTTP_STATUS_METHOD_NOT_ALLOWED,

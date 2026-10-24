@@ -19,6 +19,28 @@
 
 #include "context.h"
 
+/*
+ * The IPv6 prefixes are kept by length and masked address: the key is the length byte and the bytes of the prefix, so that
+ * the longest prefix that contains an address is found by looking up its masks from the longest to the shortest.
+ */
+static int ipv6prefix_key_len(uint8_t len)
+{
+    return 1 + ((len + 7) >> 3);
+}
+
+static void ipv6prefix_mask(uint8_t *addr6, uint8_t len)
+{
+    int i;
+
+    for (i = 0; i < OGS_IPV6_LEN; i++) {
+        int bits = len - 8 * i;
+
+        if (bits >= 8)
+            continue;
+        addr6[i] = bits <= 0 ? 0 : (addr6[i] & (uint8_t)(0xff << (8 - bits)));
+    }
+}
+
 static bsf_context_t self;
 
 int __bsf_log_domain;
@@ -189,6 +211,8 @@ void bsf_sess_remove(bsf_sess_t *sess)
         ogs_free(sess->supi);
     if (sess->gpsi)
         ogs_free(sess->gpsi);
+    if (sess->ip_domain)
+        ogs_free(sess->ip_domain);
 
     if (sess->ipv4addr_string) {
         ogs_hash_set(self.ipv4addr_hash,
@@ -197,12 +221,15 @@ void bsf_sess_remove(bsf_sess_t *sess)
     }
     if (sess->ipv6prefix_string) {
         ogs_hash_set(self.ipv6prefix_hash,
-                &sess->ipv6prefix, (sess->ipv6prefix.len >> 3) + 1, NULL);
+                &sess->ipv6prefix, ipv6prefix_key_len(sess->ipv6prefix.len), NULL);
         ogs_free(sess->ipv6prefix_string);
     }
 
     OpenAPI_clear_and_free_string_list(sess->ipv4_frame_route_list);
     OpenAPI_clear_and_free_string_list(sess->ipv6_frame_route_list);
+
+    if (sess->registered)
+        OpenAPI_pcf_binding_free(sess->registered);
 
     ogs_assert(sess->dnn);
     ogs_free(sess->dnn);
@@ -268,7 +295,7 @@ bool bsf_sess_set_ipv6prefix(bsf_sess_t *sess, char *ipv6prefix_string)
 
     if (sess->ipv6prefix_string) {
         ogs_hash_set(self.ipv6prefix_hash,
-                &sess->ipv6prefix, (sess->ipv6prefix.len >> 3) + 1, NULL);
+                &sess->ipv6prefix, ipv6prefix_key_len(sess->ipv6prefix.len), NULL);
         ogs_free(sess->ipv6prefix_string);
     }
     rv = ogs_ipv6prefix_from_string(
@@ -278,10 +305,12 @@ bool bsf_sess_set_ipv6prefix(bsf_sess_t *sess, char *ipv6prefix_string)
         return false;
     }
 
-    if (sess->ipv6prefix.len != OGS_IPV6_128_PREFIX_LEN) {
+    /* TS 29.521 V19.7.0 table 5.3.2.3.1-2: ipv6Prefix is the prefix of the UE, of any length */
+    if (sess->ipv6prefix.len < 1 || sess->ipv6prefix.len > OGS_IPV6_128_PREFIX_LEN) {
         ogs_error("Unsupported IPv6 prefix length [%d]", sess->ipv6prefix.len);
         return false;
     }
+    ipv6prefix_mask(sess->ipv6prefix.addr6, sess->ipv6prefix.len);
 
     sess->ipv6prefix_string = ogs_strdup(ipv6prefix_string);
     if (!sess->ipv6prefix_string) {
@@ -290,7 +319,7 @@ bool bsf_sess_set_ipv6prefix(bsf_sess_t *sess, char *ipv6prefix_string)
     }
 
     ogs_hash_set(self.ipv6prefix_hash,
-            &sess->ipv6prefix, (sess->ipv6prefix.len >> 3) + 1, sess);
+            &sess->ipv6prefix, ipv6prefix_key_len(sess->ipv6prefix.len), sess);
 
     return true;
 }
@@ -343,14 +372,19 @@ bsf_sess_t *bsf_sess_find_by_ipv4addr(
     return ogs_hash_get(self.ipv4addr_hash, &ipv4addr, sizeof(ipv4addr));
 }
 
+/*
+ * TS 29.521 V19.7.0 clause 4.2.4.2: "the BSF shall use the longest prefix match to find a matching IPv6 prefix": the binding
+ * whose prefix is the longest one that contains the address or the prefix of the query.
+ */
 bsf_sess_t *bsf_sess_find_by_ipv6prefix(
         char *ipv6prefix_string, bool *invalid)
 {
-    int rv;
+    int rv, len;
     struct {
         uint8_t len;
         uint8_t addr6[OGS_IPV6_LEN];
-    } ipv6prefix;
+    } ipv6prefix, key;
+    bsf_sess_t *sess = NULL;
 
     ogs_assert(ipv6prefix_string);
 
@@ -366,15 +400,51 @@ bsf_sess_t *bsf_sess_find_by_ipv6prefix(
         return NULL;
     }
 
-    if (ipv6prefix.len != OGS_IPV6_128_PREFIX_LEN) {
+    if (ipv6prefix.len < 1 || ipv6prefix.len > OGS_IPV6_128_PREFIX_LEN) {
         ogs_error("Unsupported IPv6 prefix length [%d]", ipv6prefix.len);
         if (invalid)
             *invalid = true;
         return NULL;
     }
 
-    return ogs_hash_get(self.ipv6prefix_hash,
-            &ipv6prefix, (ipv6prefix.len >> 3) + 1);
+    for (len = ipv6prefix.len; len >= 1; len--) {
+        memset(&key, 0, sizeof(key));
+        key.len = len;
+        memcpy(key.addr6, ipv6prefix.addr6, OGS_IPV6_LEN);
+        ipv6prefix_mask(key.addr6, len);
+
+        sess = ogs_hash_get(self.ipv6prefix_hash, &key, ipv6prefix_key_len(len));
+        if (sess)
+            return sess;
+    }
+    return NULL;
+}
+
+/* The binding with exactly this prefix (a registration replaces the binding of the same prefix, not that of a larger one) */
+bsf_sess_t *bsf_sess_find_by_exact_ipv6prefix(
+        char *ipv6prefix_string, bool *invalid)
+{
+    struct {
+        uint8_t len;
+        uint8_t addr6[OGS_IPV6_LEN];
+    } key;
+
+    ogs_assert(ipv6prefix_string);
+
+    if (invalid)
+        *invalid = false;
+
+    memset(&key, 0, sizeof(key));
+    if (ogs_ipv6prefix_from_string(key.addr6, &key.len, ipv6prefix_string) !=
+                OGS_OK || key.len < 1 || key.len > OGS_IPV6_128_PREFIX_LEN) {
+        ogs_error("Invalid IPv6 prefix [%s]", ipv6prefix_string);
+        if (invalid)
+            *invalid = true;
+        return NULL;
+    }
+    ipv6prefix_mask(key.addr6, key.len);
+
+    return ogs_hash_get(self.ipv6prefix_hash, &key, ipv6prefix_key_len(key.len));
 }
 
 int get_sess_load(void)

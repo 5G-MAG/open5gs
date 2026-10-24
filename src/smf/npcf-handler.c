@@ -85,6 +85,42 @@ static void update_authorized_pcc_rule_and_qos(
      * NOTE 2: In related data structures no attrib
      */
 
+    /*
+     * TS 29.512 V19.7.0 clause 4.2.4.14: with lastReqRuleData that carries SUCC_RES_ALLO in reqData, the SMF reports when the
+     * resources of the referenced PCC rules are allocated.
+     */
+    OpenAPI_list_for_each(SmPolicyDecision->last_req_rule_data, node) {
+        OpenAPI_requested_rule_data_t *RequestedRuleData = node->data;
+        OpenAPI_lnode_t *req = NULL, *ref = NULL;
+        bool succ_res_allo = false;
+
+        if (!RequestedRuleData)
+            continue;
+        OpenAPI_list_for_each(RequestedRuleData->req_data, req) {
+            if ((OpenAPI_requested_rule_data_type_e)(intptr_t)req->data ==
+                    OpenAPI_requested_rule_data_type_SUCC_RES_ALLO)
+                succ_res_allo = true;
+        }
+        if (!succ_res_allo)
+            continue;
+        OpenAPI_list_for_each(RequestedRuleData->ref_pcc_rule_ids, ref) {
+            int k;
+
+            if (!ref->data ||
+                sess->policy.num_of_succ_res_allo_rule >=
+                    OGS_MAX_NUM_OF_PCC_RULE)
+                continue;
+            for (k = 0; k < sess->policy.num_of_succ_res_allo_rule; k++) {
+                if (!strcmp(sess->policy.succ_res_allo_rule_id[k], ref->data))
+                    break;
+            }
+            if (k == sess->policy.num_of_succ_res_allo_rule)
+                sess->policy.succ_res_allo_rule_id[
+                    sess->policy.num_of_succ_res_allo_rule++] =
+                        ogs_strdup(ref->data);
+        }
+    }
+
     if (SmPolicyDecision->pcc_rules) {
         OpenAPI_map_t *PccRuleMap = NULL;
         OpenAPI_pcc_rule_t *PccRule = NULL;

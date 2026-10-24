@@ -31,6 +31,8 @@ bool pcf_npcf_am_policy_control_handle_create(pcf_ue_am_t *pcf_ue_am,
 
 bool pcf_npcf_smpolicycontrol_handle_create(pcf_sess_t *sess,
         ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg);
+bool pcf_npcf_smpolicycontrol_handle_update(pcf_sess_t *sess,
+        ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg);
 bool pcf_npcf_smpolicycontrol_handle_delete(pcf_sess_t *sess,
         ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg);
 
@@ -43,6 +45,13 @@ bool pcf_npcf_policyauthorization_handle_update(
         pcf_sess_t *sess, pcf_app_t *app,
         ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg,
         const char *content);
+bool pcf_npcf_policyauthorization_handle_events_subscription_put(
+        pcf_sess_t *sess, pcf_app_t *app,
+        ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg,
+        const char *content);
+bool pcf_npcf_policyauthorization_handle_events_subscription_delete(
+        pcf_sess_t *sess, pcf_app_t *app,
+        ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg);
 bool pcf_npcf_policyauthorization_handle_delete(
         pcf_sess_t *sess, pcf_app_t *app,
         ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg);

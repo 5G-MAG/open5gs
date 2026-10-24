@@ -172,7 +172,7 @@ void bsf_state_operational(ogs_fsm_t *s, bsf_event_t *e)
                                 }
                             }
                             if (!sess && message.PcfBinding->ipv6_prefix) {
-                                sess = bsf_sess_find_by_ipv6prefix(
+                                sess = bsf_sess_find_by_exact_ipv6prefix(
                                             message.PcfBinding->ipv6_prefix,
                                             &invalid);
                                 if (invalid) {
@@ -205,6 +205,23 @@ void bsf_state_operational(ogs_fsm_t *s, bsf_event_t *e)
                         }
                         break;
                     CASE(OGS_SBI_HTTP_METHOD_GET)
+                        /*
+                         * TS 29.521 V19.7.0 table 5.3.2.3.2-1 note 1: one and only one of ipv4Addr, ipv6Prefix and
+                         * macAddr48 is present.
+                         */
+                        if ((message.param.ipv4addr ? 1 : 0) +
+                            (message.param.ipv6prefix ? 1 : 0) +
+                            (message.param.mac_addr48 ? 1 : 0) > 1) {
+                            ogs_error("More than one UE address in the query "
+                                    "[%s]", message.h.uri);
+                            ogs_assert(true ==
+                                ogs_sbi_server_send_error(stream,
+                                    OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                                    &message,
+                                    "More than one UE address in the query",
+                                    message.h.uri, NULL));
+                            goto cleanup;
+                        }
                         if (!message.param.ipv4addr &&
                             !message.param.ipv6prefix) {
                             /*
@@ -256,6 +273,19 @@ void bsf_state_operational(ogs_fsm_t *s, bsf_event_t *e)
                         if (sess && message.param.dnn &&
                             (!sess->dnn ||
                              ogs_strcasecmp(message.param.dnn, sess->dnn)))
+                            sess = NULL;
+                        /* TS 29.521 V19.7.0 table 5.3.2.3.2-1: supi, gpsi and ipDomain narrow the match as well */
+                        if (sess && message.param.bsf_supi &&
+                            (!sess->supi ||
+                             strcmp(message.param.bsf_supi, sess->supi)))
+                            sess = NULL;
+                        if (sess && message.param.bsf_gpsi &&
+                            (!sess->gpsi ||
+                             strcmp(message.param.bsf_gpsi, sess->gpsi)))
+                            sess = NULL;
+                        if (sess && message.param.ip_domain &&
+                            (!sess->ip_domain ||
+                             strcmp(message.param.ip_domain, sess->ip_domain)))
                             sess = NULL;
                         if (sess && message.param.snssai_presence &&
                             (message.param.s_nssai.sst != sess->s_nssai.sst ||

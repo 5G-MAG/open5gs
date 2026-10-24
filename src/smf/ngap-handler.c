@@ -501,6 +501,28 @@ int ngap_handle_pdu_session_resource_modify_response_transfer(
         goto cleanup;
     }
 
+    if (message.qosFlowFailedToAddOrModifyList) {
+        /* TS 29.512 V19.7.0 clause 4.2.4.15: the rules of the flows that the access network could not set up are INACTIVE */
+        smf_bearer_t *failed[OGS_MAX_NUM_OF_PCC_RULE];
+        int num_of_failed = 0;
+
+        for (i = 0; i < OGS_ASN_LIST_COUNT(
+                    message.qosFlowFailedToAddOrModifyList) &&
+                    num_of_failed < OGS_ARRAY_SIZE(failed); i++) {
+            NGAP_QosFlowWithCauseItem_t *item = OGS_ASN_LIST_GET(
+                    message.qosFlowFailedToAddOrModifyList, i);
+
+            if (item)
+                failed[num_of_failed] = smf_qos_flow_find_by_qfi(
+                        sess, item->qosFlowIdentifier);
+            if (item && failed[num_of_failed])
+                num_of_failed++;
+        }
+        if (num_of_failed)
+            smf_sbi_send_smpolicycontrol_rule_report(
+                    sess, false, failed, num_of_failed);
+    }
+
     qosFlowAddOrModifyResponseList = message.qosFlowAddOrModifyResponseList;
     if (!qosFlowAddOrModifyResponseList) {
         /* QosFlow Release */
@@ -549,6 +571,20 @@ int ngap_handle_pdu_session_resource_modify_response_transfer(
                 stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
                 "No QoS flow", smf_ue->supi);
         goto cleanup;
+    }
+
+    {
+        /* TS 29.512 V19.7.0 clause 4.2.4.14: the resources of the flows are allocated */
+        smf_bearer_t *allocated[OGS_MAX_NUM_OF_PCC_RULE];
+        int num_of_allocated = 0;
+
+        ogs_list_for_each_entry(&sess->qos_flow_to_modify_list,
+                    qos_flow, to_modify_node) {
+            if (num_of_allocated < OGS_ARRAY_SIZE(allocated))
+                allocated[num_of_allocated++] = qos_flow;
+        }
+        smf_sbi_send_smpolicycontrol_rule_report(
+                sess, true, allocated, num_of_allocated);
     }
 
     ogs_assert(OGS_OK ==

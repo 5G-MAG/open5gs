@@ -35,8 +35,11 @@ ogs_sbi_request_t *af_nbsf_management_build_discover(
     message.h.resource.component[0] =
         (char *)OGS_SBI_RESOURCE_NAME_PCF_BINDINGS;
 
-    message.param.ipv4addr = sess->ipv4addr;
-    message.param.ipv6prefix = sess->ipv6prefix;
+    /* TS 29.521 V19.7.0 table 5.3.2.3.2-1 note 1: one and only one UE address parameter */
+    if (sess->ipv4addr)
+        message.param.ipv4addr = sess->ipv4addr;
+    else
+        message.param.ipv6prefix = sess->ipv6prefix;
 
     request = ogs_sbi_build_request(&message);
     ogs_expect(request);

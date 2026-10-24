@@ -612,6 +612,10 @@ typedef struct smf_sess_s {
     struct {
         ogs_pcc_rule_t  pcc_rule[OGS_MAX_NUM_OF_PCC_RULE];
         int             num_of_pcc_rule;
+
+        /* The PCC rules for which the PCF asked for the report SUCC_RES_ALLO (TS 29.512 V19.7.0 clause 4.2.4.14) */
+        char            *succ_res_allo_rule_id[OGS_MAX_NUM_OF_PCC_RULE];
+        int             num_of_succ_res_allo_rule;
     } policy; /* Saved from N7 or Gx */
 
     /* Paging */

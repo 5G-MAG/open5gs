@@ -73,3 +73,40 @@ end:
 
     return request;
 }
+
+ogs_sbi_request_t *pcf_naf_callback_build_policyauthorization_event_notify(
+        pcf_app_t *app_session, void *data)
+{
+    ogs_sbi_message_t message;
+    ogs_sbi_request_t *request = NULL;
+    cJSON *events_notification = data;
+    char *text = NULL;
+
+    ogs_assert(app_session);
+    ogs_assert(app_session->ev_notif_uri);
+    ogs_assert(events_notification);
+
+    memset(&message, 0, sizeof(message));
+    message.h.method = (char *)OGS_SBI_HTTP_METHOD_POST;
+    message.h.uri = ogs_msprintf("%s/%s",
+                app_session->ev_notif_uri, OGS_SBI_RESOURCE_NAME_NOTIFY);
+    if (!message.h.uri) {
+        ogs_error("No message.h.uri");
+        return NULL;
+    }
+
+    request = ogs_sbi_build_request(&message);
+    ogs_free(message.h.uri);
+    if (!request)
+        return NULL;
+
+    /* The body is the EventsNotification data type */
+    text = cJSON_Print(events_notification);
+    ogs_assert(text);
+    ogs_sbi_header_set(request->http.headers, OGS_SBI_CONTENT_TYPE,
+            OGS_SBI_CONTENT_JSON_TYPE);
+    request->http.content = text;
+    request->http.content_length = strlen(text);
+
+    return request;
+}

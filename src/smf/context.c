@@ -2059,6 +2059,9 @@ void smf_sess_remove(smf_sess_t *sess)
     for (i = 0; i < sess->policy.num_of_pcc_rule; i++)
         OGS_PCC_RULE_FREE(&sess->policy.pcc_rule[i]);
     sess->policy.num_of_pcc_rule = 0;
+    for (i = 0; i < sess->policy.num_of_succ_res_allo_rule; i++)
+        ogs_free(sess->policy.succ_res_allo_rule_id[i]);
+    sess->policy.num_of_succ_res_allo_rule = 0;
 
     ogs_hash_set(self.smf_n4_seid_hash, &sess->smf_n4_seid,
             sizeof(sess->smf_n4_seid), NULL);

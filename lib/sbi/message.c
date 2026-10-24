@@ -200,6 +200,9 @@ void ogs_sbi_message_free(ogs_sbi_message_t *message)
         OpenAPI_sm_policy_data_free(message->SmPolicyData);
     if (message->SmPolicyDeleteData)
         OpenAPI_sm_policy_delete_data_free(message->SmPolicyDeleteData);
+    if (message->SmPolicyUpdateContextData)
+        OpenAPI_sm_policy_update_context_data_free(
+                message->SmPolicyUpdateContextData);
     if (message->AuthorizedNetworkSliceInfo)
         OpenAPI_authorized_network_slice_info_free(
                 message->AuthorizedNetworkSliceInfo);
@@ -776,6 +779,22 @@ ogs_sbi_request_t *ogs_sbi_build_request(ogs_sbi_message_t *message)
         ogs_sbi_header_set(request->http.params,
                 OGS_SBI_PARAM_IPV6PREFIX, message->param.ipv6prefix);
     }
+    if (message->param.ip_domain) {
+        ogs_sbi_header_set(request->http.params,
+                OGS_SBI_PARAM_IP_DOMAIN, message->param.ip_domain);
+    }
+    if (message->param.mac_addr48) {
+        ogs_sbi_header_set(request->http.params,
+                OGS_SBI_PARAM_MAC_ADDR48, message->param.mac_addr48);
+    }
+    if (message->param.bsf_supi) {
+        ogs_sbi_header_set(request->http.params,
+                OGS_SBI_PARAM_BSF_SUPI, message->param.bsf_supi);
+    }
+    if (message->param.bsf_gpsi) {
+        ogs_sbi_header_set(request->http.params,
+                OGS_SBI_PARAM_BSF_GPSI, message->param.bsf_gpsi);
+    }
 
     if (message->param.home_plmn_id_presence) {
         OpenAPI_plmn_id_t home_plmn_id;
@@ -1240,6 +1259,14 @@ int ogs_sbi_parse_request(
             message->param.ipv4addr = ogs_hash_this_val(hi);
         } else if (!strcmp(ogs_hash_this_key(hi), OGS_SBI_PARAM_IPV6PREFIX)) {
             message->param.ipv6prefix = ogs_hash_this_val(hi);
+        } else if (!strcmp(ogs_hash_this_key(hi), OGS_SBI_PARAM_IP_DOMAIN)) {
+            message->param.ip_domain = ogs_hash_this_val(hi);
+        } else if (!strcmp(ogs_hash_this_key(hi), OGS_SBI_PARAM_MAC_ADDR48)) {
+            message->param.mac_addr48 = ogs_hash_this_val(hi);
+        } else if (!strcmp(ogs_hash_this_key(hi), OGS_SBI_PARAM_BSF_SUPI)) {
+            message->param.bsf_supi = ogs_hash_this_val(hi);
+        } else if (!strcmp(ogs_hash_this_key(hi), OGS_SBI_PARAM_BSF_GPSI)) {
+            message->param.bsf_gpsi = ogs_hash_this_val(hi);
         } else if (!strcmp(ogs_hash_this_key(hi), OGS_SBI_PARAM_HOME_PLMN_ID)) {
             char *v = NULL;
             cJSON *item = NULL;
@@ -1692,6 +1719,10 @@ static char *build_json(ogs_sbi_message_t *message)
     } else if (message->SmPolicyDeleteData) {
         item = OpenAPI_sm_policy_delete_data_convertToJSON(
                 message->SmPolicyDeleteData);
+        ogs_assert(item);
+    } else if (message->SmPolicyUpdateContextData) {
+        item = OpenAPI_sm_policy_update_context_data_convertToJSON(
+                message->SmPolicyUpdateContextData);
         ogs_assert(item);
     } else if (message->AuthorizedNetworkSliceInfo) {
         item = OpenAPI_authorized_network_slice_info_convertToJSON(
@@ -2793,6 +2824,26 @@ static int parse_json(ogs_sbi_message_t *message,
                     }
                 } else {
                     SWITCH(message->h.resource.component[2])
+                    CASE(OGS_SBI_RESOURCE_NAME_UPDATE)
+                        /* TS 29.512 clause 5.2.2.3.2: the SMF's request carries SmPolicyUpdateContextData, the 200 answer SmPolicyDecision */
+                        if (message->res_status == 0) {
+                            message->SmPolicyUpdateContextData =
+                                OpenAPI_sm_policy_update_context_data_parseFromJSON(
+                                        item);
+                            if (!message->SmPolicyUpdateContextData) {
+                                rv = OGS_ERROR;
+                                ogs_error("JSON parse error");
+                            }
+                        } else if (message->res_status ==
+                                OGS_SBI_HTTP_STATUS_OK) {
+                            message->SmPolicyDecision =
+                                OpenAPI_sm_policy_decision_parseFromJSON(item);
+                            if (!message->SmPolicyDecision) {
+                                rv = OGS_ERROR;
+                                ogs_error("JSON parse error");
+                            }
+                        }
+                        break;
                     CASE(OGS_SBI_RESOURCE_NAME_DELETE)
                         if (message->res_status == 0) {
                             message->SmPolicyDeleteData =
@@ -2912,6 +2963,12 @@ static int parse_json(ogs_sbi_message_t *message,
                         CASE(OGS_SBI_RESOURCE_NAME_DELETE)
                             /* Nothing */
                             break;
+                        CASE(OGS_SBI_RESOURCE_NAME_EVENTS_SUBSCRIPTION)
+                            /* TS 29.514 clause 5.3.4: the body is an EventsSubscReqData; the PCF reads it as JSON */
+                            break;
+                        CASE(OGS_SBI_RESOURCE_NAME_NOTIFY)
+                            /* TS 29.514 clause 4.2.5.2: the PCF's request carries EventsNotification; the NF service consumer reads it as JSON */
+                            break;
                         CASE(OGS_SBI_RESOURCE_NAME_TERMINATE)
                             /* TS 29.514 clause 4.2.5.3: the PCF's request carries TerminationInfo */
                             message->TerminationInfo =
@@ -2942,10 +2999,19 @@ static int parse_json(ogs_sbi_message_t *message,
                             }
                             break;
                         CASE(OGS_SBI_HTTP_METHOD_PATCH)
-                            if (message->res_status < 300) {
+                            if (message->res_status == 0) {
+                                /* the request carries AppSessionContextUpdateDataPatch */
                                 message->AppSessionContextUpdateDataPatch =
                                     OpenAPI_app_session_context_update_data_patch_parseFromJSON(item);
                                 if (!message->AppSessionContextUpdateDataPatch) {
+                                    rv = OGS_ERROR;
+                                    ogs_error("JSON parse error");
+                                }
+                            } else if (message->res_status < 300) {
+                                /* TS 29.514 table 5.3.3.3.2-3: the 200 carries the AppSessionContext */
+                                message->AppSessionContext =
+                                    OpenAPI_app_session_context_parseFromJSON(item);
+                                if (!message->AppSessionContext) {
                                     rv = OGS_ERROR;
                                     ogs_error("JSON parse error");
                                 }

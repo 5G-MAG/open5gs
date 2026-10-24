@@ -48,6 +48,7 @@ typedef struct bsf_sess_s {
 
     char *supi;
     char *gpsi;
+    char *ip_domain;
 
     char *ipv4addr_string;
     char *ipv6prefix_string;
@@ -75,6 +76,9 @@ typedef struct bsf_sess_s {
         int port;
     } pcf_ip[OGS_SBI_MAX_NUM_OF_IP_ADDRESS];
 
+    /* the PcfBinding as the PCF registered it (TS 29.521 V19.7.0 clause 4.2.4.2) */
+    OpenAPI_pcf_binding_t *registered;
+
     /* SBI Features */
     uint64_t management_features;
 
@@ -99,6 +103,8 @@ bsf_sess_t *bsf_sess_find_by_snssai_and_dnn(ogs_s_nssai_t *s_nssai, char *dnn);
 bsf_sess_t *bsf_sess_find_by_binding_id(char *binding_id);
 bsf_sess_t *bsf_sess_find_by_ipv4addr(
         char *ipv4addr_string, bool *invalid);
+bsf_sess_t *bsf_sess_find_by_exact_ipv6prefix(
+        char *ipv6prefix_string, bool *invalid);
 bsf_sess_t *bsf_sess_find_by_ipv6prefix(
         char *ipv6prefix_string, bool *invalid);
 int get_sess_load(void);

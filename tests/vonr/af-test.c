@@ -4964,6 +4964,221 @@ static void test15_func(abts_case *tc, void *data)
     test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
 }
 
+/* TS 29.514 V19.8.0 clauses 4.2.2.10, 4.2.3.10 and 5.3.4: the Events Subscription of an application session */
+static void test16_func(abts_case *tc, void *data)
+{
+    ogs_socknode_t *ngap = NULL;
+    ogs_socknode_t *gtpu = NULL;
+    test_ue_t *test_ue = NULL;
+    test_sess_t *sess = NULL;
+    test_bearer_t *qos_flow = NULL;
+    af_sess_t *af_sess = NULL;
+    af_npcf_policyauthorization_param_t af_param;
+    af_npcf_policyauthorization_raw_t raw;
+    const char *one =
+        "{\"events\":[{\"event\":\"SUCCESSFUL_RESOURCES_ALLOCATION\"}],"
+        "\"notifUri\":\"http://127.0.0.1:9/af\"}";
+    const char *two =
+        "{\"events\":[{\"event\":\"SUCCESSFUL_RESOURCES_ALLOCATION\"},"
+        "{\"event\":\"FAILED_RESOURCES_ALLOCATION\"}],"
+        "\"notifUri\":\"http://127.0.0.1:9/af\"}";
+
+    test_af_qos_reference_setup(tc, "0000000016",
+            &test_ue, &sess, &af_sess, &ngap, &gtpu);
+
+    memset(&af_param, 0, sizeof(af_param));
+    af_param.med_type = OpenAPI_media_type_AUDIO;
+    af_param.qos_type = 1;
+    af_param.flow_type = 99;
+    af_local_send_to_pcf(af_sess, &af_param,
+            af_npcf_policyauthorization_build_create);
+    qos_flow = test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_assert(qos_flow);
+
+#define RAW(__m, __p, __b) \
+    do { \
+        raw.method = (__m); raw.path = (__p); raw.body = (__b); \
+        af_local_send_to_pcf(af_sess, &raw, \
+                af_npcf_policyauthorization_build_raw); \
+        ogs_msleep(100); \
+    } while (0)
+#define GET_EVENTS(__expect) \
+    do { \
+        af_local_send_to_pcf(af_sess, NULL, \
+                af_npcf_policyauthorization_build_get); \
+        ogs_msleep(100); \
+        ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_pcf_status); \
+        ABTS_STR_EQUAL(tc, (__expect), af_sess->last_pcf_asc_events); \
+    } while (0)
+
+    /* the test AF subscribes to two events when it creates the application session */
+    GET_EVENTS("CHARGING_CORRELATION,ANI_REPORT");
+
+    /* DELETE removes the sub-resource (204); a second DELETE is 404 */
+    RAW("DELETE", "/events-subscription", NULL);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_NO_CONTENT, af_sess->last_pcf_status);
+    GET_EVENTS("");
+    RAW("DELETE", "/events-subscription", NULL);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_NOT_FOUND, af_sess->last_pcf_status);
+
+    /* PUT creates it (201), a second PUT modifies it (200) */
+    RAW("PUT", "/events-subscription", one);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_CREATED, af_sess->last_pcf_status);
+    GET_EVENTS("SUCCESSFUL_RESOURCES_ALLOCATION");
+    RAW("PUT", "/events-subscription", two);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_pcf_status);
+    GET_EVENTS("SUCCESSFUL_RESOURCES_ALLOCATION,FAILED_RESOURCES_ALLOCATION");
+
+    /* a body without events is 400 */
+    RAW("PUT", "/events-subscription", "{}");
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_BAD_REQUEST, af_sess->last_pcf_status);
+
+    /* a PATCH with only the events subscription (no media component) changes it; null removes it */
+    RAW("PATCH", "",
+        "{\"ascReqData\":{\"evSubsc\":{\"events\":[{\"event\":\"FAILED_RESOURCES_ALLOCATION\"}],"
+        "\"notifUri\":\"http://127.0.0.1:9/af\"}}}");
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_pcf_status);
+    GET_EVENTS("FAILED_RESOURCES_ALLOCATION");
+    RAW("PATCH", "", "{\"ascReqData\":{\"evSubsc\":null}}");
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_pcf_status);
+    GET_EVENTS("");
+
+    RAW("PUT", "/events-subscription", one);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_CREATED, af_sess->last_pcf_status);
+    GET_EVENTS("SUCCESSFUL_RESOURCES_ALLOCATION");
+
+#undef RAW
+#undef GET_EVENTS
+
+    test_af_qos_reference_delete(tc, test_ue, sess, af_sess, ngap);
+    test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
+}
+
+/* TS 29.514 V19.8.0 clauses 4.2.2.10 and 4.2.5.8: the NF service consumer is told when the resources are allocated */
+static void test17_func(abts_case *tc, void *data)
+{
+    ogs_socknode_t *ngap = NULL;
+    ogs_socknode_t *gtpu = NULL;
+    test_ue_t *test_ue = NULL;
+    test_sess_t *sess = NULL;
+    test_bearer_t *qos_flow = NULL;
+    af_sess_t *af_sess = NULL;
+    af_npcf_policyauthorization_param_t af_param;
+
+    test_af_qos_reference_setup(tc, "0000000017",
+            &test_ue, &sess, &af_sess, &ngap, &gtpu);
+
+    memset(&af_param, 0, sizeof(af_param));
+    af_param.med_type = OpenAPI_media_type_AUDIO;
+    af_param.qos_type = 1;
+    af_param.flow_type = 99;
+    af_param.ev_resources_allocation = true;
+
+    ABTS_INT_EQUAL(tc, 0, af_sess->notify_count);
+    af_local_send_to_pcf(af_sess, &af_param,
+            af_npcf_policyauthorization_build_create);
+
+    /* the access network sets the QoS flow up: the SMF reports the rule as active and the PCF notifies the NF service consumer */
+    qos_flow = test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_assert(qos_flow);
+    ogs_msleep(300);
+
+    ABTS_INT_EQUAL(tc, 1, af_sess->notify_count);
+    ABTS_STR_EQUAL(tc, "SUCCESSFUL_RESOURCES_ALLOCATION", af_sess->notify_event);
+    ABTS_INT_EQUAL(tc, 0, af_sess->notify_med_comp_n);
+    ABTS_STR_EQUAL(tc, "", af_sess->notify_failed_status);
+
+    test_af_qos_reference_delete(tc, test_ue, sess, af_sess, ngap);
+    test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
+}
+
+/* TS 29.514 V19.8.0 clause 4.2.2.2: the AF charging identifier of an ongoing application session cannot be used again */
+static void test18_func(abts_case *tc, void *data)
+{
+    ogs_socknode_t *ngap = NULL;
+    ogs_socknode_t *gtpu = NULL;
+    test_ue_t *test_ue = NULL;
+    test_sess_t *sess = NULL;
+    test_bearer_t *qos_flow = NULL;
+    af_sess_t *af_sess = NULL;
+    af_npcf_policyauthorization_param_t af_param;
+
+    test_af_qos_reference_setup(tc, "0000000018",
+            &test_ue, &sess, &af_sess, &ngap, &gtpu);
+
+    memset(&af_param, 0, sizeof(af_param));
+    af_param.med_type = OpenAPI_media_type_AUDIO;
+    af_param.qos_type = 1;
+    af_param.flow_type = 99;
+    af_param.af_charg_id = "charge-1";
+
+    af_local_send_to_pcf(af_sess, &af_param,
+            af_npcf_policyauthorization_build_create);
+    qos_flow = test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_assert(qos_flow);
+
+    /* the same identifier for a new application session */
+    af_local_send_to_pcf(af_sess, &af_param,
+            af_npcf_policyauthorization_build_create);
+    ogs_msleep(200);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_BAD_REQUEST, af_sess->last_pcf_status);
+    ABTS_STR_EQUAL(tc, "DUPLICATED_AF_SESSION", af_sess->last_pcf_cause);
+
+    test_af_qos_reference_delete(tc, test_ue, sess, af_sess, ngap);
+    test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
+}
+
+/* TS 29.514 V19.8.0 clause 4.2.5.8: the NF service consumer is told when the resources cannot be allocated */
+static void test19_func(abts_case *tc, void *data)
+{
+    int rv;
+    ogs_socknode_t *ngap = NULL;
+    ogs_socknode_t *gtpu = NULL;
+    test_ue_t *test_ue = NULL;
+    test_sess_t *sess = NULL;
+    test_bearer_t *qos_flow = NULL;
+    af_sess_t *af_sess = NULL;
+    af_npcf_policyauthorization_param_t af_param;
+    ogs_pkbuf_t *recvbuf = NULL;
+    ogs_pkbuf_t *sendbuf = NULL;
+
+    test_af_qos_reference_setup(tc, "0000000019",
+            &test_ue, &sess, &af_sess, &ngap, &gtpu);
+
+    memset(&af_param, 0, sizeof(af_param));
+    af_param.med_type = OpenAPI_media_type_AUDIO;
+    af_param.qos_type = 1;
+    af_param.flow_type = 99;
+    af_param.ev_resources_allocation = true;
+    af_local_send_to_pcf(af_sess, &af_param,
+            af_npcf_policyauthorization_build_create);
+
+    recvbuf = testgnb_ngap_read(ngap);
+    ABTS_PTR_NOTNULL(tc, recvbuf);
+    testngap_recv(test_ue, recvbuf);
+    ABTS_INT_EQUAL(tc, NGAP_ProcedureCode_id_PDUSessionResourceModify,
+            test_ue->ngap_procedure_code);
+    qos_flow = test_qos_flow_find_by_qfi(sess, 2);
+    ogs_assert(qos_flow);
+
+    /* the access network cannot set the QoS flow up: the SMF reports the rule as inactive */
+    sess->qos_flow_modify_failure = true;
+    sendbuf = testngap_build_qos_flow_resource_modify_response(qos_flow);
+    ABTS_PTR_NOTNULL(tc, sendbuf);
+    rv = testgnb_ngap_send(ngap, sendbuf);
+    ABTS_INT_EQUAL(tc, OGS_OK, rv);
+    sess->qos_flow_modify_failure = false;
+    ogs_msleep(300);
+
+    ABTS_INT_EQUAL(tc, 1, af_sess->notify_count);
+    ABTS_STR_EQUAL(tc, "FAILED_RESOURCES_ALLOCATION", af_sess->notify_event);
+    ABTS_INT_EQUAL(tc, 0, af_sess->notify_med_comp_n);
+    ABTS_STR_EQUAL(tc, "INACTIVE", af_sess->notify_failed_status);
+
+    af_sess_remove(af_sess);
+    test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
+}
+
 abts_suite *test_af(abts_suite *suite)
 {
     suite = ADD_SUITE(suite)
@@ -4990,6 +5205,10 @@ abts_suite *test_af(abts_suite *suite)
     abts_run_test(suite, test13_func, NULL);
     abts_run_test(suite, test14_func, NULL);
     abts_run_test(suite, test15_func, NULL);
+    abts_run_test(suite, test16_func, NULL);
+    abts_run_test(suite, test17_func, NULL);
+    abts_run_test(suite, test18_func, NULL);
+    abts_run_test(suite, test19_func, NULL);
 
     return suite;
 }

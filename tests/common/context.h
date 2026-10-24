@@ -464,6 +464,7 @@ typedef struct test_sess_s {
     ogs_list_t bearer_list;
 
     ogs_list_t qos_flow_to_modify_list;
+    bool qos_flow_modify_failure; /* the gNB answers a PDU session resource modify request with a failed list */
 
     test_ue_t *test_ue;
 } test_sess_t;

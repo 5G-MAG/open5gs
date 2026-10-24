@@ -26,6 +26,9 @@
 extern "C" {
 #endif
 
+/* Npcf_PolicyAuthorization_Notify of an event (TS 29.514 V19.8.0 clause 4.2.5.2); the data is the EventsNotification as cJSON */
+ogs_sbi_request_t *pcf_naf_callback_build_policyauthorization_event_notify(
+        pcf_app_t *app_session, void *data);
 ogs_sbi_request_t *pcf_naf_callback_build_policyauthorization_terminate(
         pcf_app_t *app_session, void *data);
 

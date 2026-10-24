@@ -103,6 +103,18 @@ ogs_sbi_request_t *af_npcf_policyauthorization_build_create(
     EventList = OpenAPI_list_create();
     ogs_assert(EventList);
 
+    if (af_param->ev_resources_allocation) {
+        Event = ogs_calloc(1, sizeof(*Event));
+        ogs_assert(Event);
+        Event->event = OpenAPI_npcf_af_event_SUCCESSFUL_RESOURCES_ALLOCATION;
+        OpenAPI_list_add(EventList, Event);
+
+        Event = ogs_calloc(1, sizeof(*Event));
+        ogs_assert(Event);
+        Event->event = OpenAPI_npcf_af_event_FAILED_RESOURCES_ALLOCATION;
+        OpenAPI_list_add(EventList, Event);
+    }
+
     Event = ogs_calloc(1, sizeof(*Event));
     ogs_assert(Event);
     Event->event = OpenAPI_npcf_af_event_CHARGING_CORRELATION;
@@ -128,6 +140,8 @@ ogs_sbi_request_t *af_npcf_policyauthorization_build_create(
     AscReqData.gpsi = sess->gpsi;
 
     AscReqData.af_app_id = (char *)"IMS Services";
+    if (af_param->af_charg_id)
+        AscReqData.af_charg_id = (char *)af_param->af_charg_id;
     AscReqData.res_prio = OpenAPI_reserv_priority_PRIO_1;
 
     MediaComponentList = OpenAPI_list_create();
@@ -543,6 +557,11 @@ ogs_sbi_request_t *af_npcf_policyauthorization_build_update(
     request = ogs_sbi_build_request(&message);
     ogs_expect(request);
 
+    /* TS 29.514 V19.8.0 clause 4.2.3.2: the PATCH body is a JSON Merge Patch, signalled by application/merge-patch+json */
+    if (request)
+        ogs_sbi_header_set(request->http.headers, OGS_SBI_CONTENT_TYPE,
+                OGS_SBI_CONTENT_MERGE_PATCH_TYPE);
+
     OpenAPI_list_for_each(MediaComponentList, node) {
         MediaComponentMap = node->data;
         if (MediaComponentMap) {
@@ -676,6 +695,38 @@ ogs_sbi_request_t *af_npcf_policyauthorization_build_remove_media(
         }
     }
     OpenAPI_list_free(MediaComponentList);
+
+    return request;
+}
+
+ogs_sbi_request_t *af_npcf_policyauthorization_build_raw(
+        af_sess_t *sess, void *data)
+{
+    ogs_sbi_message_t message;
+    ogs_sbi_request_t *request = NULL;
+    af_npcf_policyauthorization_raw_t *raw = data;
+
+    ogs_assert(sess);
+    ogs_assert(sess->app_session.pcf.resource_uri);
+    ogs_assert(raw);
+
+    memset(&message, 0, sizeof(message));
+    message.h.method = (char *)raw->method;
+    message.h.uri = ogs_msprintf("%s%s",
+            sess->app_session.pcf.resource_uri, raw->path ? raw->path : "");
+
+    request = ogs_sbi_build_request(&message);
+    ogs_expect(request);
+    ogs_free(message.h.uri);
+
+    if (request && raw->body) {
+        ogs_sbi_header_set(request->http.headers, OGS_SBI_CONTENT_TYPE,
+                !strcmp(raw->method, OGS_SBI_HTTP_METHOD_PATCH) ?
+                    OGS_SBI_CONTENT_MERGE_PATCH_TYPE :
+                    OGS_SBI_CONTENT_JSON_TYPE);
+        request->http.content = ogs_strdup(raw->body);
+        request->http.content_length = strlen(raw->body);
+    }
 
     return request;
 }

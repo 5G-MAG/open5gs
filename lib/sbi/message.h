@@ -144,6 +144,7 @@ extern "C" {
 #define OGS_SBI_RESOURCE_NAME_NOTIFY                "notify"
 #define OGS_SBI_RESOURCE_NAME_UPDATE                "update"
 #define OGS_SBI_RESOURCE_NAME_TERMINATE             "terminate"
+#define OGS_SBI_RESOURCE_NAME_EVENTS_SUBSCRIPTION   "events-subscription"
 
 #define OGS_SBI_RESOURCE_NAME_NETWORK_SLICE_INFORMATION \
                                                     "network-slice-information"
@@ -270,6 +271,7 @@ extern "C" {
 #define OGS_SBI_APPLICATION_JSON_TYPE               "json"
 #define OGS_SBI_APPLICATION_PROBLEM_TYPE            "problem+json"
 #define OGS_SBI_APPLICATION_PATCH_TYPE              "json-patch+json"
+#define OGS_SBI_APPLICATION_MERGE_PATCH_TYPE        "merge-patch+json"
 #define OGS_SBI_APPLICATION_3GPPHAL_TYPE            "3gppHal+json"
 #define OGS_SBI_APPLICATION_5GNAS_TYPE              "vnd.3gpp.5gnas"
 #define OGS_SBI_APPLICATION_NGAP_TYPE               "vnd.3gpp.ngap"
@@ -357,6 +359,10 @@ extern "C" {
 #define OGS_SBI_PARAM_DATASET_NAMES                 "dataset-names"
 #define OGS_SBI_PARAM_IPV4ADDR                      "ipv4Addr"
 #define OGS_SBI_PARAM_IPV6PREFIX                    "ipv6Prefix"
+#define OGS_SBI_PARAM_IP_DOMAIN                     "ipDomain"
+#define OGS_SBI_PARAM_MAC_ADDR48                    "macAddr48"
+#define OGS_SBI_PARAM_BSF_SUPI                      "supi"
+#define OGS_SBI_PARAM_BSF_GPSI                      "gpsi"
 #define OGS_SBI_PARAM_HOME_PLMN_ID                  "home-plmn-id"
 #define OGS_SBI_PARAM_HNRF_URI                      "hnrf-uri"
 
@@ -376,6 +382,8 @@ extern "C" {
     OGS_SBI_APPLICATION_TYPE "/" OGS_SBI_APPLICATION_PROBLEM_TYPE
 #define OGS_SBI_CONTENT_PATCH_TYPE                  \
     OGS_SBI_APPLICATION_TYPE "/" OGS_SBI_APPLICATION_PATCH_TYPE
+#define OGS_SBI_CONTENT_MERGE_PATCH_TYPE            \
+    OGS_SBI_APPLICATION_TYPE "/" OGS_SBI_APPLICATION_MERGE_PATCH_TYPE
 #define OGS_SBI_CONTENT_3GPPHAL_TYPE                \
     OGS_SBI_APPLICATION_TYPE "/" OGS_SBI_APPLICATION_3GPPHAL_TYPE
 #define OGS_SBI_CONTENT_5GNAS_TYPE                  \
@@ -528,6 +536,10 @@ typedef struct ogs_sbi_message_s {
 
         char *ipv4addr;
         char *ipv6prefix;
+        char *ip_domain;   /* Nbsf_Management query (TS 29.521 V19.7.0 table 5.3.2.3.2-1) */
+        char *mac_addr48;
+        char *bsf_supi;
+        char *bsf_gpsi;
 
         bool home_plmn_id_presence;
         ogs_plmn_id_t home_plmn_id;
@@ -595,6 +607,7 @@ typedef struct ogs_sbi_message_s {
     OpenAPI_sm_policy_decision_t *SmPolicyDecision;
     OpenAPI_sm_policy_data_t *SmPolicyData;
     OpenAPI_sm_policy_delete_data_t *SmPolicyDeleteData;
+    OpenAPI_sm_policy_update_context_data_t *SmPolicyUpdateContextData;
     OpenAPI_authorized_network_slice_info_t *AuthorizedNetworkSliceInfo;
     OpenAPI_pcf_binding_t *PcfBinding;
     OpenAPI_pcf_binding_patch_t *PcfBindingPatch;
