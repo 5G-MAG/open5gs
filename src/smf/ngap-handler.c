@@ -450,6 +450,77 @@ cleanup:
     return rv;
 }
 
+/*
+ * PDU Session Resource Notify Transfer (TS 38.413): the QoS flows whose GBR QoS targets are not fulfilled, or fulfilled again, are
+ * told to the PCF with the QoS notification control of TS 29.512 V19.7.0 clause 4.2.4.20. The flows that the NG-RAN released are
+ * not handled here.
+ */
+int ngap_handle_pdu_session_resource_notify_transfer(
+        smf_sess_t *sess, ogs_sbi_stream_t *stream, ogs_pkbuf_t *pkbuf)
+{
+    smf_ue_t *smf_ue = NULL;
+    smf_bearer_t *not_fulfilled[OGS_MAX_NUM_OF_PCC_RULE];
+    smf_bearer_t *fulfilled[OGS_MAX_NUM_OF_PCC_RULE];
+    int num_not_fulfilled = 0, num_fulfilled = 0;
+    int rv, i;
+
+    NGAP_PDUSessionResourceNotifyTransfer_t message;
+
+    ogs_assert(pkbuf);
+    ogs_assert(stream);
+    ogs_assert(sess);
+    smf_ue = smf_ue_find_by_id(sess->smf_ue_id);
+    ogs_assert(smf_ue);
+
+    ogs_debug("PDUSessionResourceNotifyTransfer");
+
+    rv = ogs_asn_decode(
+            &asn_DEF_NGAP_PDUSessionResourceNotifyTransfer,
+            &message, sizeof(message), pkbuf);
+    if (rv != OGS_OK) {
+        ogs_error("[%s:%d] Cannot decode NGAP message", smf_ue->supi, sess->psi);
+        smf_sbi_send_sm_context_update_error_log(
+                stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                "Cannot decode the notify transfer", smf_ue->supi);
+        goto cleanup;
+    }
+
+    if (message.qosFlowNotifyList) {
+        for (i = 0; i < OGS_ASN_LIST_COUNT(message.qosFlowNotifyList); i++) {
+            NGAP_QosFlowNotifyItem_t *item = OGS_ASN_LIST_GET(message.qosFlowNotifyList, i);
+            smf_bearer_t *qos_flow = NULL;
+
+            if (!item)
+                continue;
+            qos_flow = smf_qos_flow_find_by_qfi(sess, item->qosFlowIdentifier);
+            if (!qos_flow) {
+                ogs_warn("[%s:%d] Notify for the unknown QoS flow [%d]", smf_ue->supi, sess->psi, (int)item->qosFlowIdentifier);
+                continue;
+            }
+            if (item->notificationCause == NGAP_NotificationCause_not_fulfilled) {
+                if (num_not_fulfilled < OGS_ARRAY_SIZE(not_fulfilled))
+                    not_fulfilled[num_not_fulfilled++] = qos_flow;
+            } else if (item->notificationCause == NGAP_NotificationCause_fulfilled) {
+                if (num_fulfilled < OGS_ARRAY_SIZE(fulfilled))
+                    fulfilled[num_fulfilled++] = qos_flow;
+            }
+        }
+    }
+    if (num_not_fulfilled)
+        smf_sbi_send_smpolicycontrol_qnc_report(
+                sess, OpenAPI_qos_notif_type_NOT_GUARANTEED, not_fulfilled, num_not_fulfilled);
+    if (num_fulfilled)
+        smf_sbi_send_smpolicycontrol_qnc_report(
+                sess, OpenAPI_qos_notif_type_GUARANTEED, fulfilled, num_fulfilled);
+
+    ogs_assert(true == ogs_sbi_send_http_status_no_content(stream));
+    rv = OGS_OK;
+
+cleanup:
+    ogs_asn_free(&asn_DEF_NGAP_PDUSessionResourceNotifyTransfer, &message);
+    return rv;
+}
+
 int ngap_handle_pdu_session_resource_modify_response_transfer(
         smf_sess_t *sess, ogs_sbi_stream_t *stream, ogs_pkbuf_t *pkbuf)
 {

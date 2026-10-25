@@ -46,6 +46,15 @@ typedef struct smf_npcf_smpolicycontrol_usage_report_s {
     uint32_t time;
 } smf_npcf_smpolicycontrol_usage_report_t;
 
+/* QoS notification control (TS 29.512 V19.7.0 clause 4.2.4.20): the GBR QoS targets of PCC rules are not guaranteed, or guaranteed again */
+typedef struct smf_npcf_smpolicycontrol_qnc_report_s {
+    OpenAPI_qos_notif_type_e notif_type;
+    int num_of_rule;
+    char *rule_id[OGS_MAX_NUM_OF_PCC_RULE];
+} smf_npcf_smpolicycontrol_qnc_report_t;
+
+ogs_sbi_request_t *smf_npcf_smpolicycontrol_build_qnc_update(
+        smf_sess_t *sess, void *data);
 ogs_sbi_request_t *smf_npcf_smpolicycontrol_build_usage_update(
         smf_sess_t *sess, void *data);
 ogs_sbi_request_t *smf_npcf_smpolicycontrol_build_update(

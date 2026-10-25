@@ -2552,6 +2552,125 @@ void ngap_handle_pdu_session_resource_modify_response(
     }
 }
 
+/*
+ * TS 38.413 PDU Session Resource Notify: the NG-RAN tells that the QoS of QoS flows cannot be guaranteed or can be guaranteed again
+ * (or that QoS flows are released). The AMF passes the PDU Session Resource Notify Transfer of each PDU session to its SMF.
+ */
+void ngap_handle_pdu_session_resource_notify(
+        amf_gnb_t *gnb, ogs_ngap_message_t *message)
+{
+    char buf[OGS_ADDRSTRLEN];
+    int i, r;
+
+    amf_ue_t *amf_ue = NULL;
+    ran_ue_t *ran_ue = NULL;
+    amf_nsmf_pdusession_sm_context_param_t param;
+
+    NGAP_InitiatingMessage_t *initiatingMessage = NULL;
+    NGAP_PDUSessionResourceNotify_t *PDUSessionResourceNotify = NULL;
+
+    NGAP_PDUSessionResourceNotifyIEs_t *ie = NULL;
+    NGAP_RAN_UE_NGAP_ID_t *RAN_UE_NGAP_ID = NULL;
+    NGAP_AMF_UE_NGAP_ID_t *AMF_UE_NGAP_ID = NULL;
+    NGAP_PDUSessionResourceNotifyList_t *PDUSessionList = NULL;
+    NGAP_PDUSessionResourceNotifyItem_t *PDUSessionItem = NULL;
+    OCTET_STRING_t *transfer = NULL;
+
+    ogs_assert(gnb);
+    ogs_assert(gnb->sctp.sock);
+
+    ogs_assert(message);
+    initiatingMessage = message->choice.initiatingMessage;
+    ogs_assert(initiatingMessage);
+    PDUSessionResourceNotify =
+        initiatingMessage->value.choice.PDUSessionResourceNotify;
+    ogs_assert(PDUSessionResourceNotify);
+
+    ogs_debug("PDUSessionResourceNotify");
+
+    for (i = 0; i < OGS_ASN_LIST_COUNT(PDUSessionResourceNotify->protocolIEs); i++) {
+        ie = OGS_ASN_LIST_GET(PDUSessionResourceNotify->protocolIEs, i);
+        switch (ie->id) {
+        case NGAP_ProtocolIE_ID_id_RAN_UE_NGAP_ID:
+            RAN_UE_NGAP_ID = ie->value.choice.RAN_UE_NGAP_ID;
+            break;
+        case NGAP_ProtocolIE_ID_id_AMF_UE_NGAP_ID:
+            AMF_UE_NGAP_ID = ie->value.choice.AMF_UE_NGAP_ID;
+            break;
+        case NGAP_ProtocolIE_ID_id_PDUSessionResourceNotifyList:
+            PDUSessionList = ie->value.choice.PDUSessionResourceNotifyList;
+            break;
+        default:
+            break;
+        }
+    }
+
+    ogs_debug("    IP[%s] RAN_ID[%d]",
+            OGS_ADDR(gnb->sctp.addr, buf), gnb->gnb_id);
+
+    ran_ue = ngap_find_ran_ue_by_message_ue_ids(
+            gnb, AMF_UE_NGAP_ID, RAN_UE_NGAP_ID);
+    if (!ran_ue) {
+        ogs_error("%s: Failed to find RAN UE by NGAP UE IDs", __func__);
+        return;
+    }
+
+    amf_ue = amf_ue_find_by_id(ran_ue->amf_ue_id);
+    if (!amf_ue) {
+        ogs_error("PDUSessionResourceNotify on stale NG context [AMF_UE_NGAP_ID:%lld]",
+                (long long)ran_ue->amf_ue_ngap_id);
+        return;
+    }
+
+    if (!PDUSessionList) {
+        ogs_error("No PDUSessionResourceNotifyList");
+        r = ngap_send_error_indication2(ran_ue,
+                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
+        ogs_expect(r == OGS_OK);
+        ogs_assert(r != OGS_ERROR);
+        return;
+    }
+
+    for (i = 0; i < OGS_ASN_LIST_COUNT(PDUSessionList); i++) {
+        amf_sess_t *sess = NULL;
+
+        PDUSessionItem = (NGAP_PDUSessionResourceNotifyItem_t *)
+            OGS_ASN_LIST_GET(PDUSessionList, i);
+        if (!PDUSessionItem) {
+            ogs_error("No PDUSessionResourceNotifyItem");
+            return;
+        }
+        transfer = &PDUSessionItem->pDUSessionResourceNotifyTransfer;
+
+        sess = amf_sess_find_by_psi(amf_ue, PDUSessionItem->pDUSessionID);
+        if (!sess || !SESSION_CONTEXT_IN_SMF(sess)) {
+            ogs_error("Cannot find PDU Session ID [%d] in the SMF",
+                    (int)PDUSessionItem->pDUSessionID);
+            r = ngap_send_error_indication2(ran_ue,
+                    NGAP_Cause_PR_radioNetwork,
+                    NGAP_CauseRadioNetwork_unknown_PDU_session_ID);
+            ogs_expect(r == OGS_OK);
+            ogs_assert(r != OGS_ERROR);
+            return;
+        }
+
+        memset(&param, 0, sizeof(param));
+        param.n2smbuf = ogs_pkbuf_alloc(NULL, OGS_MAX_SDU_LEN);
+        ogs_assert(param.n2smbuf);
+        param.n2SmInfoType = OpenAPI_n2_sm_info_type_PDU_RES_NTY;
+        ogs_pkbuf_put_data(param.n2smbuf, transfer->buf, transfer->size);
+
+        r = amf_sess_sbi_discover_and_send(
+                OpenAPI_service_name_nsmf_pdusession, NULL,
+                amf_nsmf_pdusession_build_update_sm_context,
+                ran_ue, sess, AMF_UPDATE_SM_CONTEXT_MODIFIED, &param);
+        ogs_expect(r == OGS_OK);
+        ogs_assert(r != OGS_ERROR);
+
+        ogs_pkbuf_free(param.n2smbuf);
+    }
+}
+
 void ngap_handle_pdu_session_resource_release_response(
         amf_gnb_t *gnb, ogs_ngap_message_t *message)
 {

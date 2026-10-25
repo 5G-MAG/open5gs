@@ -126,6 +126,13 @@ ogs_sbi_request_t *af_npcf_policyauthorization_build_create(
     Event->notif_method = OpenAPI_af_notif_method_ONE_TIME;
     OpenAPI_list_add(EventList, Event);
 
+    if (af_param->ev_qos_notif) {
+        Event = ogs_calloc(1, sizeof(*Event));
+        ogs_assert(Event);
+        Event->event = OpenAPI_npcf_af_event_QOS_NOTIF;
+        OpenAPI_list_add(EventList, Event);
+    }
+
     if (af_param->usage_threshold) {
         Event = ogs_calloc(1, sizeof(*Event));
         ogs_assert(Event);

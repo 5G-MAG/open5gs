@@ -248,6 +248,10 @@ bool smf_sbi_send_status_notify(smf_sess_t *sess);
 void smf_sbi_send_smpolicycontrol_usage_report(
         smf_sess_t *sess, const char *um_id,
         uint64_t total, uint64_t uplink, uint64_t downlink, uint32_t time);
+/* The NG-RAN notified that the GBR QoS targets of the QoS flows cannot be guaranteed, or can be again (TS 29.512 V19.7.0 clause 4.2.4.20) */
+void smf_sbi_send_smpolicycontrol_qnc_report(
+        smf_sess_t *sess, OpenAPI_qos_notif_type_e notif_type,
+        smf_bearer_t **qos_flow, int num_of_qos_flow);
 void smf_sbi_send_smpolicycontrol_rule_report(
         smf_sess_t *sess, bool success, smf_bearer_t **qos_flow, int num_of_qos_flow);
 

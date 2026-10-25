@@ -5462,6 +5462,73 @@ static void test23_func(abts_case *tc, void *data)
     test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
 }
 
+/*
+ * TS 29.514 V19.8.0 clause 4.2.5.4: the AF subscribed to QOS_NOTIF; when the NG-RAN notifies that the GBR QoS targets of the flow
+ * are not fulfilled, or fulfilled again, the PCF tells the AF with qncReports (notifType and the flows). After the subscription is
+ * removed (clause 4.2.3.6) a notification of the NG-RAN is not passed on.
+ */
+static void test24_func(abts_case *tc, void *data)
+{
+    ogs_socknode_t *ngap = NULL;
+    ogs_socknode_t *gtpu = NULL;
+    test_ue_t *test_ue = NULL;
+    test_sess_t *sess = NULL;
+    test_bearer_t *qos_flow = NULL;
+    af_sess_t *af_sess = NULL;
+    af_npcf_policyauthorization_param_t af_param;
+    af_npcf_policyauthorization_raw_t raw;
+    ogs_pkbuf_t *sendbuf = NULL;
+
+    test_af_qos_reference_setup(tc, "0000000024",
+            &test_ue, &sess, &af_sess, &ngap, &gtpu);
+
+    memset(&af_param, 0, sizeof(af_param));
+    af_param.med_type = OpenAPI_media_type_AUDIO;
+    af_param.qos_type = 1;
+    af_param.flow_type = 99;
+    af_param.ev_qos_notif = true;
+    af_local_send_to_pcf(af_sess, &af_param,
+            af_npcf_policyauthorization_build_create);
+    qos_flow = test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_assert(qos_flow);
+    ogs_msleep(500);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_CREATED, af_sess->last_pcf_status);
+
+    sendbuf = testngap_build_qos_flow_notify(qos_flow, false);
+    ABTS_PTR_NOTNULL(tc, sendbuf);
+    ABTS_INT_EQUAL(tc, OGS_OK, testgnb_ngap_send(ngap, sendbuf));
+    ogs_msleep(500);
+    ABTS_INT_EQUAL(tc, 1, af_sess->notify_qnc_count);
+    ABTS_STR_EQUAL(tc, "NOT_GUARANTEED", af_sess->notify_qnc_type);
+    ABTS_INT_EQUAL(tc, 0, af_sess->notify_qnc_med_comp_n);
+
+    sendbuf = testngap_build_qos_flow_notify(qos_flow, true);
+    ABTS_PTR_NOTNULL(tc, sendbuf);
+    ABTS_INT_EQUAL(tc, OGS_OK, testgnb_ngap_send(ngap, sendbuf));
+    ogs_msleep(500);
+    ABTS_INT_EQUAL(tc, 2, af_sess->notify_qnc_count);
+    ABTS_STR_EQUAL(tc, "GUARANTEED", af_sess->notify_qnc_type);
+
+    /* the subscription is removed: the notification is not passed on */
+    raw.method = "PATCH";
+    raw.path = "";
+    raw.body = "{\"ascReqData\":{\"evSubsc\":{\"events\":[{\"event\":\"ANI_REPORT\",\"notifMethod\":\"ONE_TIME\"}]}}}";
+    af_local_send_to_pcf(af_sess, &raw, af_npcf_policyauthorization_build_raw);
+    ogs_msleep(500);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_pcf_status);
+    /* the QoS flow no longer asks the NG-RAN for notification: the SMF modifies it */
+    test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_msleep(300);
+    sendbuf = testngap_build_qos_flow_notify(qos_flow, false);
+    ABTS_PTR_NOTNULL(tc, sendbuf);
+    ABTS_INT_EQUAL(tc, OGS_OK, testgnb_ngap_send(ngap, sendbuf));
+    ogs_msleep(500);
+    ABTS_INT_EQUAL(tc, 2, af_sess->notify_qnc_count);
+
+    test_af_qos_reference_delete(tc, test_ue, sess, af_sess, ngap);
+    test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
+}
+
 abts_suite *test_af(abts_suite *suite)
 {
     suite = ADD_SUITE(suite)
@@ -5496,6 +5563,7 @@ abts_suite *test_af(abts_suite *suite)
     abts_run_test(suite, test21_func, NULL);
     abts_run_test(suite, test22_func, NULL);
     abts_run_test(suite, test23_func, NULL);
+    abts_run_test(suite, test24_func, NULL);
 
     return suite;
 }

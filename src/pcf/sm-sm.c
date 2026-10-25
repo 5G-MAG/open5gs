@@ -96,7 +96,9 @@ void pcf_sm_state_operational(ogs_fsm_t *s, pcf_event_t *e)
                     SWITCH(message->h.method)
                     CASE(OGS_SBI_HTTP_METHOD_POST)
                         handled = pcf_npcf_smpolicycontrol_handle_update(
-                                sess, stream, message);
+                                sess, stream, message,
+                                e->h.sbi.request ?
+                                    e->h.sbi.request->http.content : NULL);
                         break;
 
                     DEFAULT

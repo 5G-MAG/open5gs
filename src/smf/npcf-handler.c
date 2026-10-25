@@ -408,6 +408,7 @@ static void update_authorized_pcc_rule_and_qos(
                 pcc_rule->qos.mbr.downlink =
                     ogs_sbi_bitrate_from_string(QosData->maxbr_dl);
 
+            pcc_rule->qos.qnc = QosData->is_qnc && QosData->qnc;
             if (QosData->gbr_ul)
                 pcc_rule->qos.gbr.uplink =
                     ogs_sbi_bitrate_from_string(QosData->gbr_ul);

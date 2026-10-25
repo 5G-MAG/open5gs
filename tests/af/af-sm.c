@@ -189,6 +189,18 @@ void af_state_operational(ogs_fsm_t *s, af_event_t *e)
                         ogs_assert(cJSON_IsString(
                                     cJSON_GetObjectItem(body, "evSubsUri")));
                         app_session->notify_count++;
+                        if (cJSON_IsString(event) && !strcmp(event->valuestring, "QOS_NOTIF")) {
+                            cJSON *qnc = cJSON_GetArrayItem(cJSON_GetObjectItem(body, "qncReports"), 0);
+                            cJSON *qtype = qnc ? cJSON_GetObjectItem(qnc, "notifType") : NULL;
+                            cJSON *qflow = qnc ? cJSON_GetArrayItem(cJSON_GetObjectItem(qnc, "flows"), 0) : NULL;
+                            cJSON *qmed = qflow ? cJSON_GetObjectItem(qflow, "medCompN") : NULL;
+
+                            ogs_assert(cJSON_IsString(qtype));
+                            app_session->notify_qnc_count++;
+                            ogs_cpystrn(app_session->notify_qnc_type, qtype->valuestring,
+                                    sizeof(app_session->notify_qnc_type));
+                            app_session->notify_qnc_med_comp_n = cJSON_IsNumber(qmed) ? qmed->valueint : -1;
+                        }
                         if (cJSON_IsString(event) && !strcmp(event->valuestring, "USAGE_REPORT")) {
                             cJSON *usg = cJSON_GetObjectItem(body, "usgRep");
                             cJSON *total = usg ? cJSON_GetObjectItem(usg, "totalVolume") : NULL;

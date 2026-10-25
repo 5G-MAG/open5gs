@@ -86,6 +86,14 @@ static void fill_qos_level_parameters(
                 guaranteedFlowBitRateDL, qos->gbr.downlink);
         asn_uint642INTEGER(&gBR_QosInformation->
                 guaranteedFlowBitRateUL, qos->gbr.uplink);
+
+        if (qos->qnc) {
+            gBR_QosInformation->notificationControl =
+                CALLOC(1, sizeof(*gBR_QosInformation->notificationControl));
+            ogs_assert(gBR_QosInformation->notificationControl);
+            *gBR_QosInformation->notificationControl =
+                NGAP_NotificationControl_notification_requested;
+        }
     } else if (include_gbr &&
                (qos->mbr.downlink || qos->mbr.uplink ||
                 qos->gbr.downlink || qos->gbr.uplink)) {

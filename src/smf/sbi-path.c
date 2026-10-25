@@ -1200,6 +1200,36 @@ void smf_sbi_send_smpolicycontrol_usage_report(
     ogs_expect(r == OGS_OK);
 }
 
+void smf_sbi_send_smpolicycontrol_qnc_report(
+        smf_sess_t *sess, OpenAPI_qos_notif_type_e notif_type,
+        smf_bearer_t **qos_flow, int num_of_qos_flow)
+{
+    smf_npcf_smpolicycontrol_qnc_report_t *report = NULL;
+    int i, r;
+
+    ogs_assert(sess);
+
+    if (!PCF_SM_POLICY_ASSOCIATED(sess))
+        return;
+
+    report = ogs_calloc(1, sizeof(*report));
+    ogs_assert(report);
+    report->notif_type = notif_type;
+    for (i = 0; i < num_of_qos_flow && report->num_of_rule < OGS_MAX_NUM_OF_PCC_RULE; i++) {
+        if (qos_flow[i] && qos_flow[i]->pcc_rule.id)
+            report->rule_id[report->num_of_rule++] = ogs_strdup(qos_flow[i]->pcc_rule.id);
+    }
+    if (report->num_of_rule == 0) {
+        ogs_free(report);
+        return;
+    }
+
+    r = smf_sbi_discover_and_send(
+            OpenAPI_service_name_npcf_smpolicycontrol, NULL,
+            smf_npcf_smpolicycontrol_build_qnc_update, sess, NULL, 0, report);
+    ogs_expect(r == OGS_OK);
+}
+
 void smf_sbi_send_smpolicycontrol_rule_report(
         smf_sess_t *sess, bool success, smf_bearer_t **qos_flow, int num_of_qos_flow)
 {

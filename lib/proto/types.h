@@ -505,6 +505,7 @@ typedef struct ogs_qos_s {
 
     ogs_bitrate_t   mbr;  /* Maxmimum Bit Rate (MBR) */
     ogs_bitrate_t   gbr;  /* Guaranteed Bit Rate (GBR) */
+    bool            qnc;  /* QoS Notification Control: the access network notifies when the GFBR cannot be guaranteed (TS 29.512 table 5.6.2.6-1) */
 } ogs_qos_t;
 
 int ogs_check_qos_conf(ogs_qos_t *qos);

@@ -643,7 +643,8 @@ void smf_qos_flow_binding(smf_sess_t *sess)
                         (qos_flow->qos.mbr.downlink != pcc_rule->qos.mbr.downlink) ||
                         (qos_flow->qos.mbr.uplink != pcc_rule->qos.mbr.uplink) ||
                         (qos_flow->qos.gbr.downlink != pcc_rule->qos.gbr.downlink) ||
-                        (qos_flow->qos.gbr.uplink != pcc_rule->qos.gbr.uplink)) {
+                        (qos_flow->qos.gbr.uplink != pcc_rule->qos.gbr.uplink) ||
+                        (qos_flow->qos.qnc != pcc_rule->qos.qnc)) {
 
                         /*
                          * Update the QoS parameters so that the GBR QoS Flow

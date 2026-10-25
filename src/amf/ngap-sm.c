@@ -118,6 +118,9 @@ void ngap_state_operational(ogs_fsm_t *s, amf_event_t *e)
             case NGAP_ProcedureCode_id_RANConfigurationUpdate:
                 ngap_handle_ran_configuration_update(gnb, pdu);
                 break;
+            case NGAP_ProcedureCode_id_PDUSessionResourceNotify:
+                ngap_handle_pdu_session_resource_notify(gnb, pdu);
+                break;
             case NGAP_ProcedureCode_id_NGReset:
                 ngap_handle_ng_reset(gnb, pdu);
                 break;

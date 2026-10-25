@@ -2114,6 +2114,14 @@ void smf_gsm_state_operational(ogs_fsm_t *s, smf_event_t *e)
             }
             break;
 
+        case OpenAPI_n2_sm_info_type_PDU_RES_NTY:
+            rv = ngap_handle_pdu_session_resource_notify_transfer(
+                    sess, stream, pkbuf);
+            if (rv != OGS_OK)
+                ogs_error("[%s:%d] Cannot handle the PDU Session Resource Notify",
+                        smf_ue->supi, sess->psi);
+            break;
+
         case OpenAPI_n2_sm_info_type_PDU_RES_REL_RSP:
             ngap_state = sess->ngap_state.pdu_session_resource_release;
 
