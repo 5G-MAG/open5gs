@@ -123,12 +123,17 @@ ogs_sbi_server_t *ogs_sbi_server_add_dual(
 {
     ogs_sbi_server_t *h2, *h1;
 
-    /* The MHD backend has no TLS support */
-    ogs_assert(scheme == OpenAPI_uri_scheme_http);
+    /*
+     * The MHD backend has no TLS of its own: with https the HTTP/2 server
+     * terminates TLS for both protocols (ALPN) and passes the decrypted
+     * HTTP/1.1 connections to its MHD peer, which speaks plain HTTP.
+     */
 
     /* the HTTP/1.1 peer is added first so that it is started before the HTTP/2 server accepts */
-    h1 = server_add(&ogs_mhd_server_actions, interface, scheme, addr, option);
+    h1 = server_add(&ogs_mhd_server_actions, interface,
+            OpenAPI_uri_scheme_http, addr, option);
     h1->no_listen = true;
+    h1->tls_front = (scheme == OpenAPI_uri_scheme_https);
     h2 = server_add(&ogs_nghttp2_server_actions, interface, scheme, addr, option);
     h2->h1_peer = h1;
 

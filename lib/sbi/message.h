@@ -660,6 +660,9 @@ typedef struct ogs_sbi_request_s {
     struct {
         ogs_poll_t *write;
     } poll;
+
+    /* Set by the server: the request arrived over a TLS connection */
+    bool tls;
 } ogs_sbi_request_t;
 
 typedef struct ogs_sbi_response_s {

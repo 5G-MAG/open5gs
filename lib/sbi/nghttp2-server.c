@@ -23,6 +23,10 @@
 #include "yuarel.h"
 
 #include <netinet/tcp.h>
+#include <poll.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <sys/socket.h>
 #include <nghttp2/nghttp2.h>
 
 #define USE_SEND_DATA_WITH_NO_COPY 1
@@ -95,6 +99,9 @@ typedef struct ogs_sbi_stream_s {
     ogs_sbi_request_t       *request;
     bool                    memory_overflow;
 
+    /* how much of the response body has been sent in DATA frames */
+    size_t                  content_sent;
+
     ogs_sbi_session_t       *session;
 
     /*
@@ -159,8 +166,19 @@ static int alpn_select_proto_cb(SSL *ssl, const unsigned char **out,
                                 unsigned int inlen, void *arg)
 {
     int rv;
+    ogs_sbi_server_t *server = arg;
     (void)ssl;
-    (void)arg;
+
+    if (server && server->h1_peer) {
+        /* both protocols over TLS: HTTP/2 is preferred, HTTP/1.1 is relayed to the MHD peer */
+        static const unsigned char protos[] = "\x02h2\x08http/1.1";
+
+        if (SSL_select_next_proto((unsigned char **)out, outlen,
+                    protos, sizeof(protos) - 1, in, inlen) ==
+                OPENSSL_NPN_NEGOTIATED)
+            return SSL_TLSEXT_ERR_OK;
+        return SSL_TLSEXT_ERR_NOACK;
+    }
 
     rv = nghttp2_select_next_protocol((unsigned char **)out, outlen, in, inlen);
     if (rv != 1) {
@@ -351,6 +369,9 @@ static int server_start(ogs_sbi_server_t *server,
             ogs_error("Cannot create SSL CTX");
             return OGS_ERROR;
         }
+#if OPENSSL_VERSION_NUMBER >= 0x10002000L
+        SSL_CTX_set_alpn_select_cb(server->ssl_ctx, alpn_select_proto_cb, server);
+#endif
 
         if (server->verify_client_cacert) {
             char *context = NULL;
@@ -581,6 +602,7 @@ static ssize_t response_read_callback(nghttp2_session *session,
 
     ogs_sbi_response_t *response = NULL;
     ogs_sbi_stream_t *stream = NULL;
+    size_t remaining, chunk;
 
     ogs_assert(session);
 
@@ -597,15 +619,28 @@ static ssize_t response_read_callback(nghttp2_session *session,
     ogs_assert(response->http.content);
     ogs_assert(response->http.content_length);
 
+    /*
+     * RFC 9113 section 4.2 and 6.9: a DATA frame carries at most the
+     * maximum frame size and what the flow-control windows allow; nghttp2
+     * passes that bound as length and the callback has to stay within it.
+     * The rest of the body goes in the following DATA frames.
+     */
+    remaining = response->http.content_length - stream->content_sent;
+    chunk = remaining < length ? remaining : length;
+
 #if USE_SEND_DATA_WITH_NO_COPY
     *data_flags |= NGHTTP2_DATA_FLAG_NO_COPY;
 #else
-    memcpy(buf, response->http.content, response->http.content_length);
+    memcpy(buf, response->http.content + stream->content_sent, chunk);
 #endif
 
-    *data_flags |= NGHTTP2_DATA_FLAG_EOF;
+    if (chunk == remaining)
+        *data_flags |= NGHTTP2_DATA_FLAG_EOF;
 
 #if USE_SEND_DATA_WITH_NO_COPY
+    if (chunk != remaining)
+        return chunk;
+
     rv = nghttp2_session_get_stream_remote_close(session, stream_id);
     if (rv == 0) {
         ogs_warn("nghttp2_session_get_stream_remote_close() failed");
@@ -616,7 +651,7 @@ static ssize_t response_read_callback(nghttp2_session *session,
     }
 #endif
 
-    return response->http.content_length;
+    return chunk;
 }
 
 static bool server_send_rspmem_persistent(
@@ -762,6 +797,7 @@ static ogs_sbi_stream_t *stream_add(
         ogs_sbi_stream_id_free(&stream_pool, stream);
         return NULL;
     }
+    stream->request->tls = sbi_sess->ssl != NULL;
 
     stream->stream_id = stream_id;
     sbi_sess->last_stream_id = stream_id;
@@ -1003,6 +1039,7 @@ struct sniff {
 
 static void session_start(ogs_sbi_server_t *server, ogs_sock_t *new);
 static void sniff_handler(short when, ogs_socket_t fd, void *data);
+static void tls_relay_start(ogs_sbi_server_t *server, ogs_sbi_session_t *sbi_sess);
 
 /*
  * RFC 9113 section 3.4: an HTTP/2 connection starts with the 24 octets
@@ -1112,6 +1149,18 @@ static void session_start(ogs_sbi_server_t *server, ogs_sock_t *new)
         }
     }
 
+    if (sbi_sess->ssl && server->h1_peer) {
+        const unsigned char *proto = NULL;
+        unsigned int protolen = 0;
+
+        SSL_get0_alpn_selected(sbi_sess->ssl, &proto, &protolen);
+        if (!(protolen == 2 && memcmp(proto, "h2", 2) == 0)) {
+            /* HTTP/1.1 over TLS */
+            tls_relay_start(server, sbi_sess);
+            return;
+        }
+    }
+
     sbi_sess->poll.read = ogs_pollset_add(ogs_app()->pollset,
         OGS_POLLIN, new->fd, recv_handler, sbi_sess);
     ogs_assert(sbi_sess->poll.read);
@@ -1121,6 +1170,180 @@ static void session_start(ogs_sbi_server_t *server, ogs_sock_t *new)
         ogs_error("session_add() failed");
         session_remove(sbi_sess);
     }
+}
+
+/*
+ * HTTP/1.1 over TLS (TS 26.510 V19.2.0 clause 7.1.4.1: both protocol versions
+ * over TLS 1.3). The MHD backend has no TLS, so the connection is decrypted
+ * here: a relay thread copies the bytes between the TLS connection and one end
+ * of a socket pair whose other end belongs to the MHD peer, which serves it
+ * as a plain HTTP/1.1 connection. The relay thread alone uses the SSL object
+ * after the handshake.
+ */
+struct tls_relay {
+    SSL *ssl;
+    ogs_sock_t *sock;
+    int pair;
+};
+
+static void set_nonblock(int fd)
+{
+    int flags = fcntl(fd, F_GETFL, 0);
+
+    if (flags >= 0)
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+static void *tls_relay_main(void *arg)
+{
+    struct tls_relay *relay = arg;
+    int fd = relay->sock->fd, pair = relay->pair;
+    char up[16384], down[16384];
+    size_t up_len = 0, up_off = 0, down_len = 0, down_off = 0;
+    bool client_eof = false, pair_eof = false, pair_shut = false;
+    bool ssl_in = false, ssl_out = false, pair_in = false, pair_out = false;
+
+    while (true) {
+        struct pollfd p[2];
+        bool progress = false;
+        int n;
+
+        /* client to MHD */
+        if (up_len == up_off && !client_eof) {
+            n = SSL_read(relay->ssl, up, sizeof(up));
+            if (n > 0) {
+                up_len = (size_t)n; up_off = 0; progress = true;
+            } else {
+                int e = SSL_get_error(relay->ssl, n);
+                ssl_in = (e == SSL_ERROR_WANT_READ);
+                ssl_out = (e == SSL_ERROR_WANT_WRITE);
+                if (e != SSL_ERROR_WANT_READ && e != SSL_ERROR_WANT_WRITE)
+                    client_eof = true;
+            }
+        }
+        if (up_off < up_len) {
+            ssize_t w = write(pair, up + up_off, up_len - up_off);
+
+            pair_out = false;
+            if (w > 0) {
+                up_off += (size_t)w; progress = true;
+            } else if (w < 0 && errno == EAGAIN) {
+                pair_out = true;
+            } else {
+                break;
+            }
+        }
+        if (client_eof && up_off == up_len && !pair_shut) {
+            shutdown(pair, SHUT_WR);
+            pair_shut = true;
+        }
+
+        /* MHD to client */
+        if (down_len == down_off && !pair_eof) {
+            ssize_t r = read(pair, down, sizeof(down));
+
+            pair_in = false;
+            if (r > 0) {
+                down_len = (size_t)r; down_off = 0; progress = true;
+            } else if (r == 0) {
+                pair_eof = true;
+            } else if (errno == EAGAIN) {
+                pair_in = true;
+            } else {
+                pair_eof = true;
+            }
+        }
+        if (down_off < down_len) {
+            n = SSL_write(relay->ssl, down + down_off, (int)(down_len - down_off));
+            if (n > 0) {
+                down_off += (size_t)n; progress = true;
+            } else {
+                int e = SSL_get_error(relay->ssl, n);
+                if (e == SSL_ERROR_WANT_READ) ssl_in = true;
+                else if (e == SSL_ERROR_WANT_WRITE) ssl_out = true;
+                else break;
+            }
+        }
+
+        if (pair_eof && down_off == down_len)
+            break;
+        if (progress)
+            continue;
+
+        p[0].fd = fd;
+        p[0].events = (ssl_in ? POLLIN : 0) | (ssl_out ? POLLOUT : 0);
+        p[0].revents = 0;
+        p[1].fd = pair;
+        p[1].events = (pair_in ? POLLIN : 0) | (pair_out ? POLLOUT : 0);
+        p[1].revents = 0;
+        if (!p[0].events && !p[1].events)
+            break;
+        if (poll(p, 2, -1) < 0 && errno != EINTR)
+            break;
+        if ((p[0].revents | p[1].revents) & (POLLERR | POLLNVAL))
+            break;
+    }
+
+    SSL_shutdown(relay->ssl);
+    SSL_free(relay->ssl);
+    close(pair);
+    ogs_sock_destroy(relay->sock);
+    ogs_free(relay);
+    return NULL;
+}
+
+static void tls_relay_start(ogs_sbi_server_t *server, ogs_sbi_session_t *sbi_sess)
+{
+    struct tls_relay *relay;
+    struct sockaddr_storage peer;
+    socklen_t peerlen = sizeof(peer);
+    int sv[2];
+    pthread_t thread;
+    pthread_attr_t attr;
+
+    /* the session record of the HTTP/2 server is not needed: the connection is taken out of it */
+    ogs_list_remove(&server->session_list, sbi_sess);
+    relay = ogs_calloc(1, sizeof(*relay));
+    ogs_assert(relay);
+    relay->ssl = sbi_sess->ssl;
+    relay->sock = sbi_sess->sock;
+    ogs_free(sbi_sess->addr);
+    nghttp2_session_del(sbi_sess->session);
+    ogs_pool_free(&session_pool, sbi_sess);
+
+    if (getpeername(relay->sock->fd, (struct sockaddr *)&peer, &peerlen) != 0 ||
+            socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) {
+        ogs_error("Cannot relay the HTTP/1.1 connection over TLS");
+        SSL_free(relay->ssl);
+        ogs_sock_destroy(relay->sock);
+        ogs_free(relay);
+        return;
+    }
+    set_nonblock(sv[0]);
+    set_nonblock(relay->sock->fd);
+    relay->pair = sv[0];
+
+    if (ogs_mhd_server_add_connection(server->h1_peer, sv[1],
+                (struct sockaddr *)&peer, peerlen) != OGS_OK) {
+        ogs_error("Cannot hand the TLS connection to the HTTP/1.1 server");
+        close(sv[1]);
+        close(sv[0]);
+        SSL_free(relay->ssl);
+        ogs_sock_destroy(relay->sock);
+        ogs_free(relay);
+        return;
+    }
+
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    if (pthread_create(&thread, &attr, tls_relay_main, relay) != 0) {
+        ogs_error("Cannot start the TLS relay");
+        close(sv[0]);
+        SSL_free(relay->ssl);
+        ogs_sock_destroy(relay->sock);
+        ogs_free(relay);
+    }
+    pthread_attr_destroy(&attr);
 }
 
 static void recv_handler(short when, ogs_socket_t fd, void *data)
@@ -1846,18 +2069,21 @@ static int on_send_data(nghttp2_session *session, nghttp2_frame *frame,
     ogs_assert(framehd);
     ogs_assert(length);
 
-    pkbuf = ogs_pkbuf_alloc(NULL, OGS_MAX_SDU_LEN);
+    padlen = frame->data.padlen;
+
+    pkbuf = ogs_pkbuf_alloc(NULL, 9 + padlen + length);
     ogs_assert(pkbuf);
     ogs_pkbuf_put_data(pkbuf, framehd, 9);
-
-    padlen = frame->data.padlen;
 
     if (padlen > 0) {
         ogs_pkbuf_put_u8(pkbuf, padlen-1);
     }
 
+    /* this frame carries the next length octets of the body */
+    ogs_assert(stream->content_sent + length <= response->http.content_length);
     ogs_pkbuf_put_data(pkbuf,
-            response->http.content, response->http.content_length);
+            response->http.content + stream->content_sent, length);
+    stream->content_sent += length;
 
     if (padlen > 0) {
         memset(pkbuf->tail, 0, padlen-1);

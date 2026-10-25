@@ -65,6 +65,13 @@ typedef struct ogs_sbi_server_s {
      */
     struct ogs_sbi_server_s *h1_peer;
     bool no_listen;
+
+    /*
+     * The HTTP/1.1 peer of an https dual server: its connections come from
+     * the TLS front of the HTTP/2 server, which decrypts them, so the
+     * requests it parses arrived over TLS (ogs_sbi_request_t.tls).
+     */
+    bool tls_front;
 } ogs_sbi_server_t;
 
 typedef struct ogs_sbi_server_actions_s {

@@ -67,6 +67,8 @@ static void notify_connection(void *cls,
         struct MHD_Connection *connection,
         void **socket_context,
         enum MHD_ConnectionNotificationCode toe);
+#define MAX_HTTP_CONTENT_LEN (256 * 1024 * 1024) /* 256MB */
+
 static _MHD_Result access_handler(
         void *cls,
         struct MHD_Connection *connection,
@@ -640,6 +642,8 @@ static _MHD_Result access_handler(
         MHD_get_connection_values(connection, MHD_HEADER_KIND,
                 (MHD_KeyValueIterator)get_values, request->http.headers);
 
+        request->tls = server->tls_front;
+
         request->h.method = ogs_strdup(method);
         ogs_assert(request->h.method);
         request->h.uri = ogs_strdup(url);
@@ -660,7 +664,8 @@ static _MHD_Result access_handler(
         size_t offset = 0;
         size_t new_length = 0;
 
-        if (*upload_data_size > OGS_MAX_SDU_LEN -
+        /* the same bound as the HTTP/2 server (nghttp2-server.c) */
+        if (*upload_data_size > MAX_HTTP_CONTENT_LEN -
                 request->http.content_length) {
             ogs_error("Payload too large : Content-Length[%d], "
                     "upload_data_size[%d]",
