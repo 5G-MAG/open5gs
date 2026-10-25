@@ -910,6 +910,54 @@ static struct {
     ogs_pfcp_volume_measurement_t vol_meas;
 } usage_report_buf;
 
+/* Create SRR and Update SRR carry the QoS monitoring control of the rule (TS 29.244 V19.6.0 tables 7.5.2.9-1 and 7.5.4.9-1); buf outlives the building of the message */
+void ogs_pfcp_build_create_srr(
+        ogs_pfcp_tlv_create_srr_t *message, ogs_pfcp_srr_t *srr, void *buf, int buf_len)
+{
+    ogs_assert(message);
+    ogs_assert(srr);
+
+    message->presence = 1;
+    message->srr_id.presence = 1;
+    message->srr_id.data = &srr->id;
+    message->srr_id.len = 1;
+    if (srr->qos_monitoring_presence) {
+        message->qos_monitoring_per_qos_flow_control_information.presence = 1;
+        ogs_pfcp_build_qos_monitoring_control(
+                &message->qos_monitoring_per_qos_flow_control_information,
+                &srr->qos_monitoring, buf, buf_len);
+    }
+}
+
+void ogs_pfcp_build_update_srr(
+        ogs_pfcp_tlv_update_srr_t *message, ogs_pfcp_srr_t *srr, void *buf, int buf_len)
+{
+    ogs_assert(message);
+    ogs_assert(srr);
+
+    message->presence = 1;
+    message->srr_id.presence = 1;
+    message->srr_id.data = &srr->id;
+    message->srr_id.len = 1;
+    if (srr->qos_monitoring_presence) {
+        message->qos_monitoring_per_qos_flow_control_information.presence = 1;
+        ogs_pfcp_build_qos_monitoring_control(
+                &message->qos_monitoring_per_qos_flow_control_information,
+                &srr->qos_monitoring, buf, buf_len);
+    }
+}
+
+void ogs_pfcp_build_remove_srr(ogs_pfcp_tlv_remove_srr_t *message, ogs_pfcp_srr_t *srr)
+{
+    ogs_assert(message);
+    ogs_assert(srr);
+
+    message->presence = 1;
+    message->srr_id.presence = 1;
+    message->srr_id.data = &srr->id;
+    message->srr_id.len = 1;
+}
+
 ogs_pkbuf_t *ogs_pfcp_build_session_report_request(
         uint8_t type, ogs_pfcp_user_plane_report_t *report)
 {
@@ -1029,6 +1077,30 @@ ogs_pkbuf_t *ogs_pfcp_build_session_report_request(
                     report->usage_report[i].time_of_last_packet;
             }
         }
+    }
+
+    if (report->type.session_report) {
+        /* the QoS Monitoring Report of an SRR (TS 29.244 V19.6.0 clause 7.5.8.6) */
+        uint8_t srr_id = report->qos_monitoring.srr_id;
+        uint8_t measurement_buf[16];
+
+        req->session_report.presence = 1;
+        req->session_report.srr_id.presence = 1;
+        req->session_report.srr_id.data = &srr_id;
+        req->session_report.srr_id.len = 1;
+        req->session_report.qos_monitoring_report.presence = 1;
+        req->session_report.qos_monitoring_report.qfi.presence = 1;
+        req->session_report.qos_monitoring_report.qfi.u8 = report->qos_monitoring.qfi;
+        req->session_report.qos_monitoring_report.qos_monitoring_measurement.presence = 1;
+        ogs_pfcp_build_qos_monitoring_measurement(
+                &req->session_report.qos_monitoring_report.qos_monitoring_measurement,
+                &report->qos_monitoring.measurement, measurement_buf, sizeof(measurement_buf));
+
+        pfcp_message->h.type = type;
+        pkbuf = ogs_pfcp_build_msg(pfcp_message);
+        ogs_expect(pkbuf);
+        ogs_free(pfcp_message);
+        return pkbuf;
     }
 
     if (report->error_indication.remote_f_teid_len) {

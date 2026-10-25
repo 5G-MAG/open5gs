@@ -133,6 +133,28 @@ ogs_sbi_request_t *af_npcf_policyauthorization_build_create(
         OpenAPI_list_add(EventList, Event);
     }
 
+    if (af_param->ev_qos_mon) {
+        OpenAPI_qos_monitoring_information_t *qm = ogs_calloc(1, sizeof(*qm));
+
+        ogs_assert(qm);
+        Event = ogs_calloc(1, sizeof(*Event));
+        ogs_assert(Event);
+        Event->event = OpenAPI_npcf_af_event_QOS_MONITORING;
+        Event->notif_method = OpenAPI_af_notif_method_EVENT_DETECTION;
+        Event->is_wait_time = true;
+        Event->wait_time = af_param->qos_mon_wait_time;
+        OpenAPI_list_add(EventList, Event);
+
+        evSubsc.req_qos_mon_params = OpenAPI_list_create();
+        ogs_assert(evSubsc.req_qos_mon_params);
+        OpenAPI_list_add(evSubsc.req_qos_mon_params, (void *)OpenAPI_requested_qos_monitoring_parameter_DOWNLINK);
+        OpenAPI_list_add(evSubsc.req_qos_mon_params, (void *)OpenAPI_requested_qos_monitoring_parameter_UPLINK);
+        OpenAPI_list_add(evSubsc.req_qos_mon_params, (void *)OpenAPI_requested_qos_monitoring_parameter_ROUND_TRIP);
+        qm->is_rep_thresh_dl = qm->is_rep_thresh_ul = qm->is_rep_thresh_rp = true;
+        qm->rep_thresh_dl = qm->rep_thresh_ul = qm->rep_thresh_rp = af_param->qos_mon_threshold;
+        evSubsc.qos_mon = qm;
+    }
+
     if (af_param->usage_threshold) {
         Event = ogs_calloc(1, sizeof(*Event));
         ogs_assert(Event);
@@ -331,6 +353,10 @@ ogs_sbi_request_t *af_npcf_policyauthorization_build_create(
     OpenAPI_list_free(EventList);
     if (evSubsc.usg_thres)
         OpenAPI_usage_threshold_free(evSubsc.usg_thres);
+    if (evSubsc.req_qos_mon_params)
+        OpenAPI_list_free(evSubsc.req_qos_mon_params);
+    if (evSubsc.qos_mon)
+        ogs_free(evSubsc.qos_mon);
 
     if (sNssai.sd)
         ogs_free(sNssai.sd);

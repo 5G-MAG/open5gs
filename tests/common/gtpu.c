@@ -231,6 +231,44 @@ int test_gtpu_send(
     return OGS_OK;
 }
 
+int test_gtpu_send_qos_monitoring_response(
+        ogs_socknode_t *node, test_bearer_t *bearer, ogs_pkbuf_t *dl,
+        ogs_time_t received_at, uint32_t dl_result, uint32_t ul_result)
+{
+    ogs_gtp2_header_desc_t desc;
+    ogs_pkbuf_t *ul = NULL;
+    ogs_sockaddr_t to;
+    test_sess_t *sess = NULL;
+    ssize_t sent;
+
+    ogs_assert(node);
+    ogs_assert(bearer);
+    ogs_assert(dl);
+    sess = bearer->sess;
+    ogs_assert(sess);
+
+    if (ogs_gtpu_parse_header(&desc, dl) < 0 || !desc.qm.qmp ||
+        desc.pdu_type != OGS_GTP2_EXTENSION_HEADER_PDU_TYPE_DL_PDU_SESSION_INFORMATION)
+        return OGS_ERROR;
+
+    memset(&to, 0, sizeof(to));
+    to.ogs_sin_port = htobe16(OGS_GTPV1_U_UDP_PORT);
+    if (sess->upf_n3_ip.ipv4) {
+        to.ogs_sa_family = AF_INET;
+        to.sin.sin_addr.s_addr = sess->upf_n3_ip.addr;
+    } else {
+        to.ogs_sa_family = AF_INET6;
+        memcpy(to.sin6.sin6_addr.s6_addr, sess->upf_n3_ip.addr6, OGS_IPV6_LEN);
+    }
+
+    ul = ogs_gtpu_build_qos_monitoring_ul(sess->upf_n3_teid, desc.qos_flow_identifier,
+            desc.qm.dl_sending_ts, ogs_gtpu_time_to_ntp64(received_at), ogs_gtpu_time_to_ntp64(ogs_time_now()),
+            true, dl_result, true, ul_result);
+    sent = ogs_sendto(node->sock->fd, ul->data, ul->len, 0, &to);
+    ogs_pkbuf_free(ul);
+    return sent > 0 ? OGS_OK : OGS_ERROR;
+}
+
 int test_gtpu_send_ping(
         ogs_socknode_t *node, test_bearer_t *bearer, const char *dst_ip)
 {

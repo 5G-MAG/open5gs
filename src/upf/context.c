@@ -19,6 +19,7 @@
 
 #include "context.h"
 #include "pfcp-path.h"
+#include "qos-monitoring.h"
 
 static upf_context_t self;
 
@@ -46,7 +47,9 @@ void upf_context_init(void)
     ogs_pfcp_self()->up_function_features.mnop = 1;
     ogs_pfcp_self()->up_function_features.vtime = 1;
     ogs_pfcp_self()->up_function_features.frrt = 1;
-    ogs_pfcp_self()->up_function_features_len = 4;
+    /* per QoS flow per UE QoS monitoring for packet delay (TS 29.244 V19.6.0 clause 5.24.4.1), octet 9 of the features */
+    ogs_pfcp_self()->up_function_features.qfqm = 1;
+    ogs_pfcp_self()->up_function_features_len = 5;
 
     ogs_list_init(&self.sess_list);
     ogs_pool_init(&upf_sess_pool, ogs_app()->pool.sess);
@@ -220,6 +223,7 @@ int upf_sess_remove(upf_sess_t *sess)
     ogs_assert(sess);
 
     upf_sess_urr_acc_remove_all(sess);
+    upf_qos_monitoring_remove_all(sess);
 
     ogs_list_remove(&self.sess_list, sess);
     ogs_pfcp_sess_clear(&sess->pfcp);

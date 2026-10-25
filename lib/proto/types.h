@@ -582,6 +582,26 @@ typedef struct ogs_pcc_rule_s {
 
     char *um_id; /* 5GC: the usage monitoring data that the rule refers to (TS 29.512 clause 5.6.2.2 refUmData) */
 
+    /* 5GC: QoS monitoring of the packet delay that the rule refers to (refQosMon, QosMonitoringData of TS 29.512); delays and thresholds in ms, times in s */
+    struct {
+        bool presence;
+        bool dl_delay;
+        bool ul_delay;
+        bool rt_delay;
+        bool event_triggered;
+        bool periodic;
+        bool thr_dl_presence;
+        bool thr_ul_presence;
+        bool thr_rt_presence;
+        uint32_t thr_dl;
+        uint32_t thr_ul;
+        uint32_t thr_rt;
+        bool wait_time_presence;
+        uint32_t wait_time;
+        bool rep_period_presence;
+        uint32_t rep_period;
+    } qos_mon;
+
     ogs_qos_t  qos;
 } ogs_pcc_rule_t;
 
@@ -614,6 +634,7 @@ typedef struct ogs_pcc_rule_s {
             ogs_assert((__dST)->um_id); \
         } \
         (__dST)->precedence = (__sRC)->precedence; \
+        memcpy(&(__dST)->qos_mon, &(__sRC)->qos_mon, sizeof((__sRC)->qos_mon)); \
         memcpy(&(__dST)->qos, &(__sRC)->qos, sizeof(ogs_qos_t)); \
     } while(0)
 

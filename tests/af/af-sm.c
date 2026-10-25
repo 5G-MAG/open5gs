@@ -189,6 +189,22 @@ void af_state_operational(ogs_fsm_t *s, af_event_t *e)
                         ogs_assert(cJSON_IsString(
                                     cJSON_GetObjectItem(body, "evSubsUri")));
                         app_session->notify_count++;
+                        if (cJSON_IsString(event) && !strcmp(event->valuestring, "QOS_MONITORING")) {
+                            cJSON *qm = cJSON_GetArrayItem(cJSON_GetObjectItem(body, "qosMonReports"), 0);
+                            cJSON *qflow = qm ? cJSON_GetArrayItem(cJSON_GetObjectItem(qm, "flows"), 0) : NULL;
+                            cJSON *qmed = qflow ? cJSON_GetObjectItem(qflow, "medCompN") : NULL;
+                            cJSON *d;
+
+                            ogs_assert(qm);
+                            app_session->notify_qm_count++;
+                            d = cJSON_GetArrayItem(cJSON_GetObjectItem(qm, "dlDelays"), 0);
+                            app_session->notify_qm_dl = cJSON_IsNumber(d) ? (long)d->valuedouble : -1;
+                            d = cJSON_GetArrayItem(cJSON_GetObjectItem(qm, "ulDelays"), 0);
+                            app_session->notify_qm_ul = cJSON_IsNumber(d) ? (long)d->valuedouble : -1;
+                            d = cJSON_GetArrayItem(cJSON_GetObjectItem(qm, "rtDelays"), 0);
+                            app_session->notify_qm_rt = cJSON_IsNumber(d) ? (long)d->valuedouble : -1;
+                            app_session->notify_qm_med_comp_n = cJSON_IsNumber(qmed) ? qmed->valueint : -1;
+                        }
                         if (cJSON_IsString(event) && !strcmp(event->valuestring, "QOS_NOTIF")) {
                             cJSON *qnc = cJSON_GetArrayItem(cJSON_GetObjectItem(body, "qncReports"), 0);
                             cJSON *qtype = qnc ? cJSON_GetObjectItem(qnc, "notifType") : NULL;

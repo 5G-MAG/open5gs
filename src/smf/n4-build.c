@@ -756,6 +756,64 @@ ogs_pkbuf_t *smf_n4_build_usage_monitoring_request(
     return pkbuf;
 }
 
+/*
+ * The Session Reporting Rule of the QoS monitoring of one flow (xact->data is the id of the flow): Create SRR the first time, Update SRR
+ * when the monitoring changes, Remove SRR when it ends (TS 29.244 V19.6.0 clause 5.39.2). The SRR ID is the QFI.
+ */
+ogs_pkbuf_t *smf_n4_build_qos_monitoring_request(
+        uint8_t type, smf_sess_t *sess, ogs_pfcp_xact_t *xact)
+{
+    ogs_pfcp_message_t *pfcp_message = NULL;
+    ogs_pfcp_session_modification_request_t *req = NULL;
+    ogs_pkbuf_t *pkbuf = NULL;
+    smf_bearer_t *qos_flow = NULL;
+    ogs_pfcp_srr_t *srr = NULL;
+    uint8_t control_buf[128];
+
+    ogs_assert(sess);
+    ogs_assert(xact);
+    qos_flow = smf_qos_flow_find_by_id(OGS_POINTER_TO_UINT(xact->data));
+    if (!qos_flow) {
+        ogs_error("No QoS flow for the QoS monitoring");
+        return NULL;
+    }
+
+    pfcp_message = ogs_calloc(1, sizeof(*pfcp_message));
+    if (!pfcp_message) {
+        ogs_error("ogs_calloc() failed");
+        return NULL;
+    }
+    req = &pfcp_message->pfcp_session_modification_request;
+
+    srr = ogs_pfcp_srr_find_or_add(&sess->pfcp, qos_flow->qfi);
+    ogs_assert(srr);
+
+    if (qos_flow->qos_mon.presence) {
+        srr->qos_monitoring_presence = true;
+        memcpy(&srr->qos_monitoring, &qos_flow->qos_mon.control, sizeof(srr->qos_monitoring));
+        if (!qos_flow->qos_mon.created) {
+            ogs_pfcp_build_create_srr(&req->create_srr, srr, control_buf, sizeof(control_buf));
+            qos_flow->qos_mon.created = true;
+        } else {
+            ogs_pfcp_build_update_srr(&req->update_srr, srr, control_buf, sizeof(control_buf));
+        }
+    } else {
+        ogs_pfcp_build_remove_srr(&req->remove_srr, srr);
+        qos_flow->qos_mon.created = false;
+    }
+    qos_flow->qos_mon.to_send = false;
+
+    pfcp_message->h.type = type;
+    pkbuf = ogs_pfcp_build_msg(pfcp_message);
+    ogs_expect(pkbuf);
+    ogs_free(pfcp_message);
+
+    if (!qos_flow->qos_mon.presence)
+        ogs_pfcp_srr_remove(srr);
+
+    return pkbuf;
+}
+
 ogs_pkbuf_t *smf_n4_build_session_deletion_request(
         uint8_t type, smf_sess_t *sess)
 {

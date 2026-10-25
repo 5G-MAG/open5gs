@@ -1270,7 +1270,53 @@ void ogs_pfcp_sess_clear(ogs_pfcp_sess_t *sess)
     ogs_pfcp_far_remove_all(sess);
     ogs_pfcp_urr_remove_all(sess);
     ogs_pfcp_qer_remove_all(sess);
+    ogs_pfcp_srr_remove_all(sess);
     if (sess->bar) ogs_pfcp_bar_delete(sess->bar);
+}
+
+ogs_pfcp_srr_t *ogs_pfcp_srr_find(ogs_pfcp_sess_t *sess, uint8_t id)
+{
+    ogs_pfcp_srr_t *srr = NULL;
+
+    ogs_assert(sess);
+    ogs_list_for_each(&sess->srr_list, srr)
+        if (srr->id == id)
+            return srr;
+    return NULL;
+}
+
+ogs_pfcp_srr_t *ogs_pfcp_srr_find_or_add(ogs_pfcp_sess_t *sess, uint8_t id)
+{
+    ogs_pfcp_srr_t *srr = ogs_pfcp_srr_find(sess, id);
+
+    if (srr)
+        return srr;
+    srr = ogs_calloc(1, sizeof(*srr));
+    if (!srr) {
+        ogs_error("ogs_calloc() failed");
+        return NULL;
+    }
+    srr->sess = sess;
+    srr->id = id;
+    ogs_list_add(&sess->srr_list, srr);
+    return srr;
+}
+
+void ogs_pfcp_srr_remove(ogs_pfcp_srr_t *srr)
+{
+    ogs_assert(srr);
+    ogs_assert(srr->sess);
+    ogs_list_remove(&srr->sess->srr_list, srr);
+    ogs_free(srr);
+}
+
+void ogs_pfcp_srr_remove_all(ogs_pfcp_sess_t *sess)
+{
+    ogs_pfcp_srr_t *srr = NULL, *next = NULL;
+
+    ogs_assert(sess);
+    ogs_list_for_each_safe(&sess->srr_list, next, srr)
+        ogs_pfcp_srr_remove(srr);
 }
 
 static int precedence_compare(ogs_pfcp_pdr_t *pdr1, ogs_pfcp_pdr_t *pdr2)

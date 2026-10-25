@@ -1461,6 +1461,48 @@ ED6(uint8_t spare:3;,
 #define OGS_PFCP_DATA_STATUS_BUFF                          (1<<1)
 typedef uint8_t  ogs_pfcp_data_status_t;
 
+/*
+ * QoS monitoring of the packet delay (TS 29.244 V19.6.0 table 7.5.2.9-3 and clauses 8.2.167 to 8.2.171): the control information of one
+ * QoS flow in a Session Reporting Rule, and the measurement of a report. Delays and thresholds are in milliseconds, times in seconds.
+ */
+typedef struct ogs_pfcp_qos_monitoring_control_s {
+    uint8_t qfi;
+    bool dl_delay;              /* Requested QoS Monitoring: DLPD, ULPD, RPPD */
+    bool ul_delay;
+    bool rt_delay;
+    bool event_triggered;       /* Reporting Frequency: EVETT, PERIO */
+    bool periodic;
+    bool thr_dl_presence;
+    bool thr_ul_presence;
+    bool thr_rt_presence;
+    uint32_t thr_dl;            /* Packet Delay Thresholds */
+    uint32_t thr_ul;
+    uint32_t thr_rt;
+    bool min_wait_presence;
+    uint32_t min_wait;          /* Minimum Wait Time */
+    bool period_presence;
+    uint32_t period;            /* Measurement Period */
+} ogs_pfcp_qos_monitoring_control_t;
+
+typedef struct ogs_pfcp_qos_monitoring_measurement_s {
+    bool dl_presence;
+    bool ul_presence;
+    bool rt_presence;
+    bool failure;               /* PLMF: no time stamp was received for a delay exceeding the Measurement Period */
+    uint32_t dl;
+    uint32_t ul;
+    uint32_t rt;
+} ogs_pfcp_qos_monitoring_measurement_t;
+
+int16_t ogs_pfcp_build_qos_monitoring_control(ogs_tlv_octet_t *octet,
+        const ogs_pfcp_qos_monitoring_control_t *control, void *data, int data_len);
+int16_t ogs_pfcp_parse_qos_monitoring_control(
+        ogs_pfcp_qos_monitoring_control_t *control, const ogs_tlv_octet_t *octet);
+int16_t ogs_pfcp_build_qos_monitoring_measurement(ogs_tlv_octet_t *octet,
+        const ogs_pfcp_qos_monitoring_measurement_t *measurement, void *data, int data_len);
+int16_t ogs_pfcp_parse_qos_monitoring_measurement(
+        ogs_pfcp_qos_monitoring_measurement_t *measurement, const ogs_tlv_octet_t *octet);
+
 typedef struct ogs_pfcp_user_plane_report_s {
     ogs_pfcp_report_type_t type;
     struct {
@@ -1484,6 +1526,12 @@ typedef struct ogs_pfcp_user_plane_report_s {
         ogs_pfcp_f_teid_t remote_f_teid;
         int remote_f_teid_len;
     } error_indication;
+    /* The QoS Monitoring Report of a Session Report (TS 29.244 V19.6.0 table 7.5.8.6-1); set with type.session_report */
+    struct {
+        uint8_t srr_id;
+        uint8_t qfi;
+        ogs_pfcp_qos_monitoring_measurement_t measurement;
+    } qos_monitoring;
 } ogs_pfcp_user_plane_report_t;
 
 int16_t ogs_pfcp_build_volume_measurement(ogs_tlv_octet_t *octet,

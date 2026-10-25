@@ -322,6 +322,14 @@ void smf_5gc_n4_handle_session_modification_response(
     ogs_assert(flags);
     trigger = xact->delete_trigger;
 
+    /* A Session Reporting Rule for QoS monitoring: nothing to read in the answer */
+    if (flags & OGS_PFCP_MODIFY_QOS_MONITORING) {
+        ogs_pfcp_xact_commit(xact);
+        if (rsp->cause.presence && rsp->cause.u8 != OGS_PFCP_CAUSE_REQUEST_ACCEPTED)
+            ogs_warn("PFCP Cause [%d] : QoS monitoring not accepted", rsp->cause.u8);
+        return;
+    }
+
     /* A modification for the usage monitoring control instances: the answer to a Query URR carries the usage report */
     if (flags & OGS_PFCP_MODIFY_USAGE_MONITORING) {
         int i, k;
@@ -1865,10 +1873,27 @@ uint8_t smf_n4_handle_session_report_request(
         }
     }
 
+    /* TS 29.244 V19.6.0 clause 7.5.8.6: the QoS Monitoring Report of a Session Report goes to the PCF (TS 29.512 V19.7.0 clause 4.2.4.24) */
+    if (report_type.session_report && pfcp_req->session_report.presence &&
+            pfcp_req->session_report.qos_monitoring_report.presence) {
+        ogs_pfcp_qos_monitoring_measurement_t measurement;
+        smf_bearer_t *qm_flow = NULL;
+
+        if (pfcp_req->session_report.qos_monitoring_report.qos_monitoring_measurement.presence &&
+            ogs_pfcp_parse_qos_monitoring_measurement(&measurement,
+                &pfcp_req->session_report.qos_monitoring_report.qos_monitoring_measurement) > 0 &&
+            pfcp_req->session_report.qos_monitoring_report.qfi.presence) {
+            qm_flow = smf_qos_flow_find_by_qfi(sess, pfcp_req->session_report.qos_monitoring_report.qfi.u8);
+            if (qm_flow && qm_flow->pcc_rule.id && sess->policy.qos_mon_trigger)
+                smf_sbi_send_smpolicycontrol_qos_monitoring_report(sess, qm_flow, &measurement);
+        }
+    }
+
     /* TS 29.244 sec 8.2.21: At least one bit shall be set to "1". Several bits may be set to "1". */
     if (report_type.downlink_data_report ||
         report_type.error_indication_report ||
-        report_type.usage_report) {
+        report_type.usage_report ||
+        report_type.session_report) {
         ogs_assert(OGS_OK ==
             smf_pfcp_send_session_report_response(
                 pfcp_xact, sess, OGS_PFCP_CAUSE_REQUEST_ACCEPTED));

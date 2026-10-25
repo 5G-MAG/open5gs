@@ -78,6 +78,9 @@ typedef struct ogs_gtp2_extension_header_s {
 #define OGS_GTP2_MAX_EXTENSION_HEADER_LEN 4
 
 #define OGS_GTP2_NUM_OF_EXTENSION_HEADER 8
+
+/* the PDU Session Container of a QoS monitoring packet: type 0x85, length in units of four octets (TS 29.281 clause 5.2.2.7) */
+#define OGS_GTP2_MAX_PDU_SESSION_CONTAINER_LEN 64
     } __attribute__ ((packed)) array[OGS_GTP2_NUM_OF_EXTENSION_HEADER];
 } __attribute__ ((packed)) ogs_gtp2_extension_header_t;
 
@@ -93,6 +96,22 @@ typedef struct ogs_gtp2_header_desc_s {
     ogs_port_t udp;
     bool pdcp_number_presence;
     uint16_t pdcp_number;
+
+    /*
+     * QoS monitoring in the PDU Session Container (TS 38.415 V19.1.0 clauses 5.5.2.1 and 5.5.2.2): the QMP field, the time stamps
+     * (64-bit NTP format) and the delay results of the NG-RAN in milliseconds. In an uplink frame dl_sending_ts is the DL Sending
+     * Time Stamp Repeated.
+     */
+    struct {
+        bool qmp;
+        bool dl_delay_ind;
+        bool ul_delay_ind;
+        uint64_t dl_sending_ts;
+        uint64_t dl_received_ts;
+        uint64_t ul_sending_ts;
+        uint32_t dl_delay_result;
+        uint32_t ul_delay_result;
+    } qm;
 } ogs_gtp2_header_desc_t;
 
 /* 8.4 Cause */

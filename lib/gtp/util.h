@@ -32,6 +32,25 @@ int ogs_gtpu_parse_header(
         ogs_gtp2_header_desc_t *header_desc, ogs_pkbuf_t *pkbuf);
 uint16_t ogs_in_cksum(uint16_t *addr, int len);
 
+/* The 64-bit NTP time stamp (RFC 5905 clause 6) of TS 38.415 clause 5.5.3.9 and the time of this host */
+uint64_t ogs_gtpu_time_to_ntp64(ogs_time_t time);
+ogs_time_t ogs_gtpu_ntp64_to_time(uint64_t ntp);
+
+/*
+ * A G-PDU without a T-PDU that carries a DL PDU SESSION INFORMATION frame with QMP and the DL Sending Time Stamp (TS 29.281 V19.2.0
+ * clause 5.2.2.7, TS 38.415 V19.1.0 clause 5.5.2.1): the dummy packet of the QoS monitoring per QoS flow of TS 29.244 clause 5.24.4.3.
+ */
+ogs_pkbuf_t *ogs_gtpu_build_qos_monitoring_dl(
+        uint32_t teid, uint8_t qfi, uint64_t dl_sending_ts);
+/*
+ * The monitoring response of the NG-RAN: a G-PDU without a T-PDU that carries an UL PDU SESSION INFORMATION frame with QMP, the three
+ * time stamps and the delay results of the RAN part (a result is carried when its indication is set).
+ */
+ogs_pkbuf_t *ogs_gtpu_build_qos_monitoring_ul(uint32_t teid, uint8_t qfi,
+        uint64_t dl_sending_ts, uint64_t dl_received_ts, uint64_t ul_sending_ts,
+        bool dl_delay_ind, uint32_t dl_delay_result,
+        bool ul_delay_ind, uint32_t ul_delay_result);
+
 typedef struct ogs_gtp2_sender_f_teid_s {
     bool teid_presence;
     uint32_t teid;

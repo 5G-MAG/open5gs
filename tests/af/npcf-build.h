@@ -35,6 +35,9 @@ typedef struct af_npcf_policyauthorization_param_s {
     const char *af_charg_id;       /* the AF charging identifier (afChargId), NULL for none */
     bool ev_resources_allocation;  /* subscribe to SUCCESSFUL_RESOURCES_ALLOCATION and FAILED_RESOURCES_ALLOCATION */
     const char *sponsor_id;        /* sponId and aspId: sponsored data connectivity (TS 29.514 V19.8.0 clause 4.2.2.5), NULL for none */
+    bool ev_qos_mon;               /* subscribe to QOS_MONITORING for the packet delay (TS 29.514 V19.8.0 clause 4.2.2.23) */
+    int qos_mon_threshold;         /* repThreshDl, repThreshUl and repThreshRp in ms (event triggered reporting) */
+    int qos_mon_wait_time;         /* waitTime in seconds */
     bool ev_qos_notif;             /* subscribe to QOS_NOTIF (TS 29.514 V19.8.0 clause 4.2.2.6) */
     long usage_threshold;          /* with the event USAGE_REPORT: the totalVolume of usgThres in bytes, 0 for none */
 } af_npcf_policyauthorization_param_t;

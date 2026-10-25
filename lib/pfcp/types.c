@@ -517,6 +517,161 @@ int16_t ogs_pfcp_parse_dropped_dl_traffic_threshold(
     return size;
 }
 
+/* An information element inside a grouped one: type, length and value (TS 29.244 V19.6.0 clause 8.1.1) */
+static int put_ie(uint8_t *p, uint16_t type, const uint8_t *value, uint16_t len)
+{
+    p[0] = type >> 8; p[1] = type & 0xff;
+    p[2] = len >> 8; p[3] = len & 0xff;
+    memcpy(p + 4, value, len);
+    return 4 + len;
+}
+
+static void put_u32(uint8_t *p, uint32_t v)
+{
+    p[0] = v >> 24; p[1] = (v >> 16) & 0xff; p[2] = (v >> 8) & 0xff; p[3] = v & 0xff;
+}
+
+static uint32_t get_u32(const uint8_t *p)
+{
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+}
+
+int16_t ogs_pfcp_build_qos_monitoring_control(ogs_tlv_octet_t *octet,
+        const ogs_pfcp_qos_monitoring_control_t *control, void *data, int data_len)
+{
+    uint8_t *p = data, v[16];
+    int size = 0, n;
+
+    ogs_assert(octet);
+    ogs_assert(control);
+    ogs_assert(data);
+    ogs_assert(data_len >= 96);
+
+    /* QFI, Requested QoS Monitoring (octets 5 and 6), Reporting Frequency */
+    v[0] = control->qfi & 0x3f;
+    size += put_ie(p + size, OGS_PFCP_QFI_TYPE, v, 1);
+    v[0] = (control->dl_delay ? 0x01 : 0) | (control->ul_delay ? 0x02 : 0) | (control->rt_delay ? 0x04 : 0);
+    v[1] = 0;
+    size += put_ie(p + size, OGS_PFCP_REQUESTED_QOS_MONITORING_TYPE, v, 2);
+    v[0] = (control->event_triggered ? 0x01 : 0) | (control->periodic ? 0x02 : 0);
+    size += put_ie(p + size, OGS_PFCP_REPORTING_FREQUENCY_TYPE, v, 1);
+
+    if (control->thr_dl_presence || control->thr_ul_presence || control->thr_rt_presence) {
+        n = 1;
+        v[0] = (control->thr_dl_presence ? 0x01 : 0) | (control->thr_ul_presence ? 0x02 : 0) | (control->thr_rt_presence ? 0x04 : 0);
+        if (control->thr_dl_presence) { put_u32(v + n, control->thr_dl); n += 4; }
+        if (control->thr_ul_presence) { put_u32(v + n, control->thr_ul); n += 4; }
+        if (control->thr_rt_presence) { put_u32(v + n, control->thr_rt); n += 4; }
+        size += put_ie(p + size, OGS_PFCP_PACKET_DELAY_THRESHOLDS_TYPE, v, n);
+    }
+    if (control->min_wait_presence) {
+        put_u32(v, control->min_wait);
+        size += put_ie(p + size, OGS_PFCP_MINIMUM_WAIT_TIME_TYPE, v, 4);
+    }
+    if (control->period_presence) {
+        put_u32(v, control->period);
+        size += put_ie(p + size, OGS_PFCP_MEASUREMENT_PERIOD_TYPE, v, 4);
+    }
+
+    octet->data = data;
+    octet->len = size;
+    return size;
+}
+
+int16_t ogs_pfcp_parse_qos_monitoring_control(
+        ogs_pfcp_qos_monitoring_control_t *control, const ogs_tlv_octet_t *octet)
+{
+    const uint8_t *p = octet->data;
+    int pos = 0;
+
+    memset(control, 0, sizeof(*control));
+    while (pos + 4 <= octet->len) {
+        uint16_t type = (p[pos] << 8) | p[pos + 1];
+        uint16_t len = (p[pos + 2] << 8) | p[pos + 3];
+        const uint8_t *v = p + pos + 4;
+
+        if (pos + 4 + len > octet->len) {
+            ogs_error("Invalid length in QoS Monitoring per QoS flow Control Information");
+            return -1;
+        }
+        switch (type) {
+        case OGS_PFCP_QFI_TYPE:
+            if (len >= 1) control->qfi = v[0] & 0x3f;
+            break;
+        case OGS_PFCP_REQUESTED_QOS_MONITORING_TYPE:
+            if (len >= 1) {
+                control->dl_delay = v[0] & 0x01;
+                control->ul_delay = v[0] & 0x02;
+                control->rt_delay = v[0] & 0x04;
+            }
+            break;
+        case OGS_PFCP_REPORTING_FREQUENCY_TYPE:
+            if (len >= 1) {
+                control->event_triggered = v[0] & 0x01;
+                control->periodic = v[0] & 0x02;
+            }
+            break;
+        case OGS_PFCP_PACKET_DELAY_THRESHOLDS_TYPE:
+            if (len >= 1) {
+                int n = 1;
+
+                if ((v[0] & 0x01) && n + 4 <= len) { control->thr_dl_presence = true; control->thr_dl = get_u32(v + n); n += 4; }
+                if ((v[0] & 0x02) && n + 4 <= len) { control->thr_ul_presence = true; control->thr_ul = get_u32(v + n); n += 4; }
+                if ((v[0] & 0x04) && n + 4 <= len) { control->thr_rt_presence = true; control->thr_rt = get_u32(v + n); n += 4; }
+            }
+            break;
+        case OGS_PFCP_MINIMUM_WAIT_TIME_TYPE:
+            if (len >= 4) { control->min_wait_presence = true; control->min_wait = get_u32(v); }
+            break;
+        case OGS_PFCP_MEASUREMENT_PERIOD_TYPE:
+            if (len >= 4) { control->period_presence = true; control->period = get_u32(v); }
+            break;
+        default:
+            break;
+        }
+        pos += 4 + len;
+    }
+    return octet->len;
+}
+
+int16_t ogs_pfcp_build_qos_monitoring_measurement(ogs_tlv_octet_t *octet,
+        const ogs_pfcp_qos_monitoring_measurement_t *measurement, void *data, int data_len)
+{
+    uint8_t *p = data;
+    int size = 1;
+
+    ogs_assert(octet);
+    ogs_assert(measurement);
+    ogs_assert(data);
+    ogs_assert(data_len >= 16);
+
+    p[0] = (measurement->dl_presence ? 0x01 : 0) | (measurement->ul_presence ? 0x02 : 0) |
+        (measurement->rt_presence ? 0x04 : 0) | (measurement->failure ? 0x08 : 0);
+    if (measurement->dl_presence) { put_u32(p + size, measurement->dl); size += 4; }
+    if (measurement->ul_presence) { put_u32(p + size, measurement->ul); size += 4; }
+    if (measurement->rt_presence) { put_u32(p + size, measurement->rt); size += 4; }
+
+    octet->data = data;
+    octet->len = size;
+    return size;
+}
+
+int16_t ogs_pfcp_parse_qos_monitoring_measurement(
+        ogs_pfcp_qos_monitoring_measurement_t *measurement, const ogs_tlv_octet_t *octet)
+{
+    const uint8_t *p = octet->data;
+    int n = 1;
+
+    memset(measurement, 0, sizeof(*measurement));
+    if (octet->len < 1)
+        return -1;
+    measurement->failure = p[0] & 0x08;
+    if (p[0] & 0x01) { if (n + 4 > octet->len) return -1; measurement->dl_presence = true; measurement->dl = get_u32(p + n); n += 4; }
+    if (p[0] & 0x02) { if (n + 4 > octet->len) return -1; measurement->ul_presence = true; measurement->ul = get_u32(p + n); n += 4; }
+    if (p[0] & 0x04) { if (n + 4 > octet->len) return -1; measurement->rt_presence = true; measurement->rt = get_u32(p + n); n += 4; }
+    return n;
+}
+
 int16_t ogs_pfcp_build_volume_measurement(ogs_tlv_octet_t *octet,
         ogs_pfcp_volume_measurement_t *volume, void *data, int data_len)
 {

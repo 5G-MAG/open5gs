@@ -1563,6 +1563,43 @@ bool ogs_pfcp_handle_remove_bar(ogs_pfcp_sess_t *sess,
     return false;
 }
 
+/* The SRR of a Create SRR or an Update SRR: the QoS monitoring control of one QoS flow (TS 29.244 V19.6.0 clause 5.39.2) */
+ogs_pfcp_srr_t *ogs_pfcp_handle_srr(ogs_pfcp_sess_t *sess, bool create,
+        ogs_tlv_octet_t *srr_id, ogs_tlv_octet_t *control,
+        uint8_t *cause_value, uint8_t *offending_ie_value)
+{
+    ogs_pfcp_srr_t *srr = NULL;
+    ogs_pfcp_qos_monitoring_control_t parsed;
+
+    ogs_assert(sess);
+    if (!srr_id || srr_id->len < 1) {
+        ogs_error("No SRR ID");
+        *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+        *offending_ie_value = OGS_PFCP_SRR_ID_TYPE;
+        return NULL;
+    }
+    if (control && control->len) {
+        if (ogs_pfcp_parse_qos_monitoring_control(&parsed, control) < 0) {
+            *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+            *offending_ie_value = OGS_PFCP_QOS_MONITORING_PER_QOS_FLOW_CONTROL_INFORMATION_TYPE;
+            return NULL;
+        }
+    }
+    srr = create ? ogs_pfcp_srr_find_or_add(sess, ((uint8_t *)srr_id->data)[0]) :
+        ogs_pfcp_srr_find(sess, ((uint8_t *)srr_id->data)[0]);
+    if (!srr) {
+        ogs_error("Cannot find SRR-ID[%d]", ((uint8_t *)srr_id->data)[0]);
+        *cause_value = OGS_PFCP_CAUSE_RULE_CREATION_MODIFICATION_FAILURE;
+        *offending_ie_value = OGS_PFCP_SRR_ID_TYPE;
+        return NULL;
+    }
+    if (control && control->len) {
+        srr->qos_monitoring_presence = true;
+        memcpy(&srr->qos_monitoring, &parsed, sizeof(parsed));
+    }
+    return srr;
+}
+
 ogs_pfcp_urr_t *ogs_pfcp_handle_create_urr(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_create_urr_t *message,
         uint8_t *cause_value, uint8_t *offending_ie_value)

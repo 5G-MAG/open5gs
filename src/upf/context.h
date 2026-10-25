@@ -124,6 +124,21 @@ typedef struct upf_sess_s {
     /* Accounting: */
     upf_sess_urr_acc_t urr_acc[OGS_MAX_NUM_OF_URR]; /* FIXME: This probably needs to be mved to a hashtable or alike */
     char            *apn_dnn;            /* APN/DNN Item */
+
+    /* QoS monitoring of the packet delay, one entry per Session Reporting Rule (qos-monitoring.c) */
+#define UPF_MAX_NUM_OF_QOSMON 8
+    struct upf_qosmon_s {
+        bool            used;
+        ogs_pool_id_t   sess_id;        /* for the timer callback */
+        uint8_t         srr_id;
+        ogs_timer_t     *timer;
+        ogs_time_t      t1;             /* when the packet with QMP that waits for its response was sent, 0 if none */
+        uint64_t        t1_ntp;
+        ogs_time_t      last_report;    /* for the Minimum Wait Time */
+        ogs_time_t      last_periodic;
+        bool            have_result;
+        ogs_pfcp_qos_monitoring_measurement_t result;
+    } qosmon[UPF_MAX_NUM_OF_QOSMON];
 } upf_sess_t;
 
 void upf_context_init(void);

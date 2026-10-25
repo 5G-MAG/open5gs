@@ -27,6 +27,9 @@ static bool content_has_evsubsc(const char *content);
 static bool sponsored_not_authorized(pcf_sess_t *sess, cJSON *context);
 static void app_qnc_decisions(pcf_app_t *app, OpenAPI_list_t *QosDecisionList);
 static void app_qnc_trigger(pcf_app_t *app, OpenAPI_sm_policy_decision_t *decision);
+static void app_qm_apply(pcf_app_t *app, OpenAPI_sm_policy_decision_t *decision, OpenAPI_list_t *PccRuleList);
+static char *app_qm_signature(pcf_app_t *app);
+static void qos_mon_reports_notify(pcf_sess_t *sess, const char *content);
 
 static uint8_t pcf_qos_index_from_media(
         const char *qos_reference,
@@ -746,6 +749,7 @@ static void app_events_refresh(pcf_app_t *app)
     app->ev_fail_res_alloc = false;
     app->ev_usage_report = false;
     app->ev_qos_notif = false;
+    app->ev_qos_mon = false;
     if (app->ev_notif_uri) {
         ogs_free(app->ev_notif_uri);
         app->ev_notif_uri = NULL;
@@ -772,6 +776,8 @@ static void app_events_refresh(pcf_app_t *app)
             app->ev_usage_report = true;
         else if (!strcmp(name->valuestring, "QOS_NOTIF"))
             app->ev_qos_notif = true;
+        else if (!strcmp(name->valuestring, "QOS_MONITORING"))
+            app->ev_qos_mon = true;
     }
 
     uri = cJSON_GetObjectItem(ev_subsc, "notifUri");
@@ -891,6 +897,105 @@ static void app_qnc_trigger(pcf_app_t *app, OpenAPI_sm_policy_decision_t *decisi
     }
     OpenAPI_list_add(decision->policy_ctrl_req_triggers,
             (void *)OpenAPI_policy_control_request_trigger_QOS_NOTIF);
+}
+
+/*
+ * QoS monitoring of the packet delay (TS 29.514 V19.8.0 clause 4.2.2.23; TS 29.512 V19.7.0 clause 4.2.3.25): the subscription of the AF
+ * (QOS_MONITORING events with their notification methods, reqQosMonParams and the thresholds of qosMon) becomes the QosMonitoringData
+ * that the PCC rules of the application session refer to, with the trigger QOS_MONITORING.
+ */
+typedef struct qm_params_s {
+    bool valid;
+    bool dl, ul, rt;
+    bool event_triggered, periodic;
+    int thr_dl, thr_ul, thr_rt;
+    int wait_time;
+    int rep_period;
+} qm_params_t;
+
+static void app_qm_params(pcf_app_t *app, qm_params_t *q)
+{
+    cJSON *asc = NULL, *ev = NULL, *events = NULL, *event = NULL, *item = NULL, *params = NULL, *param = NULL, *qos_mon = NULL;
+    pcf_sess_t *sess = app->sess;
+
+    memset(q, 0, sizeof(*q));
+    q->thr_dl = q->thr_ul = q->thr_rt = q->wait_time = q->rep_period = -1;
+    if (!app->context || !sess ||
+        !OGS_SBI_FEATURES_IS_SET(sess->policyauthorization_features, OGS_SBI_NPCF_POLICYAUTHORIZATION_QOS_MONITORING) ||
+        !OGS_SBI_FEATURES_IS_SET(sess->smpolicycontrol_features, OGS_SBI_NPCF_SMPOLICYCONTROL_QOS_MONITORING))
+        return;
+
+    asc = cJSON_GetObjectItem(app->context, "ascReqData");
+    ev = asc ? cJSON_GetObjectItem(asc, "evSubsc") : NULL;
+    if (!cJSON_IsObject(ev))
+        return;
+
+    events = cJSON_GetObjectItem(ev, "events");
+    cJSON_ArrayForEach(event, events) {
+        item = cJSON_GetObjectItem(event, "event");
+        if (!cJSON_IsString(item) || strcmp(item->valuestring, "QOS_MONITORING"))
+            continue;
+        q->valid = true;
+        item = cJSON_GetObjectItem(event, "notifMethod");
+        if (cJSON_IsString(item) && !strcmp(item->valuestring, "PERIODIC"))
+            q->periodic = true;
+        else
+            q->event_triggered = true;
+        item = cJSON_GetObjectItem(event, "waitTime");
+        if (cJSON_IsNumber(item)) q->wait_time = item->valueint;
+        item = cJSON_GetObjectItem(event, "repPeriod");
+        if (cJSON_IsNumber(item)) q->rep_period = item->valueint;
+    }
+    params = cJSON_GetObjectItem(ev, "reqQosMonParams");
+    cJSON_ArrayForEach(param, params) {
+        if (!cJSON_IsString(param)) continue;
+        if (!strcmp(param->valuestring, "DOWNLINK")) q->dl = true;
+        else if (!strcmp(param->valuestring, "UPLINK")) q->ul = true;
+        else if (!strcmp(param->valuestring, "ROUND_TRIP")) q->rt = true;
+    }
+    qos_mon = cJSON_GetObjectItem(ev, "qosMon");
+    if (cJSON_IsObject(qos_mon)) {
+        item = cJSON_GetObjectItem(qos_mon, "repThreshDl");
+        if (cJSON_IsNumber(item)) q->thr_dl = item->valueint;
+        item = cJSON_GetObjectItem(qos_mon, "repThreshUl");
+        if (cJSON_IsNumber(item)) q->thr_ul = item->valueint;
+        item = cJSON_GetObjectItem(qos_mon, "repThreshRp");
+        if (cJSON_IsNumber(item)) q->thr_rt = item->valueint;
+    }
+    if (!(q->dl || q->ul || q->rt))
+        q->valid = false;
+}
+
+static char *app_qm_signature(pcf_app_t *app)
+{
+    qm_params_t q;
+
+    app_qm_params(app, &q);
+    return ogs_msprintf("%d%d%d%d%d%d,%d,%d,%d,%d,%d", q.valid, q.dl, q.ul, q.rt, q.event_triggered, q.periodic,
+            q.thr_dl, q.thr_ul, q.thr_rt, q.wait_time, q.rep_period);
+}
+
+static void app_qm_apply(pcf_app_t *app, OpenAPI_sm_policy_decision_t *decision, OpenAPI_list_t *PccRuleList)
+{
+    qm_params_t q;
+    OpenAPI_lnode_t *node = NULL;
+
+    app_qm_params(app, &q);
+    if (!q.valid)
+        return;
+    if (!app->qm_id) {
+        app->qm_id = ogs_msprintf("qm-%s", app->app_session_id);
+        ogs_assert(app->qm_id);
+    }
+    OpenAPI_list_for_each(PccRuleList, node) {
+        OpenAPI_map_t *Map = node->data;
+
+        if (!Map || !Map->value)
+            continue;
+        ogs_sbi_decision_add_qos_monitoring(decision, Map->value, app->qm_id, q.dl, q.ul, q.rt,
+                q.event_triggered, q.periodic, q.thr_dl, q.thr_ul, q.thr_rt, q.wait_time, q.rep_period);
+    }
+    ogs_sbi_decision_add_qos_monitoring_trigger(decision);
 }
 
 /*
@@ -1061,6 +1166,7 @@ static void app_usage_send(pcf_sess_t *sess, pcf_app_t *app, const usage_params_
     }
     app_qnc_decisions(app, QosDecisionList);
     app_qnc_trigger(app, &SmPolicyDecision);
+    app_qm_apply(app, &SmPolicyDecision, PccRuleList);
     if (end_monitor)
         ogs_sbi_decision_end_usage_monitoring(&SmPolicyDecision, app->um_id);
     if (monitor || end_monitor)
@@ -1107,8 +1213,13 @@ static void app_usage_apply(pcf_sess_t *sess, pcf_app_t *app, bool thresholds_gi
 
     monitor = p.sponsored && p.usage_report && p.has_thres &&
         OGS_SBI_FEATURES_IS_SET(sess->smpolicycontrol_features, OGS_SBI_NPCF_SMPOLICYCONTROL_UMC);
-    sig = ogs_msprintf("%d|%s|%s|%d|%ld|%ld|%ld|%d|%d", p.sponsored, p.asp_id ? p.asp_id : "", p.spon_id ? p.spon_id : "",
-            monitor, p.total, p.uplink, p.downlink, p.duration, app->ev_qos_notif);
+    {
+        char *qm_sig = app_qm_signature(app);
+
+        sig = ogs_msprintf("%d|%s|%s|%d|%ld|%ld|%ld|%d|%d|%s", p.sponsored, p.asp_id ? p.asp_id : "", p.spon_id ? p.spon_id : "",
+                monitor, p.total, p.uplink, p.downlink, p.duration, app->ev_qos_notif, qm_sig);
+        ogs_free(qm_sig);
+    }
     ogs_assert(sig);
 
     if (!app->chg_id) {
@@ -1783,6 +1894,7 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
     succ_res_alloc_request(&SmPolicyDecision, PccRuleList);
     app_qnc_trigger(app_session, &SmPolicyDecision);
     app_qnc_decisions(app_session, QosDecisionList);
+    app_qm_apply(app_session, &SmPolicyDecision, PccRuleList);
 
     memset(&sendmsg, 0, sizeof(sendmsg));
 
@@ -2386,6 +2498,7 @@ bool pcf_npcf_policyauthorization_handle_update(
     succ_res_alloc_request(&SmPolicyDecision, PccRuleList);
     app_qnc_trigger(app_session, &SmPolicyDecision);
     app_qnc_decisions(app_session, QosDecisionList);
+    app_qm_apply(app_session, &SmPolicyDecision, PccRuleList);
 
     /* The resource now reads as the creation request with the modification applied (clause 5.3.3.3.1 GET) */
     ogs_assert(app_session->context);
@@ -2885,6 +2998,85 @@ static void qnc_reports_notify(pcf_sess_t *sess, const char *content)
         cJSON_Delete(body);
 }
 
+/*
+ * qosMonReports of the SMF (TS 29.512 V19.7.0 clause 4.2.4.24): the packet delays that the UPF measured for PCC rules. The generated model
+ * of QosMonitoringReport is the one of TS 29.514 (both YAML files use the name), so the report is read from the JSON of the request. The
+ * AF that subscribed to QOS_MONITORING is told with the flows of the rules and the delays (TS 29.514 V19.8.0 clause 4.2.5.14).
+ */
+static void qos_mon_reports_notify(pcf_sess_t *sess, const char *content)
+{
+    cJSON *body = NULL, *reports = NULL, *report = NULL;
+    pcf_app_t *app = NULL;
+
+    if (!content)
+        return;
+    body = cJSON_Parse(content);
+    reports = body ? cJSON_GetObjectItem(body, "qosMonReports") : NULL;
+    cJSON_ArrayForEach(report, reports) {
+        cJSON *ids = cJSON_GetObjectItem(report, "refPccRuleIds");
+
+        if (!cJSON_IsArray(ids))
+            continue;
+        ogs_list_for_each(&sess->app_list, app) {
+            OpenAPI_list_t *owned = OpenAPI_list_create();
+            cJSON *id = NULL, *evs = NULL, *notifs = NULL, *notif = NULL, *info = NULL, *flows = NULL, *arr = NULL, *item = NULL;
+            ogs_sbi_server_t *server = ogs_sbi_server_first();
+            ogs_sbi_header_t header;
+            char *location = NULL;
+            const char *names[] = { "ulDelays", "dlDelays", "rtDelays", "pdmf" };
+            int k;
+
+            ogs_assert(owned);
+            cJSON_ArrayForEach(id, ids) {
+                if (cJSON_IsString(id) && app_owns_rule(app, id->valuestring))
+                    OpenAPI_list_add(owned, id->valuestring);
+            }
+            if (owned->count == 0 || !app->ev_qos_mon || !app->ev_notif_uri || !server) {
+                OpenAPI_list_free(owned);
+                continue;
+            }
+
+            evs = cJSON_CreateObject();
+            ogs_assert(evs);
+            memset(&header, 0, sizeof(header));
+            header.service.name = OpenAPI_service_name_ToString(OpenAPI_service_name_npcf_policyauthorization);
+            header.api.version = (char *)OGS_SBI_API_V1;
+            header.resource.component[0] = (char *)OGS_SBI_RESOURCE_NAME_APP_SESSIONS;
+            header.resource.component[1] = (char *)app->app_session_id;
+            header.resource.component[2] = (char *)OGS_SBI_RESOURCE_NAME_EVENTS_SUBSCRIPTION;
+            location = ogs_sbi_server_uri(server, &header);
+            ogs_assert(location);
+            cJSON_AddStringToObject(evs, "evSubsUri", location);
+            ogs_free(location);
+            notifs = cJSON_AddArrayToObject(evs, "evNotifs");
+            notif = cJSON_CreateObject();
+            ogs_assert(notifs && notif);
+            cJSON_AddStringToObject(notif, "event", "QOS_MONITORING");
+            cJSON_AddItemToArray(notifs, notif);
+            arr = cJSON_AddArrayToObject(evs, "qosMonReports");
+            info = cJSON_CreateObject();
+            ogs_assert(arr && info);
+            flows = flows_of_rules(app, owned);
+            if (cJSON_GetArraySize(flows) > 0)
+                cJSON_AddItemToObject(info, "flows", flows);
+            else
+                cJSON_Delete(flows);
+            for (k = 0; k < 4; k++) {
+                item = cJSON_GetObjectItem(report, names[k]);
+                if (item)
+                    cJSON_AddItemToObject(info, names[k], cJSON_Duplicate(item, 1));
+            }
+            cJSON_AddItemToArray(arr, info);
+
+            pcf_sbi_send_policyauthorization_event_notify(app, evs);
+            cJSON_Delete(evs);
+            OpenAPI_list_free(owned);
+        }
+    }
+    if (body)
+        cJSON_Delete(body);
+}
+
 bool pcf_npcf_smpolicycontrol_handle_update(pcf_sess_t *sess,
         ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg,
         const char *content)
@@ -2986,6 +3178,7 @@ bool pcf_npcf_smpolicycontrol_handle_update(pcf_sess_t *sess,
     }
 
     qnc_reports_notify(sess, content);
+    qos_mon_reports_notify(sess, content);
 
     /*
      * accuUsageReports (clause 4.2.4.10): the usage of the sponsored data connectivity goes to the application function, in the

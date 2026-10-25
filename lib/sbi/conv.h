@@ -150,6 +150,17 @@ void ogs_sbi_decision_end_usage_monitoring(
 void ogs_sbi_decision_add_sponsor(
         OpenAPI_sm_policy_decision_t *decision, OpenAPI_pcc_rule_t *pcc_rule_model, const char *chg_id,
         const char *sponsor_id, const char *asp_id);
+/*
+ * QoS monitoring of the packet delay (TS 29.512 V19.7.0 clause 4.2.3.25): the QosMonitoringData with the requested parameters, the
+ * reporting frequencies and the thresholds (-1 leaves one out), referred to by the PCC rule. ogs_sbi_decision_free_traffic_control()
+ * frees it.
+ */
+void ogs_sbi_decision_add_qos_monitoring(
+        OpenAPI_sm_policy_decision_t *decision, OpenAPI_pcc_rule_t *pcc_rule_model, const char *qm_id,
+        bool dl, bool ul, bool rt, bool event_triggered, bool periodic,
+        int thr_dl, int thr_ul, int thr_rt, int wait_time, int rep_period);
+/* Add QOS_MONITORING to the policy control request triggers of the decision */
+void ogs_sbi_decision_add_qos_monitoring_trigger(OpenAPI_sm_policy_decision_t *decision);
 /* Add US_RE to the policy control request triggers of the decision */
 void ogs_sbi_decision_add_us_re_trigger(OpenAPI_sm_policy_decision_t *decision);
 void ogs_sbi_free_qos_data(OpenAPI_qos_data_t *QosData);

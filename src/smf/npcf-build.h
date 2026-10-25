@@ -53,6 +53,14 @@ typedef struct smf_npcf_smpolicycontrol_qnc_report_s {
     char *rule_id[OGS_MAX_NUM_OF_PCC_RULE];
 } smf_npcf_smpolicycontrol_qnc_report_t;
 
+/* A QoS monitoring report of the packet delay of the flow of a PCC rule (TS 29.512 V19.7.0 clause 4.2.4.24); the builder frees it */
+typedef struct smf_npcf_smpolicycontrol_qos_mon_report_s {
+    char *rule_id;
+    ogs_pfcp_qos_monitoring_measurement_t measurement;
+} smf_npcf_smpolicycontrol_qos_mon_report_t;
+
+ogs_sbi_request_t *smf_npcf_smpolicycontrol_build_qos_mon_update(
+        smf_sess_t *sess, void *data);
 ogs_sbi_request_t *smf_npcf_smpolicycontrol_build_qnc_update(
         smf_sess_t *sess, void *data);
 ogs_sbi_request_t *smf_npcf_smpolicycontrol_build_usage_update(

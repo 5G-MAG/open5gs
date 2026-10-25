@@ -59,6 +59,11 @@ void ogs_pfcp_build_update_qer(
     ogs_pfcp_tlv_update_qer_t *message, int i,
     ogs_pfcp_qer_t *qer, uint64_t modify_flags);
 
+void ogs_pfcp_build_create_srr(
+        ogs_pfcp_tlv_create_srr_t *message, ogs_pfcp_srr_t *srr, void *buf, int buf_len);
+void ogs_pfcp_build_update_srr(
+        ogs_pfcp_tlv_update_srr_t *message, ogs_pfcp_srr_t *srr, void *buf, int buf_len);
+void ogs_pfcp_build_remove_srr(ogs_pfcp_tlv_remove_srr_t *message, ogs_pfcp_srr_t *srr);
 void ogs_pfcp_build_create_urr(
     ogs_pfcp_tlv_create_urr_t *message, int i, ogs_pfcp_urr_t *urr);
 void ogs_pfcp_build_update_urr(

@@ -20,7 +20,18 @@
 #include "context.h"
 #include "pfcp-path.h"
 #include "gtp-path.h"
+#include "qos-monitoring.h"
 #include "n4-handler.h"
+
+/* Create SRR and Update SRR: start or change the QoS monitoring of a QoS flow (TS 29.244 V19.6.0 clause 5.39.2) */
+static void upf_n4_handle_srr(upf_sess_t *sess, bool create, ogs_tlv_octet_t *srr_id,
+        ogs_tlv_octet_t *control, uint8_t *cause_value, uint8_t *offending_ie_value)
+{
+    ogs_pfcp_srr_t *srr = ogs_pfcp_handle_srr(&sess->pfcp, create, srr_id, control, cause_value, offending_ie_value);
+
+    if (srr)
+        upf_qos_monitoring_configure(sess, srr);
+}
 
 static void upf_n4_handle_create_urr(upf_sess_t *sess, ogs_pfcp_tlv_create_urr_t *create_urr_arr,
                               uint8_t *cause_value, uint8_t *offending_ie_value)
@@ -103,6 +114,14 @@ void upf_n4_handle_session_establishment_request(
     upf_n4_handle_create_urr(sess, &req->create_urr[0], &cause_value, &offending_ie_value);
     if (cause_value != OGS_PFCP_CAUSE_REQUEST_ACCEPTED)
         goto cleanup;
+
+    if (req->create_srr.presence) {
+        upf_n4_handle_srr(sess, true, &req->create_srr.srr_id,
+                &req->create_srr.qos_monitoring_per_qos_flow_control_information,
+                &cause_value, &offending_ie_value);
+        if (cause_value != OGS_PFCP_CAUSE_REQUEST_ACCEPTED)
+            goto cleanup;
+    }
 
     if (req->apn_dnn.presence) {
         char apn_dnn[OGS_MAX_DNN_LEN+1];
@@ -359,6 +378,30 @@ void upf_n4_handle_session_modification_request(
     }
     if (cause_value != OGS_PFCP_CAUSE_REQUEST_ACCEPTED)
         goto cleanup;
+
+    if (req->remove_srr.presence && req->remove_srr.srr_id.len >= 1) {
+        uint8_t srr_id = ((uint8_t *)req->remove_srr.srr_id.data)[0];
+        ogs_pfcp_srr_t *srr = NULL;
+
+        upf_qos_monitoring_stop(sess, srr_id);
+        srr = ogs_pfcp_srr_find(&sess->pfcp, srr_id);
+        if (srr)
+            ogs_pfcp_srr_remove(srr);
+    }
+    if (req->create_srr.presence) {
+        upf_n4_handle_srr(sess, true, &req->create_srr.srr_id,
+                &req->create_srr.qos_monitoring_per_qos_flow_control_information,
+                &cause_value, &offending_ie_value);
+        if (cause_value != OGS_PFCP_CAUSE_REQUEST_ACCEPTED)
+            goto cleanup;
+    }
+    if (req->update_srr.presence) {
+        upf_n4_handle_srr(sess, false, &req->update_srr.srr_id,
+                &req->update_srr.qos_monitoring_per_qos_flow_control_information,
+                &cause_value, &offending_ie_value);
+        if (cause_value != OGS_PFCP_CAUSE_REQUEST_ACCEPTED)
+            goto cleanup;
+    }
 
     for (i = 0; i < OGS_MAX_NUM_OF_QER; i++) {
         if (ogs_pfcp_handle_create_qer(&sess->pfcp, &req->create_qer[i],

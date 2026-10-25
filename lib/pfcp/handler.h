@@ -96,6 +96,9 @@ bool ogs_pfcp_handle_remove_bar(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_remove_bar_t *message,
         uint8_t *cause_value, uint8_t *offending_ie_value);
 
+ogs_pfcp_srr_t *ogs_pfcp_handle_srr(ogs_pfcp_sess_t *sess, bool create,
+        ogs_tlv_octet_t *srr_id, ogs_tlv_octet_t *control,
+        uint8_t *cause_value, uint8_t *offending_ie_value);
 ogs_pfcp_urr_t *ogs_pfcp_handle_create_urr(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_create_urr_t *message,
         uint8_t *cause_value, uint8_t *offending_ie_value);

@@ -5529,6 +5529,82 @@ static void test24_func(abts_case *tc, void *data)
     test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
 }
 
+/* The test gNB answers a downlink packet with QMP that the UPF sends (TS 38.415 V19.1.0 clause 5.5.2.2); false when none comes in time */
+static bool test_af_qos_monitoring_respond(ogs_socknode_t *gtpu, test_bearer_t *qos_flow,
+        uint32_t dl_result, uint32_t ul_result, int msec)
+{
+    struct pollfd fds;
+    ogs_pkbuf_t *recvbuf = NULL;
+    ogs_time_t received_at;
+    int rv;
+
+    memset(&fds, 0, sizeof(fds));
+    fds.fd = gtpu->sock->fd;
+    fds.events = POLLIN;
+    if (poll(&fds, 1, msec) <= 0)
+        return false;
+    recvbuf = testgnb_gtpu_read(gtpu);
+    received_at = ogs_time_now();
+    if (!recvbuf)
+        return false;
+    rv = test_gtpu_send_qos_monitoring_response(gtpu, qos_flow, recvbuf, received_at, dl_result, ul_result);
+    ogs_pkbuf_free(recvbuf);
+    return rv == OGS_OK;
+}
+
+/*
+ * TS 29.514 V19.8.0 clauses 4.2.2.23 and 4.2.5.14, TS 29.512 V19.7.0 clauses 4.2.3.25 and 4.2.4.24, TS 29.244 V19.6.0 clause 5.24.4: the AF
+ * subscribes to QOS_MONITORING (event detection, thresholds of 40 ms), the SMF has the UPF measure the packet delay of the QoS flow, the UPF
+ * sends a packet with QMP and the test gNB answers it with the delays of the RAN part: the round trip delay reaches the threshold and the
+ * AF is told the three delays. Delays below the thresholds are not reported.
+ */
+static void test25_func(abts_case *tc, void *data)
+{
+    ogs_socknode_t *ngap = NULL;
+    ogs_socknode_t *gtpu = NULL;
+    test_ue_t *test_ue = NULL;
+    test_sess_t *sess = NULL;
+    test_bearer_t *qos_flow = NULL;
+    af_sess_t *af_sess = NULL;
+    af_npcf_policyauthorization_param_t af_param;
+    int i;
+
+    test_af_qos_reference_setup(tc, "0000000025",
+            &test_ue, &sess, &af_sess, &ngap, &gtpu);
+
+    memset(&af_param, 0, sizeof(af_param));
+    af_param.med_type = OpenAPI_media_type_AUDIO;
+    af_param.qos_type = 1;
+    af_param.flow_type = 99;
+    af_param.ev_qos_mon = true;
+    af_param.qos_mon_threshold = 40;
+    af_param.qos_mon_wait_time = 1;
+    af_local_send_to_pcf(af_sess, &af_param,
+            af_npcf_policyauthorization_build_create);
+    qos_flow = test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_assert(qos_flow);
+    ogs_msleep(500);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_CREATED, af_sess->last_pcf_status);
+
+    /* the first packet with QMP: the RAN part of the delays is 20 ms downlink and 30 ms uplink */
+    ABTS_TRUE(tc, test_af_qos_monitoring_respond(gtpu, qos_flow, 20, 30, 5000));
+    ogs_msleep(500);
+    ABTS_INT_EQUAL(tc, 1, af_sess->notify_qm_count);
+    ABTS_TRUE(tc, af_sess->notify_qm_dl >= 20 && af_sess->notify_qm_dl < 25);
+    ABTS_TRUE(tc, af_sess->notify_qm_ul >= 30 && af_sess->notify_qm_ul < 35);
+    ABTS_TRUE(tc, af_sess->notify_qm_rt >= 50 && af_sess->notify_qm_rt < 60);
+    ABTS_INT_EQUAL(tc, 0, af_sess->notify_qm_med_comp_n);
+
+    /* delays below the thresholds: the next packets are answered, and nothing is reported */
+    for (i = 0; i < 2; i++)
+        ABTS_TRUE(tc, test_af_qos_monitoring_respond(gtpu, qos_flow, 1, 1, 5000));
+    ogs_msleep(500);
+    ABTS_INT_EQUAL(tc, 1, af_sess->notify_qm_count);
+
+    test_af_qos_reference_delete(tc, test_ue, sess, af_sess, ngap);
+    test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
+}
+
 abts_suite *test_af(abts_suite *suite)
 {
     suite = ADD_SUITE(suite)
@@ -5564,6 +5640,7 @@ abts_suite *test_af(abts_suite *suite)
     abts_run_test(suite, test22_func, NULL);
     abts_run_test(suite, test23_func, NULL);
     abts_run_test(suite, test24_func, NULL);
+    abts_run_test(suite, test25_func, NULL);
 
     return suite;
 }

@@ -711,6 +711,39 @@ int smf_5gc_pfcp_send_usage_monitoring_request(smf_sess_t *sess)
     return rv;
 }
 
+/* The Session Reporting Rule for the QoS monitoring of one flow goes to the UPF in a Session Modification Request of its own */
+int smf_5gc_pfcp_send_qos_monitoring_request(smf_sess_t *sess, smf_bearer_t *qos_flow)
+{
+    int rv;
+    ogs_pfcp_xact_t *xact = NULL;
+
+    ogs_assert(sess);
+    ogs_assert(qos_flow);
+
+    /* TS 29.244 V19.6.0 clause 5.24.4.1: the SMF may request it when the UPF set the QFQM feature flag */
+    if (!sess->pfcp_node->up_function_features.qfqm) {
+        ogs_warn("The UPF does not support per QoS flow QoS monitoring (QFQM)");
+        qos_flow->qos_mon.to_send = false;
+        return OGS_OK;
+    }
+
+    xact = ogs_pfcp_xact_local_create(
+            sess->pfcp_node, sess_5gc_timeout, OGS_UINT_TO_POINTER(sess->id));
+    if (!xact) {
+        ogs_error("ogs_pfcp_xact_local_create() failed");
+        return OGS_ERROR;
+    }
+
+    xact->local_seid = sess->smf_n4_seid;
+    xact->modify_flags = OGS_PFCP_MODIFY_QOS_MONITORING;
+    xact->data = OGS_UINT_TO_POINTER(qos_flow->id);
+
+    rv = smf_pfcp_send_modify_list(sess, smf_n4_build_qos_monitoring_request, xact, 0);
+    ogs_expect(rv == OGS_OK);
+
+    return rv;
+}
+
 int smf_5gc_pfcp_send_one_qos_flow_modification_request(
         smf_bearer_t *qos_flow, ogs_sbi_stream_t *stream,
         uint64_t flags, ogs_time_t duration)

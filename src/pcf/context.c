@@ -721,6 +721,8 @@ pcf_sess_t *pcf_sess_add(pcf_ue_sm_t *pcf_ue_sm, uint8_t psi)
             OGS_SBI_NPCF_SMPOLICYCONTROL_UMC);
     OGS_SBI_FEATURES_SET(sess->smpolicycontrol_features,
             OGS_SBI_NPCF_SMPOLICYCONTROL_SPONSORED_CONNECTIVITY);
+    OGS_SBI_FEATURES_SET(sess->smpolicycontrol_features,
+            OGS_SBI_NPCF_SMPOLICYCONTROL_QOS_MONITORING);
 
     OGS_SBI_FEATURES_SET(sess->management_features,
             OGS_SBI_NBSF_MANAGEMENT_BINDING_UPDATE);
@@ -728,6 +730,8 @@ pcf_sess_t *pcf_sess_add(pcf_ue_sm_t *pcf_ue_sm, uint8_t psi)
     /* SponsoredConnectivity: the sponsor and the usage thresholds of the AF go to the SMF and the usage comes back (TS 29.514 V19.8.0 clauses 4.2.2.5 to 4.2.5.6) */
     OGS_SBI_FEATURES_SET(sess->policyauthorization_features,
             OGS_SBI_NPCF_POLICYAUTHORIZATION_SPONSORED_CONNECTIVITY);
+    OGS_SBI_FEATURES_SET(sess->policyauthorization_features,
+            OGS_SBI_NPCF_POLICYAUTHORIZATION_QOS_MONITORING);
     OGS_SBI_FEATURES_SET(sess->policyauthorization_features,
             OGS_SBI_NPCF_POLICYAUTHORIZATION_IMS_SBI);
 
@@ -1076,6 +1080,7 @@ int pcf_app_remove(pcf_app_t *app)
             if (app->outcome[i].rule_id) ogs_free(app->outcome[i].rule_id);
         app->num_of_outcome = 0;
     }
+    if (app->qm_id) ogs_free(app->qm_id);
     if (app->um_id) ogs_free(app->um_id);
     if (app->chg_id) ogs_free(app->chg_id);
     if (app->um_sig) ogs_free(app->um_sig);

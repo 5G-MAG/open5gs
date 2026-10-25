@@ -1561,6 +1561,8 @@ void ogs_sbi_free_pcc_rule(OpenAPI_pcc_rule_t *PccRule)
         OpenAPI_list_free(PccRule->ref_um_data);
     if (PccRule->ref_chg_data)
         OpenAPI_list_free(PccRule->ref_chg_data);
+    if (PccRule->ref_qos_mon)
+        OpenAPI_list_free(PccRule->ref_qos_mon);
     if (PccRule->flow_infos) {
         OpenAPI_list_for_each(PccRule->flow_infos, node) {
             FlowInformation = node->data;
@@ -1662,6 +1664,16 @@ static void free_usage_monitoring_data(void *value)
     ogs_free(Um);
 }
 
+static void free_qos_monitoring_data(void *value)
+{
+    OpenAPI_qos_monitoring_data_t *Qm = value;
+
+    if (Qm->req_qos_mon_params) OpenAPI_list_free(Qm->req_qos_mon_params);
+    if (Qm->rep_freqs) OpenAPI_list_free(Qm->rep_freqs);
+    if (Qm->qm_id) ogs_free(Qm->qm_id);
+    ogs_free(Qm);
+}
+
 void ogs_sbi_decision_free_traffic_control(OpenAPI_sm_policy_decision_t *decision)
 {
     ogs_assert(decision);
@@ -1673,6 +1685,8 @@ void ogs_sbi_decision_free_traffic_control(OpenAPI_sm_policy_decision_t *decisio
     decision->um_decs = NULL;
     free_map_list(decision->chg_decs, free_charging_data, false);
     decision->chg_decs = NULL;
+    free_map_list(decision->qos_mon_decs, free_qos_monitoring_data, false);
+    decision->qos_mon_decs = NULL;
 }
 
 void ogs_sbi_decision_add_usage_monitoring(
@@ -1777,6 +1791,78 @@ void ogs_sbi_decision_add_sponsor(
         ogs_assert(pcc_rule_model->ref_chg_data);
     }
     OpenAPI_list_add(pcc_rule_model->ref_chg_data, (void *)chg_id);
+}
+
+void ogs_sbi_decision_add_qos_monitoring(
+        OpenAPI_sm_policy_decision_t *decision, OpenAPI_pcc_rule_t *pcc_rule_model, const char *qm_id,
+        bool dl, bool ul, bool rt, bool event_triggered, bool periodic,
+        int thr_dl, int thr_ul, int thr_rt, int wait_time, int rep_period)
+{
+    OpenAPI_qos_monitoring_data_t *Qm = NULL;
+    OpenAPI_map_t *QmMap = NULL;
+    OpenAPI_lnode_t *node = NULL;
+    bool known = false;
+
+    ogs_assert(decision);
+    ogs_assert(pcc_rule_model);
+    ogs_assert(qm_id);
+
+    if (!decision->qos_mon_decs) {
+        decision->qos_mon_decs = OpenAPI_list_create();
+        ogs_assert(decision->qos_mon_decs);
+    }
+    OpenAPI_list_for_each(decision->qos_mon_decs, node) {
+        OpenAPI_map_t *Map = node->data;
+
+        if (Map && Map->key && !strcmp(Map->key, qm_id))
+            known = true;
+    }
+    if (!known) {
+        Qm = ogs_calloc(1, sizeof(*Qm));
+        ogs_assert(Qm);
+        Qm->qm_id = ogs_strdup(qm_id);
+        ogs_assert(Qm->qm_id);
+        Qm->req_qos_mon_params = OpenAPI_list_create();
+        ogs_assert(Qm->req_qos_mon_params);
+        if (dl) OpenAPI_list_add(Qm->req_qos_mon_params, (void *)OpenAPI_requested_qos_monitoring_parameter_DOWNLINK);
+        if (ul) OpenAPI_list_add(Qm->req_qos_mon_params, (void *)OpenAPI_requested_qos_monitoring_parameter_UPLINK);
+        if (rt) OpenAPI_list_add(Qm->req_qos_mon_params, (void *)OpenAPI_requested_qos_monitoring_parameter_ROUND_TRIP);
+        Qm->rep_freqs = OpenAPI_list_create();
+        ogs_assert(Qm->rep_freqs);
+        if (event_triggered) OpenAPI_list_add(Qm->rep_freqs, (void *)OpenAPI_reporting_frequency_EVENT_TRIGGERED);
+        if (periodic) OpenAPI_list_add(Qm->rep_freqs, (void *)OpenAPI_reporting_frequency_PERIODIC);
+        if (thr_dl >= 0) { Qm->is_rep_thresh_dl = true; Qm->rep_thresh_dl = thr_dl; }
+        if (thr_ul >= 0) { Qm->is_rep_thresh_ul = true; Qm->rep_thresh_ul = thr_ul; }
+        if (thr_rt >= 0) { Qm->is_rep_thresh_rp = true; Qm->rep_thresh_rp = thr_rt; }
+        if (wait_time >= 0) { Qm->is_wait_time = true; Qm->wait_time = wait_time; }
+        if (rep_period >= 0) { Qm->is_rep_period = true; Qm->rep_period = rep_period; }
+        QmMap = OpenAPI_map_create(Qm->qm_id, Qm);
+        ogs_assert(QmMap);
+        OpenAPI_list_add(decision->qos_mon_decs, QmMap);
+    }
+
+    if (!pcc_rule_model->ref_qos_mon) {
+        pcc_rule_model->ref_qos_mon = OpenAPI_list_create();
+        ogs_assert(pcc_rule_model->ref_qos_mon);
+    }
+    OpenAPI_list_add(pcc_rule_model->ref_qos_mon, (void *)qm_id);
+}
+
+void ogs_sbi_decision_add_qos_monitoring_trigger(OpenAPI_sm_policy_decision_t *decision)
+{
+    OpenAPI_lnode_t *node = NULL;
+
+    ogs_assert(decision);
+    if (!decision->policy_ctrl_req_triggers) {
+        decision->policy_ctrl_req_triggers = OpenAPI_list_create();
+        ogs_assert(decision->policy_ctrl_req_triggers);
+    }
+    OpenAPI_list_for_each(decision->policy_ctrl_req_triggers, node)
+        if ((OpenAPI_policy_control_request_trigger_e)(intptr_t)node->data ==
+                OpenAPI_policy_control_request_trigger_QOS_MONITORING)
+            return;
+    OpenAPI_list_add(decision->policy_ctrl_req_triggers,
+            (void *)OpenAPI_policy_control_request_trigger_QOS_MONITORING);
 }
 
 void ogs_sbi_decision_add_us_re_trigger(OpenAPI_sm_policy_decision_t *decision)

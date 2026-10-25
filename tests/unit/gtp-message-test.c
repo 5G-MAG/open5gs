@@ -313,11 +313,63 @@ static void gtp_message_test1(abts_case *tc, void *data)
     ogs_pkbuf_free(pkbuf);
 }
 
+/*
+ * TS 38.415 V19.1.0 clauses 5.5.2.1 and 5.5.2.2: the frames of QoS monitoring in the PDU Session Container (TS 29.281 V19.2.0
+ * clause 5.2.2.7) are built and parsed back with every field.
+ */
+static void gtp_qos_monitoring_test(abts_case *tc, void *data)
+{
+    ogs_pkbuf_t *pkbuf = NULL;
+    ogs_gtp2_header_desc_t desc;
+    ogs_time_t now = 1792883000LL * OGS_USEC_PER_SEC + 123456;
+    uint64_t t1 = ogs_gtpu_time_to_ntp64(now);
+    int len;
+
+    /* the time stamp converts back to the microsecond (the fraction has a resolution of 233 ps) */
+    ABTS_TRUE(tc, ogs_gtpu_ntp64_to_time(t1) >= now - 1 && ogs_gtpu_ntp64_to_time(t1) <= now);
+
+    pkbuf = ogs_gtpu_build_qos_monitoring_dl(0x01020304, 2, t1);
+    ABTS_PTR_NOTNULL(tc, pkbuf);
+    ABTS_INT_EQUAL(tc, 0, pkbuf->len % 4);
+    len = ogs_gtpu_parse_header(&desc, pkbuf);
+    ABTS_INT_EQUAL(tc, pkbuf->len, len);
+    ABTS_INT_EQUAL(tc, OGS_GTPU_MSGTYPE_GPDU, desc.type);
+    ABTS_INT_EQUAL(tc, 0x01020304, (int)desc.teid);
+    ABTS_INT_EQUAL(tc, OGS_GTP2_EXTENSION_HEADER_PDU_TYPE_DL_PDU_SESSION_INFORMATION, desc.pdu_type);
+    ABTS_INT_EQUAL(tc, 2, desc.qos_flow_identifier);
+    ABTS_TRUE(tc, desc.qm.qmp);
+    ABTS_TRUE(tc, desc.qm.dl_sending_ts == t1);
+    ogs_pkbuf_free(pkbuf);
+
+    pkbuf = ogs_gtpu_build_qos_monitoring_ul(0x0a0b0c0d, 5, t1, t1 + 100, t1 + 200, true, 7, true, 9);
+    ABTS_PTR_NOTNULL(tc, pkbuf);
+    ABTS_INT_EQUAL(tc, 0, pkbuf->len % 4);
+    len = ogs_gtpu_parse_header(&desc, pkbuf);
+    ABTS_INT_EQUAL(tc, pkbuf->len, len);
+    ABTS_INT_EQUAL(tc, OGS_GTP2_EXTENSION_HEADER_PDU_TYPE_UL_PDU_SESSION_INFORMATION, desc.pdu_type);
+    ABTS_INT_EQUAL(tc, 5, desc.qos_flow_identifier);
+    ABTS_TRUE(tc, desc.qm.qmp);
+    ABTS_TRUE(tc, desc.qm.dl_sending_ts == t1);
+    ABTS_TRUE(tc, desc.qm.dl_received_ts == t1 + 100);
+    ABTS_TRUE(tc, desc.qm.ul_sending_ts == t1 + 200);
+    ABTS_TRUE(tc, desc.qm.dl_delay_ind && desc.qm.dl_delay_result == 7);
+    ABTS_TRUE(tc, desc.qm.ul_delay_ind && desc.qm.ul_delay_result == 9);
+    ogs_pkbuf_free(pkbuf);
+
+    /* only the uplink result */
+    pkbuf = ogs_gtpu_build_qos_monitoring_ul(1, 1, t1, t1, t1, false, 0, true, 11);
+    len = ogs_gtpu_parse_header(&desc, pkbuf);
+    ABTS_INT_EQUAL(tc, pkbuf->len, len);
+    ABTS_TRUE(tc, !desc.qm.dl_delay_ind && desc.qm.ul_delay_ind && desc.qm.ul_delay_result == 11);
+    ogs_pkbuf_free(pkbuf);
+}
+
 abts_suite *test_gtp_message(abts_suite *suite)
 {
     suite = ADD_SUITE(suite)
 
     abts_run_test(suite, gtp_message_test1, NULL);
+    abts_run_test(suite, gtp_qos_monitoring_test, NULL);
 
     return suite;
 }

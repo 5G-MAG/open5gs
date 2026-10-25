@@ -514,6 +514,47 @@ static void qos_flow_gate_update(smf_bearer_t *qos_flow, int flow_status)
     }
 }
 
+/*
+ * The QoS monitoring of the flow follows the rule: a rule with QoS monitoring data has it created (or changed when it differs) at the
+ * UPF as a Session Reporting Rule, a rule that comes without it ends it.
+ */
+static void qos_flow_qos_monitoring_update(smf_bearer_t *qos_flow, ogs_pcc_rule_t *pcc_rule)
+{
+    ogs_pfcp_qos_monitoring_control_t control;
+
+    ogs_assert(qos_flow);
+    ogs_assert(pcc_rule);
+
+    if (pcc_rule->qos_mon.presence) {
+        memset(&control, 0, sizeof(control));
+        control.qfi = qos_flow->qfi;
+        control.dl_delay = pcc_rule->qos_mon.dl_delay;
+        control.ul_delay = pcc_rule->qos_mon.ul_delay;
+        control.rt_delay = pcc_rule->qos_mon.rt_delay;
+        control.event_triggered = pcc_rule->qos_mon.event_triggered;
+        control.periodic = pcc_rule->qos_mon.periodic;
+        control.thr_dl_presence = pcc_rule->qos_mon.thr_dl_presence;
+        control.thr_dl = pcc_rule->qos_mon.thr_dl;
+        control.thr_ul_presence = pcc_rule->qos_mon.thr_ul_presence;
+        control.thr_ul = pcc_rule->qos_mon.thr_ul;
+        control.thr_rt_presence = pcc_rule->qos_mon.thr_rt_presence;
+        control.thr_rt = pcc_rule->qos_mon.thr_rt;
+        control.min_wait_presence = pcc_rule->qos_mon.wait_time_presence;
+        control.min_wait = pcc_rule->qos_mon.wait_time;
+        control.period_presence = pcc_rule->qos_mon.rep_period_presence;
+        control.period = pcc_rule->qos_mon.rep_period;
+
+        if (!qos_flow->qos_mon.presence || memcmp(&qos_flow->qos_mon.control, &control, sizeof(control))) {
+            qos_flow->qos_mon.presence = true;
+            memcpy(&qos_flow->qos_mon.control, &control, sizeof(control));
+            qos_flow->qos_mon.to_send = true;
+        }
+    } else if (qos_flow->qos_mon.presence) {
+        qos_flow->qos_mon.presence = false;
+        qos_flow->qos_mon.to_send = true;
+    }
+}
+
 void smf_qos_flow_binding(smf_sess_t *sess)
 {
     int rv;
@@ -661,6 +702,9 @@ void smf_qos_flow_binding(smf_sess_t *sess)
                     }
                 }
             }
+
+            /* TS 29.512 V19.7.0 clause 4.2.3.25: the QoS monitoring of the packet delay that the rule asks for, or none any more */
+            qos_flow_qos_monitoring_update(qos_flow, pcc_rule);
 
             /*
              * TS 29.512 V19.7.0 clause 4.2.4.10: the PDRs of a rule that refers to a usage monitoring control instance report to
@@ -816,6 +860,12 @@ void smf_qos_flow_binding(smf_sess_t *sess)
                 continue;
             }
 
+            /* the rule is gone: so is the QoS monitoring of its flow */
+            if (qos_flow->qos_mon.created) {
+                qos_flow->qos_mon.presence = false;
+                qos_flow->qos_mon.to_send = true;
+            }
+
             pfcp_flags |= OGS_PFCP_MODIFY_REMOVE;
 
             if (!list_reset) {
@@ -845,6 +895,15 @@ void smf_qos_flow_binding(smf_sess_t *sess)
                     HOME_ROUTED_ROAMING_IN_HSMF(sess) ?
                         OGS_PFCP_MODIFY_HOME_ROUTED_ROAMING|pfcp_flags :
                         pfcp_flags, 0));
+    }
+    /* the QoS monitoring of the flows that changed goes to the UP function, one Session Reporting Rule at a time */
+    {
+        smf_bearer_t *qos_flow = NULL;
+
+        ogs_list_for_each(&sess->bearer_list, qos_flow) {
+            if (qos_flow->qos_mon.to_send)
+                ogs_assert(OGS_OK == smf_5gc_pfcp_send_qos_monitoring_request(sess, qos_flow));
+        }
     }
     /* what is pending for the usage monitoring control instances (create, thresholds, PDRs, query) goes to the UP function */
     for (i = 0; i < sess->policy.num_of_um; i++) {

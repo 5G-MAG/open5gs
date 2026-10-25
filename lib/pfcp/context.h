@@ -142,6 +142,7 @@ typedef struct ogs_pfcp_far_s ogs_pfcp_far_t;
 typedef struct ogs_pfcp_urr_s ogs_pfcp_urr_t;
 typedef struct ogs_pfcp_qer_s ogs_pfcp_qer_t;
 typedef struct ogs_pfcp_bar_s ogs_pfcp_bar_t;
+typedef struct ogs_pfcp_srr_s ogs_pfcp_srr_t;
 
 typedef struct ogs_pfcp_pdr_s {
     ogs_pfcp_object_t       obj;
@@ -323,6 +324,15 @@ typedef struct ogs_pfcp_bar_s {
     ogs_pfcp_sess_t         *sess;
 } ogs_pfcp_bar_t;
 
+/* A Session Reporting Rule (TS 29.244 V19.6.0 clause 7.5.2.9): here with the QoS monitoring control of one QoS flow */
+typedef struct ogs_pfcp_srr_s {
+    ogs_lnode_t         lnode;
+    ogs_pfcp_sess_t     *sess;
+    uint8_t             id;
+    bool                qos_monitoring_presence;
+    ogs_pfcp_qos_monitoring_control_t qos_monitoring;
+} ogs_pfcp_srr_t;
+
 typedef struct ogs_pfcp_sess_s {
     ogs_pfcp_object_t   obj;
 
@@ -330,6 +340,7 @@ typedef struct ogs_pfcp_sess_s {
     ogs_list_t          far_list;       /* FAR List */
     ogs_list_t          urr_list;       /* URR List */
     ogs_list_t          qer_list;       /* QER List */
+    ogs_list_t          srr_list;       /* SRR List */
     ogs_pfcp_bar_t      *bar;           /* BAR Item */
 
     OGS_POOL(pdr_id_pool, uint8_t);
@@ -473,6 +484,11 @@ void ogs_pfcp_far_remove(ogs_pfcp_far_t *far);
 void ogs_pfcp_far_remove_all(ogs_pfcp_sess_t *sess);
 
 ogs_pfcp_urr_t *ogs_pfcp_urr_add(ogs_pfcp_sess_t *sess);
+ogs_pfcp_srr_t *ogs_pfcp_srr_find(ogs_pfcp_sess_t *sess, uint8_t id);
+ogs_pfcp_srr_t *ogs_pfcp_srr_find_or_add(ogs_pfcp_sess_t *sess, uint8_t id);
+void ogs_pfcp_srr_remove(ogs_pfcp_srr_t *srr);
+void ogs_pfcp_srr_remove_all(ogs_pfcp_sess_t *sess);
+
 ogs_pfcp_urr_t *ogs_pfcp_urr_find(
         ogs_pfcp_sess_t *sess, ogs_pfcp_urr_id_t id);
 ogs_pfcp_urr_t *ogs_pfcp_urr_find_or_add(

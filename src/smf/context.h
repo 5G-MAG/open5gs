@@ -267,6 +267,17 @@ typedef struct smf_bearer_s {
     } pcc_rule;
     ogs_qos_t       qos;            /* QoS Information */
 
+    /*
+     * QoS monitoring of the packet delay of the flow (TS 29.512 V19.7.0 clause 4.2.3.25; TS 29.244 V19.6.0 clause 5.39.2): what the
+     * rule asks for, whether the UPF has it as a Session Reporting Rule (the SRR ID is the QFI), and what is still to be told.
+     */
+    struct {
+        bool                presence;
+        ogs_pfcp_qos_monitoring_control_t control;
+        bool                created;
+        bool                to_send;
+    } qos_mon;
+
     OGS_POOL(pf_identifier_pool, uint8_t);
 
     /* Packet Filter List */
@@ -640,6 +651,7 @@ typedef struct smf_sess_s {
             uint32_t        used_time;
         } um[SMF_MAX_NUM_OF_UM];
         int             num_of_um;
+        bool            qos_mon_trigger;    /* QOS_MONITORING armed by the PCF: the reports go to it (clause 4.2.4.24) */
     } policy; /* Saved from N7 or Gx */
 
     /* Paging */

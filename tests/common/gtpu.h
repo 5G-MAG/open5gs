@@ -38,6 +38,14 @@ int test_gtpu_send(
         ogs_gtp2_header_desc_t *header_desc, ogs_pkbuf_t *pkbuf);
 int test_gtpu_send_ping(
         ogs_socknode_t *node, test_bearer_t *bearer, const char *dst_ip);
+/*
+ * The NG-RAN answers a downlink packet with QMP (TS 38.415 V19.1.0 clause 5.5.2.2): dl is the packet as it was read, received_at the
+ * time of its reception; dl_result and ul_result are the RAN part of the delays in milliseconds. Returns OGS_ERROR when the packet is
+ * not a downlink packet with QMP.
+ */
+int test_gtpu_send_qos_monitoring_response(
+        ogs_socknode_t *node, test_bearer_t *bearer, ogs_pkbuf_t *dl,
+        ogs_time_t received_at, uint32_t dl_result, uint32_t ul_result);
 int test_gtpu_send_slacc_rs(ogs_socknode_t *node, test_bearer_t *bearer);
 int test_gtpu_send_slacc_rs_with_unspecified_source_address(
         ogs_socknode_t *node, test_bearer_t *bearer);

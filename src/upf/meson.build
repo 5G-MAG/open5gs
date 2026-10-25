@@ -55,6 +55,7 @@ libupf_sources = files('''
     pfcp-path.h
     n4-build.h
     n4-handler.h
+    qos-monitoring.h
 
     rule-match.c
     init.c
@@ -68,6 +69,7 @@ libupf_sources = files('''
     pfcp-path.c
     n4-build.c
     n4-handler.c
+    qos-monitoring.c
 '''.split())
 
 libtins_dep = dependency('libtins',

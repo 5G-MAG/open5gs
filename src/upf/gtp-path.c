@@ -50,6 +50,7 @@
 #include "arp-nd.h"
 #include "event.h"
 #include "gtp-path.h"
+#include "qos-monitoring.h"
 #include "pfcp-path.h"
 #include "rule-match.h"
 
@@ -339,6 +340,19 @@ static void _gtpv1_u_recv_cb(short when, ogs_socket_t fd, void *data)
             ogs_pkbuf_free(echo_rsp);
         }
         goto cleanup;
+    }
+    /*
+     * An uplink packet of the NG-RAN with the QMP field (TS 29.244 V19.6.0 clause 5.24.4.3): the delay is measured from its time stamps;
+     * without a T-PDU it is the monitoring response of the NG-RAN and goes no further.
+     */
+    if (header_desc.type == OGS_GTPU_MSGTYPE_GPDU && header_desc.qm.qmp &&
+        header_desc.pdu_type == OGS_GTP2_EXTENSION_HEADER_PDU_TYPE_UL_PDU_SESSION_INFORMATION) {
+        ogs_pfcp_object_t *qm_object = ogs_pfcp_object_find_by_teid(header_desc.teid);
+
+        if (qm_object && qm_object->type == OGS_PFCP_OBJ_SESS_TYPE)
+            upf_qos_monitoring_uplink(UPF_SESS((ogs_pfcp_sess_t *)qm_object), &header_desc, ogs_time_now());
+        if (pkbuf->len <= len)
+            goto cleanup;
     }
     if (header_desc.type != OGS_GTPU_MSGTYPE_END_MARKER &&
         pkbuf->len <= len) {

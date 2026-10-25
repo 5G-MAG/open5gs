@@ -121,6 +121,13 @@ static void update_authorized_pcc_rule_and_qos(
         }
     }
 
+    /* QOS_MONITORING armed by the PCF: the reports of the UPF go to it (clause 4.2.4.24) */
+    OpenAPI_list_for_each(SmPolicyDecision->policy_ctrl_req_triggers, node) {
+        if ((OpenAPI_policy_control_request_trigger_e)(intptr_t)node->data ==
+                OpenAPI_policy_control_request_trigger_QOS_MONITORING)
+            sess->policy.qos_mon_trigger = true;
+    }
+
     /*
      * TS 29.512 V19.7.0 clause 4.2.4.10: umDecs gives the usage monitoring control instances (a null value ends the monitoring) and
      * lastReqUsageData asks for the accumulated usage of instances.
@@ -287,6 +294,40 @@ static void update_authorized_pcc_rule_and_qos(
              */
             pcc_rule->flow_status = OGS_DIAM_RX_FLOW_STATUS_ENABLED;
 
+            /* refQosMon: the QoS monitoring of the packet delay of the rule (TS 29.512 V19.7.0 clause 4.2.3.25) */
+            if (PccRule->ref_qos_mon && PccRule->ref_qos_mon->first &&
+                PccRule->ref_qos_mon->first->data && SmPolicyDecision->qos_mon_decs) {
+                OpenAPI_lnode_t *qm_node = NULL;
+
+                OpenAPI_list_for_each(SmPolicyDecision->qos_mon_decs, qm_node) {
+                    OpenAPI_map_t *QmMap = qm_node->data;
+                    OpenAPI_qos_monitoring_data_t *Qm = QmMap ? QmMap->value : NULL;
+                    OpenAPI_lnode_t *p = NULL;
+
+                    if (!Qm || !QmMap->key || strcmp(QmMap->key, PccRule->ref_qos_mon->first->data))
+                        continue;
+                    pcc_rule->qos_mon.presence = true;
+                    OpenAPI_list_for_each(Qm->req_qos_mon_params, p) {
+                        switch ((OpenAPI_requested_qos_monitoring_parameter_e)(intptr_t)p->data) {
+                        case OpenAPI_requested_qos_monitoring_parameter_DOWNLINK: pcc_rule->qos_mon.dl_delay = true; break;
+                        case OpenAPI_requested_qos_monitoring_parameter_UPLINK: pcc_rule->qos_mon.ul_delay = true; break;
+                        case OpenAPI_requested_qos_monitoring_parameter_ROUND_TRIP: pcc_rule->qos_mon.rt_delay = true; break;
+                        default: break;
+                        }
+                    }
+                    OpenAPI_list_for_each(Qm->rep_freqs, p) {
+                        if ((OpenAPI_reporting_frequency_e)(intptr_t)p->data == OpenAPI_reporting_frequency_EVENT_TRIGGERED)
+                            pcc_rule->qos_mon.event_triggered = true;
+                        else if ((OpenAPI_reporting_frequency_e)(intptr_t)p->data == OpenAPI_reporting_frequency_PERIODIC)
+                            pcc_rule->qos_mon.periodic = true;
+                    }
+                    if (Qm->is_rep_thresh_dl) { pcc_rule->qos_mon.thr_dl_presence = true; pcc_rule->qos_mon.thr_dl = Qm->rep_thresh_dl; }
+                    if (Qm->is_rep_thresh_ul) { pcc_rule->qos_mon.thr_ul_presence = true; pcc_rule->qos_mon.thr_ul = Qm->rep_thresh_ul; }
+                    if (Qm->is_rep_thresh_rp) { pcc_rule->qos_mon.thr_rt_presence = true; pcc_rule->qos_mon.thr_rt = Qm->rep_thresh_rp; }
+                    if (Qm->is_wait_time) { pcc_rule->qos_mon.wait_time_presence = true; pcc_rule->qos_mon.wait_time = Qm->wait_time; }
+                    if (Qm->is_rep_period) { pcc_rule->qos_mon.rep_period_presence = true; pcc_rule->qos_mon.rep_period = Qm->rep_period; }
+                }
+            }
             /* refUmData: the usage monitoring control instance of the rule (clause 5.6.2.2) */
             if (PccRule->ref_um_data && PccRule->ref_um_data->first &&
                 PccRule->ref_um_data->first->data)
