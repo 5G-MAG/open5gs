@@ -60,6 +60,26 @@ pcf:
 #        pre_emption_vulnerability: 1
 
 ################################################################################
+# PCF Background Data Transfer policies (Npcf_BDTPolicyControl, TS 29.554)
+################################################################################
+#
+# The transfer policies that the PCF offers for the desired time window of a request (POST .../bdtpolicies). The id of a policy is its
+# position in the list, starting with 1. A policy with a window is offered for the first occurrence of the daily window (UTC, hh:mm)
+# that overlaps the desired time window, and not at all if there is none; a policy without a window is offered for the desired time window
+# itself. Bit rates are in bit/s. If no policy is configured, the PCF offers one policy for the desired time window, with rating group 1
+# and no limit on the bit rate.
+#
+#  bdt:
+#    transfer_policies:
+#      - rating_group: 10
+#        max_bit_rate_dl: 10000000
+#        max_bit_rate_ul: 2000000
+#        window:
+#          start: "01:00"
+#          end: "05:00"
+#      - rating_group: 20
+
+################################################################################
 # PCF Policy Configuration: UE Home PLMN and SUPI Range Based Policies
 ################################################################################
 #

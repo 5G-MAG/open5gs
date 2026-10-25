@@ -19,6 +19,7 @@
 
 #include "sbi-path.h"
 #include "npcf-handler.h"
+#include "bdt.h"
 
 static pcf_context_t self;
 
@@ -96,6 +97,7 @@ void pcf_context_final(void)
     pcf_ue_sm_remove_all();
 
     pcf_qos_profile_clear();
+    pcf_bdt_final();
 
     ogs_assert(self.supi_am_hash);
     ogs_hash_destroy(self.supi_am_hash);
@@ -524,6 +526,12 @@ int pcf_context_parse_config(void)
                     rv = parse_qos_profiles_conf(&pcf_iter);
                     if (rv != OGS_OK) {
                         ogs_error("parse_qos_profiles_conf() failed");
+                        return rv;
+                    }
+                } else if (!strcmp(pcf_key, "bdt")) {
+                    rv = pcf_bdt_parse_config(&pcf_iter);
+                    if (rv != OGS_OK) {
+                        ogs_error("pcf_bdt_parse_config() failed");
                         return rv;
                     }
                 } else if (!strcmp(pcf_key, OGS_POLICY_STRING)) {

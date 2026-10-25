@@ -56,6 +56,10 @@ typedef struct af_sess_s {
     char last_pcf_asc_qos_ref[64];
     char last_pcf_asc_events[160];   /* the events of the evSubsc of the last AppSessionContext, separated by commas */
     char last_pcf_cause[64];
+    int last_bdt_status;              /* the last answer of the Npcf_BDTPolicyControl service: status, Location, cause and body */
+    char last_bdt_location[200];
+    char last_bdt_cause[64];
+    char last_bdt_body[3072];
     int notify_count;                 /* the Npcf_PolicyAuthorization_Notify requests of the PCF (TS 29.514 V19.8.0 clause 4.2.5.2) */
     char notify_event[64];            /* the event of the first evNotifs entry of the last one */
     int notify_med_comp_n;            /* the medCompN of its first flow, -1 if none */

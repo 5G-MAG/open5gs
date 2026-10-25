@@ -76,6 +76,18 @@ int pcf_sbi_open(void)
         policyauthorization_enabled = true;
     }
 
+    /* TS 29.554: the NEF is the known consumer; the Media AF of TS 26.510 clause 5.5.2 invokes the service itself */
+    if (ogs_sbi_nf_service_is_available(
+                OpenAPI_service_name_npcf_bdtpolicycontrol)) {
+        service = ogs_sbi_nf_service_build_default(
+                    nf_instance, OpenAPI_service_name_npcf_bdtpolicycontrol);
+        ogs_assert(service);
+        ogs_sbi_nf_service_add_version(
+                    service, OGS_SBI_API_V1, OGS_SBI_API_V1_0_0, NULL);
+        ogs_sbi_nf_service_add_allowed_nf_type(service, OpenAPI_nf_type_NEF);
+        ogs_sbi_nf_service_add_allowed_nf_type(service, OpenAPI_nf_type_AF);
+    }
+
     if ((smpolicycontrol_enabled == true &&
             policyauthorization_enabled == false) ||
         (smpolicycontrol_enabled == false &&

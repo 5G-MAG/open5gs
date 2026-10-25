@@ -19,6 +19,7 @@
 
 #include "sbi-path.h"
 #include "nnrf-handler.h"
+#include "bdt.h"
 
 void pcf_state_initial(ogs_fsm_t *s, pcf_event_t *e)
 {
@@ -290,6 +291,10 @@ void pcf_state_operational(ogs_fsm_t *s, pcf_event_t *e)
                         pcf_ue_sm ? pcf_ue_sm->supi : "Unknown", sess->psi);
                 PCF_SESS_CLEAR(sess);
             }
+            break;
+
+        case OpenAPI_service_name_npcf_bdtpolicycontrol:
+            pcf_npcf_bdtpolicycontrol_handle(stream, &message, request->http.content);
             break;
 
         case OpenAPI_service_name_npcf_policyauthorization:

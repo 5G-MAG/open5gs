@@ -57,6 +57,16 @@ typedef struct af_npcf_policyauthorization_raw_s {
     const char *body;  /* JSON text, or NULL */
 } af_npcf_policyauthorization_raw_t;
 
+/* A request to the Npcf_BDTPolicyControl service of the PCF of the application session (TS 29.554 V19.2.1 clause 5.3) */
+typedef struct af_npcf_bdtpolicycontrol_raw_s {
+    const char *method;
+    const char *path;  /* appended to .../bdtpolicies, e.g. "/1" */
+    const char *body;  /* JSON text, or NULL */
+} af_npcf_bdtpolicycontrol_raw_t;
+
+ogs_sbi_request_t *af_npcf_bdtpolicycontrol_build_raw(
+        af_sess_t *sess, void *data);
+
 ogs_sbi_request_t *af_npcf_policyauthorization_build_raw(
         af_sess_t *sess, void *data);
 ogs_sbi_request_t *af_npcf_policyauthorization_build_get(

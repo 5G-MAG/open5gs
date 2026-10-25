@@ -291,6 +291,15 @@ pcf:
       qos_index: 1
     - reference: "test-video"
       qos_index: 2
+  bdt:
+    transfer_policies:
+      - rating_group: 10
+        max_bit_rate_dl: 10000000
+        max_bit_rate_ul: 2000000
+        window:
+          start: "01:00"
+          end: "05:00"
+      - rating_group: 20
 
 nssf:
   sbi:

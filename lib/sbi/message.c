@@ -2954,6 +2954,10 @@ static int parse_json(ogs_sbi_message_t *message,
             END
             break;
 
+        case OpenAPI_service_name_npcf_bdtpolicycontrol:
+            /* TS 29.554 clause 5.3: the bodies (BdtReqData, BdtPolicy, PatchBdtPolicy, Notification) are read as JSON by the PCF and its consumer */
+            break;
+
         case OpenAPI_service_name_npcf_policyauthorization:
             SWITCH(message->h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_APP_SESSIONS)

@@ -469,6 +469,21 @@ void af_state_operational(ogs_fsm_t *s, af_event_t *e)
             END
             break;
 
+        case OpenAPI_service_name_npcf_bdtpolicycontrol:
+            sess = e->h.sbi.data;
+            ogs_assert(sess);
+            sess->last_bdt_status = message.res_status;
+            sess->last_bdt_cause[0] = '\0';
+            sess->last_bdt_location[0] = '\0';
+            sess->last_bdt_body[0] = '\0';
+            if (message.ProblemDetails && message.ProblemDetails->cause)
+                ogs_cpystrn(sess->last_bdt_cause, message.ProblemDetails->cause, sizeof(sess->last_bdt_cause));
+            if (message.http.location)
+                ogs_cpystrn(sess->last_bdt_location, message.http.location, sizeof(sess->last_bdt_location));
+            if (e->h.sbi.response && e->h.sbi.response->http.content)
+                ogs_cpystrn(sess->last_bdt_body, e->h.sbi.response->http.content, sizeof(sess->last_bdt_body));
+            break;
+
         case OpenAPI_service_name_npcf_policyauthorization:
             SWITCH(message.h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_APP_SESSIONS)

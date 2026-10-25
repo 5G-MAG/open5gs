@@ -5738,6 +5738,162 @@ static void test26_func(abts_case *tc, void *data)
     test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
 }
 
+/* One request to the Npcf_BDTPolicyControl service; the answer is in af_sess->last_bdt_* */
+static void test_af_bdt(af_sess_t *af_sess, const char *method, const char *path, const char *body)
+{
+    af_npcf_bdtpolicycontrol_raw_t raw;
+
+    raw.method = method;
+    raw.path = path;
+    raw.body = body;
+    af_sess->last_bdt_status = 0;
+    af_local_send_to_pcf(af_sess, &raw, af_npcf_bdtpolicycontrol_build_raw);
+    ogs_msleep(300);
+}
+
+#define BDT_REQ(__asp, __des, __extra) \
+    "{\"aspId\":\"" __asp "\",\"desTimeInt\":" __des ",\"numOfUes\":10,\"volPerUe\":{\"totalVolume\":1000000}" __extra "}"
+
+/*
+ * TS 29.554 V19.2.1 clauses 4.2.2.2, 4.2.3.2 and 4.2.5.2 and tables 5.3.2.3.1-3, 5.3.3.3.1-3 and 5.3.3.3.2-3: the BDT policy of the
+ * Media AF. A request creates an Individual BDT policy with the transfer policies of the PCF (here a policy for the window from 01:00 to
+ * 05:00 UTC and one for the whole desired window); the same request again is 303 to the existing resource; a transfer policy that was
+ * offered is selected by PATCH, in the form that the negotiated features give; the resource can be read and deleted.
+ */
+static void test27_func(abts_case *tc, void *data)
+{
+    ogs_socknode_t *ngap = NULL;
+    ogs_socknode_t *gtpu = NULL;
+    test_ue_t *test_ue = NULL;
+    test_sess_t *sess = NULL;
+    af_sess_t *af_sess = NULL;
+    af_npcf_policyauthorization_param_t af_param;
+    cJSON *doc = NULL, *pol = NULL, *list = NULL, *t = NULL, *req = NULL;
+    char first[200], second[200], ref1[80];
+
+    test_af_qos_reference_setup(tc, "0000000027",
+            &test_ue, &sess, &af_sess, &ngap, &gtpu);
+
+    memset(&af_param, 0, sizeof(af_param));
+    af_param.med_type = OpenAPI_media_type_AUDIO;
+    af_param.qos_type = 1;
+    af_param.flow_type = 99;
+    af_local_send_to_pcf(af_sess, &af_param,
+            af_npcf_policyauthorization_build_create);
+    test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_msleep(500);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_CREATED, af_sess->last_pcf_status);
+
+    /* invalid requests: a mandatory attribute is missing, numOfUes is 0, the window ends before it starts */
+    test_af_bdt(af_sess, "POST", "", "{\"desTimeInt\":{\"startTime\":\"2030-03-05T00:00:00Z\",\"stopTime\":\"2030-03-05T12:00:00Z\"},\"numOfUes\":10,\"volPerUe\":{\"totalVolume\":1}}");
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_BAD_REQUEST, af_sess->last_bdt_status);
+    test_af_bdt(af_sess, "POST", "", "{\"aspId\":\"asp\",\"desTimeInt\":{\"startTime\":\"2030-03-05T00:00:00Z\",\"stopTime\":\"2030-03-05T12:00:00Z\"},\"numOfUes\":0,\"volPerUe\":{\"totalVolume\":1}}");
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_BAD_REQUEST, af_sess->last_bdt_status);
+    test_af_bdt(af_sess, "POST", "", "{\"aspId\":\"asp\",\"desTimeInt\":{\"startTime\":\"2030-03-05T12:00:00Z\",\"stopTime\":\"2030-03-05T00:00:00Z\"},\"numOfUes\":1,\"volPerUe\":{\"totalVolume\":1}}");
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_BAD_REQUEST, af_sess->last_bdt_status);
+
+    /* create, with PatchCorrection (feature 3) in suppFeat; the notification attributes are not kept: BdtNotification_5G is not supported */
+    test_af_bdt(af_sess, "POST", "", BDT_REQ("asp-1",
+            "{\"startTime\":\"2030-03-05T00:00:00Z\",\"stopTime\":\"2030-03-05T12:00:00Z\"}",
+            ",\"suppFeat\":\"4\",\"warnNotifReq\":true,\"notifUri\":\"http://127.0.0.1:9/n\""));
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_CREATED, af_sess->last_bdt_status);
+    ABTS_PTR_NOTNULL(tc, strstr(af_sess->last_bdt_location, "/npcf-bdtpolicycontrol/v1/bdtpolicies/"));
+    ogs_cpystrn(first, strstr(af_sess->last_bdt_location, "/bdtpolicies") + strlen("/bdtpolicies"), sizeof(first));
+    doc = cJSON_Parse(af_sess->last_bdt_body);
+    ABTS_PTR_NOTNULL(tc, doc);
+    pol = cJSON_GetObjectItem(doc, "bdtPolData");
+    req = cJSON_GetObjectItem(doc, "bdtReqData");
+    ABTS_TRUE(tc, cJSON_IsString(cJSON_GetObjectItem(pol, "bdtRefId")));
+    ogs_cpystrn(ref1, cJSON_GetObjectItem(pol, "bdtRefId")->valuestring, sizeof(ref1));
+    ABTS_STR_EQUAL(tc, "4", cJSON_GetObjectItem(pol, "suppFeat")->valuestring);
+    ABTS_STR_EQUAL(tc, "asp-1", cJSON_GetObjectItem(req, "aspId")->valuestring);
+    ABTS_PTR_EQUAL(tc, NULL, cJSON_GetObjectItem(req, "warnNotifReq"));
+    ABTS_PTR_EQUAL(tc, NULL, cJSON_GetObjectItem(req, "notifUri"));
+    list = cJSON_GetObjectItem(pol, "transfPolicies");
+    ABTS_INT_EQUAL(tc, 2, cJSON_GetArraySize(list));
+    t = cJSON_GetArrayItem(list, 0);
+    ABTS_INT_EQUAL(tc, 1, cJSON_GetObjectItem(t, "transPolicyId")->valueint);
+    ABTS_INT_EQUAL(tc, 10, cJSON_GetObjectItem(t, "ratingGroup")->valueint);
+    ABTS_STR_EQUAL(tc, "2030-03-05T01:00:00Z", cJSON_GetObjectItem(cJSON_GetObjectItem(t, "recTimeInt"), "startTime")->valuestring);
+    ABTS_STR_EQUAL(tc, "2030-03-05T05:00:00Z", cJSON_GetObjectItem(cJSON_GetObjectItem(t, "recTimeInt"), "stopTime")->valuestring);
+    ABTS_STR_EQUAL(tc, "10000000 bps", cJSON_GetObjectItem(t, "maxBitRateDl")->valuestring);
+    ABTS_STR_EQUAL(tc, "2000000 bps", cJSON_GetObjectItem(t, "maxBitRateUl")->valuestring);
+    t = cJSON_GetArrayItem(list, 1);
+    ABTS_INT_EQUAL(tc, 2, cJSON_GetObjectItem(t, "transPolicyId")->valueint);
+    ABTS_INT_EQUAL(tc, 20, cJSON_GetObjectItem(t, "ratingGroup")->valueint);
+    ABTS_STR_EQUAL(tc, "2030-03-05T00:00:00Z", cJSON_GetObjectItem(cJSON_GetObjectItem(t, "recTimeInt"), "startTime")->valuestring);
+    ABTS_STR_EQUAL(tc, "2030-03-05T12:00:00Z", cJSON_GetObjectItem(cJSON_GetObjectItem(t, "recTimeInt"), "stopTime")->valuestring);
+    ABTS_PTR_EQUAL(tc, NULL, cJSON_GetObjectItem(t, "maxBitRateDl"));
+    cJSON_Delete(doc);
+
+    /* the same service requirements: 303 See Other to the existing resource */
+    test_af_bdt(af_sess, "POST", "", BDT_REQ("asp-1",
+            "{\"startTime\":\"2030-03-05T00:00:00Z\",\"stopTime\":\"2030-03-05T12:00:00Z\"}", ""));
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_SEE_OTHER, af_sess->last_bdt_status);
+    ABTS_PTR_NOTNULL(tc, strstr(af_sess->last_bdt_location, first));
+
+    /* read it, and one that does not exist */
+    test_af_bdt(af_sess, "GET", first, NULL);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_bdt_status);
+    doc = cJSON_Parse(af_sess->last_bdt_body);
+    ABTS_PTR_NOTNULL(tc, doc);
+    ABTS_STR_EQUAL(tc, ref1, cJSON_GetObjectItem(cJSON_GetObjectItem(doc, "bdtPolData"), "bdtRefId")->valuestring);
+    cJSON_Delete(doc);
+    test_af_bdt(af_sess, "GET", "/9999", NULL);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_NOT_FOUND, af_sess->last_bdt_status);
+    ABTS_STR_EQUAL(tc, "BDT_POLICY_NOT_FOUND", af_sess->last_bdt_cause);
+    test_af_bdt(af_sess, "PATCH", "/9999", "{\"bdtPolData\":{\"selTransPolicyId\":1}}");
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_NOT_FOUND, af_sess->last_bdt_status);
+    ABTS_STR_EQUAL(tc, "BDT_POLICY_NOT_FOUND", af_sess->last_bdt_cause);
+
+    /* PatchCorrection: the selection is bdtPolData.selTransPolicyId; a policy that was not offered, the old form and value 0 are refused */
+    test_af_bdt(af_sess, "PATCH", first, "{\"bdtPolData\":{\"selTransPolicyId\":7}}");
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_BAD_REQUEST, af_sess->last_bdt_status);
+    test_af_bdt(af_sess, "PATCH", first, "{\"bdtPolData\":{\"selTransPolicyId\":0}}");
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_BAD_REQUEST, af_sess->last_bdt_status);
+    test_af_bdt(af_sess, "PATCH", first, "{\"selTransPolicyId\":2}");
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_BAD_REQUEST, af_sess->last_bdt_status);
+    test_af_bdt(af_sess, "PATCH", first, "{\"bdtPolData\":{\"selTransPolicyId\":2}}");
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_bdt_status);
+    doc = cJSON_Parse(af_sess->last_bdt_body);
+    ABTS_PTR_NOTNULL(tc, doc);
+    ABTS_INT_EQUAL(tc, 2, cJSON_GetObjectItem(cJSON_GetObjectItem(doc, "bdtPolData"), "selTransPolicyId")->valueint);
+    cJSON_Delete(doc);
+
+    /* without PatchCorrection the selection is the BdtPolicyDataPatch; a window that the daily policy does not overlap only has policy 2 */
+    test_af_bdt(af_sess, "POST", "", BDT_REQ("asp-2",
+            "{\"startTime\":\"2030-03-06T06:00:00Z\",\"stopTime\":\"2030-03-06T07:00:00Z\"}", ""));
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_CREATED, af_sess->last_bdt_status);
+    ogs_cpystrn(second, strstr(af_sess->last_bdt_location, "/bdtpolicies") + strlen("/bdtpolicies"), sizeof(second));
+    doc = cJSON_Parse(af_sess->last_bdt_body);
+    ABTS_PTR_NOTNULL(tc, doc);
+    pol = cJSON_GetObjectItem(doc, "bdtPolData");
+    ABTS_PTR_EQUAL(tc, NULL, cJSON_GetObjectItem(pol, "suppFeat"));
+    list = cJSON_GetObjectItem(pol, "transfPolicies");
+    ABTS_INT_EQUAL(tc, 1, cJSON_GetArraySize(list));
+    ABTS_INT_EQUAL(tc, 2, cJSON_GetObjectItem(cJSON_GetArrayItem(list, 0), "transPolicyId")->valueint);
+    cJSON_Delete(doc);
+    test_af_bdt(af_sess, "PATCH", second, "{\"bdtPolData\":{\"selTransPolicyId\":2}}");
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_BAD_REQUEST, af_sess->last_bdt_status);
+    test_af_bdt(af_sess, "PATCH", second, "{\"selTransPolicyId\":2}");
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_bdt_status);
+
+    /* delete both: 204, then they are gone; the collection takes no GET */
+    test_af_bdt(af_sess, "GET", "", NULL);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_METHOD_NOT_ALLOWED, af_sess->last_bdt_status);
+    test_af_bdt(af_sess, "DELETE", first, NULL);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_NO_CONTENT, af_sess->last_bdt_status);
+    test_af_bdt(af_sess, "GET", first, NULL);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_NOT_FOUND, af_sess->last_bdt_status);
+    test_af_bdt(af_sess, "DELETE", first, NULL);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_NOT_FOUND, af_sess->last_bdt_status);
+    test_af_bdt(af_sess, "DELETE", second, NULL);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_NO_CONTENT, af_sess->last_bdt_status);
+
+    test_af_qos_reference_delete(tc, test_ue, sess, af_sess, ngap);
+    test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
+}
+
 abts_suite *test_af(abts_suite *suite)
 {
     suite = ADD_SUITE(suite)
@@ -5775,6 +5931,7 @@ abts_suite *test_af(abts_suite *suite)
     abts_run_test(suite, test24_func, NULL);
     abts_run_test(suite, test25_func, NULL);
     abts_run_test(suite, test26_func, NULL);
+    abts_run_test(suite, test27_func, NULL);
 
     return suite;
 }

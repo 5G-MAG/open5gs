@@ -760,6 +760,46 @@ ogs_sbi_request_t *af_npcf_policyauthorization_build_remove_media(
     return request;
 }
 
+ogs_sbi_request_t *af_npcf_bdtpolicycontrol_build_raw(
+        af_sess_t *sess, void *data)
+{
+    ogs_sbi_message_t message;
+    ogs_sbi_request_t *request = NULL;
+    af_npcf_bdtpolicycontrol_raw_t *raw = data;
+    char *base = NULL, *cut = NULL;
+
+    ogs_assert(sess);
+    ogs_assert(sess->app_session.pcf.resource_uri);
+    ogs_assert(raw);
+
+    /* the PCF of the application session: its address is the part of the resource URI before the service name */
+    base = ogs_strdup(sess->app_session.pcf.resource_uri);
+    ogs_assert(base);
+    cut = strstr(base, "/npcf-policyauthorization/");
+    ogs_assert(cut);
+    *cut = '\0';
+
+    memset(&message, 0, sizeof(message));
+    message.h.method = (char *)raw->method;
+    message.h.uri = ogs_msprintf("%s/npcf-bdtpolicycontrol/v1/bdtpolicies%s", base, raw->path ? raw->path : "");
+    ogs_free(base);
+
+    request = ogs_sbi_build_request(&message);
+    ogs_expect(request);
+    ogs_free(message.h.uri);
+
+    if (request && raw->body) {
+        ogs_sbi_header_set(request->http.headers, OGS_SBI_CONTENT_TYPE,
+                !strcmp(raw->method, OGS_SBI_HTTP_METHOD_PATCH) ?
+                    OGS_SBI_CONTENT_MERGE_PATCH_TYPE :
+                    OGS_SBI_CONTENT_JSON_TYPE);
+        request->http.content = ogs_strdup(raw->body);
+        request->http.content_length = strlen(raw->body);
+    }
+
+    return request;
+}
+
 ogs_sbi_request_t *af_npcf_policyauthorization_build_raw(
         af_sess_t *sess, void *data)
 {

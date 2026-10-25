@@ -141,6 +141,7 @@ extern "C" {
 #define OGS_SBI_RESOURCE_NAME_SM_POLICIES           "sm-policies"
 #define OGS_SBI_RESOURCE_NAME_DELETE                "delete"
 #define OGS_SBI_RESOURCE_NAME_APP_SESSIONS          "app-sessions"
+#define OGS_SBI_RESOURCE_NAME_BDT_POLICIES          "bdtpolicies"
 #define OGS_SBI_RESOURCE_NAME_NOTIFY                "notify"
 #define OGS_SBI_RESOURCE_NAME_UPDATE                "update"
 #define OGS_SBI_RESOURCE_NAME_TERMINATE             "terminate"
