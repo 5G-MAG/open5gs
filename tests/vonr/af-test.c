@@ -5605,6 +5605,139 @@ static void test25_func(abts_case *tc, void *data)
     test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
 }
 
+/* The ECN field of the IP packet that the test gNB receives from the UPF; false when none comes in time */
+static bool test_af_gtpu_reply_ecn(ogs_socknode_t *gtpu, int msec, int *ecn)
+{
+    struct pollfd fds;
+    ogs_pkbuf_t *recvbuf = NULL;
+    int hlen;
+
+    memset(&fds, 0, sizeof(fds));
+    fds.fd = gtpu->sock->fd;
+    fds.events = POLLIN;
+    if (poll(&fds, 1, msec) <= 0) return false;
+
+    recvbuf = testgnb_gtpu_read(gtpu);
+    if (!recvbuf) return false;
+    hlen = ogs_gtpu_parse_header(NULL, recvbuf);
+    *ecn = hlen > 0 ? (((uint8_t *)recvbuf->data)[hlen + 1] & 0x03) : -1;
+    ogs_pkbuf_free(recvbuf);
+    return true;
+}
+
+/*
+ * TS 29.514 V19.8.0 clauses 4.2.2.43 and 4.2.5.27, TS 29.512 V19.7.0 clause 4.2.6.2.21, TS 38.413 V19.1.0 clause 9.3.1.266, TS 29.244
+ * V19.6.0 clause 5.37 and TS 38.415 V19.1.0 clause 5.5.2.2: the AF gives l4sInd UL_DL and subscribes to L4S_SUPP; the SMF has the UPF
+ * mark the packets and asks the NG-RAN for the congestion information (ECN Marking at UPF Request both). With the congestion that the
+ * test gNB reports, the UPF sets CE in the ECN-capable packets, and does not touch the packets that are not ECN-capable. A status
+ * that says the reporting is not active is passed on to the AF as NOT_AVAILABLE and the UPF stops the marking; active again is
+ * AVAILABLE and the marking resumes with the next congestion information.
+ */
+static void test26_func(abts_case *tc, void *data)
+{
+    ogs_socknode_t *ngap = NULL;
+    ogs_socknode_t *gtpu = NULL;
+    test_ue_t *test_ue = NULL;
+    test_sess_t *sess = NULL;
+    test_bearer_t *qos_flow = NULL;
+    af_sess_t *af_sess = NULL;
+    af_npcf_policyauthorization_param_t af_param;
+    af_npcf_policyauthorization_raw_t raw;
+    int ecn = -1;
+
+    test_af_qos_reference_setup(tc, "0000000026",
+            &test_ue, &sess, &af_sess, &ngap, &gtpu);
+
+    memset(&af_param, 0, sizeof(af_param));
+    af_param.med_type = OpenAPI_media_type_AUDIO;
+    af_param.qos_type = 1;
+    af_param.flow_type = 99;
+    af_param.l4s_ind = 3;
+    af_param.ev_l4s = true;
+    sess->ecn_status = 1;
+    af_local_send_to_pcf(af_sess, &af_param,
+            af_npcf_policyauthorization_build_create);
+    qos_flow = test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_assert(qos_flow);
+    ogs_msleep(500);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_CREATED, af_sess->last_pcf_status);
+
+    /* ECN Marking at UPF Request both (0 ul, 1 dl, 2 both, 3 stop, plus 1); the NG-RAN said active: nothing is reported */
+    ABTS_INT_EQUAL(tc, 3, sess->ecn_request);
+    ABTS_INT_EQUAL(tc, 0, af_sess->notify_l4s_count);
+
+    /* no congestion: an ECT(1) packet is not marked */
+    test_gtpu_ping_tos = 0x01;
+    ABTS_INT_EQUAL(tc, OGS_OK, test_gtpu_send_ping(gtpu, qos_flow, TEST_PING_IPV4));
+    ABTS_TRUE(tc, test_af_gtpu_reply_ecn(gtpu, 2000, &ecn));
+    ABTS_INT_EQUAL(tc, 0x01, ecn);
+
+    /* the NG-RAN reports congestion of 100 percent downlink: the ECT(1) packet comes back with CE */
+    ABTS_INT_EQUAL(tc, OGS_OK, test_gtpu_send_congestion(gtpu, qos_flow, 10000, 10000));
+    ogs_msleep(200);
+    ABTS_INT_EQUAL(tc, OGS_OK, test_gtpu_send_ping(gtpu, qos_flow, TEST_PING_IPV4));
+    ABTS_TRUE(tc, test_af_gtpu_reply_ecn(gtpu, 2000, &ecn));
+    ABTS_INT_EQUAL(tc, 0x03, ecn);
+
+    /* a packet that is not ECN-capable stays as it is */
+    test_gtpu_ping_tos = 0x00;
+    ABTS_INT_EQUAL(tc, OGS_OK, test_gtpu_send_ping(gtpu, qos_flow, TEST_PING_IPV4));
+    ABTS_TRUE(tc, test_af_gtpu_reply_ecn(gtpu, 2000, &ecn));
+    ABTS_INT_EQUAL(tc, 0x00, ecn);
+
+    /* no more congestion: the packets are not marked any more */
+    test_gtpu_ping_tos = 0x01;
+    ABTS_INT_EQUAL(tc, OGS_OK, test_gtpu_send_congestion(gtpu, qos_flow, 0, 0));
+    ogs_msleep(200);
+    ABTS_INT_EQUAL(tc, OGS_OK, test_gtpu_send_ping(gtpu, qos_flow, TEST_PING_IPV4));
+    ABTS_TRUE(tc, test_af_gtpu_reply_ecn(gtpu, 2000, &ecn));
+    ABTS_INT_EQUAL(tc, 0x01, ecn);
+
+    /* congestion again, then l4sInd DL only, and the NG-RAN answers that the reporting is not active: ECN Marking at UPF Request dl,
+     * NOT_AVAILABLE to the AF, and the UPF stops the marking (TS 29.244 V19.6.0 clause 5.38.1) */
+    ABTS_INT_EQUAL(tc, OGS_OK, test_gtpu_send_congestion(gtpu, qos_flow, 10000, 10000));
+    ogs_msleep(200);
+    sess->ecn_status = 2;
+    raw.method = "PATCH";
+    raw.path = "";
+    raw.body = "{\"ascReqData\":{\"medComponents\":{\"0\":{\"medCompN\":0,\"medType\":\"AUDIO\",\"l4sInd\":\"DL\"}}}}";
+    af_local_send_to_pcf(af_sess, &raw, af_npcf_policyauthorization_build_raw);
+    ogs_msleep(300);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_pcf_status);
+    test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_msleep(500);
+    ABTS_INT_EQUAL(tc, 2, sess->ecn_request);
+    ABTS_INT_EQUAL(tc, 1, af_sess->notify_l4s_count);
+    ABTS_STR_EQUAL(tc, "NOT_AVAILABLE", af_sess->notify_l4s_type);
+    ABTS_INT_EQUAL(tc, 0, af_sess->notify_l4s_med_comp_n);
+    ABTS_INT_EQUAL(tc, OGS_OK, test_gtpu_send_ping(gtpu, qos_flow, TEST_PING_IPV4));
+    ABTS_TRUE(tc, test_af_gtpu_reply_ecn(gtpu, 2000, &ecn));
+    ABTS_INT_EQUAL(tc, 0x01, ecn);
+
+    /* l4sInd UL_DL again and the NG-RAN reports active: AVAILABLE */
+    sess->ecn_status = 1;
+    raw.body = "{\"ascReqData\":{\"medComponents\":{\"0\":{\"medCompN\":0,\"medType\":\"AUDIO\",\"l4sInd\":\"UL_DL\"}}}}";
+    af_local_send_to_pcf(af_sess, &raw, af_npcf_policyauthorization_build_raw);
+    ogs_msleep(300);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_pcf_status);
+    test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_msleep(500);
+    ABTS_INT_EQUAL(tc, 3, sess->ecn_request);
+    ABTS_INT_EQUAL(tc, 2, af_sess->notify_l4s_count);
+    ABTS_STR_EQUAL(tc, "AVAILABLE", af_sess->notify_l4s_type);
+
+    /* the marking resumes with the congestion information that follows */
+    ABTS_INT_EQUAL(tc, OGS_OK, test_gtpu_send_congestion(gtpu, qos_flow, 10000, 10000));
+    ogs_msleep(200);
+    ABTS_INT_EQUAL(tc, OGS_OK, test_gtpu_send_ping(gtpu, qos_flow, TEST_PING_IPV4));
+    ABTS_TRUE(tc, test_af_gtpu_reply_ecn(gtpu, 2000, &ecn));
+    ABTS_INT_EQUAL(tc, 0x03, ecn);
+
+    test_gtpu_ping_tos = 0;
+    test_af_qos_reference_delete(tc, test_ue, sess, af_sess, ngap);
+    test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
+}
+
 abts_suite *test_af(abts_suite *suite)
 {
     suite = ADD_SUITE(suite)
@@ -5641,6 +5774,7 @@ abts_suite *test_af(abts_suite *suite)
     abts_run_test(suite, test23_func, NULL);
     abts_run_test(suite, test24_func, NULL);
     abts_run_test(suite, test25_func, NULL);
+    abts_run_test(suite, test26_func, NULL);
 
     return suite;
 }

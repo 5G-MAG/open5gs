@@ -1612,6 +1612,13 @@ void ogs_sbi_decision_add_traffic_control(
     /* only 1 TrafficControlData is used for a PccRule, so its id is the id of the rule */
     TcData->tc_id = pcc_rule->id;
     TcData->flow_status = ogs_sbi_flow_status_from_pcc_rule(pcc_rule->flow_status);
+    /* l4sInd: the explicit indication of ECN marking for L4S support (TS 29.512 V19.7.0 clause 4.2.6.2.21) */
+    switch (pcc_rule->l4s_ind) {
+    case OGS_PCC_RULE_L4S_UL: TcData->l4s_ind = OpenAPI_uplink_downlink_support_UL; break;
+    case OGS_PCC_RULE_L4S_DL: TcData->l4s_ind = OpenAPI_uplink_downlink_support_DL; break;
+    case OGS_PCC_RULE_L4S_UL_DL: TcData->l4s_ind = OpenAPI_uplink_downlink_support_UL_DL; break;
+    default: break;
+    }
 
     if (!decision->traff_cont_decs) {
         decision->traff_cont_decs = OpenAPI_list_create();
@@ -1863,6 +1870,23 @@ void ogs_sbi_decision_add_qos_monitoring_trigger(OpenAPI_sm_policy_decision_t *d
             return;
     OpenAPI_list_add(decision->policy_ctrl_req_triggers,
             (void *)OpenAPI_policy_control_request_trigger_QOS_MONITORING);
+}
+
+void ogs_sbi_decision_add_l4s_trigger(OpenAPI_sm_policy_decision_t *decision)
+{
+    OpenAPI_lnode_t *node = NULL;
+
+    ogs_assert(decision);
+    if (!decision->policy_ctrl_req_triggers) {
+        decision->policy_ctrl_req_triggers = OpenAPI_list_create();
+        ogs_assert(decision->policy_ctrl_req_triggers);
+    }
+    OpenAPI_list_for_each(decision->policy_ctrl_req_triggers, node)
+        if ((OpenAPI_policy_control_request_trigger_e)(intptr_t)node->data ==
+                OpenAPI_policy_control_request_trigger_L4S_SUPP)
+            return;
+    OpenAPI_list_add(decision->policy_ctrl_req_triggers,
+            (void *)OpenAPI_policy_control_request_trigger_L4S_SUPP);
 }
 
 void ogs_sbi_decision_add_us_re_trigger(OpenAPI_sm_policy_decision_t *decision)

@@ -3000,6 +3000,28 @@ static ogs_pkbuf_t *testngap_build_pdu_session_resource_modify_response_trasfer(
         qosFlowAddOrModifyResponseItem->qosFlowIdentifier = qos_flow->qfi;
     }
 
+    if (sess->ecn_status) {
+        /* the ECN Marking or Congestion Information Reporting Status of the QoS flows (TS 38.413 V19.1.0 clause 9.3.1.267) */
+        NGAP_ProtocolExtensionContainer_14713P291_t *container = CALLOC(1, sizeof(*container));
+        NGAP_PDUSessionResourceModifyResponseTransfer_ExtIEs_t *ext = CALLOC(1, sizeof(*ext));
+        NGAP_ECNMarkingorCongestionInformationReportingStatus_t *status = CALLOC(1, sizeof(*status));
+
+        ASN_SEQUENCE_ADD(&container->list, ext);
+        ext->id = NGAP_ProtocolIE_ID_id_ECNMarkingorCongestionInformationReportingStatus;
+        ext->criticality = NGAP_Criticality_ignore;
+        ext->extensionValue.present =
+            NGAP_PDUSessionResourceModifyResponseTransfer_ExtIEs__extensionValue_PR_ECNMarkingorCongestionInformationReportingStatus;
+        ext->extensionValue.choice.ECNMarkingorCongestionInformationReportingStatus = status;
+        ogs_list_for_each_entry(&sess->qos_flow_to_modify_list, qos_flow, to_modify_node) {
+            NGAP_ECNMarkingorCongestionInformationReportingStatus_Item_t *item = CALLOC(1, sizeof(*item));
+
+            item->qosFlowIdentifier = qos_flow->qfi;
+            item->activationStatus = sess->ecn_status == 1 ? NGAP_ActivationStatus_active : NGAP_ActivationStatus_not_active;
+            ASN_SEQUENCE_ADD(&status->list, item);
+        }
+        message.iE_Extensions = (struct NGAP_ProtocolExtensionContainer *)container;
+    }
+
     return ogs_asn_encode(
             &asn_DEF_NGAP_PDUSessionResourceModifyResponseTransfer, &message);
 }

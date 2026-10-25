@@ -160,9 +160,9 @@ extern "C" {
 
 
 #define OGS_SBI_FEATURES_IS_SET(__fEATURES, __n) \
-    (__fEATURES & (1 << ((__n)-1)))
+    (__fEATURES & ((uint64_t)1 << ((__n)-1)))
 #define OGS_SBI_FEATURES_SET(__fEATURES, __n) \
-    __fEATURES |= (1 << ((__n)-1))
+    __fEATURES |= ((uint64_t)1 << ((__n)-1))
 
 #define OGS_SBI_NNRF_NFM_SERVICE_MAP 1
 #define OGS_SBI_NNRF_NFM_EMPTY_OBJECTS_NRF_INFO 2
@@ -250,6 +250,8 @@ extern "C" {
 #define OGS_SBI_NPCF_POLICYAUTHORIZATION_ES3XX 26
 #define OGS_SBI_NPCF_POLICYAUTHORIZATION_DISABLE_UE_NOTIFICATION 27
 #define OGS_SBI_NPCF_POLICYAUTHORIZATION_PATCH_CORRECTION 28
+/* TS 29.514 V19.8.0 table 5.8-1; the L4S feature of the Npcf_SMPolicyControl is number 97, beyond the 64 features of the mask */
+#define OGS_SBI_NPCF_POLICYAUTHORIZATION_L4S 63
 
 #define OGS_SBI_NBSF_MANAGEMENT_MULTI_UE_ADDR 1
 #define OGS_SBI_NBSF_MANAGEMENT_BINDING_UPDATE 2

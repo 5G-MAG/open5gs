@@ -126,6 +126,13 @@ ogs_sbi_request_t *af_npcf_policyauthorization_build_create(
     Event->notif_method = OpenAPI_af_notif_method_ONE_TIME;
     OpenAPI_list_add(EventList, Event);
 
+    if (af_param->ev_l4s) {
+        Event = ogs_calloc(1, sizeof(*Event));
+        ogs_assert(Event);
+        Event->event = OpenAPI_npcf_af_event_L4S_SUPP;
+        OpenAPI_list_add(EventList, Event);
+    }
+
     if (af_param->ev_qos_notif) {
         Event = ogs_calloc(1, sizeof(*Event));
         ogs_assert(Event);
@@ -197,6 +204,9 @@ ogs_sbi_request_t *af_npcf_policyauthorization_build_create(
 
     MediaComponent->med_comp_n = (i++);
     MediaComponent->f_status = OpenAPI_flow_status_ENABLED;
+    MediaComponent->l4s_ind = af_param->l4s_ind == 1 ? OpenAPI_uplink_downlink_support_UL :
+        af_param->l4s_ind == 2 ? OpenAPI_uplink_downlink_support_DL :
+        af_param->l4s_ind == 3 ? OpenAPI_uplink_downlink_support_UL_DL : OpenAPI_uplink_downlink_support_NULL;
     if (!af_param->omit_med_type)
         MediaComponent->med_type = af_param->med_type;
     if (af_param->qos_reference)

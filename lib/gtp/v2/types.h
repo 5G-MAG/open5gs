@@ -112,6 +112,17 @@ typedef struct ogs_gtp2_header_desc_s {
         uint32_t dl_delay_result;
         uint32_t ul_delay_result;
     } qm;
+
+    /*
+     * Congestion information of the NG-RAN in an UL PDU SESSION INFORMATION frame (TS 38.415 V19.1.0 clauses 5.5.3.25 and 5.5.3.26): for
+     * the ECN marking at the UPF the percentage of the IP packets to mark in hundredths of a percent (0 to 10000).
+     */
+    struct {
+        bool ul_presence;
+        bool dl_presence;
+        uint16_t ul;
+        uint16_t dl;
+    } congestion;
 } ogs_gtp2_header_desc_t;
 
 /* 8.4 Cause */

@@ -120,6 +120,7 @@ typedef struct ogs_pfcp_xact_s {
 #define OGS_PFCP_MODIFY_URR_TIME_THRESH ((uint64_t)1<<34)
 #define OGS_PFCP_MODIFY_PDR_URR ((uint64_t)1<<35) /* the URRs of a PDR change (usage monitoring) */
 #define OGS_PFCP_MODIFY_QOS_MONITORING ((uint64_t)1<<37) /* Session Reporting Rules for QoS monitoring change */
+#define OGS_PFCP_MODIFY_L4S ((uint64_t)1<<38) /* the ECN marking for L4S of a QER changes (the QoS flow is not modified) */
 #define OGS_PFCP_MODIFY_USAGE_MONITORING ((uint64_t)1<<36) /* usage monitoring control instances change (create, update or query URR) */
     uint64_t        modify_flags;
 

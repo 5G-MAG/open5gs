@@ -580,6 +580,13 @@ typedef struct ogs_pcc_rule_s {
     uint32_t precedence;
     uint32_t rating_group;
 
+    /* 5GC: explicit indication of ECN marking for L4S support (l4sInd of the TrafficControlData of TS 29.512): 0 none, then UL, DL, UL and DL */
+#define OGS_PCC_RULE_L4S_NONE 0
+#define OGS_PCC_RULE_L4S_UL 1
+#define OGS_PCC_RULE_L4S_DL 2
+#define OGS_PCC_RULE_L4S_UL_DL 3
+    int l4s_ind;
+
     char *um_id; /* 5GC: the usage monitoring data that the rule refers to (TS 29.512 clause 5.6.2.2 refUmData) */
 
     /* 5GC: QoS monitoring of the packet delay that the rule refers to (refQosMon, QosMonitoringData of TS 29.512); delays and thresholds in ms, times in s */
@@ -629,6 +636,7 @@ typedef struct ogs_pcc_rule_s {
         } \
         (__dST)->num_of_flow = (__sRC)->num_of_flow; \
         (__dST)->flow_status = (__sRC)->flow_status; \
+        (__dST)->l4s_ind = (__sRC)->l4s_ind; \
         if ((__sRC)->um_id) { \
             (__dST)->um_id = ogs_strdup((__sRC)->um_id); \
             ogs_assert((__dST)->um_id); \
@@ -1003,6 +1011,7 @@ typedef struct ogs_media_component_s {
     uint64_t            rs_bandwidth;
 
     int                 flow_status;
+    int                 l4s_ind;        /* OGS_PCC_RULE_L4S_*: l4sInd of the media component */
 
 #define OGS_MAX_NUM_OF_MEDIA_SUB_COMPONENT     8
     ogs_media_sub_component_t sub[OGS_MAX_NUM_OF_MEDIA_SUB_COMPONENT];

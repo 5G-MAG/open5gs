@@ -38,6 +38,8 @@ typedef struct af_npcf_policyauthorization_param_s {
     bool ev_qos_mon;               /* subscribe to QOS_MONITORING for the packet delay (TS 29.514 V19.8.0 clause 4.2.2.23) */
     int qos_mon_threshold;         /* repThreshDl, repThreshUl and repThreshRp in ms (event triggered reporting) */
     int qos_mon_wait_time;         /* waitTime in seconds */
+    int l4s_ind;                   /* l4sInd of the media component: 1 UL, 2 DL, 3 UL_DL, 0 none (TS 29.514 V19.8.0 clause 4.2.2.43) */
+    bool ev_l4s;                   /* subscribe to L4S_SUPP */
     bool ev_qos_notif;             /* subscribe to QOS_NOTIF (TS 29.514 V19.8.0 clause 4.2.2.6) */
     long usage_threshold;          /* with the event USAGE_REPORT: the totalVolume of usgThres in bytes, 0 for none */
 } af_npcf_policyauthorization_param_t;

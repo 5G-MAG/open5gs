@@ -33,8 +33,6 @@ static void parse_qos_monitoring(ogs_gtp2_header_desc_t *header_desc, const uint
     header_desc->pdu_type = pdu_type;
     header_desc->qos_flow_identifier = c[1] & 0x3f;
     header_desc->qm.qmp = (c[0] & 0x08) ? true : false;
-    if (!header_desc->qm.qmp)
-        return;
 
 #define GET64(__dst) do { \
         if (pos + 8 > len) { header_desc->qm.qmp = false; return; } \
@@ -48,19 +46,50 @@ static void parse_qos_monitoring(ogs_gtp2_header_desc_t *header_desc, const uint
     } while (0)
 
     if (pdu_type == OGS_GTP2_EXTENSION_HEADER_PDU_TYPE_DL_PDU_SESSION_INFORMATION) {
+        if (!header_desc->qm.qmp)
+            return;
         if (c[1] & 0x80) /* PPP: the PPI octet */
             pos++;
         GET64(header_desc->qm.dl_sending_ts);
     } else if (pdu_type == OGS_GTP2_EXTENSION_HEADER_PDU_TYPE_UL_PDU_SESSION_INFORMATION) {
+        bool snp = (c[0] & 0x01) ? true : false;
+        bool n3n9 = (c[1] & 0x80) ? true : false;
+        bool new_ie_flag = (c[1] & 0x40) ? true : false;
+        uint32_t skip;
+
         header_desc->qm.dl_delay_ind = (c[0] & 0x04) ? true : false;
         header_desc->qm.ul_delay_ind = (c[0] & 0x02) ? true : false;
-        GET64(header_desc->qm.dl_sending_ts);
-        GET64(header_desc->qm.dl_received_ts);
-        GET64(header_desc->qm.ul_sending_ts);
+        if (header_desc->qm.qmp) {
+            GET64(header_desc->qm.dl_sending_ts);
+            GET64(header_desc->qm.dl_received_ts);
+            GET64(header_desc->qm.ul_sending_ts);
+        }
         if (header_desc->qm.dl_delay_ind)
             GET32(header_desc->qm.dl_delay_result);
         if (header_desc->qm.ul_delay_ind)
             GET32(header_desc->qm.ul_delay_result);
+        if (snp)
+            pos += 3; /* UL QFI Sequence Number */
+        if (n3n9)
+            GET32(skip); /* N3/N9 Delay Result */
+        if (new_ie_flag && pos < len) {
+            uint8_t flags = c[pos++];
+
+            if (flags & 0x01) /* D1 UL PDCP Delay Result Ind. */
+                pos++;
+            if (flags & 0x02) { /* UL Congestion Information */
+                if (pos + 2 > len) return;
+                header_desc->congestion.ul_presence = true;
+                header_desc->congestion.ul = (c[pos] << 8) | c[pos + 1];
+                pos += 2;
+            }
+            if (flags & 0x04) { /* DL Congestion Information */
+                if (pos + 2 > len) return;
+                header_desc->congestion.dl_presence = true;
+                header_desc->congestion.dl = (c[pos] << 8) | c[pos + 1];
+                pos += 2;
+            }
+        }
     }
 #undef GET64
 #undef GET32
@@ -131,6 +160,23 @@ ogs_pkbuf_t *ogs_gtpu_build_qos_monitoring_dl(
     c[0] = (OGS_GTP2_EXTENSION_HEADER_PDU_TYPE_DL_PDU_SESSION_INFORMATION << 4) | 0x08;
     c[1] = qfi & 0x3f;
     put64(c + 2, dl_sending_ts);
+    return pkbuf;
+}
+
+ogs_pkbuf_t *ogs_gtpu_build_congestion_ul(uint32_t teid, uint8_t qfi,
+        bool ul_presence, uint16_t ul, bool dl_presence, uint16_t dl)
+{
+    uint8_t *c = NULL;
+    int n = 3 + (ul_presence ? 2 : 0) + (dl_presence ? 2 : 0);
+    int content_len = (n + 2 + 3) / 4 * 4 - 2;
+    ogs_pkbuf_t *pkbuf = build_container_packet(teid, &c, content_len);
+    int pos = 3;
+
+    c[0] = OGS_GTP2_EXTENSION_HEADER_PDU_TYPE_UL_PDU_SESSION_INFORMATION << 4;
+    c[1] = 0x40 | (qfi & 0x3f); /* the New IE Flags octet follows */
+    c[2] = (ul_presence ? 0x02 : 0) | (dl_presence ? 0x04 : 0);
+    if (ul_presence) { c[pos++] = ul >> 8; c[pos++] = ul & 0xff; }
+    if (dl_presence) { c[pos++] = dl >> 8; c[pos++] = dl & 0xff; }
     return pkbuf;
 }
 

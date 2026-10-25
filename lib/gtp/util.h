@@ -46,6 +46,12 @@ ogs_pkbuf_t *ogs_gtpu_build_qos_monitoring_dl(
  * The monitoring response of the NG-RAN: a G-PDU without a T-PDU that carries an UL PDU SESSION INFORMATION frame with QMP, the three
  * time stamps and the delay results of the RAN part (a result is carried when its indication is set).
  */
+/*
+ * A G-PDU without a T-PDU that carries an UL PDU SESSION INFORMATION frame with the congestion information of the NG-RAN for the ECN
+ * marking at the UPF (TS 38.415 V19.1.0 clause 5.5.2.2); the values are in hundredths of a percent.
+ */
+ogs_pkbuf_t *ogs_gtpu_build_congestion_ul(uint32_t teid, uint8_t qfi,
+        bool ul_presence, uint16_t ul, bool dl_presence, uint16_t dl);
 ogs_pkbuf_t *ogs_gtpu_build_qos_monitoring_ul(uint32_t teid, uint8_t qfi,
         uint64_t dl_sending_ts, uint64_t dl_received_ts, uint64_t ul_sending_ts,
         bool dl_delay_ind, uint32_t dl_delay_result,

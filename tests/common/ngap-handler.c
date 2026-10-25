@@ -530,6 +530,25 @@ void testngap_handle_pdu_session_resource_modify_request(
 
                             qos_flow->qfi = QosFlowAddOrModifyRequestItem->
                                                 qosFlowIdentifier;
+
+                            sess->ecn_request = 0;
+                            if (QosFlowAddOrModifyRequestItem->iE_Extensions) {
+                                NGAP_ProtocolExtensionContainer_14713P339_t *ext =
+                                    (NGAP_ProtocolExtensionContainer_14713P339_t *)
+                                    QosFlowAddOrModifyRequestItem->iE_Extensions;
+                                int e;
+
+                                for (e = 0; e < ext->list.count; e++) {
+                                    NGAP_QosFlowAddOrModifyRequestItem_ExtIEs_t *x = ext->list.array[e];
+
+                                    if (x && x->id == NGAP_ProtocolIE_ID_id_ECNMarkingorCongestionInformationReportingRequest &&
+                                            x->extensionValue.choice.ECNMarkingorCongestionInformationReportingRequest &&
+                                            x->extensionValue.choice.ECNMarkingorCongestionInformationReportingRequest->present ==
+                                                NGAP_ECNMarkingorCongestionInformationReportingRequest_PR_eCNMarkingAtUPFRequest)
+                                        sess->ecn_request = 1 + x->extensionValue.choice.
+                                            ECNMarkingorCongestionInformationReportingRequest->choice.eCNMarkingAtUPFRequest;
+                                }
+                            }
                         }
                         break;
                     default:

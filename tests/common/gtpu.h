@@ -46,6 +46,17 @@ int test_gtpu_send_ping(
 int test_gtpu_send_qos_monitoring_response(
         ogs_socknode_t *node, test_bearer_t *bearer, ogs_pkbuf_t *dl,
         ogs_time_t received_at, uint32_t dl_result, uint32_t ul_result);
+/*
+ * The ToS octet (the traffic class of IPv6) of the pings that test_gtpu_send_ping sends, 0 by default: the ECN field is its two low
+ * bits (RFC 3168).
+ */
+extern int test_gtpu_ping_tos;
+/*
+ * The NG-RAN gives the congestion information for the ECN marking at the UPF (TS 38.415 V19.1.0 clause 5.5.2.2), in hundredths of a
+ * percent; a value above 10000 is not sent.
+ */
+int test_gtpu_send_congestion(
+        ogs_socknode_t *node, test_bearer_t *bearer, uint32_t ul, uint32_t dl);
 int test_gtpu_send_slacc_rs(ogs_socknode_t *node, test_bearer_t *bearer);
 int test_gtpu_send_slacc_rs_with_unspecified_source_address(
         ogs_socknode_t *node, test_bearer_t *bearer);

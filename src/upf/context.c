@@ -49,7 +49,9 @@ void upf_context_init(void)
     ogs_pfcp_self()->up_function_features.frrt = 1;
     /* per QoS flow per UE QoS monitoring for packet delay (TS 29.244 V19.6.0 clause 5.24.4.1), octet 9 of the features */
     ogs_pfcp_self()->up_function_features.qfqm = 1;
-    ogs_pfcp_self()->up_function_features_len = 5;
+    /* ECN marking for L4S (TS 29.244 V19.6.0 clause 5.38.1), octet 12 of the features */
+    ogs_pfcp_self()->up_function_features.eml4s = 1;
+    ogs_pfcp_self()->up_function_features_len = 8;
 
     ogs_list_init(&self.sess_list);
     ogs_pool_init(&upf_sess_pool, ogs_app()->pool.sess);

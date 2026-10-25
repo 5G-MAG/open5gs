@@ -160,6 +160,7 @@ void ogs_sbi_decision_add_qos_monitoring(
         bool dl, bool ul, bool rt, bool event_triggered, bool periodic,
         int thr_dl, int thr_ul, int thr_rt, int wait_time, int rep_period);
 /* Add QOS_MONITORING to the policy control request triggers of the decision */
+void ogs_sbi_decision_add_l4s_trigger(OpenAPI_sm_policy_decision_t *decision);
 void ogs_sbi_decision_add_qos_monitoring_trigger(OpenAPI_sm_policy_decision_t *decision);
 /* Add US_RE to the policy control request triggers of the decision */
 void ogs_sbi_decision_add_us_re_trigger(OpenAPI_sm_policy_decision_t *decision);

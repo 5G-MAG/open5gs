@@ -28,6 +28,8 @@ static bool sponsored_not_authorized(pcf_sess_t *sess, cJSON *context);
 static void app_qnc_decisions(pcf_app_t *app, OpenAPI_list_t *QosDecisionList);
 static void app_qnc_trigger(pcf_app_t *app, OpenAPI_sm_policy_decision_t *decision);
 static void app_qm_apply(pcf_app_t *app, OpenAPI_sm_policy_decision_t *decision, OpenAPI_list_t *PccRuleList);
+static void app_l4s_trigger(pcf_app_t *app, OpenAPI_sm_policy_decision_t *decision);
+static void l4s_reports_notify(pcf_sess_t *sess, const char *content);
 static char *app_qm_signature(pcf_app_t *app);
 static void qos_mon_reports_notify(pcf_sess_t *sess, const char *content);
 
@@ -734,6 +736,16 @@ static void send_app_session_context(
     OpenAPI_app_session_context_free(AppSessionContext);
 }
 
+static int l4s_ind_from_model(OpenAPI_uplink_downlink_support_e ind)
+{
+    switch (ind) {
+    case OpenAPI_uplink_downlink_support_UL: return OGS_PCC_RULE_L4S_UL;
+    case OpenAPI_uplink_downlink_support_DL: return OGS_PCC_RULE_L4S_DL;
+    case OpenAPI_uplink_downlink_support_UL_DL: return OGS_PCC_RULE_L4S_UL_DL;
+    default: return OGS_PCC_RULE_L4S_NONE;
+    }
+}
+
 /*
  * The events that the PCF acts on, read from the AppSessionContext that the resource now holds: the events of the Events
  * Subscription of TS 29.514 V19.8.0 clause 4.2.2.10 and the URI to notify them at (the notifUri of the subscription, else the
@@ -750,6 +762,7 @@ static void app_events_refresh(pcf_app_t *app)
     app->ev_usage_report = false;
     app->ev_qos_notif = false;
     app->ev_qos_mon = false;
+    app->ev_l4s = false;
     if (app->ev_notif_uri) {
         ogs_free(app->ev_notif_uri);
         app->ev_notif_uri = NULL;
@@ -778,6 +791,8 @@ static void app_events_refresh(pcf_app_t *app)
             app->ev_qos_notif = true;
         else if (!strcmp(name->valuestring, "QOS_MONITORING"))
             app->ev_qos_mon = true;
+        else if (!strcmp(name->valuestring, "L4S_SUPP"))
+            app->ev_l4s = true;
     }
 
     uri = cJSON_GetObjectItem(ev_subsc, "notifUri");
@@ -975,6 +990,21 @@ static char *app_qm_signature(pcf_app_t *app)
             q.thr_dl, q.thr_ul, q.thr_rt, q.wait_time, q.rep_period);
 }
 
+/* The AF subscribed to L4S_SUPP and the rules indicate L4S: the SMF reports the availability of ECN marking (TS 29.512 V19.7.0 clause 4.2.6.2.21) */
+static void app_l4s_trigger(pcf_app_t *app, OpenAPI_sm_policy_decision_t *decision)
+{
+    int i;
+
+    if (!app->ev_l4s)
+        return;
+    for (i = 0; i < app->num_of_pcc_rule; i++) {
+        if (app->pcc_rule[i].l4s_ind != OGS_PCC_RULE_L4S_NONE) {
+            ogs_sbi_decision_add_l4s_trigger(decision);
+            return;
+        }
+    }
+}
+
 static void app_qm_apply(pcf_app_t *app, OpenAPI_sm_policy_decision_t *decision, OpenAPI_list_t *PccRuleList)
 {
     qm_params_t q;
@@ -1167,6 +1197,7 @@ static void app_usage_send(pcf_sess_t *sess, pcf_app_t *app, const usage_params_
     app_qnc_decisions(app, QosDecisionList);
     app_qnc_trigger(app, &SmPolicyDecision);
     app_qm_apply(app, &SmPolicyDecision, PccRuleList);
+    app_l4s_trigger(app, &SmPolicyDecision);
     if (end_monitor)
         ogs_sbi_decision_end_usage_monitoring(&SmPolicyDecision, app->um_id);
     if (monitor || end_monitor)
@@ -1541,6 +1572,7 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
                 media_component->media_component_number =
                     MediaComponent->med_comp_n;
                 media_component->media_type = MediaComponent->med_type;
+                media_component->l4s_ind = l4s_ind_from_model(MediaComponent->l4s_ind);
                 if (MediaComponent->mar_bw_dl)
                     media_component->max_requested_bandwidth_dl =
                         ogs_sbi_bitrate_from_string(MediaComponent->mar_bw_dl);
@@ -1845,6 +1877,10 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
             pcc_rule->flow_status =
                 ogs_sbi_flow_status_to_pcc_rule(media_component->flow_status);
 
+        /* l4sInd of the media component: the explicit indication of ECN marking for L4S (TS 29.514 V19.8.0 clause 4.2.2.43) */
+        if (OGS_SBI_FEATURES_IS_SET(sess->policyauthorization_features, OGS_SBI_NPCF_POLICYAUTHORIZATION_L4S))
+            pcc_rule->l4s_ind = media_component->l4s_ind;
+
         /* if we failed to get QoS from IMS, apply WEBUI QoS */
         if (pcc_rule->qos.mbr.downlink == 0)
             pcc_rule->qos.mbr.downlink = db_pcc_rule->qos.mbr.downlink;
@@ -1895,6 +1931,7 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
     app_qnc_trigger(app_session, &SmPolicyDecision);
     app_qnc_decisions(app_session, QosDecisionList);
     app_qm_apply(app_session, &SmPolicyDecision, PccRuleList);
+    app_l4s_trigger(app_session, &SmPolicyDecision);
 
     memset(&sendmsg, 0, sizeof(sendmsg));
 
@@ -2151,6 +2188,7 @@ bool pcf_npcf_policyauthorization_handle_update(
                 media_component->media_component_number =
                     MediaComponent->med_comp_n;
                 media_component->media_type = MediaComponent->med_type;
+                media_component->l4s_ind = l4s_ind_from_model(MediaComponent->l4s_ind);
                 if (MediaComponent->mar_bw_dl)
                     media_component->max_requested_bandwidth_dl =
                         ogs_sbi_bitrate_from_string(MediaComponent->mar_bw_dl);
@@ -2399,6 +2437,10 @@ bool pcf_npcf_policyauthorization_handle_update(
             pcc_rule->flow_status =
                 ogs_sbi_flow_status_to_pcc_rule(media_component->flow_status);
 
+        /* l4sInd of the media component: the explicit indication of ECN marking for L4S (TS 29.514 V19.8.0 clause 4.2.2.43) */
+        if (OGS_SBI_FEATURES_IS_SET(sess->policyauthorization_features, OGS_SBI_NPCF_POLICYAUTHORIZATION_L4S))
+            pcc_rule->l4s_ind = media_component->l4s_ind;
+
         /* if we failed to get QoS from IMS, apply WEBUI QoS */
         if (pcc_rule->qos.mbr.downlink == 0)
             pcc_rule->qos.mbr.downlink = db_pcc_rule->qos.mbr.downlink;
@@ -2499,6 +2541,7 @@ bool pcf_npcf_policyauthorization_handle_update(
     app_qnc_trigger(app_session, &SmPolicyDecision);
     app_qnc_decisions(app_session, QosDecisionList);
     app_qm_apply(app_session, &SmPolicyDecision, PccRuleList);
+    app_l4s_trigger(app_session, &SmPolicyDecision);
 
     /* The resource now reads as the creation request with the modification applied (clause 5.3.3.3.1 GET) */
     ogs_assert(app_session->context);
@@ -3077,6 +3120,84 @@ static void qos_mon_reports_notify(pcf_sess_t *sess, const char *content)
         cJSON_Delete(body);
 }
 
+/*
+ * l4sReports of the SMF (TS 29.512 V19.7.0 clause 4.2.6.2.21): ECN marking for L4S is not available, or available again, for PCC rules.
+ * The AF that subscribed to L4S_SUPP is told with the flows of the rules (TS 29.514 V19.8.0 clause 4.2.5.27).
+ */
+static void l4s_reports_notify(pcf_sess_t *sess, const char *content)
+{
+    cJSON *body = NULL, *reports = NULL, *report = NULL;
+    pcf_app_t *app = NULL;
+
+    if (!content)
+        return;
+    body = cJSON_Parse(content);
+    reports = body ? cJSON_GetObjectItem(body, "l4sReports") : NULL;
+    cJSON_ArrayForEach(report, reports) {
+        cJSON *ids = cJSON_GetObjectItem(report, "refPccRuleIds");
+
+        if (!cJSON_IsArray(ids))
+            continue;
+        ogs_list_for_each(&sess->app_list, app) {
+            OpenAPI_list_t *owned = OpenAPI_list_create();
+            cJSON *id = NULL, *evs = NULL, *notifs = NULL, *notif = NULL, *info = NULL, *flows = NULL, *arr = NULL, *item = NULL;
+            ogs_sbi_server_t *server = ogs_sbi_server_first();
+            ogs_sbi_header_t header;
+            char *location = NULL;
+
+            ogs_assert(owned);
+            cJSON_ArrayForEach(id, ids) {
+                if (cJSON_IsString(id) && app_owns_rule(app, id->valuestring))
+                    OpenAPI_list_add(owned, id->valuestring);
+            }
+            if (owned->count == 0 || !app->ev_l4s || !app->ev_notif_uri || !server) {
+                OpenAPI_list_free(owned);
+                continue;
+            }
+
+            evs = cJSON_CreateObject();
+            ogs_assert(evs);
+            memset(&header, 0, sizeof(header));
+            header.service.name = OpenAPI_service_name_ToString(OpenAPI_service_name_npcf_policyauthorization);
+            header.api.version = (char *)OGS_SBI_API_V1;
+            header.resource.component[0] = (char *)OGS_SBI_RESOURCE_NAME_APP_SESSIONS;
+            header.resource.component[1] = (char *)app->app_session_id;
+            header.resource.component[2] = (char *)OGS_SBI_RESOURCE_NAME_EVENTS_SUBSCRIPTION;
+            location = ogs_sbi_server_uri(server, &header);
+            ogs_assert(location);
+            cJSON_AddStringToObject(evs, "evSubsUri", location);
+            ogs_free(location);
+            notifs = cJSON_AddArrayToObject(evs, "evNotifs");
+            notif = cJSON_CreateObject();
+            ogs_assert(notifs && notif);
+            cJSON_AddStringToObject(notif, "event", "L4S_SUPP");
+            cJSON_AddItemToArray(notifs, notif);
+            arr = cJSON_AddArrayToObject(evs, "l4sReports");
+            info = cJSON_CreateObject();
+            ogs_assert(arr && info);
+            flows = flows_of_rules(app, owned);
+            if (cJSON_GetArraySize(flows) > 0)
+                cJSON_AddItemToObject(info, "flows", flows);
+            else
+                cJSON_Delete(flows);
+            item = cJSON_GetObjectItem(report, "notifType");
+            if (!cJSON_IsString(item)) {
+                cJSON_Delete(evs);
+                OpenAPI_list_free(owned);
+                continue;
+            }
+            cJSON_AddStringToObject(info, "notifType", item->valuestring);
+            cJSON_AddItemToArray(arr, info);
+
+            pcf_sbi_send_policyauthorization_event_notify(app, evs);
+            cJSON_Delete(evs);
+            OpenAPI_list_free(owned);
+        }
+    }
+    if (body)
+        cJSON_Delete(body);
+}
+
 bool pcf_npcf_smpolicycontrol_handle_update(pcf_sess_t *sess,
         ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg,
         const char *content)
@@ -3179,6 +3300,7 @@ bool pcf_npcf_smpolicycontrol_handle_update(pcf_sess_t *sess,
 
     qnc_reports_notify(sess, content);
     qos_mon_reports_notify(sess, content);
+    l4s_reports_notify(sess, content);
 
     /*
      * accuUsageReports (clause 4.2.4.10): the usage of the sponsored data connectivity goes to the application function, in the

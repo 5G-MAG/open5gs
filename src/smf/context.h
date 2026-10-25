@@ -278,6 +278,18 @@ typedef struct smf_bearer_s {
         bool                to_send;
     } qos_mon;
 
+    /*
+     * ECN marking for L4S at the UPF (TS 29.512 V19.7.0 clause 4.2.6.2.21): what the rule indicates (OGS_PCC_RULE_L4S_*), what the
+     * NG-RAN is asked for with ECN Marking at UPF Request (TS 38.413 V19.1.0 clause 9.3.1.266), the activation status it answered
+     * with, and whether the PCF was told that the marking is not available.
+     */
+    struct {
+        int                 ind;
+        bool                stop;       /* the rule no longer indicates it: the NG-RAN is told to stop */
+        int                 ran_status;
+        bool                reported_unavailable;
+    } l4s;
+
     OGS_POOL(pf_identifier_pool, uint8_t);
 
     /* Packet Filter List */
@@ -651,6 +663,7 @@ typedef struct smf_sess_s {
             uint32_t        used_time;
         } um[SMF_MAX_NUM_OF_UM];
         int             num_of_um;
+        bool            l4s_trigger;        /* L4S_SUPP armed by the PCF: the availability of ECN marking is reported to it (clause 4.2.6.2.21) */
         bool            qos_mon_trigger;    /* QOS_MONITORING armed by the PCF: the reports go to it (clause 4.2.4.24) */
     } policy; /* Saved from N7 or Gx */
 

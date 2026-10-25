@@ -219,6 +219,7 @@ typedef struct pcf_app_s {
     bool ev_usage_report;
     bool ev_qos_notif;
     bool ev_qos_mon;
+    bool ev_l4s;
     char *qm_id;        /* the QosMonitoringData of the application session at the SMF */
     char *ev_notif_uri;
     ogs_sbi_client_t *ev_client; /* the client of ev_notif_uri when it is not the one of notif_uri */

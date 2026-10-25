@@ -453,6 +453,70 @@ ogs_sbi_request_t *smf_npcf_smpolicycontrol_build_qnc_update(
 }
 
 /*
+ * l4sReports of SmPolicyUpdateContextData is an array of L4sSupportInfo (refPccRuleIds, notifType NOT_AVAILABLE or AVAILABLE, TS 29.512
+ * V19.7.0 table 5.6.2.57-1), with L4S_SUPP in the triggers.
+ */
+ogs_sbi_request_t *smf_npcf_smpolicycontrol_build_l4s_update(
+        smf_sess_t *sess, void *data)
+{
+    ogs_sbi_message_t message;
+    ogs_sbi_request_t *request = NULL;
+    smf_npcf_smpolicycontrol_l4s_report_t *report = data;
+    OpenAPI_sm_policy_update_context_data_t UpdateData;
+    OpenAPI_list_t *Triggers = NULL;
+    cJSON *body = NULL, *reports = NULL, *info = NULL, *ids = NULL;
+    char *text = NULL;
+    int i;
+
+    ogs_assert(sess);
+    ogs_assert(sess->policy_association.resource_uri);
+    ogs_assert(report);
+
+    memset(&message, 0, sizeof(message));
+    message.h.method = (char *)OGS_SBI_HTTP_METHOD_POST;
+    message.h.uri = ogs_msprintf("%s/%s", sess->policy_association.resource_uri, OGS_SBI_RESOURCE_NAME_UPDATE);
+
+    memset(&UpdateData, 0, sizeof(UpdateData));
+    Triggers = OpenAPI_list_create();
+    ogs_assert(Triggers);
+    OpenAPI_list_add(Triggers, (void *)OpenAPI_policy_control_request_trigger_L4S_SUPP);
+    UpdateData.rep_policy_ctrl_req_triggers = Triggers;
+    message.SmPolicyUpdateContextData = &UpdateData;
+
+    request = ogs_sbi_build_request(&message);
+    ogs_expect(request);
+
+    if (request && request->http.content) {
+        body = cJSON_Parse(request->http.content);
+        ogs_assert(body);
+        reports = cJSON_AddArrayToObject(body, "l4sReports");
+        info = cJSON_CreateObject();
+        ogs_assert(reports && info);
+        ids = cJSON_AddArrayToObject(info, "refPccRuleIds");
+        ogs_assert(ids);
+        for (i = 0; i < report->num_of_rule; i++)
+            cJSON_AddItemToArray(ids, cJSON_CreateString(report->rule_id[i]));
+        cJSON_AddStringToObject(info, "notifType", report->available ? "AVAILABLE" : "NOT_AVAILABLE");
+        cJSON_AddItemToArray(reports, info);
+        text = cJSON_PrintUnformatted(body);
+        ogs_assert(text);
+        ogs_free(request->http.content);
+        request->http.content = ogs_strdup(text);
+        request->http.content_length = strlen(text);
+        cJSON_free(text);
+        cJSON_Delete(body);
+    }
+
+    OpenAPI_list_free(Triggers);
+    ogs_free(message.h.uri);
+    for (i = 0; i < report->num_of_rule; i++)
+        ogs_free(report->rule_id[i]);
+    ogs_free(report);
+
+    return request;
+}
+
+/*
  * qosMonReports of SmPolicyUpdateContextData is an array of the QosMonitoringReport of TS 29.512 (refPccRuleIds, ulDelays, dlDelays,
  * rtDelays, pdmf); the generated model of that name is the one of TS 29.514 (flows), both YAML files using one schema name, so the
  * report is added to the JSON of the request.

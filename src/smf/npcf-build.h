@@ -53,6 +53,16 @@ typedef struct smf_npcf_smpolicycontrol_qnc_report_s {
     char *rule_id[OGS_MAX_NUM_OF_PCC_RULE];
 } smf_npcf_smpolicycontrol_qnc_report_t;
 
+/* ECN marking for L4S is not available, or available again, for the flows of PCC rules (TS 29.512 V19.7.0 clause 4.2.6.2.21) */
+typedef struct smf_npcf_smpolicycontrol_l4s_report_s {
+    bool available;
+    int num_of_rule;
+    char *rule_id[OGS_MAX_NUM_OF_PCC_RULE];
+} smf_npcf_smpolicycontrol_l4s_report_t;
+
+ogs_sbi_request_t *smf_npcf_smpolicycontrol_build_l4s_update(
+        smf_sess_t *sess, void *data);
+
 /* A QoS monitoring report of the packet delay of the flow of a PCC rule (TS 29.512 V19.7.0 clause 4.2.4.24); the builder frees it */
 typedef struct smf_npcf_smpolicycontrol_qos_mon_report_s {
     char *rule_id;

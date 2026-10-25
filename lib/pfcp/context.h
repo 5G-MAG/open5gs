@@ -312,6 +312,14 @@ typedef struct ogs_pfcp_qer_s {
 
     uint8_t                 qfi;
 
+    /*
+     * ECN marking for L4S (QER Indications EML4S, TS 29.244 V19.6.0 clause 8.2.216) and what the UPF marks: the percentage of the IP
+     * packets in hundredths of a percent, from the congestion information of the NG-RAN (TS 38.415 clauses 5.5.3.25 and 5.5.3.26)
+     */
+    bool                    ecn_marking_l4s;
+    uint16_t                ecn_ul;
+    uint16_t                ecn_dl;
+
     ogs_pfcp_sess_t         *sess;
 } ogs_pfcp_qer_t;
 

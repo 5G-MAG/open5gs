@@ -269,6 +269,8 @@ int test_gtpu_send_qos_monitoring_response(
     return sent > 0 ? OGS_OK : OGS_ERROR;
 }
 
+int test_gtpu_ping_tos;
+
 int test_gtpu_send_ping(
         ogs_socknode_t *node, test_bearer_t *bearer, const char *dst_ip)
 {
@@ -306,7 +308,7 @@ int test_gtpu_send_ping(
 
         ip_h->ip_v = 4;
         ip_h->ip_hl = 5;
-        ip_h->ip_tos = 0;
+        ip_h->ip_tos = test_gtpu_ping_tos;
         ip_h->ip_id = rand();
         ip_h->ip_off = 0;
         ip_h->ip_ttl = 255;
@@ -351,7 +353,7 @@ int test_gtpu_send_ping(
         icmp6_h->icmp6_cksum = ogs_in_cksum(
                 (uint16_t *)ip6_h, sizeof *ip6_h + sizeof *icmp6_h);
 
-        ip6_h->ip6_flow = htobe32(0x60000001);
+        ip6_h->ip6_flow = htobe32(0x60000001 | ((uint32_t)test_gtpu_ping_tos << 20));
         ip6_h->ip6_plen = plen;
         ip6_h->ip6_nxt = nxt;;
         ip6_h->ip6_hlim = 0xff;
@@ -627,4 +629,33 @@ int test_gtpu_send_indirect_data_forwarding(
     header_desc.pdcp_number = 0x4567;
 
     return test_gtpu_send(node, bearer, &header_desc, pkbuf);
+}
+
+int test_gtpu_send_congestion(
+        ogs_socknode_t *node, test_bearer_t *bearer, uint32_t ul, uint32_t dl)
+{
+    ogs_pkbuf_t *buf = NULL;
+    ogs_sockaddr_t to;
+    test_sess_t *sess = NULL;
+    ssize_t sent;
+
+    ogs_assert(node);
+    ogs_assert(bearer);
+    sess = bearer->sess;
+    ogs_assert(sess);
+
+    memset(&to, 0, sizeof(to));
+    to.ogs_sin_port = htobe16(OGS_GTPV1_U_UDP_PORT);
+    if (sess->upf_n3_ip.ipv4) {
+        to.ogs_sa_family = AF_INET;
+        to.sin.sin_addr.s_addr = sess->upf_n3_ip.addr;
+    } else {
+        to.ogs_sa_family = AF_INET6;
+        memcpy(to.sin6.sin6_addr.s6_addr, sess->upf_n3_ip.addr6, OGS_IPV6_LEN);
+    }
+
+    buf = ogs_gtpu_build_congestion_ul(sess->upf_n3_teid, bearer->qfi, ul <= 10000, ul, dl <= 10000, dl);
+    sent = ogs_sendto(node->sock->fd, buf->data, buf->len, 0, &to);
+    ogs_pkbuf_free(buf);
+    return sent > 0 ? OGS_OK : OGS_ERROR;
 }

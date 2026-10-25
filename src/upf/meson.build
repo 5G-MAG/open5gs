@@ -56,6 +56,7 @@ libupf_sources = files('''
     n4-build.h
     n4-handler.h
     qos-monitoring.h
+    l4s.h
 
     rule-match.c
     init.c
@@ -70,6 +71,7 @@ libupf_sources = files('''
     n4-build.c
     n4-handler.c
     qos-monitoring.c
+    l4s.c
 '''.split())
 
 libtins_dep = dependency('libtins',

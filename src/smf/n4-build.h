@@ -32,6 +32,8 @@ ogs_pkbuf_t *smf_n4_build_pdr_to_modify_list(
         uint8_t type, smf_sess_t *sess, ogs_pfcp_xact_t *xact);
 ogs_pkbuf_t *smf_n4_build_qos_flow_to_modify_list(
         uint8_t type, smf_sess_t *sess, ogs_pfcp_xact_t *xact);
+ogs_pkbuf_t *smf_n4_build_l4s_request(
+        uint8_t type, smf_sess_t *sess, ogs_pfcp_xact_t *xact);
 ogs_pkbuf_t *smf_n4_build_qos_monitoring_request(
         uint8_t type, smf_sess_t *sess, ogs_pfcp_xact_t *xact);
 ogs_pkbuf_t *smf_n4_build_usage_monitoring_request(

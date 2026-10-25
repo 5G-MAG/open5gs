@@ -1230,6 +1230,35 @@ void smf_sbi_send_smpolicycontrol_qnc_report(
     ogs_expect(r == OGS_OK);
 }
 
+void smf_sbi_send_smpolicycontrol_l4s_report(
+        smf_sess_t *sess, bool available, smf_bearer_t **qos_flow, int num_of_qos_flow)
+{
+    smf_npcf_smpolicycontrol_l4s_report_t *report = NULL;
+    int i, r;
+
+    ogs_assert(sess);
+
+    if (!PCF_SM_POLICY_ASSOCIATED(sess))
+        return;
+
+    report = ogs_calloc(1, sizeof(*report));
+    ogs_assert(report);
+    report->available = available;
+    for (i = 0; i < num_of_qos_flow && report->num_of_rule < OGS_MAX_NUM_OF_PCC_RULE; i++) {
+        if (qos_flow[i] && qos_flow[i]->pcc_rule.id)
+            report->rule_id[report->num_of_rule++] = ogs_strdup(qos_flow[i]->pcc_rule.id);
+    }
+    if (report->num_of_rule == 0) {
+        ogs_free(report);
+        return;
+    }
+
+    r = smf_sbi_discover_and_send(
+            OpenAPI_service_name_npcf_smpolicycontrol, NULL,
+            smf_npcf_smpolicycontrol_build_l4s_update, sess, NULL, 0, report);
+    ogs_expect(r == OGS_OK);
+}
+
 void smf_sbi_send_smpolicycontrol_qos_monitoring_report(
         smf_sess_t *sess, smf_bearer_t *qos_flow,
         const ogs_pfcp_qos_monitoring_measurement_t *measurement)

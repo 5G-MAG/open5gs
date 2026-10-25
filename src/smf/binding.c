@@ -518,6 +518,35 @@ static void qos_flow_gate_update(smf_bearer_t *qos_flow, int flow_status)
  * The QoS monitoring of the flow follows the rule: a rule with QoS monitoring data has it created (or changed when it differs) at the
  * UPF as a Session Reporting Rule, a rule that comes without it ends it.
  */
+/*
+ * TS 29.512 V19.7.0 clause 4.2.6.2.21: a rule with l4sInd enables ECN marking for L4S of its QoS flow. The UP function that has the
+ * feature does the marking (TS 29.244 V19.6.0 QER Indications EML4S) and the NG-RAN is asked to report the congestion information.
+ * Returns true when the flow has to be told (PFCP QER and NGAP).
+ */
+static bool qos_flow_l4s_update(smf_sess_t *sess, smf_bearer_t *qos_flow, ogs_pcc_rule_t *pcc_rule)
+{
+    int ind = OGS_PCC_RULE_L4S_NONE;
+    bool upf = false, on;
+
+    if (!qos_flow->qer)
+        return false;
+    if (sess->pfcp_node && sess->pfcp_node->up_function_features.eml4s) {
+        ind = pcc_rule->l4s_ind;
+        upf = true;
+    }
+    /* an NG-RAN node that reports the congestion information as not active leaves nothing to mark for (TS 29.244 V19.6.0 clause 5.38.1) */
+    on = upf && ind != OGS_PCC_RULE_L4S_NONE && qos_flow->l4s.ran_status != 2;
+    if (qos_flow->l4s.ind == ind && qos_flow->qer->ecn_marking_l4s == on)
+        return false;
+
+    qos_flow->l4s.stop = (ind == OGS_PCC_RULE_L4S_NONE && qos_flow->l4s.ind != OGS_PCC_RULE_L4S_NONE);
+    qos_flow->l4s.ind = ind;
+    qos_flow->qer->ecn_marking_l4s = on;
+    if (ind == OGS_PCC_RULE_L4S_NONE)
+        qos_flow->l4s.ran_status = 0;
+    return true;
+}
+
 static void qos_flow_qos_monitoring_update(smf_bearer_t *qos_flow, ogs_pcc_rule_t *pcc_rule)
 {
     ogs_pfcp_qos_monitoring_control_t control;
@@ -705,6 +734,8 @@ void smf_qos_flow_binding(smf_sess_t *sess)
 
             /* TS 29.512 V19.7.0 clause 4.2.3.25: the QoS monitoring of the packet delay that the rule asks for, or none any more */
             qos_flow_qos_monitoring_update(qos_flow, pcc_rule);
+            if (qos_flow_l4s_update(sess, qos_flow, pcc_rule) && !qos_flow_created)
+                qos_presence = true;
 
             /*
              * TS 29.512 V19.7.0 clause 4.2.4.10: the PDRs of a rule that refers to a usage monitoring control instance report to

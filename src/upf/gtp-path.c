@@ -51,6 +51,7 @@
 #include "event.h"
 #include "gtp-path.h"
 #include "qos-monitoring.h"
+#include "l4s.h"
 #include "pfcp-path.h"
 #include "rule-match.h"
 
@@ -220,6 +221,10 @@ static void _gtpv1_tun_recv_common_cb(
     for (i = 0; i < pdr->num_of_urr; i++)
         upf_sess_urr_acc_add(sess, pdr->urr[i], recvbuf->len, false);
 
+    /* ECN marking for L4S of the downlink packets (TS 29.244 V19.6.0 clause 5.38.1) */
+    if (pdr->qer && pdr->qer->ecn_marking_l4s)
+        upf_l4s_mark(recvbuf, pdr->qer->ecn_dl);
+
     ogs_assert(true == ogs_pfcp_up_handle_pdr(
                 pdr, OGS_GTPU_MSGTYPE_GPDU, 0, NULL, recvbuf, &report));
 
@@ -345,12 +350,18 @@ static void _gtpv1_u_recv_cb(short when, ogs_socket_t fd, void *data)
      * An uplink packet of the NG-RAN with the QMP field (TS 29.244 V19.6.0 clause 5.24.4.3): the delay is measured from its time stamps;
      * without a T-PDU it is the monitoring response of the NG-RAN and goes no further.
      */
-    if (header_desc.type == OGS_GTPU_MSGTYPE_GPDU && header_desc.qm.qmp &&
+    if (header_desc.type == OGS_GTPU_MSGTYPE_GPDU &&
+        (header_desc.qm.qmp || header_desc.congestion.ul_presence || header_desc.congestion.dl_presence) &&
         header_desc.pdu_type == OGS_GTP2_EXTENSION_HEADER_PDU_TYPE_UL_PDU_SESSION_INFORMATION) {
         ogs_pfcp_object_t *qm_object = ogs_pfcp_object_find_by_teid(header_desc.teid);
 
-        if (qm_object && qm_object->type == OGS_PFCP_OBJ_SESS_TYPE)
-            upf_qos_monitoring_uplink(UPF_SESS((ogs_pfcp_sess_t *)qm_object), &header_desc, ogs_time_now());
+        if (qm_object && qm_object->type == OGS_PFCP_OBJ_SESS_TYPE) {
+            if (header_desc.qm.qmp)
+                upf_qos_monitoring_uplink(UPF_SESS((ogs_pfcp_sess_t *)qm_object), &header_desc, ogs_time_now());
+            /* ECN marking for L4S: the congestion information of the NG-RAN (TS 29.244 V19.6.0 clause 5.38.1) */
+            if (header_desc.congestion.ul_presence || header_desc.congestion.dl_presence)
+                upf_l4s_congestion(UPF_SESS((ogs_pfcp_sess_t *)qm_object), &header_desc);
+        }
         if (pkbuf->len <= len)
             goto cleanup;
     }
@@ -883,6 +894,10 @@ static void _gtpv1_u_recv_cb(short when, ogs_socket_t fd, void *data)
                 }
             }
 #endif
+
+            /* ECN marking for L4S of the uplink packets (TS 29.244 V19.6.0 clause 5.38.1) */
+            if (pdr->qer && pdr->qer->ecn_marking_l4s)
+                upf_l4s_mark(pkbuf, pdr->qer->ecn_ul);
 
             ogs_assert(true == ogs_pfcp_up_handle_pdr(
                         pdr, header_desc.type, len, &header_desc,

@@ -322,6 +322,14 @@ void smf_5gc_n4_handle_session_modification_response(
     ogs_assert(flags);
     trigger = xact->delete_trigger;
 
+    /* The ECN marking for L4S of a QER: nothing to read in the answer */
+    if (flags & OGS_PFCP_MODIFY_L4S) {
+        ogs_pfcp_xact_commit(xact);
+        if (rsp->cause.presence && rsp->cause.u8 != OGS_PFCP_CAUSE_REQUEST_ACCEPTED)
+            ogs_warn("PFCP Cause [%d] : ECN marking for L4S not accepted", rsp->cause.u8);
+        return;
+    }
+
     /* A Session Reporting Rule for QoS monitoring: nothing to read in the answer */
     if (flags & OGS_PFCP_MODIFY_QOS_MONITORING) {
         ogs_pfcp_xact_commit(xact);

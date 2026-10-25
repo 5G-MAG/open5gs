@@ -59,6 +59,9 @@ typedef struct af_sess_s {
     int notify_count;                 /* the Npcf_PolicyAuthorization_Notify requests of the PCF (TS 29.514 V19.8.0 clause 4.2.5.2) */
     char notify_event[64];            /* the event of the first evNotifs entry of the last one */
     int notify_med_comp_n;            /* the medCompN of its first flow, -1 if none */
+    int notify_l4s_count;             /* the notifications of the event L4S_SUPP, notifType and medCompN of the first flow of the last one */
+    char notify_l4s_type[24];
+    int notify_l4s_med_comp_n;
     int notify_qm_count;              /* the notifications of the event QOS_MONITORING */
     long notify_qm_dl, notify_qm_ul, notify_qm_rt; /* the first delay of the last one, -1 if none */
     int notify_qm_med_comp_n;

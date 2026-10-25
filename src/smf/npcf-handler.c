@@ -121,6 +121,13 @@ static void update_authorized_pcc_rule_and_qos(
         }
     }
 
+    /* L4S_SUPP armed by the PCF: the availability of ECN marking for L4S is reported to it (clause 4.2.6.2.21) */
+    OpenAPI_list_for_each(SmPolicyDecision->policy_ctrl_req_triggers, node) {
+        if ((OpenAPI_policy_control_request_trigger_e)(intptr_t)node->data ==
+                OpenAPI_policy_control_request_trigger_L4S_SUPP)
+            sess->policy.l4s_trigger = true;
+    }
+
     /* QOS_MONITORING armed by the PCF: the reports of the UPF go to it (clause 4.2.4.24) */
     OpenAPI_list_for_each(SmPolicyDecision->policy_ctrl_req_triggers, node) {
         if ((OpenAPI_policy_control_request_trigger_e)(intptr_t)node->data ==
@@ -349,6 +356,13 @@ static void update_authorized_pcc_rule_and_qos(
                             pcc_rule->flow_status =
                                 ogs_sbi_flow_status_to_pcc_rule(
                                         TcData->flow_status);
+                        /* l4sInd: ECN marking for L4S is supported for the UL, the DL or both (clause 4.2.6.2.21) */
+                        switch (TcData->l4s_ind) {
+                        case OpenAPI_uplink_downlink_support_UL: pcc_rule->l4s_ind = OGS_PCC_RULE_L4S_UL; break;
+                        case OpenAPI_uplink_downlink_support_DL: pcc_rule->l4s_ind = OGS_PCC_RULE_L4S_DL; break;
+                        case OpenAPI_uplink_downlink_support_UL_DL: pcc_rule->l4s_ind = OGS_PCC_RULE_L4S_UL_DL; break;
+                        default: break;
+                        }
                         break;
                     }
                 }

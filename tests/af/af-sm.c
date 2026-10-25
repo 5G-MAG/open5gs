@@ -205,6 +205,18 @@ void af_state_operational(ogs_fsm_t *s, af_event_t *e)
                             app_session->notify_qm_rt = cJSON_IsNumber(d) ? (long)d->valuedouble : -1;
                             app_session->notify_qm_med_comp_n = cJSON_IsNumber(qmed) ? qmed->valueint : -1;
                         }
+                        if (cJSON_IsString(event) && !strcmp(event->valuestring, "L4S_SUPP")) {
+                            cJSON *l4s = cJSON_GetArrayItem(cJSON_GetObjectItem(body, "l4sReports"), 0);
+                            cJSON *ltype = l4s ? cJSON_GetObjectItem(l4s, "notifType") : NULL;
+                            cJSON *lflow = l4s ? cJSON_GetArrayItem(cJSON_GetObjectItem(l4s, "flows"), 0) : NULL;
+                            cJSON *lmed = lflow ? cJSON_GetObjectItem(lflow, "medCompN") : NULL;
+
+                            ogs_assert(cJSON_IsString(ltype));
+                            app_session->notify_l4s_count++;
+                            ogs_cpystrn(app_session->notify_l4s_type, ltype->valuestring,
+                                    sizeof(app_session->notify_l4s_type));
+                            app_session->notify_l4s_med_comp_n = cJSON_IsNumber(lmed) ? lmed->valueint : -1;
+                        }
                         if (cJSON_IsString(event) && !strcmp(event->valuestring, "QOS_NOTIF")) {
                             cJSON *qnc = cJSON_GetArrayItem(cJSON_GetObjectItem(body, "qncReports"), 0);
                             cJSON *qtype = qnc ? cJSON_GetObjectItem(qnc, "notifType") : NULL;

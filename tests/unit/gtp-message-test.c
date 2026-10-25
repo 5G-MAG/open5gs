@@ -356,6 +356,23 @@ static void gtp_qos_monitoring_test(abts_case *tc, void *data)
     ABTS_TRUE(tc, desc.qm.ul_delay_ind && desc.qm.ul_delay_result == 9);
     ogs_pkbuf_free(pkbuf);
 
+    /* the congestion information of the NG-RAN, without QMP */
+    pkbuf = ogs_gtpu_build_congestion_ul(7, 3, true, 2500, true, 10000);
+    ABTS_INT_EQUAL(tc, 0, pkbuf->len % 4);
+    len = ogs_gtpu_parse_header(&desc, pkbuf);
+    ABTS_INT_EQUAL(tc, pkbuf->len, len);
+    ABTS_INT_EQUAL(tc, 3, desc.qos_flow_identifier);
+    ABTS_TRUE(tc, !desc.qm.qmp);
+    ABTS_TRUE(tc, desc.congestion.ul_presence && desc.congestion.ul == 2500);
+    ABTS_TRUE(tc, desc.congestion.dl_presence && desc.congestion.dl == 10000);
+    ogs_pkbuf_free(pkbuf);
+
+    pkbuf = ogs_gtpu_build_congestion_ul(7, 3, false, 0, true, 42);
+    len = ogs_gtpu_parse_header(&desc, pkbuf);
+    ABTS_INT_EQUAL(tc, pkbuf->len, len);
+    ABTS_TRUE(tc, !desc.congestion.ul_presence && desc.congestion.dl_presence && desc.congestion.dl == 42);
+    ogs_pkbuf_free(pkbuf);
+
     /* only the uplink result */
     pkbuf = ogs_gtpu_build_qos_monitoring_ul(1, 1, t1, t1, t1, false, 0, true, 11);
     len = ogs_gtpu_parse_header(&desc, pkbuf);

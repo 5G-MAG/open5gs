@@ -363,6 +363,30 @@ ED7(uint8_t spare:2;,
         };
         uint8_t octet11;
     };
+    union {
+        struct {
+
+/*
+ * 12/8 EML4S N4 UP function supports ECN Marking for L4S (see clause 5.38.1).
+ * 12/7 DETNET N4 Deterministic Networking is supported by the UP function.
+ * 12/6 QMCON N4 UPF support of QoS monitoring of Congestion information.
+ * 12/5 N6JEDB N4 UPF support of N6 Jitter, DL Periodicity and UL Periodicity Measurement and Reporting, and End of Data Burst marking.
+ * 12/4 DRTSC N4 UP function supports Direct Reporting of TSC management information events.
+ * 12/3 TSCTS N4 AF requested support of Time Synchronization and/or Time Sensitive Communication.
+ * 12/2 DBDM Sxa, N4 The buffering parameters DL Buffering Duration and DL Buffering Suggested Packet Count.
+ * 12/1 REDSM N4 UP function supports the Redundant Steering Mode.
+ */
+ED8(uint8_t eml4s:1;,
+    uint8_t detnet:1;,
+    uint8_t qmcon:1;,
+    uint8_t n6jedb:1;,
+    uint8_t drtsc:1;,
+    uint8_t tscts:1;,
+    uint8_t dbdm:1;,
+    uint8_t redsm:1;)
+        };
+        uint8_t octet12;
+    };
 } __attribute__ ((packed)) ogs_pfcp_up_function_features_t;
 
 /*

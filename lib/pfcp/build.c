@@ -824,6 +824,7 @@ void ogs_pfcp_build_update_urr(
 static struct {
     char mbr[OGS_PFCP_BITRATE_LEN];
     char gbr[OGS_PFCP_BITRATE_LEN];
+    uint8_t indications; /* QER Indications, octet 5 */
 } create_qer_buf[OGS_MAX_NUM_OF_QER], update_qer_buf[OGS_MAX_NUM_OF_QER];
 
 void ogs_pfcp_build_create_qer(
@@ -855,6 +856,14 @@ void ogs_pfcp_build_create_qer(
     if (qer->qfi) {
         message->qos_flow_identifier.presence = 1;
         message->qos_flow_identifier.u8 = qer->qfi;
+    }
+
+    /* EML4S: the UPF performs ECN marking for L4S (bit 3) */
+    if (qer->ecn_marking_l4s) {
+        create_qer_buf[i].indications = 0x04;
+        message->qer_indications.presence = 1;
+        message->qer_indications.data = &create_qer_buf[i].indications;
+        message->qer_indications.len = 1;
     }
 }
 
@@ -892,6 +901,12 @@ void ogs_pfcp_build_update_qer(
                     &message->guaranteed_bitrate,
                     &qer->gbr, update_qer_buf[i].gbr, OGS_PFCP_BITRATE_LEN);
         }
+
+        /* the ECN marking for L4S is on or off (QER Indications EML4S, bit 3) */
+        update_qer_buf[i].indications = qer->ecn_marking_l4s ? 0x04 : 0x00;
+        message->qer_indications.presence = 1;
+        message->qer_indications.data = &update_qer_buf[i].indications;
+        message->qer_indications.len = 1;
     }
 }
 

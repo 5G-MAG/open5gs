@@ -814,6 +814,39 @@ ogs_pkbuf_t *smf_n4_build_qos_monitoring_request(
     return pkbuf;
 }
 
+/* Update QER with the ECN marking for L4S of the QoS flow alone (TS 29.244 V19.6.0 clause 5.38.1) */
+ogs_pkbuf_t *smf_n4_build_l4s_request(
+        uint8_t type, smf_sess_t *sess, ogs_pfcp_xact_t *xact)
+{
+    ogs_pfcp_message_t *pfcp_message = NULL;
+    ogs_pfcp_session_modification_request_t *req = NULL;
+    ogs_pkbuf_t *pkbuf = NULL;
+    smf_bearer_t *qos_flow = NULL;
+
+    ogs_assert(sess);
+    ogs_assert(xact);
+    qos_flow = smf_qos_flow_find_by_id(OGS_POINTER_TO_UINT(xact->data));
+    if (!qos_flow || !qos_flow->qer) {
+        ogs_error("No QoS flow for the ECN marking for L4S");
+        return NULL;
+    }
+
+    pfcp_message = ogs_calloc(1, sizeof(*pfcp_message));
+    if (!pfcp_message) {
+        ogs_error("ogs_calloc() failed");
+        return NULL;
+    }
+    req = &pfcp_message->pfcp_session_modification_request;
+    ogs_pfcp_build_update_qer(&req->update_qer[0], 0, qos_flow->qer, OGS_PFCP_MODIFY_QOS_MODIFY);
+
+    pfcp_message->h.type = type;
+    pkbuf = ogs_pfcp_build_msg(pfcp_message);
+    ogs_expect(pkbuf);
+    ogs_free(pfcp_message);
+
+    return pkbuf;
+}
+
 ogs_pkbuf_t *smf_n4_build_session_deletion_request(
         uint8_t type, smf_sess_t *sess)
 {

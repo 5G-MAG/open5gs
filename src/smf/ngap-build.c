@@ -106,6 +106,70 @@ static void fill_qos_level_parameters(
     }
 }
 
+/*
+ * TS 38.413 V19.1.0 clause 9.3.1.266: ECN Marking at UPF Request tells the NG-RAN node to report the congestion information of a
+ * QoS flow, as the UP function marks the packets for L4S (TS 29.512 V19.7.0 clause 4.2.6.2.21).
+ */
+static NGAP_ECNMarkingorCongestionInformationReportingRequest_t *l4s_request(smf_bearer_t *qos_flow)
+{
+    NGAP_ECNMarkingorCongestionInformationReportingRequest_t *request = NULL;
+    long value;
+
+    if (!qos_flow || (qos_flow->l4s.ind == OGS_PCC_RULE_L4S_NONE && !qos_flow->l4s.stop))
+        return NULL;
+    switch (qos_flow->l4s.ind) {
+    case OGS_PCC_RULE_L4S_UL: value = NGAP_ECNMarkingAtUPFRequest_ul; break;
+    case OGS_PCC_RULE_L4S_DL: value = NGAP_ECNMarkingAtUPFRequest_dl; break;
+    case OGS_PCC_RULE_L4S_UL_DL: value = NGAP_ECNMarkingAtUPFRequest_both; break;
+    default: value = NGAP_ECNMarkingAtUPFRequest_stop; break;
+    }
+    request = CALLOC(1, sizeof(*request));
+    ogs_assert(request);
+    request->present = NGAP_ECNMarkingorCongestionInformationReportingRequest_PR_eCNMarkingAtUPFRequest;
+    request->choice.eCNMarkingAtUPFRequest = value;
+    return request;
+}
+
+static void l4s_setup_item_ext(NGAP_QosFlowSetupRequestItem_t *item, smf_bearer_t *qos_flow)
+{
+    NGAP_ProtocolExtensionContainer_14713P350_t *container = NULL;
+    NGAP_QosFlowSetupRequestItem_ExtIEs_t *ext = NULL;
+    NGAP_ECNMarkingorCongestionInformationReportingRequest_t *request = l4s_request(qos_flow);
+
+    if (!request)
+        return;
+    container = CALLOC(1, sizeof(*container));
+    ogs_assert(container);
+    ext = CALLOC(1, sizeof(*ext));
+    ogs_assert(ext);
+    ASN_SEQUENCE_ADD(&container->list, ext);
+    ext->id = NGAP_ProtocolIE_ID_id_ECNMarkingorCongestionInformationReportingRequest;
+    ext->criticality = NGAP_Criticality_ignore;
+    ext->extensionValue.present = NGAP_QosFlowSetupRequestItem_ExtIEs__extensionValue_PR_ECNMarkingorCongestionInformationReportingRequest;
+    ext->extensionValue.choice.ECNMarkingorCongestionInformationReportingRequest = request;
+    item->iE_Extensions = (struct NGAP_ProtocolExtensionContainer *)container;
+}
+
+static void l4s_modify_item_ext(NGAP_QosFlowAddOrModifyRequestItem_t *item, smf_bearer_t *qos_flow)
+{
+    NGAP_ProtocolExtensionContainer_14713P339_t *container = NULL;
+    NGAP_QosFlowAddOrModifyRequestItem_ExtIEs_t *ext = NULL;
+    NGAP_ECNMarkingorCongestionInformationReportingRequest_t *request = l4s_request(qos_flow);
+
+    if (!request)
+        return;
+    container = CALLOC(1, sizeof(*container));
+    ogs_assert(container);
+    ext = CALLOC(1, sizeof(*ext));
+    ogs_assert(ext);
+    ASN_SEQUENCE_ADD(&container->list, ext);
+    ext->id = NGAP_ProtocolIE_ID_id_ECNMarkingorCongestionInformationReportingRequest;
+    ext->criticality = NGAP_Criticality_ignore;
+    ext->extensionValue.present = NGAP_QosFlowAddOrModifyRequestItem_ExtIEs__extensionValue_PR_ECNMarkingorCongestionInformationReportingRequest;
+    ext->extensionValue.choice.ECNMarkingorCongestionInformationReportingRequest = request;
+    item->iE_Extensions = (struct NGAP_ProtocolExtensionContainer *)container;
+}
+
 ogs_pkbuf_t *ngap_build_pdu_session_resource_setup_request_transfer(
         smf_sess_t *sess)
 {
@@ -387,6 +451,7 @@ ogs_pkbuf_t *ngap_build_pdu_session_resource_setup_request_transfer(
         fill_qos_level_parameters(
                 QosFlowSetupRequestItem->qosFlowLevelQosParameters,
                 &qos, true);
+        l4s_setup_item_ext(QosFlowSetupRequestItem, smf_qos_flow_find_by_qfi(sess, qosFlowSetupItem->qfi));
 
     } else {
         ogs_list_for_each(&sess->bearer_list, qos_flow) {
@@ -406,6 +471,7 @@ ogs_pkbuf_t *ngap_build_pdu_session_resource_setup_request_transfer(
             fill_qos_level_parameters(
                     QosFlowSetupRequestItem->qosFlowLevelQosParameters,
                     &qos_flow->qos, true);
+            l4s_setup_item_ext(QosFlowSetupRequestItem, qos_flow);
         }
     }
 
@@ -533,6 +599,7 @@ ogs_pkbuf_t *ngap_build_pdu_session_resource_modify_request_transfer(
                     fill_qos_level_parameters(
                             QosFlowAddOrModifyRequestItem->
                                 qosFlowLevelQosParameters, &qos, true);
+                    l4s_modify_item_ext(QosFlowAddOrModifyRequestItem, smf_qos_flow_find_by_qfi(sess, qosFlowAddModRequestItem->qfi));
                 }
             }
         }
@@ -556,6 +623,7 @@ ogs_pkbuf_t *ngap_build_pdu_session_resource_modify_request_transfer(
             fill_qos_level_parameters(
                     QosFlowAddOrModifyRequestItem->qosFlowLevelQosParameters,
                     &qos_flow->qos, include_gbr);
+            l4s_modify_item_ext(QosFlowAddOrModifyRequestItem, qos_flow);
         }
     }
 

@@ -22,6 +22,86 @@
 #include "pfcp-path.h"
 #include "ngap-path.h"
 
+/*
+ * TS 38.413 V19.1.0 clause 9.3.1.267: the NG-RAN node tells per QoS flow whether the ECN marking or congestion information reporting
+ * is active. When the PCF armed L4S_SUPP, it is told which flows have no ECN marking for L4S, and which have it again (TS 29.512
+ * V19.7.0 clause 4.2.6.2.21).
+ */
+static void handle_l4s_status(smf_sess_t *sess, NGAP_ECNMarkingorCongestionInformationReportingStatus_t *status)
+{
+    smf_bearer_t *unavailable[OGS_MAX_NUM_OF_PCC_RULE];
+    smf_bearer_t *available[OGS_MAX_NUM_OF_PCC_RULE];
+    int num_unavailable = 0, num_available = 0, i;
+
+    if (!status)
+        return;
+    for (i = 0; i < status->list.count; i++) {
+        NGAP_ECNMarkingorCongestionInformationReportingStatus_Item_t *item = status->list.array[i];
+        smf_bearer_t *qos_flow = item ? smf_qos_flow_find_by_qfi(sess, item->qosFlowIdentifier) : NULL;
+
+        if (!qos_flow || qos_flow->l4s.ind == OGS_PCC_RULE_L4S_NONE)
+            continue;
+        qos_flow->l4s.ran_status = (item->activationStatus == NGAP_ActivationStatus_active) ? 1 : 2;
+        /* not active: the UP function is told to stop the ECN marking for L4S, and to resume it when the NG-RAN reports active again */
+        if (qos_flow->qer && sess->pfcp_node && sess->pfcp_node->up_function_features.eml4s &&
+                qos_flow->qer->ecn_marking_l4s != (qos_flow->l4s.ran_status == 1)) {
+            qos_flow->qer->ecn_marking_l4s = (qos_flow->l4s.ran_status == 1);
+            ogs_assert(OGS_OK == smf_5gc_pfcp_send_l4s_request(sess, qos_flow));
+        }
+        if (qos_flow->l4s.ran_status == 2 && !qos_flow->l4s.reported_unavailable &&
+                num_unavailable < OGS_ARRAY_SIZE(unavailable)) {
+            qos_flow->l4s.reported_unavailable = true;
+            unavailable[num_unavailable++] = qos_flow;
+        } else if (qos_flow->l4s.ran_status == 1 && qos_flow->l4s.reported_unavailable &&
+                num_available < OGS_ARRAY_SIZE(available)) {
+            qos_flow->l4s.reported_unavailable = false;
+            available[num_available++] = qos_flow;
+        }
+    }
+    if (!sess->policy.l4s_trigger)
+        return;
+    if (num_unavailable)
+        smf_sbi_send_smpolicycontrol_l4s_report(sess, false, unavailable, num_unavailable);
+    if (num_available)
+        smf_sbi_send_smpolicycontrol_l4s_report(sess, true, available, num_available);
+}
+
+/*
+ * The status of the ECN marking or congestion information reporting is an extension of the transfer. The NG-RAN node has had the
+ * request of the flows by now, so a stop is no longer pending.
+ */
+static void handle_l4s_status_ext(smf_sess_t *sess, struct NGAP_ProtocolExtensionContainer *ext, bool setup)
+{
+    smf_bearer_t *qos_flow = NULL;
+    int i;
+
+    if (ext && setup) {
+        NGAP_ProtocolExtensionContainer_14713P315_t *list = (NGAP_ProtocolExtensionContainer_14713P315_t *)ext;
+
+        for (i = 0; i < list->list.count; i++) {
+            NGAP_PDUSessionResourceSetupResponseTransfer_ExtIEs_t *ie = list->list.array[i];
+
+            if (ie && ie->id == NGAP_ProtocolIE_ID_id_ECNMarkingorCongestionInformationReportingStatus &&
+                    ie->extensionValue.present ==
+                    NGAP_PDUSessionResourceSetupResponseTransfer_ExtIEs__extensionValue_PR_ECNMarkingorCongestionInformationReportingStatus)
+                handle_l4s_status(sess, ie->extensionValue.choice.ECNMarkingorCongestionInformationReportingStatus);
+        }
+    } else if (ext) {
+        NGAP_ProtocolExtensionContainer_14713P291_t *list = (NGAP_ProtocolExtensionContainer_14713P291_t *)ext;
+
+        for (i = 0; i < list->list.count; i++) {
+            NGAP_PDUSessionResourceModifyResponseTransfer_ExtIEs_t *ie = list->list.array[i];
+
+            if (ie && ie->id == NGAP_ProtocolIE_ID_id_ECNMarkingorCongestionInformationReportingStatus &&
+                    ie->extensionValue.present ==
+                    NGAP_PDUSessionResourceModifyResponseTransfer_ExtIEs__extensionValue_PR_ECNMarkingorCongestionInformationReportingStatus)
+                handle_l4s_status(sess, ie->extensionValue.choice.ECNMarkingorCongestionInformationReportingStatus);
+        }
+    }
+    ogs_list_for_each(&sess->bearer_list, qos_flow)
+        qos_flow->l4s.stop = false;
+}
+
 int ngap_handle_pdu_session_resource_setup_response_transfer(
         smf_sess_t *sess, ogs_sbi_stream_t *stream, ogs_pkbuf_t *pkbuf)
 {
@@ -65,6 +145,8 @@ int ngap_handle_pdu_session_resource_setup_response_transfer(
                 "No N2 SM Info Type", smf_ue->supi);
         goto cleanup;
     }
+
+    handle_l4s_status_ext(sess, message.iE_Extensions, true);
 
     rv = OGS_ERROR;
 
@@ -554,6 +636,8 @@ int ngap_handle_pdu_session_resource_modify_response_transfer(
                 "No N2 SM Info Type", smf_ue->supi);
         goto cleanup;
     }
+
+    handle_l4s_status_ext(sess, message.iE_Extensions, false);
 
     rv = OGS_ERROR;
 

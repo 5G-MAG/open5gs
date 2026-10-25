@@ -1421,6 +1421,11 @@ ogs_pfcp_qer_t *ogs_pfcp_handle_create_qer(ogs_pfcp_sess_t *sess,
     if (message->qos_flow_identifier.presence)
         qer->qfi = message->qos_flow_identifier.u8;
 
+    /* QER Indications: EML4S, bit 3 */
+    qer->ecn_marking_l4s = false;
+    if (message->qer_indications.presence && message->qer_indications.len >= 1)
+        qer->ecn_marking_l4s = (((uint8_t *)message->qer_indications.data)[0] & 0x04) ? true : false;
+
     return qer;
 }
 
@@ -1472,6 +1477,13 @@ ogs_pfcp_qer_t *ogs_pfcp_handle_update_qer(ogs_pfcp_sess_t *sess,
             *offending_ie_value = OGS_PFCP_GBR_TYPE;
             return NULL;
         }
+    }
+
+    /* QER Indications: EML4S, bit 3 (when stopped the marking percentages are reset) */
+    if (message->qer_indications.presence && message->qer_indications.len >= 1) {
+        qer->ecn_marking_l4s = (((uint8_t *)message->qer_indications.data)[0] & 0x04) ? true : false;
+        if (!qer->ecn_marking_l4s)
+            qer->ecn_ul = qer->ecn_dl = 0;
     }
 
     return qer;
