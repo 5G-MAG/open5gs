@@ -346,6 +346,7 @@ typedef struct smf_sess_s {
 
     ogs_pfcp_sess_t pfcp;           /* PFCP session context */
 
+    bool            pdu_set_ran_supported; /* the NG-RAN gave the PDU Set based Handling Indicator (TS 38.413 V19.1.0 clause 9.3.1.268) */
     uint64_t        smpolicycontrol_features; /* SBI features */
     uint64_t        smpolicycontrol_features_hi; /* the features above number 64 (OGS_SBI_FEATURES_HI_SET) */
 
@@ -702,6 +703,9 @@ typedef struct smf_sess_s {
     /* Handover */
     struct {
         bool prepared;
+        /* what the target NG-RAN node said of PDU Set based Handling in the Handover Request Acknowledge: applied when the handover completes */
+        bool pdu_set_known;
+        bool pdu_set_ran_supported;
         bool data_forwarding_not_possible;
         bool indirect_data_forwarding;
 

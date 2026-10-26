@@ -136,6 +136,91 @@ static long associated_set_index(NGAP_ProtocolExtensionContainer_14713P33_t *lis
     return 0;
 }
 
+/*
+ * PDU Set marking by the UP function (TS 29.244 V19.6.0 clause 5.38.3): when the NG-RAN has indicated support of PDU Set based Handling and the
+ * UP function supports PDU Set marking, the QER of a QoS flow that has PDU Set QoS parameters is told to mark the downlink packets; the QER of a
+ * flow that no longer has them is told to stop.
+ */
+void smf_pdu_set_marking_update(smf_sess_t *sess)
+{
+    smf_bearer_t *qos_flow = NULL;
+
+    if (!sess->pfcp_node || !sess->pfcp_node->up_function_features.pdusm)
+        return;
+    ogs_list_for_each(&sess->bearer_list, qos_flow) {
+        bool on = sess->pdu_set_ran_supported && qos_flow->pdu_set_dl.presence;
+
+        if (qos_flow->qer && qos_flow->qer->pdu_set_marking != on) {
+            qos_flow->qer->pdu_set_marking = on;
+            ogs_assert(OGS_OK == smf_5gc_pfcp_send_l4s_request(sess, qos_flow));
+        }
+    }
+}
+
+static void handle_pdu_set_indicator_ext(smf_sess_t *sess, struct NGAP_ProtocolExtensionContainer *ext, bool setup)
+{
+    int i;
+
+    if (ext && setup) {
+        NGAP_ProtocolExtensionContainer_14713P315_t *list = (NGAP_ProtocolExtensionContainer_14713P315_t *)ext;
+
+        for (i = 0; i < list->list.count; i++) {
+            NGAP_PDUSessionResourceSetupResponseTransfer_ExtIEs_t *ie = list->list.array[i];
+
+            if (ie && ie->id == NGAP_ProtocolIE_ID_id_PDUSetbasedHandlingIndicator)
+                sess->pdu_set_ran_supported = true;
+        }
+    } else if (ext) {
+        NGAP_ProtocolExtensionContainer_14713P291_t *list = (NGAP_ProtocolExtensionContainer_14713P291_t *)ext;
+
+        for (i = 0; i < list->list.count; i++) {
+            NGAP_PDUSessionResourceModifyResponseTransfer_ExtIEs_t *ie = list->list.array[i];
+
+            if (ie && ie->id == NGAP_ProtocolIE_ID_id_PDUSetbasedHandlingIndicator)
+                sess->pdu_set_ran_supported = true;
+        }
+    }
+    smf_pdu_set_marking_update(sess);
+}
+
+/*
+ * TS 29.244 V19.6.0 clause 5.38.3: after a handover the NG-RAN node that serves the UE reports whether it supports PDU Set based Handling; the
+ * marking of the QoS flows follows (stopped for a node that does not report it, started again for one that does).
+ */
+static void handle_pdu_set_indicator_handover(smf_sess_t *sess, struct NGAP_ProtocolExtensionContainer *ext, bool path_switch)
+{
+    bool indicated = false;
+    int i;
+
+    if (ext && path_switch) {
+        NGAP_ProtocolExtensionContainer_14713P267_t *list = (NGAP_ProtocolExtensionContainer_14713P267_t *)ext;
+
+        for (i = 0; i < list->list.count; i++) {
+            NGAP_PathSwitchRequestTransfer_ExtIEs_t *ie = list->list.array[i];
+
+            if (ie && ie->id == NGAP_ProtocolIE_ID_id_PDUSetbasedHandlingIndicator)
+                indicated = true;
+        }
+    } else if (ext) {
+        NGAP_ProtocolExtensionContainer_14713P144_t *list = (NGAP_ProtocolExtensionContainer_14713P144_t *)ext;
+
+        for (i = 0; i < list->list.count; i++) {
+            NGAP_HandoverRequestAcknowledgeTransfer_ExtIEs_t *ie = list->list.array[i];
+
+            if (ie && ie->id == NGAP_ProtocolIE_ID_id_PDUSetbasedHandlingIndicator)
+                indicated = true;
+        }
+    }
+    if (path_switch) {
+        sess->pdu_set_ran_supported = indicated;
+        smf_pdu_set_marking_update(sess);
+    } else {
+        /* an N2 handover is not complete until the source and the target have done their parts: the marking follows then (nsmf-handler.c) */
+        sess->handover.pdu_set_known = true;
+        sess->handover.pdu_set_ran_supported = indicated;
+    }
+}
+
 int ngap_handle_pdu_session_resource_setup_response_transfer(
         smf_sess_t *sess, ogs_sbi_stream_t *stream, ogs_pkbuf_t *pkbuf)
 {
@@ -183,6 +268,7 @@ int ngap_handle_pdu_session_resource_setup_response_transfer(
     }
 
     handle_l4s_status_ext(sess, message.iE_Extensions, true);
+    handle_pdu_set_indicator_ext(sess, message.iE_Extensions, true);
 
     rv = OGS_ERROR;
 
@@ -709,6 +795,7 @@ int ngap_handle_pdu_session_resource_modify_response_transfer(
     }
 
     handle_l4s_status_ext(sess, message.iE_Extensions, false);
+    handle_pdu_set_indicator_ext(sess, message.iE_Extensions, false);
 
     rv = OGS_ERROR;
 
@@ -868,6 +955,8 @@ int ngap_handle_path_switch_request_transfer(
                 "No N2 SM Info Type", smf_ue->supi);
         goto cleanup;
     }
+
+    handle_pdu_set_indicator_handover(sess, message.iE_Extensions, true);
 
     rv = OGS_ERROR;
 
@@ -1137,6 +1226,8 @@ int ngap_handle_handover_request_ack(
                 "No N2 SM Info Type", smf_ue->supi);
         goto cleanup;
     }
+
+    handle_pdu_set_indicator_handover(sess, message.iE_Extensions, false);
 
     rv = OGS_ERROR;
 

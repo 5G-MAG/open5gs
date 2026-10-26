@@ -2627,7 +2627,7 @@ bool pcf_npcf_policyauthorization_handle_update(
             }
         }
         attr_only = existing && !reference && media_component->media_type == OpenAPI_media_type_NULL &&
-            media_component->num_of_sub == 0 && media_component->flow_status == OpenAPI_flow_status_NULL &&
+            media_component->num_of_sub == 0 &&
             !media_component->max_requested_bandwidth_dl && !media_component->max_requested_bandwidth_ul &&
             !media_component->min_requested_bandwidth_dl && !media_component->min_requested_bandwidth_ul &&
             !media_component->rr_bandwidth && !media_component->rs_bandwidth;
@@ -2784,7 +2784,7 @@ bool pcf_npcf_policyauthorization_handle_update(
         }
 
         /* fStatus of the media component: the gate of the flows (TS 29.514 clause 5.6.2.7) */
-        if (!attr_only && media_component->flow_status != OpenAPI_flow_status_NULL)
+        if (media_component->flow_status != OpenAPI_flow_status_NULL)
             pcc_rule->flow_status =
                 ogs_sbi_flow_status_to_pcc_rule(media_component->flow_status);
 

@@ -117,6 +117,8 @@ ogs_pkbuf_t *ogs_gtp1_build_error_indication(
     return pkbuf;
 }
 
+static void add_pdu_set_information(const ogs_gtp2_header_desc_t *header_desc, ogs_pkbuf_t *pkbuf);
+
 void ogs_gtp2_encapsulate_header(
         ogs_gtp2_header_desc_t *header_desc, ogs_pkbuf_t *pkbuf)
 {
@@ -160,6 +162,53 @@ void ogs_gtp2_encapsulate_header(
     }
 
     ogs_gtp2_fill_header(&gtp_hdesc, &ext_hdesc, pkbuf);
+
+    /* the header goes after the PDU Session Container, which must be the last one so far: not with the UDP Port or PDCP Number headers */
+    if (header_desc->pdu_set.presence && header_desc->qos_flow_identifier &&
+            !header_desc->udp.presence && !header_desc->pdcp_number_presence)
+        add_pdu_set_information(header_desc, pkbuf);
+}
+
+/*
+ * The PDU Set Information Container extension header after the PDU Session Container that fill_header has made (TS 29.281 V19.2.0 clause 5.2.2.8,
+ * TS 38.415 V19.1.0 clause 6.5.2.1): the length in units of four octets, the frame padded to n*4-2 octets, the next extension header type 0.
+ */
+static void add_pdu_set_information(const ogs_gtp2_header_desc_t *header_desc, ogs_pkbuf_t *pkbuf)
+{
+    const int hlen = OGS_GTPV1U_HEADER_LEN + OGS_GTPV1U_EXTENSION_HEADER_LEN + 4; /* the GTP-U header, its optional fields and the PDU Session Container */
+    int content = header_desc->pdu_set.pssize_presence ? 8 : 5;
+    int units = (content + 2 + 3) / 4;
+    int ext_len = units * 4;
+    uint8_t *p;
+    uint16_t length;
+
+    ogs_assert(pkbuf->len >= hlen);
+    p = pkbuf->data;
+    ogs_assert(p[OGS_GTPV1U_HEADER_LEN + OGS_GTPV1U_EXTENSION_HEADER_LEN - 1] ==
+            OGS_GTP2_EXTENSION_HEADER_TYPE_PDU_SESSION_CONTAINER);
+    ogs_pkbuf_push(pkbuf, ext_len);
+    p = pkbuf->data;
+    memmove(p, p + ext_len, hlen);
+    /* the PDU Session Container announces the new header, which has no successor */
+    p[hlen - 1] = OGS_GTP2_EXTENSION_HEADER_TYPE_PDU_SET_INFORMATION_CONTAINER;
+    memset(p + hlen, 0, ext_len);
+    p[hlen] = units;
+    p[hlen + 1] = (header_desc->pdu_set.end_of_data_burst ? 0x08 : 0) | (header_desc->pdu_set.end_pdu ? 0x04 : 0) |
+        (header_desc->pdu_set.pssize_presence ? 0x02 : 0);
+    p[hlen + 2] = ((header_desc->qos_flow_identifier & 0x3f) << 2) | ((header_desc->pdu_set.pssn >> 8) & 0x03);
+    p[hlen + 3] = header_desc->pdu_set.pssn & 0xff;
+    p[hlen + 4] = header_desc->pdu_set.psi & 0x0f;
+    p[hlen + 5] = header_desc->pdu_set.psn;
+    if (header_desc->pdu_set.pssize_presence) {
+        p[hlen + 6] = (header_desc->pdu_set.pssize >> 16) & 0xff;
+        p[hlen + 7] = (header_desc->pdu_set.pssize >> 8) & 0xff;
+        p[hlen + 8] = header_desc->pdu_set.pssize & 0xff;
+    }
+    /* the length field of the GTP-U header counts what follows its first eight octets */
+    length = (p[2] << 8) | p[3];
+    length += ext_len;
+    p[2] = length >> 8;
+    p[3] = length & 0xff;
 }
 
 void ogs_gtp2_fill_header(

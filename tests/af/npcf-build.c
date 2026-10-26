@@ -321,6 +321,12 @@ ogs_sbi_request_t *af_npcf_policyauthorization_build_create(
             ogs_strdup("permit out icmp from any to any"));
         OpenAPI_list_add(fDescList,
             ogs_strdup("permit in icmp from any to any"));
+    } else if (af_param->flow_type == 98) {
+        /* UDP from anywhere: the RTP packets that the test sends to the UE */
+        OpenAPI_list_add(fDescList,
+            ogs_strdup("permit out 17 from any to any"));
+        OpenAPI_list_add(fDescList,
+            ogs_strdup("permit in 17 from any to any"));
     } else {
         ogs_assert_if_reached();
     }
@@ -353,7 +359,7 @@ ogs_sbi_request_t *af_npcf_policyauthorization_build_create(
     /* Flow Description */
     fDescList = OpenAPI_list_create();
     ogs_assert(fDescList);
-    if (af_param->flow_type == 0) {
+    if (af_param->flow_type == 0 || af_param->flow_type == 98) {
         /* Nothing */
     } else if (af_param->flow_type == 1 || af_param->flow_type == 99) {
         OpenAPI_list_add(fDescList,
@@ -632,6 +638,12 @@ ogs_sbi_request_t *af_npcf_policyauthorization_build_update(
             ogs_strdup("permit out icmp from any to any"));
         OpenAPI_list_add(fDescList,
             ogs_strdup("permit in icmp from any to any"));
+    } else if (af_param->flow_type == 98) {
+        /* UDP from anywhere: the RTP packets that the test sends to the UE */
+        OpenAPI_list_add(fDescList,
+            ogs_strdup("permit out 17 from any to any"));
+        OpenAPI_list_add(fDescList,
+            ogs_strdup("permit in 17 from any to any"));
     } else {
         ogs_assert_if_reached();
     }

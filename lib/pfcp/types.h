@@ -387,6 +387,29 @@ ED8(uint8_t eml4s:1;,
         };
         uint8_t octet12;
     };
+    union {
+        struct {
+/*
+ * 13/8 UN6TU N4 UPF supports N6 tunnelling using N6 routing information.
+ * 13/7 UMN6IP N4 UPF supports to allocate a mapped N6 IP address and perform IP replacement.
+ * 13/6 UPSBIES N4 UPF support of event subscription via Service Based Interface.
+ * 13/5 MT-SDT N4 UPF support of reporting the size of DL Data Packets per QoS flow.
+ * 13/4 EDBNC N4 UP function supports Extended DL Buffering Notification Control.
+ * 13/3 QMDRM N4 UPF support of QoS monitoring of Data Rate Measurement.
+ * 13/2 CN-TL N4 UPF support of the TSN Talker and Listener functionality.
+ * 13/1 PDUSM N4 UP function supports PDU Set Marking (see clause 5.38.3).
+ */
+ED8(uint8_t un6tu:1;,
+    uint8_t umn6ip:1;,
+    uint8_t upsbies:1;,
+    uint8_t mt_sdt:1;,
+    uint8_t edbnc:1;,
+    uint8_t qmdrm:1;,
+    uint8_t cn_tl:1;,
+    uint8_t pdusm:1;)
+        };
+        uint8_t octet13;
+    };
 } __attribute__ ((packed)) ogs_pfcp_up_function_features_t;
 
 /*

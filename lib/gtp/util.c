@@ -264,7 +264,9 @@ int ogs_gtpu_parse_header(
             /* the PDU Session Container of a QoS monitoring packet is longer than the other headers */
             if (((*ext_h) * 4) > OGS_GTP2_MAX_EXTENSION_HEADER_LEN &&
                 !(*(ext_h - 1) == OGS_GTP2_EXTENSION_HEADER_TYPE_PDU_SESSION_CONTAINER &&
-                  ((*ext_h) * 4) <= OGS_GTP2_MAX_PDU_SESSION_CONTAINER_LEN)) {
+                  ((*ext_h) * 4) <= OGS_GTP2_MAX_PDU_SESSION_CONTAINER_LEN) &&
+                !(*(ext_h - 1) == OGS_GTP2_EXTENSION_HEADER_TYPE_PDU_SET_INFORMATION_CONTAINER &&
+                  ((*ext_h) * 4) <= 12)) {
                 ogs_error("Overflow length : %d", (*ext_h));
                 return -1;
             }
@@ -297,6 +299,25 @@ int ogs_gtpu_parse_header(
                             ext_hdesc.array[i].qos_flow_identifier;
                         ogs_trace("   QFI [0x%x]",
                                 header_desc->qos_flow_identifier);
+                }
+                break;
+            case OGS_GTP2_EXTENSION_HEADER_TYPE_PDU_SET_INFORMATION_CONTAINER:
+                /* TS 38.415 V19.1.0 clause 6.5.2.1; ext_h points at the length octet, the frame follows */
+                if ((*ext_h) * 4 >= 8) {
+                    const uint8_t *f = ext_h + 1;
+
+                    header_desc->pdu_set.presence = true;
+                    header_desc->pdu_set.end_of_data_burst = (f[0] & 0x08) != 0;
+                    header_desc->pdu_set.end_pdu = (f[0] & 0x04) != 0;
+                    header_desc->pdu_set.pssize_presence = (f[0] & 0x02) != 0 && (*ext_h) * 4 >= 12;
+                    header_desc->pdu_set.pssn = ((f[1] & 0x03) << 8) | f[2];
+                    header_desc->pdu_set.psi = f[3] & 0x0f;
+                    header_desc->pdu_set.psn = f[4];
+                    if (header_desc->pdu_set.pssize_presence)
+                        header_desc->pdu_set.pssize = (f[5] << 16) | (f[6] << 8) | f[7];
+                    /* the QFI of the frame is the one of the PDU Session Container (TS 29.281 NOTE 6); it is read here only when that is absent */
+                    if (!header_desc->qos_flow_identifier)
+                        header_desc->qos_flow_identifier = f[1] >> 2;
                 }
                 break;
             case OGS_GTP2_EXTENSION_HEADER_TYPE_UDP_PORT:

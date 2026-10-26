@@ -5605,6 +5605,51 @@ static void test25_func(abts_case *tc, void *data)
     test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
 }
 
+
+/* One downlink RTP packet (UDP) from the test to the UE: the UPF gets it from the network side (TUN device) like any packet from the data network */
+static bool test_af_send_rtp(test_sess_t *sess, uint32_t timestamp, uint16_t seq, bool marker)
+{
+    struct sockaddr_in to;
+    uint8_t rtp[16 + 20];
+    int fd, rv;
+    char addr[INET_ADDRSTRLEN];
+
+    memset(&to, 0, sizeof(to));
+    to.sin_family = AF_INET;
+    to.sin_port = htons(30000);
+    memcpy(&to.sin_addr, &sess->ue_ip.addr, sizeof(to.sin_addr));
+    (void)addr;
+    memset(rtp, 0, sizeof(rtp));
+    rtp[0] = 0x80;                                  /* version 2 */
+    rtp[1] = (marker ? 0x80 : 0) | 96;              /* marker bit and payload type */
+    rtp[2] = seq >> 8; rtp[3] = seq & 0xff;
+    rtp[4] = timestamp >> 24; rtp[5] = timestamp >> 16; rtp[6] = timestamp >> 8; rtp[7] = timestamp;
+    rtp[11] = 0x01;                                 /* SSRC */
+    fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return false;
+    rv = sendto(fd, rtp, sizeof(rtp), 0, (struct sockaddr *)&to, sizeof(to));
+    close(fd);
+    return rv == (int)sizeof(rtp);
+}
+
+/* The GTP-U header of the next packet that the test gNB receives; false when none comes in time */
+static bool test_af_gtpu_read_header(ogs_socknode_t *gtpu, int msec, ogs_gtp2_header_desc_t *desc)
+{
+    struct pollfd fds;
+    ogs_pkbuf_t *recvbuf = NULL;
+    int hlen;
+
+    memset(&fds, 0, sizeof(fds));
+    fds.fd = gtpu->sock->fd;
+    fds.events = POLLIN;
+    if (poll(&fds, 1, msec) <= 0) return false;
+    recvbuf = testgnb_gtpu_read(gtpu);
+    if (!recvbuf) return false;
+    hlen = ogs_gtpu_parse_header(desc, recvbuf);
+    ogs_pkbuf_free(recvbuf);
+    return hlen > 0;
+}
+
 /* The ECN field of the IP packet that the test gNB receives from the UPF; false when none comes in time */
 static bool test_af_gtpu_reply_ecn(ogs_socknode_t *gtpu, int msec, int *ecn)
 {
@@ -6208,6 +6253,143 @@ static void test33_func(abts_case *tc, void *data)
     test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
 }
 
+
+/*
+ * TS 29.244 V19.6.0 clause 5.38.3, TS 29.281 V19.2.0 clause 5.2.2.8, TS 38.415 V19.1.0 clause 6.5.2.1, TS 38.413 V19.1.0 clause 9.3.1.268: the AF gives
+ * PDU Set QoS parameters, the NG-RAN says that it supports PDU Set based Handling, and the SMF has the UPF mark the downlink packets of the QoS
+ * flow. The UPF identifies the PDU Sets of RTP packets by the RTP timestamp, the marker bit ends a set, and the PDU Set Information Container follows the
+ * PDU Session Container with the QFI of the flow. When the parameters are removed the marking stops.
+ */
+static void test34_func(abts_case *tc, void *data)
+{
+    ogs_socknode_t *ngap = NULL;
+    ogs_socknode_t *gtpu = NULL;
+    test_ue_t *test_ue = NULL;
+    test_sess_t *sess = NULL;
+    test_bearer_t *qos_flow = NULL;
+    af_sess_t *af_sess = NULL;
+    af_npcf_policyauthorization_param_t af_param;
+    af_npcf_policyauthorization_raw_t raw;
+    ogs_gtp2_header_desc_t d;
+
+    test_af_qos_reference_setup(tc, "0000000034",
+            &test_ue, &sess, &af_sess, &ngap, &gtpu);
+
+    memset(&af_param, 0, sizeof(af_param));
+    af_param.med_type = OpenAPI_media_type_AUDIO;
+    af_param.qos_reference = "test-audio";
+    af_param.pdu_set_qos = true;
+    af_param.qos_type = 1;
+    af_param.flow_type = 98;
+    sess->pdu_set_indicator = true;
+    af_local_send_to_pcf(af_sess, &af_param,
+            af_npcf_policyauthorization_build_create);
+    qos_flow = test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_assert(qos_flow);
+    ogs_msleep(800);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_CREATED, af_sess->last_pcf_status);
+
+    /* a PDU Set of three RTP packets, then one of a single packet */
+    ABTS_TRUE(tc, test_af_send_rtp(sess, 1000, 1, false));
+    ABTS_TRUE(tc, test_af_gtpu_read_header(gtpu, 2000, &d));
+    ABTS_TRUE(tc, d.pdu_set.presence);
+    ABTS_INT_EQUAL(tc, qos_flow->qfi, d.qos_flow_identifier);
+    ABTS_INT_EQUAL(tc, 0, d.pdu_set.pssn);
+    ABTS_INT_EQUAL(tc, 0, d.pdu_set.psn);
+    ABTS_TRUE(tc, !d.pdu_set.end_pdu);
+    ABTS_TRUE(tc, test_af_send_rtp(sess, 1000, 2, false));
+    ABTS_TRUE(tc, test_af_gtpu_read_header(gtpu, 2000, &d));
+    ABTS_INT_EQUAL(tc, 0, d.pdu_set.pssn);
+    ABTS_INT_EQUAL(tc, 1, d.pdu_set.psn);
+    ABTS_TRUE(tc, !d.pdu_set.end_pdu);
+    ABTS_TRUE(tc, test_af_send_rtp(sess, 1000, 3, true));
+    ABTS_TRUE(tc, test_af_gtpu_read_header(gtpu, 2000, &d));
+    ABTS_INT_EQUAL(tc, 0, d.pdu_set.pssn);
+    ABTS_INT_EQUAL(tc, 2, d.pdu_set.psn);
+    ABTS_TRUE(tc, d.pdu_set.end_pdu);
+    ABTS_TRUE(tc, test_af_send_rtp(sess, 4000, 4, true));
+    ABTS_TRUE(tc, test_af_gtpu_read_header(gtpu, 2000, &d));
+    ABTS_INT_EQUAL(tc, 1, d.pdu_set.pssn);
+    ABTS_INT_EQUAL(tc, 0, d.pdu_set.psn);
+    ABTS_TRUE(tc, d.pdu_set.end_pdu);
+    ABTS_INT_EQUAL(tc, 0, d.pdu_set.psi);
+
+    /* the PDU Set QoS parameters are removed: no more marking */
+    raw.method = "PATCH";
+    raw.path = "";
+    raw.body = "{\"ascReqData\":{\"medComponents\":{\"0\":{\"medCompN\":0,\"pduSetQosDl\":null}}}}";
+    af_local_send_to_pcf(af_sess, &raw, af_npcf_policyauthorization_build_raw);
+    ogs_msleep(300);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_pcf_status);
+    test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_msleep(800);
+    ABTS_TRUE(tc, test_af_send_rtp(sess, 7000, 5, true));
+    ABTS_TRUE(tc, test_af_gtpu_read_header(gtpu, 2000, &d));
+    ABTS_TRUE(tc, !d.pdu_set.presence);
+
+    sess->pdu_set_indicator = false;
+    test_af_qos_reference_delete(tc, test_ue, sess, af_sess, ngap);
+    test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
+}
+
+
+/*
+ * TS 29.514 V19.8.0 clause 5.6.2.7 (fStatus of a media component), TS 29.244 V19.6.0 clause 8.2.7 (gate status): an update that names only the fStatus of a
+ * media component, with no QoS reference or media type, closes and opens the gate of the flow: the downlink packets stop and come again.
+ */
+static void test35_func(abts_case *tc, void *data)
+{
+    ogs_socknode_t *ngap = NULL;
+    ogs_socknode_t *gtpu = NULL;
+    test_ue_t *test_ue = NULL;
+    test_sess_t *sess = NULL;
+    test_bearer_t *qos_flow = NULL;
+    af_sess_t *af_sess = NULL;
+    af_npcf_policyauthorization_param_t af_param;
+    af_npcf_policyauthorization_raw_t raw;
+    ogs_gtp2_header_desc_t d;
+
+    test_af_qos_reference_setup(tc, "0000000035",
+            &test_ue, &sess, &af_sess, &ngap, &gtpu);
+
+    memset(&af_param, 0, sizeof(af_param));
+    af_param.med_type = OpenAPI_media_type_AUDIO;
+    af_param.qos_reference = "test-audio";
+    af_param.qos_type = 1;
+    af_param.flow_type = 98;
+    af_local_send_to_pcf(af_sess, &af_param,
+            af_npcf_policyauthorization_build_create);
+    qos_flow = test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_assert(qos_flow);
+    ogs_msleep(500);
+
+    ABTS_TRUE(tc, test_af_send_rtp(sess, 1000, 1, true));
+    ABTS_TRUE(tc, test_af_gtpu_read_header(gtpu, 2000, &d));
+
+    raw.method = "PATCH";
+    raw.path = "";
+    raw.body = "{\"ascReqData\":{\"medComponents\":{\"0\":{\"medCompN\":0,\"fStatus\":\"DISABLED\"}}}}";
+    af_local_send_to_pcf(af_sess, &raw, af_npcf_policyauthorization_build_raw);
+    ogs_msleep(300);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_pcf_status);
+    test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_msleep(800);
+    ABTS_TRUE(tc, test_af_send_rtp(sess, 2000, 2, true));
+    ABTS_TRUE(tc, !test_af_gtpu_read_header(gtpu, 1000, &d));
+
+    raw.body = "{\"ascReqData\":{\"medComponents\":{\"0\":{\"medCompN\":0,\"fStatus\":\"ENABLED\"}}}}";
+    af_local_send_to_pcf(af_sess, &raw, af_npcf_policyauthorization_build_raw);
+    ogs_msleep(300);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_pcf_status);
+    test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_msleep(800);
+    ABTS_TRUE(tc, test_af_send_rtp(sess, 3000, 3, true));
+    ABTS_TRUE(tc, test_af_gtpu_read_header(gtpu, 2000, &d));
+
+    test_af_qos_reference_delete(tc, test_ue, sess, af_sess, ngap);
+    test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
+}
+
 abts_suite *test_af(abts_suite *suite)
 {
     suite = ADD_SUITE(suite)
@@ -6252,6 +6434,8 @@ abts_suite *test_af(abts_suite *suite)
     abts_run_test(suite, test31_func, NULL);
     abts_run_test(suite, test32_func, NULL);
     abts_run_test(suite, test33_func, NULL);
+    abts_run_test(suite, test34_func, NULL);
+    abts_run_test(suite, test35_func, NULL);
 
     return suite;
 }

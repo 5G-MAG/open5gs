@@ -3040,12 +3040,32 @@ static ogs_pkbuf_t *testngap_build_pdu_session_resource_modify_response_trasfer(
         }
     }
 
+    if (sess->pdu_set_indicator) {
+        /* the NG-RAN supports PDU Set based Handling (TS 38.413 V19.1.0 clause 9.3.1.268) */
+        NGAP_ProtocolExtensionContainer_14713P291_t *container = (NGAP_ProtocolExtensionContainer_14713P291_t *)message.iE_Extensions;
+        NGAP_PDUSessionResourceModifyResponseTransfer_ExtIEs_t *ext = CALLOC(1, sizeof(*ext));
+
+        if (!container) {
+            container = CALLOC(1, sizeof(*container));
+            message.iE_Extensions = (struct NGAP_ProtocolExtensionContainer *)container;
+        }
+        ASN_SEQUENCE_ADD(&container->list, ext);
+        ext->id = NGAP_ProtocolIE_ID_id_PDUSetbasedHandlingIndicator;
+        ext->criticality = NGAP_Criticality_ignore;
+        ext->extensionValue.present =
+            NGAP_PDUSessionResourceModifyResponseTransfer_ExtIEs__extensionValue_PR_PDUSetbasedHandlingIndicator;
+        ext->extensionValue.choice.PDUSetbasedHandlingIndicator = CALLOC(1, sizeof(NGAP_PDUSetbasedHandlingIndicator_t));
+        *ext->extensionValue.choice.PDUSetbasedHandlingIndicator = NGAP_PDUSetbasedHandlingIndicator_supported;
+    }
+
     if (sess->ecn_status) {
         /* the ECN Marking or Congestion Information Reporting Status of the QoS flows (TS 38.413 V19.1.0 clause 9.3.1.267) */
-        NGAP_ProtocolExtensionContainer_14713P291_t *container = CALLOC(1, sizeof(*container));
+        NGAP_ProtocolExtensionContainer_14713P291_t *container = (NGAP_ProtocolExtensionContainer_14713P291_t *)message.iE_Extensions;
         NGAP_PDUSessionResourceModifyResponseTransfer_ExtIEs_t *ext = CALLOC(1, sizeof(*ext));
         NGAP_ECNMarkingorCongestionInformationReportingStatus_t *status = CALLOC(1, sizeof(*status));
 
+        if (!container)
+            container = CALLOC(1, sizeof(*container));
         ASN_SEQUENCE_ADD(&container->list, ext);
         ext->id = NGAP_ProtocolIE_ID_id_ECNMarkingorCongestionInformationReportingStatus;
         ext->criticality = NGAP_Criticality_ignore;

@@ -858,9 +858,9 @@ void ogs_pfcp_build_create_qer(
         message->qos_flow_identifier.u8 = qer->qfi;
     }
 
-    /* EML4S: the UPF performs ECN marking for L4S (bit 3) */
-    if (qer->ecn_marking_l4s) {
-        create_qer_buf[i].indications = 0x04;
+    /* EML4S: the UPF performs ECN marking for L4S (bit 3); PDUSM: the UPF performs PDU Set marking (bit 4) */
+    if (qer->ecn_marking_l4s || qer->pdu_set_marking) {
+        create_qer_buf[i].indications = (qer->ecn_marking_l4s ? 0x04 : 0) | (qer->pdu_set_marking ? 0x08 : 0);
         message->qer_indications.presence = 1;
         message->qer_indications.data = &create_qer_buf[i].indications;
         message->qer_indications.len = 1;
@@ -902,8 +902,8 @@ void ogs_pfcp_build_update_qer(
                     &qer->gbr, update_qer_buf[i].gbr, OGS_PFCP_BITRATE_LEN);
         }
 
-        /* the ECN marking for L4S is on or off (QER Indications EML4S, bit 3) */
-        update_qer_buf[i].indications = qer->ecn_marking_l4s ? 0x04 : 0x00;
+        /* the ECN marking for L4S and the PDU Set marking are on or off (QER Indications EML4S, bit 3, and PDUSM, bit 4) */
+        update_qer_buf[i].indications = (qer->ecn_marking_l4s ? 0x04 : 0x00) | (qer->pdu_set_marking ? 0x08 : 0x00);
         message->qer_indications.presence = 1;
         message->qer_indications.data = &update_qer_buf[i].indications;
         message->qer_indications.len = 1;

@@ -38,6 +38,9 @@ int ngap_handle_path_switch_request_transfer(
         smf_sess_t *sess, ogs_sbi_stream_t *stream, ogs_pkbuf_t *pkbuf);
 int ngap_handle_handover_required_transfer(
         smf_sess_t *sess, ogs_sbi_stream_t *stream, ogs_pkbuf_t *pkbuf);
+/* The QER of each QoS flow follows the PDU Set based Handling support of the NG-RAN and the PDU Set QoS parameters of the flow (TS 29.244 clause 5.38.3) */
+void smf_pdu_set_marking_update(smf_sess_t *sess);
+
 int ngap_handle_handover_request_ack(
         smf_sess_t *sess, ogs_sbi_stream_t *stream, ogs_pkbuf_t *pkbuf);
 

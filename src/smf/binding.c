@@ -743,6 +743,11 @@ void smf_qos_flow_binding(smf_sess_t *sess)
                 qos_flow->pdu_set_dl = pcc_rule->pdu_set_dl;
                 qos_flow->pdu_set_ul = pcc_rule->pdu_set_ul;
                 qos_presence = true;
+                /* a flow that no longer has PDU Set QoS parameters is no longer marked (TS 29.244 V19.6.0 clause 5.38.3), not at the next N2 response */
+                if (qos_flow->qer && qos_flow->qer->pdu_set_marking && !qos_flow->pdu_set_dl.presence) {
+                    qos_flow->qer->pdu_set_marking = false;
+                    ogs_assert(OGS_OK == smf_5gc_pfcp_send_l4s_request(sess, qos_flow));
+                }
             }
 
             /* TS 29.512 V19.7.0 clause 4.2.3.25: the QoS monitoring of the packet delay that the rule asks for, or none any more */

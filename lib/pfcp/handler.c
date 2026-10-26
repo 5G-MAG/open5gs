@@ -263,6 +263,15 @@ bool ogs_pfcp_up_handle_pdr(
             sendhdr.pdu_type =
                 OGS_GTP2_EXTENSION_HEADER_PDU_TYPE_DL_PDU_SESSION_INFORMATION;
             sendhdr.qos_flow_identifier = pdr->qer->qfi;
+            /* PDU Set marking (TS 29.244 V19.6.0 clause 5.38.3): the PDU Set information of this packet, which the UPF has left in the QER */
+            if (pdr->qer->pdu_set_marking && pdr->qer->pdu_set_mark.presence) {
+                sendhdr.pdu_set.presence = true;
+                sendhdr.pdu_set.end_pdu = pdr->qer->pdu_set_mark.end_pdu;
+                sendhdr.pdu_set.pssn = pdr->qer->pdu_set_mark.pssn;
+                sendhdr.pdu_set.psi = pdr->qer->pdu_set_mark.psi;
+                sendhdr.pdu_set.psn = pdr->qer->pdu_set_mark.psn;
+                pdr->qer->pdu_set_mark.presence = false;
+            }
         } else if (pdr->src_if == OGS_PFCP_INTERFACE_ACCESS &&
                 far->dst_if == OGS_PFCP_INTERFACE_ACCESS &&
                 recvhdr->qos_flow_identifier) {
@@ -1423,8 +1432,11 @@ ogs_pfcp_qer_t *ogs_pfcp_handle_create_qer(ogs_pfcp_sess_t *sess,
 
     /* QER Indications: EML4S, bit 3 */
     qer->ecn_marking_l4s = false;
-    if (message->qer_indications.presence && message->qer_indications.len >= 1)
+    qer->pdu_set_marking = false;
+    if (message->qer_indications.presence && message->qer_indications.len >= 1) {
         qer->ecn_marking_l4s = (((uint8_t *)message->qer_indications.data)[0] & 0x04) ? true : false;
+        qer->pdu_set_marking = (((uint8_t *)message->qer_indications.data)[0] & 0x08) ? true : false;
+    }
 
     return qer;
 }
@@ -1484,6 +1496,9 @@ ogs_pfcp_qer_t *ogs_pfcp_handle_update_qer(ogs_pfcp_sess_t *sess,
         qer->ecn_marking_l4s = (((uint8_t *)message->qer_indications.data)[0] & 0x04) ? true : false;
         if (!qer->ecn_marking_l4s)
             qer->ecn_ul = qer->ecn_dl = 0;
+        qer->pdu_set_marking = (((uint8_t *)message->qer_indications.data)[0] & 0x08) ? true : false;
+        if (!qer->pdu_set_marking)
+            memset(&qer->pdu_set, 0, sizeof(qer->pdu_set));
     }
 
     return qer;

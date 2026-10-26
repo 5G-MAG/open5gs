@@ -320,6 +320,28 @@ typedef struct ogs_pfcp_qer_s {
     uint16_t                ecn_ul;
     uint16_t                ecn_dl;
 
+    /*
+     * PDU Set marking of the downlink packets of the QoS flow (QER Indications PDUSM, TS 29.244 V19.6.0 clauses 8.2.216 and 5.38.3) and the
+     * state of the UPF that identifies the PDU Sets: the timestamp of the RTP packets of the PDU Set in progress, its sequence number and the
+     * number of PDUs so far.
+     */
+    bool                    pdu_set_marking;
+    struct {
+        bool                active;
+        uint32_t            rtp_timestamp;
+        uint16_t            pssn;
+        uint8_t             psn;
+        bool                rtp_timestamp_known;    /* a PDU Set has been marked, so the next one counts on */
+    } pdu_set;
+    /* what the packet in hand gets: set by the UPF, taken by the encapsulation */
+    struct {
+        bool                presence;
+        bool                end_pdu;
+        uint16_t            pssn;
+        uint8_t             psi;
+        uint8_t             psn;
+    } pdu_set_mark;
+
     ogs_pfcp_sess_t         *sess;
 } ogs_pfcp_qer_t;
 

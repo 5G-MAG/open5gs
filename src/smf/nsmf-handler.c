@@ -20,6 +20,7 @@
 #include "sbi-path.h"
 #include "nas-path.h"
 #include "ngap-path.h"
+#include "ngap-handler.h"
 #include "pfcp-path.h"
 #include "local-path.h"
 #include "gsm-handler.h"
@@ -979,6 +980,13 @@ bool smf_nsmf_handle_update_sm_context(
             }
             sess->handover.prepared = false;
 
+            /* TS 29.244 V19.6.0 clause 5.38.3: upon the completion of the N2 handover the marking follows the target NG-RAN node */
+            if (sess->handover.pdu_set_known) {
+                sess->handover.pdu_set_known = false;
+                sess->pdu_set_ran_supported = sess->handover.pdu_set_ran_supported;
+                smf_pdu_set_marking_update(sess);
+            }
+
             ogs_list_for_each(&sess->bearer_list, qos_flow) {
                 ogs_pfcp_far_t *dl_far = qos_flow->dl_far;
                 ogs_assert(dl_far);
@@ -1031,6 +1039,7 @@ bool smf_nsmf_handle_update_sm_context(
             smf_bearer_t *qos_flow = NULL;
 
             sess->handover.prepared = false;
+            sess->handover.pdu_set_known = false;
 
             ogs_list_for_each(&sess->bearer_list, qos_flow) {
                 ogs_pfcp_far_t *dl_far = qos_flow->dl_far;

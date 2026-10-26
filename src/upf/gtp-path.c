@@ -52,6 +52,7 @@
 #include "gtp-path.h"
 #include "qos-monitoring.h"
 #include "l4s.h"
+#include "pdu-set.h"
 #include "pfcp-path.h"
 #include "rule-match.h"
 
@@ -224,6 +225,10 @@ static void _gtpv1_tun_recv_common_cb(
     /* ECN marking for L4S of the downlink packets (TS 29.244 V19.6.0 clause 5.38.1) */
     if (pdr->qer && pdr->qer->ecn_marking_l4s)
         upf_l4s_mark(recvbuf, pdr->qer->ecn_dl);
+
+    /* PDU Set marking of the downlink packets of the QoS flow (clause 5.38.3) */
+    if (pdr->qer && pdr->qer->pdu_set_marking)
+        upf_pdu_set_mark(pdr->qer, recvbuf);
 
     ogs_assert(true == ogs_pfcp_up_handle_pdr(
                 pdr, OGS_GTPU_MSGTYPE_GPDU, 0, NULL, recvbuf, &report));

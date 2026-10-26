@@ -42,8 +42,11 @@ extern "C" {
  *   Null/Loopback(4bytes)
  *
  * So, we'll just use 12bytes.
+ *
+ * The PDU Set Information Container that the UPF adds to a marked downlink packet (TS 29.281 V19.2.0 clause 5.2.2.8) is 8 octets, or 12 with the PDU
+ * Set Size, so the headroom is 16 + 12 and a little more.
  */
-#define OGS_TUN_MAX_HEADROOM 16
+#define OGS_TUN_MAX_HEADROOM 32
 
 ogs_socket_t ogs_tun_open(char *ifname, int maxlen, int is_tap);
 int ogs_tun_set_ip(char *ifname, ogs_ipsubnet_t *gw,  ogs_ipsubnet_t *sub);

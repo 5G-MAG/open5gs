@@ -53,6 +53,8 @@ extern "C" {
 typedef struct ogs_gtp2_extension_header_s {
 #define OGS_GTP2_EXTENSION_HEADER_TYPE_UDP_PORT 0x40
 #define OGS_GTP2_EXTENSION_HEADER_TYPE_PDU_SESSION_CONTAINER 0x85
+/* TS 29.281 V19.2.0 clause 5.2.2.8 and the Next Extension Header Field value table: 0000 0100 for a UPF and gNB of this version */
+#define OGS_GTP2_EXTENSION_HEADER_TYPE_PDU_SET_INFORMATION_CONTAINER 0x04
 #define OGS_GTP2_EXTENSION_HEADER_TYPE_PDCP_NUMBER 0xc0
 #define OGS_GTP2_EXTENSION_HEADER_TYPE_NO_MORE_EXTENSION_HEADERS 0x0
     uint16_t sequence_number;
@@ -123,6 +125,22 @@ typedef struct ogs_gtp2_header_desc_s {
         uint16_t ul;
         uint16_t dl;
     } congestion;
+
+    /*
+     * PDU Set information of a downlink packet in the PDU Set Information Container (TS 38.415 V19.1.0 clause 6.5.2.1, DL PDU SET INFORMATION): the
+     * End of Data Burst and End PDU indications, the PDU Set Sequence Number (10 bits), the PDU Set Importance (4 bits, 0 when unknown), the
+     * PDU Sequence Number within the PDU Set and, when pssize_presence, the PDU Set Size in bytes (24 bits). The QFI is the one of the PDU Session Container.
+     */
+    struct {
+        bool presence;
+        bool end_of_data_burst;
+        bool end_pdu;
+        uint16_t pssn;
+        uint8_t psi;
+        uint8_t psn;
+        bool pssize_presence;
+        uint32_t pssize;
+    } pdu_set;
 } ogs_gtp2_header_desc_t;
 
 /* 8.4 Cause */
