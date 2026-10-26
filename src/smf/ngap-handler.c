@@ -537,6 +537,23 @@ cleanup:
  * told to the PCF with the QoS notification control of TS 29.512 V19.7.0 clause 4.2.4.20. The flows that the NG-RAN released are
  * not handled here.
  */
+/* The Alternative QoS Parameters Set Notify Index of a QoS Flow Notify Item (TS 38.413 V19.1.0 clause 9.3.1.153), or -1 when it has none */
+static long alternative_notify_index(NGAP_QosFlowNotifyItem_t *item)
+{
+    NGAP_ProtocolExtensionContainer_14713P346_t *list = (NGAP_ProtocolExtensionContainer_14713P346_t *)item->iE_Extensions;
+    int i;
+
+    for (i = 0; list && i < list->list.count; i++) {
+        NGAP_QosFlowNotifyItem_ExtIEs_t *ie = list->list.array[i];
+
+        if (ie && ie->id == NGAP_ProtocolIE_ID_id_CurrentQoSParaSetIndex &&
+                ie->extensionValue.present == NGAP_QosFlowNotifyItem_ExtIEs__extensionValue_PR_AlternativeQoSParaSetNotifyIndex &&
+                ie->extensionValue.choice.AlternativeQoSParaSetNotifyIndex)
+            return *ie->extensionValue.choice.AlternativeQoSParaSetNotifyIndex;
+    }
+    return -1;
+}
+
 int ngap_handle_pdu_session_resource_notify_transfer(
         smf_sess_t *sess, ogs_sbi_stream_t *stream, ogs_pkbuf_t *pkbuf)
 {
@@ -580,7 +597,18 @@ int ngap_handle_pdu_session_resource_notify_transfer(
                 continue;
             }
             if (item->notificationCause == NGAP_NotificationCause_not_fulfilled) {
-                if (num_not_fulfilled < OGS_ARRAY_SIZE(not_fulfilled))
+                long alt_index = alternative_notify_index(item);
+
+                /*
+                 * TS 38.413 V19.1.0 clause 9.3.1.153: the index of the alternative QoS parameters set that is fulfilled, in the order of
+                 * the list that was sent; the PCF is told which one (TS 29.512 V19.7.0 clause 5.6.2.32, "altQosParamId").
+                 */
+                if (alt_index >= 1 && alt_index <= qos_flow->alt_qos.num_of_set) {
+                    smf_bearer_t *one = qos_flow;
+
+                    smf_sbi_send_smpolicycontrol_qnc_report(sess, OpenAPI_qos_notif_type_NOT_GUARANTEED, &one, 1,
+                            qos_flow->alt_qos.set[alt_index - 1].id);
+                } else if (num_not_fulfilled < OGS_ARRAY_SIZE(not_fulfilled))
                     not_fulfilled[num_not_fulfilled++] = qos_flow;
             } else if (item->notificationCause == NGAP_NotificationCause_fulfilled) {
                 if (num_fulfilled < OGS_ARRAY_SIZE(fulfilled))
@@ -590,10 +618,10 @@ int ngap_handle_pdu_session_resource_notify_transfer(
     }
     if (num_not_fulfilled)
         smf_sbi_send_smpolicycontrol_qnc_report(
-                sess, OpenAPI_qos_notif_type_NOT_GUARANTEED, not_fulfilled, num_not_fulfilled);
+                sess, OpenAPI_qos_notif_type_NOT_GUARANTEED, not_fulfilled, num_not_fulfilled, NULL);
     if (num_fulfilled)
         smf_sbi_send_smpolicycontrol_qnc_report(
-                sess, OpenAPI_qos_notif_type_GUARANTEED, fulfilled, num_fulfilled);
+                sess, OpenAPI_qos_notif_type_GUARANTEED, fulfilled, num_fulfilled, NULL);
 
     ogs_assert(true == ogs_sbi_send_http_status_no_content(stream));
     rv = OGS_OK;

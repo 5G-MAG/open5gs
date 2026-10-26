@@ -211,6 +211,21 @@ ogs_sbi_request_t *af_npcf_policyauthorization_build_create(
         MediaComponent->med_type = af_param->med_type;
     if (af_param->qos_reference)
         MediaComponent->qos_reference = ogs_strdup(af_param->qos_reference);
+    if (af_param->alt_ser_req1) {
+        MediaComponent->alt_ser_reqs = OpenAPI_list_create();
+        ogs_assert(MediaComponent->alt_ser_reqs);
+        OpenAPI_list_add(MediaComponent->alt_ser_reqs, ogs_strdup(af_param->alt_ser_req1));
+        if (af_param->alt_ser_req2)
+            OpenAPI_list_add(MediaComponent->alt_ser_reqs, ogs_strdup(af_param->alt_ser_req2));
+    }
+    if (af_param->pdu_set_qos) {
+        MediaComponent->pdu_set_qos_dl = ogs_calloc(1, sizeof(*MediaComponent->pdu_set_qos_dl));
+        ogs_assert(MediaComponent->pdu_set_qos_dl);
+        MediaComponent->pdu_set_qos_dl->is_pdu_set_delay_budget = true;
+        MediaComponent->pdu_set_qos_dl->pdu_set_delay_budget = 1500;
+        MediaComponent->pdu_set_qos_dl->pdu_set_err_rate = ogs_strdup("1E-3");
+        MediaComponent->pdu_set_qos_dl->pdu_set_handling_info = OpenAPI_pdu_set_handling_info_ALL_PDUS_NEEDED;
+    }
     if (af_param->qos_type == 1) {
         MediaComponent->mar_bw_dl = ogs_sbi_bitrate_to_string(
                                         96000, OGS_SBI_BITRATE_BPS);
@@ -391,6 +406,18 @@ ogs_sbi_request_t *af_npcf_policyauthorization_build_create(
                     ogs_free(MediaComponent->rs_bw);
                 if (MediaComponent->qos_reference)
                     ogs_free(MediaComponent->qos_reference);
+                if (MediaComponent->alt_ser_reqs) {
+                    OpenAPI_lnode_t *alt_node = NULL;
+
+                    OpenAPI_list_for_each(MediaComponent->alt_ser_reqs, alt_node)
+                        ogs_free(alt_node->data);
+                    OpenAPI_list_free(MediaComponent->alt_ser_reqs);
+                }
+                if (MediaComponent->pdu_set_qos_dl) {
+                    if (MediaComponent->pdu_set_qos_dl->pdu_set_err_rate)
+                        ogs_free(MediaComponent->pdu_set_qos_dl->pdu_set_err_rate);
+                    ogs_free(MediaComponent->pdu_set_qos_dl);
+                }
 
                 codecList = MediaComponent->codecs;
                 OpenAPI_list_for_each(codecList, node2) {

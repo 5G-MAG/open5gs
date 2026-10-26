@@ -42,6 +42,9 @@ typedef struct af_npcf_policyauthorization_param_s {
     bool ev_l4s;                   /* subscribe to L4S_SUPP */
     bool ev_qos_notif;             /* subscribe to QOS_NOTIF (TS 29.514 V19.8.0 clause 4.2.2.6) */
     long usage_threshold;          /* with the event USAGE_REPORT: the totalVolume of usgThres in bytes, 0 for none */
+    const char *alt_ser_req1;      /* altSerReqs of the media component (TS 29.514 V19.8.0 clause 4.2.2.32), highest priority first, NULL for none */
+    const char *alt_ser_req2;
+    bool pdu_set_qos;              /* pduSetQosDl of the media component (clause 4.2.2.39): a delay budget, an error rate and the integrated handling information */
 } af_npcf_policyauthorization_param_t;
 
 ogs_sbi_request_t *af_npcf_policyauthorization_build_create(

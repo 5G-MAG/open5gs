@@ -17,6 +17,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <ctype.h>
 #include "sbi-path.h"
 #include "npcf-handler.h"
 #include "bdt.h"
@@ -271,6 +272,19 @@ ogs_pcc_rule_t *pcf_qos_profile_dynamic_pcc_rule_by_index(uint8_t qos_index)
     return NULL;
 }
 
+pcf_qos_profile_t *pcf_qos_profile_find(const char *reference)
+{
+    int i;
+
+    if (!reference)
+        return NULL;
+    for (i = 0; i < self.num_of_qos_profile; i++) {
+        if (!strcmp(self.qos_profile[i].reference, reference))
+            return &self.qos_profile[i];
+    }
+    return NULL;
+}
+
 static bool pcf_qos_profile_reference_exists(const char *reference)
 {
     int i;
@@ -383,6 +397,10 @@ static int parse_qos_profiles_conf(ogs_yaml_iter_t *parent)
         long qos_index = 0;
         bool has_arp = false, has_precedence = false;
         long arp_priority = 0, arp_capability = 0, arp_vulnerability = 0, precedence = 0;
+        bool has_pdb = false;
+        long pdb = 0;
+        const char *per = NULL;
+        uint64_t gbr_dl = 0, gbr_ul = 0;
 
         OGS_YAML_ARRAY_NEXT(&profile_array, &profile_iter);
         while (ogs_yaml_iter_next(&profile_iter)) {
@@ -396,6 +414,15 @@ static int parse_qos_profiles_conf(ogs_yaml_iter_t *parent)
             } else if (!strcmp(profile_key, "precedence")) {
                 precedence = strtol(ogs_yaml_iter_value(&profile_iter), NULL, 10);
                 has_precedence = precedence > 0;
+            } else if (!strcmp(profile_key, "packet_delay_budget")) {
+                pdb = strtol(ogs_yaml_iter_value(&profile_iter), NULL, 10);
+                has_pdb = pdb > 0;
+            } else if (!strcmp(profile_key, "packet_error_rate")) {
+                per = ogs_yaml_iter_value(&profile_iter);
+            } else if (!strcmp(profile_key, "gbr_downlink")) {
+                gbr_dl = strtoull(ogs_yaml_iter_value(&profile_iter), NULL, 10);
+            } else if (!strcmp(profile_key, "gbr_uplink")) {
+                gbr_ul = strtoull(ogs_yaml_iter_value(&profile_iter), NULL, 10);
             } else if (!strcmp(profile_key, "arp")) {
                 ogs_yaml_iter_t arp_iter;
 
@@ -455,6 +482,15 @@ static int parse_qos_profiles_conf(ogs_yaml_iter_t *parent)
         ogs_assert(self.qos_profile[self.num_of_qos_profile].reference);
         self.qos_profile[self.num_of_qos_profile].qos_index =
             (uint8_t)qos_index;
+        self.qos_profile[self.num_of_qos_profile].alt.pdb_presence = has_pdb;
+        self.qos_profile[self.num_of_qos_profile].alt.pdb = (uint32_t)pdb;
+        /* the form of PacketErrRate of TS 29.571: one digit, "E-", one digit */
+        if (per && strlen(per) == 4 && isdigit((unsigned char)per[0]) && per[1] == 'E' && per[2] == '-' && isdigit((unsigned char)per[3]))
+            ogs_cpystrn(self.qos_profile[self.num_of_qos_profile].alt.per, per, OGS_QOS_ERROR_RATE_LEN);
+        else if (per)
+            ogs_warn("Ignore qos_profiles[%s] packet_error_rate [%s]: the form is one digit, E-, one digit", reference, per);
+        self.qos_profile[self.num_of_qos_profile].alt.gbr.downlink = gbr_dl;
+        self.qos_profile[self.num_of_qos_profile].alt.gbr.uplink = gbr_ul;
         if (has_arp && has_precedence &&
                 arp_priority >= 1 && arp_priority <= 15 &&
                 (arp_capability == OGS_5GC_PRE_EMPTION_DISABLED || arp_capability == OGS_5GC_PRE_EMPTION_ENABLED) &&
@@ -731,6 +767,12 @@ pcf_sess_t *pcf_sess_add(pcf_ue_sm_t *pcf_ue_sm, uint8_t psi)
             OGS_SBI_NPCF_SMPOLICYCONTROL_SPONSORED_CONNECTIVITY);
     OGS_SBI_FEATURES_SET(sess->smpolicycontrol_features,
             OGS_SBI_NPCF_SMPOLICYCONTROL_QOS_MONITORING);
+    /* the alternative QoS parameter sets of the AF (TS 29.514 V19.8.0 clause 4.2.2.32, TS 29.512 V19.7.0 clause 4.2.6.2.1) */
+    OGS_SBI_FEATURES_SET(sess->smpolicycontrol_features,
+            OGS_SBI_NPCF_SMPOLICYCONTROL_AUTHORIZATION_WITH_REQUIRED_QOS);
+    /* PDU Set QoS parameters of the AF (TS 29.514 V19.8.0 clause 4.2.2.39, TS 29.512 V19.7.0 clause 4.2.6.6.2) */
+    OGS_SBI_FEATURES_HI_SET(sess->smpolicycontrol_features_hi,
+            OGS_SBI_NPCF_SMPOLICYCONTROL_PDU_SET_HANDLING);
 
     OGS_SBI_FEATURES_SET(sess->management_features,
             OGS_SBI_NBSF_MANAGEMENT_BINDING_UPDATE);
@@ -744,6 +786,10 @@ pcf_sess_t *pcf_sess_add(pcf_ue_sm_t *pcf_ue_sm, uint8_t psi)
             OGS_SBI_NPCF_POLICYAUTHORIZATION_IMS_SBI);
     OGS_SBI_FEATURES_SET(sess->policyauthorization_features,
             OGS_SBI_NPCF_POLICYAUTHORIZATION_L4S);
+    OGS_SBI_FEATURES_SET(sess->policyauthorization_features,
+            OGS_SBI_NPCF_POLICYAUTHORIZATION_AUTHORIZATION_WITH_REQUIRED_QOS);
+    OGS_SBI_FEATURES_SET(sess->policyauthorization_features,
+            OGS_SBI_NPCF_POLICYAUTHORIZATION_PDU_SET_HANDLING);
 
     sess->sm_policy_id = ogs_msprintf("%d",
             (int)ogs_pool_index(&pcf_sess_pool, sess));

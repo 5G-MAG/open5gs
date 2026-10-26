@@ -551,14 +551,7 @@ bool pcf_sbi_send_smpolicycontrol_create_response(
 
         OpenAPI_list_add(PccRuleList, PccRuleMap);
 
-        QosData = ogs_sbi_build_qos_data(pcc_rule);
-        ogs_assert(QosData);
-        ogs_assert(QosData->qos_id);
-
-        QosDecisionMap = OpenAPI_map_create(QosData->qos_id, QosData);
-        ogs_assert(QosDecisionMap);
-
-        OpenAPI_list_add(QosDecisionList, QosDecisionMap);
+        ogs_sbi_decision_add_qos_data(QosDecisionList, pcc_rule);
     }
 
     if (PccRuleList->count)
@@ -572,9 +565,9 @@ bool pcf_sbi_send_smpolicycontrol_create_response(
         SmPolicyDecision.policy_ctrl_req_triggers = PolicyCtrlReqTriggers;
 
     /* Supported Features */
-    if (sess->smpolicycontrol_features) {
+    if (sess->smpolicycontrol_features || sess->smpolicycontrol_features_hi) {
         SmPolicyDecision.supp_feat =
-            ogs_uint64_to_string(sess->smpolicycontrol_features);
+            ogs_sbi_features_to_string(sess->smpolicycontrol_features, sess->smpolicycontrol_features_hi);
         ogs_assert(SmPolicyDecision.supp_feat);
     }
 

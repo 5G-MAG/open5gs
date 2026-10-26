@@ -268,6 +268,13 @@ typedef struct smf_bearer_s {
     ogs_qos_t       qos;            /* QoS Information */
 
     /*
+     * The Alternative QoS parameter sets and the PDU Set QoS parameters of the rule (TS 29.512 V19.7.0 clauses 4.2.6.2.1 and 4.2.6.6.2) that the
+     * NG-RAN is told with the QoS profile; the position in the list of the sets is the index that the NG-RAN answers with.
+     */
+    ogs_alt_qos_t   alt_qos;
+    ogs_pdu_set_qos_t pdu_set_dl, pdu_set_ul;
+
+    /*
      * QoS monitoring of the packet delay of the flow (TS 29.512 V19.7.0 clause 4.2.3.25; TS 29.244 V19.6.0 clause 5.39.2): what the
      * rule asks for, whether the UPF has it as a Session Reporting Rule (the SRR ID is the QFI), and what is still to be told.
      */
@@ -331,6 +338,7 @@ typedef struct smf_sess_s {
     ogs_pfcp_sess_t pfcp;           /* PFCP session context */
 
     uint64_t        smpolicycontrol_features; /* SBI features */
+    uint64_t        smpolicycontrol_features_hi; /* the features above number 64 (OGS_SBI_FEATURES_HI_SET) */
 
     uint32_t        smf_n4_teid;    /* SMF-N4-TEID is derived from NODE */
 

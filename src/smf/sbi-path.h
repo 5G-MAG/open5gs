@@ -253,7 +253,7 @@ void smf_sbi_send_smpolicycontrol_l4s_report(
         smf_sess_t *sess, bool available, smf_bearer_t **qos_flow, int num_of_qos_flow);
 void smf_sbi_send_smpolicycontrol_qnc_report(
         smf_sess_t *sess, OpenAPI_qos_notif_type_e notif_type,
-        smf_bearer_t **qos_flow, int num_of_qos_flow);
+        smf_bearer_t **qos_flow, int num_of_qos_flow, const char *alt_qos_param_id);
 /* The UPF measured the packet delay of the QoS flow (TS 29.512 V19.7.0 clause 4.2.4.24) */
 void smf_sbi_send_smpolicycontrol_qos_monitoring_report(
         smf_sess_t *sess, smf_bearer_t *qos_flow,

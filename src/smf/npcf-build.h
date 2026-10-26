@@ -49,6 +49,7 @@ typedef struct smf_npcf_smpolicycontrol_usage_report_s {
 /* QoS notification control (TS 29.512 V19.7.0 clause 4.2.4.20): the GBR QoS targets of PCC rules are not guaranteed, or guaranteed again */
 typedef struct smf_npcf_smpolicycontrol_qnc_report_s {
     OpenAPI_qos_notif_type_e notif_type;
+    char *alt_qos_param_id;     /* the alternative QoS parameter set that the NG-RAN can guarantee (altQosParamId), NULL when none */
     int num_of_rule;
     char *rule_id[OGS_MAX_NUM_OF_PCC_RULE];
 } smf_npcf_smpolicycontrol_qnc_report_t;

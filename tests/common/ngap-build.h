@@ -58,6 +58,8 @@ ogs_pkbuf_t *testngap_build_qos_flow_resource_modify_response(
 ogs_pkbuf_t *testngap_build_qos_flow_resource_release_response(
         test_bearer_t *qos_flow);
 /* PDU Session Resource Notify: the GBR QoS targets of the QoS flow are fulfilled again, or are not fulfilled (TS 38.413) */
+/* The notify of a QoS flow whose current alternative QoS parameters set is the one at this index (0: not even the lowest is fulfilled), TS 38.413 V19.1.0 clause 9.3.1.153 */
+ogs_pkbuf_t *testngap_build_qos_flow_notify_alternative(test_bearer_t *qos_flow, long alt_index);
 ogs_pkbuf_t *testngap_build_qos_flow_notify(
         test_bearer_t *qos_flow, bool fulfilled);
 ogs_pkbuf_t *testngap_build_pdu_session_resource_release_response(

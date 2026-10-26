@@ -1636,8 +1636,20 @@ ogs_pkbuf_t *testngap_build_qos_flow_resource_release_response(
     return ogs_ngap_encode(&pdu);
 }
 
+static ogs_pkbuf_t *build_qos_flow_notify(test_bearer_t *qos_flow, bool fulfilled, long alt_index);
+
 ogs_pkbuf_t *testngap_build_qos_flow_notify(
         test_bearer_t *qos_flow, bool fulfilled)
+{
+    return build_qos_flow_notify(qos_flow, fulfilled, -1);
+}
+
+ogs_pkbuf_t *testngap_build_qos_flow_notify_alternative(test_bearer_t *qos_flow, long alt_index)
+{
+    return build_qos_flow_notify(qos_flow, false, alt_index);
+}
+
+static ogs_pkbuf_t *build_qos_flow_notify(test_bearer_t *qos_flow, bool fulfilled, long alt_index)
 {
     test_ue_t *test_ue = NULL;
     test_sess_t *sess = NULL;
@@ -1732,6 +1744,21 @@ ogs_pkbuf_t *testngap_build_qos_flow_notify(
     qosFlowNotifyItem->qosFlowIdentifier = qos_flow->qfi;
     qosFlowNotifyItem->notificationCause = fulfilled ?
         NGAP_NotificationCause_fulfilled : NGAP_NotificationCause_not_fulfilled;
+    if (alt_index >= 0) {
+        NGAP_ProtocolExtensionContainer_14713P346_t *container = CALLOC(1, sizeof(*container));
+        NGAP_QosFlowNotifyItem_ExtIEs_t *ext = CALLOC(1, sizeof(*ext));
+
+        ogs_assert(container);
+        ogs_assert(ext);
+        ASN_SEQUENCE_ADD(&container->list, ext);
+        ext->id = NGAP_ProtocolIE_ID_id_CurrentQoSParaSetIndex;
+        ext->criticality = NGAP_Criticality_ignore;
+        ext->extensionValue.present = NGAP_QosFlowNotifyItem_ExtIEs__extensionValue_PR_AlternativeQoSParaSetNotifyIndex;
+        ext->extensionValue.choice.AlternativeQoSParaSetNotifyIndex = CALLOC(1, sizeof(long));
+        ogs_assert(ext->extensionValue.choice.AlternativeQoSParaSetNotifyIndex);
+        *ext->extensionValue.choice.AlternativeQoSParaSetNotifyIndex = alt_index;
+        qosFlowNotifyItem->iE_Extensions = (struct NGAP_ProtocolExtensionContainer *)container;
+    }
 
     n2smbuf = ogs_asn_encode(
             &asn_DEF_NGAP_PDUSessionResourceNotifyTransfer, &message);

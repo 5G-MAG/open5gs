@@ -267,9 +267,9 @@ ogs_sbi_request_t *smf_npcf_smpolicycontrol_build_create(
 
     SmPolicyContextData.subs_def_qos = &SubsDefQos;
 
-    if (sess->smpolicycontrol_features) {
+    if (sess->smpolicycontrol_features || sess->smpolicycontrol_features_hi) {
         SmPolicyContextData.supp_feat =
-            ogs_uint64_to_string(sess->smpolicycontrol_features);
+            ogs_sbi_features_to_string(sess->smpolicycontrol_features, sess->smpolicycontrol_features_hi);
         if (!SmPolicyContextData.supp_feat) {
             ogs_error("No supp_feat");
             goto end;
@@ -433,6 +433,8 @@ ogs_sbi_request_t *smf_npcf_smpolicycontrol_build_qnc_update(
         for (i = 0; i < report->num_of_rule; i++)
             cJSON_AddItemToArray(ids, cJSON_CreateString(report->rule_id[i]));
         cJSON_AddStringToObject(info, "notifType", OpenAPI_qos_notif_type_ToString(report->notif_type));
+        if (report->alt_qos_param_id)
+            cJSON_AddStringToObject(info, "altQosParamId", report->alt_qos_param_id);
         cJSON_AddItemToArray(reports, info);
         text = cJSON_PrintUnformatted(body);
         ogs_assert(text);
@@ -447,6 +449,8 @@ ogs_sbi_request_t *smf_npcf_smpolicycontrol_build_qnc_update(
     ogs_free(message.h.uri);
     for (i = 0; i < report->num_of_rule; i++)
         ogs_free(report->rule_id[i]);
+    if (report->alt_qos_param_id)
+        ogs_free(report->alt_qos_param_id);
     ogs_free(report);
 
     return request;

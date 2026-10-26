@@ -4351,3 +4351,41 @@ void ogs_sbi_discovery_option_clear_hnrf_uri(
     ogs_free(discovery_option->hnrf_uri);
     discovery_option->hnrf_uri = NULL;
 }
+
+
+void ogs_sbi_features_from_string(const char *string, uint64_t *low, uint64_t *high)
+{
+    size_t length, i;
+
+    ogs_assert(low);
+    ogs_assert(high);
+    *low = *high = 0;
+    if (!string)
+        return;
+
+    /* the digits from the right: 16 give the low word, the next 16 the high word; the features above number 128 are not known here */
+    length = strlen(string);
+    for (i = 0; i < length && i < 32; i++) {
+        char c = string[length - 1 - i];
+        uint64_t digit;
+
+        if (c >= '0' && c <= '9') digit = c - '0';
+        else if (c >= 'a' && c <= 'f') digit = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') digit = c - 'A' + 10;
+        else {
+            *low = *high = 0;
+            return;
+        }
+        if (i < 16)
+            *low |= digit << (4 * i);
+        else
+            *high |= digit << (4 * (i - 16));
+    }
+}
+
+char *ogs_sbi_features_to_string(uint64_t low, uint64_t high)
+{
+    if (high)
+        return ogs_msprintf("%llx%016llx", (unsigned long long)high, (unsigned long long)low);
+    return ogs_msprintf("%llx", (unsigned long long)low);
+}

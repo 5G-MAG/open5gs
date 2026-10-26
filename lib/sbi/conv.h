@@ -120,6 +120,8 @@ OpenAPI_pcc_rule_t *ogs_sbi_build_pcc_rule(
         ogs_pcc_rule_t *pcc_rule, int flow_presence);
 void ogs_sbi_free_pcc_rule(OpenAPI_pcc_rule_t *PccRule);
 OpenAPI_qos_data_t *ogs_sbi_build_qos_data(ogs_pcc_rule_t *pcc_rule);
+/* The QosData of the alternative QoS parameter set number index of the rule (TS 29.512 V19.7.0 clause 4.2.6.2.1) */
+OpenAPI_qos_data_t *ogs_sbi_build_alt_qos_data(ogs_pcc_rule_t *pcc_rule, int index);
 
 /*
  * The flow status of a PCC rule (the values of the Flow-Status AVP, 3GPP TS 29.214: 0 enabled uplink, 1 enabled downlink,
@@ -164,6 +166,8 @@ void ogs_sbi_decision_add_l4s_trigger(OpenAPI_sm_policy_decision_t *decision);
 void ogs_sbi_decision_add_qos_monitoring_trigger(OpenAPI_sm_policy_decision_t *decision);
 /* Add US_RE to the policy control request triggers of the decision */
 void ogs_sbi_decision_add_us_re_trigger(OpenAPI_sm_policy_decision_t *decision);
+/* Adds the QosData of the rule to the list, and the QosData of its alternative QoS parameter sets */
+void ogs_sbi_decision_add_qos_data(OpenAPI_list_t *QosDecisionList, ogs_pcc_rule_t *pcc_rule);
 void ogs_sbi_free_qos_data(OpenAPI_qos_data_t *QosData);
 
 #ifdef __cplusplus

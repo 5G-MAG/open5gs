@@ -5894,6 +5894,226 @@ static void test27_func(abts_case *tc, void *data)
     test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
 }
 
+/* TS 29.514 V19.8.0 clause 4.2.3.2: fStatus REMOVED on every media sub component removes the flows of the media component, so the PCC rule */
+static void test28_func(abts_case *tc, void *data)
+{
+    ogs_socknode_t *ngap = NULL;
+    ogs_socknode_t *gtpu = NULL;
+    test_ue_t *test_ue = NULL;
+    test_sess_t *sess = NULL;
+    test_bearer_t *qos_flow = NULL;
+    af_sess_t *af_sess = NULL;
+    af_npcf_policyauthorization_param_t af_param;
+    af_npcf_policyauthorization_raw_t raw;
+
+    test_af_qos_reference_setup(tc, "0000000028",
+            &test_ue, &sess, &af_sess, &ngap, &gtpu);
+
+    memset(&af_param, 0, sizeof(af_param));
+    af_param.med_type = OpenAPI_media_type_AUDIO;
+    af_param.qos_type = 1;
+    af_param.flow_type = 99;
+    af_local_send_to_pcf(af_sess, &af_param,
+            af_npcf_policyauthorization_build_create);
+    qos_flow = test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_assert(qos_flow);
+
+    raw.method = "PATCH";
+    raw.path = "";
+    raw.body = "{\"ascReqData\":{\"medComponents\":{\"0\":{\"medCompN\":0,"
+        "\"medSubComps\":{\"0\":{\"fNum\":0,\"fStatus\":\"REMOVED\"}}}}}}";
+    af_local_send_to_pcf(af_sess, &raw, af_npcf_policyauthorization_build_raw);
+    ogs_msleep(100);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_pcf_status);
+
+    /* the rule is gone: the SMF releases the QoS flow */
+    test_af_qos_flow_release(tc, test_ue, sess, ngap);
+
+    af_local_send_to_pcf(af_sess, NULL,
+            af_npcf_policyauthorization_build_delete);
+    ogs_msleep(100);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_NO_CONTENT,
+            af_sess->last_pcf_status);
+
+    test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
+}
+
+
+/*
+ * TS 29.514 V19.8.0 clauses 4.2.2.32 and 4.2.3.30, TS 29.512 V19.7.0 clause 4.2.6.2.1, TS 38.413 V19.1.0 clauses 9.3.1.152 and 9.3.1.153: the AF
+ * gives a QoS reference with two alternative QoS references. The PCF derives the alternative QoS parameter sets from the qos_profiles
+ * entries (delay budget, error rate, guaranteed bit rates), the SMF tells the NG-RAN the list in the order of priority, the NG-RAN reports
+ * the set that it fulfils with the index of the list, and the AF is told the alternative that it can have as the QoS reference it gave.
+ * A null altSerReqs removes the sets.
+ */
+static void test29_func(abts_case *tc, void *data)
+{
+    ogs_socknode_t *ngap = NULL;
+    ogs_socknode_t *gtpu = NULL;
+    test_ue_t *test_ue = NULL;
+    test_sess_t *sess = NULL;
+    test_bearer_t *qos_flow = NULL;
+    af_sess_t *af_sess = NULL;
+    af_npcf_policyauthorization_param_t af_param;
+    af_npcf_policyauthorization_raw_t raw;
+    ogs_pkbuf_t *sendbuf = NULL;
+
+    test_af_qos_reference_setup(tc, "0000000029",
+            &test_ue, &sess, &af_sess, &ngap, &gtpu);
+
+    memset(&af_param, 0, sizeof(af_param));
+    af_param.med_type = OpenAPI_media_type_AUDIO;
+    af_param.qos_reference = "test-audio";
+    af_param.alt_ser_req1 = "test-audio-alt1";
+    af_param.alt_ser_req2 = "test-audio-alt2";
+    af_param.ev_qos_notif = true;
+    af_param.qos_type = 1;
+    af_param.flow_type = 99;
+    af_local_send_to_pcf(af_sess, &af_param,
+            af_npcf_policyauthorization_build_create);
+    qos_flow = test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_assert(qos_flow);
+    ogs_msleep(300);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_CREATED, af_sess->last_pcf_status);
+
+    /* the list of the QoS flow, with the values of the qos_profiles entries (0.5 ms units for the delay budget) */
+    ABTS_INT_EQUAL(tc, 2, sess->qos_ext.count);
+    ABTS_INT_EQUAL(tc, 1, (int)sess->qos_ext.set[0].index);
+    ABTS_INT_EQUAL(tc, 64000, (int)sess->qos_ext.set[0].gfbr_dl);
+    ABTS_INT_EQUAL(tc, 48000, (int)sess->qos_ext.set[0].gfbr_ul);
+    ABTS_INT_EQUAL(tc, 200, (int)sess->qos_ext.set[0].pdb);
+    ABTS_INT_EQUAL(tc, 1, (int)sess->qos_ext.set[0].per_scalar);
+    ABTS_INT_EQUAL(tc, 2, (int)sess->qos_ext.set[0].per_exponent);
+    ABTS_INT_EQUAL(tc, 2, (int)sess->qos_ext.set[1].index);
+    ABTS_INT_EQUAL(tc, 32000, (int)sess->qos_ext.set[1].gfbr_dl);
+    ABTS_INT_EQUAL(tc, 300, (int)sess->qos_ext.set[1].pdb);
+    ABTS_INT_EQUAL(tc, 3, (int)sess->qos_ext.set[1].per_exponent);
+
+    /* the NG-RAN fulfils the first alternative: the AF is told that alternative */
+    sendbuf = testngap_build_qos_flow_notify_alternative(qos_flow, 1);
+    ABTS_PTR_NOTNULL(tc, sendbuf);
+    ABTS_INT_EQUAL(tc, OGS_OK, testgnb_ngap_send(ngap, sendbuf));
+    ogs_msleep(500);
+    ABTS_INT_EQUAL(tc, 1, af_sess->notify_qnc_count);
+    ABTS_STR_EQUAL(tc, "NOT_GUARANTEED", af_sess->notify_qnc_type);
+    ABTS_STR_EQUAL(tc, "test-audio-alt1", af_sess->notify_qnc_alt);
+
+    sendbuf = testngap_build_qos_flow_notify_alternative(qos_flow, 2);
+    ABTS_PTR_NOTNULL(tc, sendbuf);
+    ABTS_INT_EQUAL(tc, OGS_OK, testgnb_ngap_send(ngap, sendbuf));
+    ogs_msleep(500);
+    ABTS_INT_EQUAL(tc, 2, af_sess->notify_qnc_count);
+    ABTS_STR_EQUAL(tc, "test-audio-alt2", af_sess->notify_qnc_alt);
+
+    /* not even the lowest alternative is fulfilled: no alternative is named */
+    sendbuf = testngap_build_qos_flow_notify_alternative(qos_flow, 0);
+    ABTS_PTR_NOTNULL(tc, sendbuf);
+    ABTS_INT_EQUAL(tc, OGS_OK, testgnb_ngap_send(ngap, sendbuf));
+    ogs_msleep(500);
+    ABTS_INT_EQUAL(tc, 3, af_sess->notify_qnc_count);
+    ABTS_STR_EQUAL(tc, "NOT_GUARANTEED", af_sess->notify_qnc_type);
+    ABTS_STR_EQUAL(tc, "", af_sess->notify_qnc_alt);
+
+    /* the QoS reference is fulfilled again */
+    sendbuf = testngap_build_qos_flow_notify(qos_flow, true);
+    ABTS_PTR_NOTNULL(tc, sendbuf);
+    ABTS_INT_EQUAL(tc, OGS_OK, testgnb_ngap_send(ngap, sendbuf));
+    ogs_msleep(500);
+    ABTS_INT_EQUAL(tc, 4, af_sess->notify_qnc_count);
+    ABTS_STR_EQUAL(tc, "GUARANTEED", af_sess->notify_qnc_type);
+
+    /* a null altSerReqs removes the alternative sets from the QoS profile */
+    raw.method = "PATCH";
+    raw.path = "";
+    raw.body = "{\"ascReqData\":{\"medComponents\":{\"0\":{\"medCompN\":0,\"altSerReqs\":null}}}}";
+    af_local_send_to_pcf(af_sess, &raw, af_npcf_policyauthorization_build_raw);
+    ogs_msleep(300);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_pcf_status);
+    test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ABTS_INT_EQUAL(tc, 0, sess->qos_ext.count);
+
+    test_af_qos_reference_delete(tc, test_ue, sess, af_sess, ngap);
+    test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
+}
+
+/* An alternative QoS reference that the PCF is not configured with is refused like an unknown qosReference (TS 29.514 V19.8.0 clause 4.2.2.2) */
+static void test30_func(abts_case *tc, void *data)
+{
+    ogs_socknode_t *ngap = NULL;
+    ogs_socknode_t *gtpu = NULL;
+    test_ue_t *test_ue = NULL;
+    test_sess_t *sess = NULL;
+    af_sess_t *af_sess = NULL;
+    af_npcf_policyauthorization_param_t af_param;
+
+    test_af_qos_reference_setup(tc, "0000000030",
+            &test_ue, &sess, &af_sess, &ngap, &gtpu);
+
+    memset(&af_param, 0, sizeof(af_param));
+    af_param.med_type = OpenAPI_media_type_AUDIO;
+    af_param.qos_reference = "test-audio";
+    af_param.alt_ser_req1 = "no-such-reference";
+    af_param.qos_type = 1;
+    af_param.flow_type = 99;
+    af_local_send_to_pcf(af_sess, &af_param,
+            af_npcf_policyauthorization_build_create);
+    ogs_msleep(300);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_BAD_REQUEST, af_sess->last_pcf_status);
+
+    test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
+}
+
+/*
+ * TS 29.514 V19.8.0 clause 4.2.2.39, TS 29.512 V19.7.0 clause 4.2.6.6.2, TS 38.413 V19.1.0 clause 9.3.1.151 (PDU Set QoS Parameters): the AF gives
+ * the PDU Set QoS parameters of the downlink, the PCF puts them in the QosData of the rule and the SMF tells the NG-RAN; a null value
+ * removes them.
+ */
+static void test31_func(abts_case *tc, void *data)
+{
+    ogs_socknode_t *ngap = NULL;
+    ogs_socknode_t *gtpu = NULL;
+    test_ue_t *test_ue = NULL;
+    test_sess_t *sess = NULL;
+    test_bearer_t *qos_flow = NULL;
+    af_sess_t *af_sess = NULL;
+    af_npcf_policyauthorization_param_t af_param;
+    af_npcf_policyauthorization_raw_t raw;
+
+    test_af_qos_reference_setup(tc, "0000000031",
+            &test_ue, &sess, &af_sess, &ngap, &gtpu);
+
+    memset(&af_param, 0, sizeof(af_param));
+    af_param.med_type = OpenAPI_media_type_AUDIO;
+    af_param.qos_reference = "test-audio";
+    af_param.pdu_set_qos = true;
+    af_param.qos_type = 1;
+    af_param.flow_type = 99;
+    af_local_send_to_pcf(af_sess, &af_param,
+            af_npcf_policyauthorization_build_create);
+    qos_flow = test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_assert(qos_flow);
+    ogs_msleep(300);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_CREATED, af_sess->last_pcf_status);
+
+    ABTS_TRUE(tc, sess->qos_ext.pdu_set);
+    ABTS_INT_EQUAL(tc, 1500, (int)sess->qos_ext.pdu_set_dl_budget);
+    ABTS_INT_EQUAL(tc, 1, (int)sess->qos_ext.pdu_set_dl_per_scalar);
+    ABTS_INT_EQUAL(tc, 3, (int)sess->qos_ext.pdu_set_dl_per_exponent);
+    ABTS_INT_EQUAL(tc, 0, (int)sess->qos_ext.pdu_set_dl_handling);
+
+    raw.method = "PATCH";
+    raw.path = "";
+    raw.body = "{\"ascReqData\":{\"medComponents\":{\"0\":{\"medCompN\":0,\"pduSetQosDl\":null}}}}";
+    af_local_send_to_pcf(af_sess, &raw, af_npcf_policyauthorization_build_raw);
+    ogs_msleep(300);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_pcf_status);
+    test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ABTS_TRUE(tc, !sess->qos_ext.pdu_set);
+
+    test_af_qos_reference_delete(tc, test_ue, sess, af_sess, ngap);
+    test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
+}
+
 abts_suite *test_af(abts_suite *suite)
 {
     suite = ADD_SUITE(suite)
@@ -5932,6 +6152,10 @@ abts_suite *test_af(abts_suite *suite)
     abts_run_test(suite, test25_func, NULL);
     abts_run_test(suite, test26_func, NULL);
     abts_run_test(suite, test27_func, NULL);
+    abts_run_test(suite, test28_func, NULL);
+    abts_run_test(suite, test29_func, NULL);
+    abts_run_test(suite, test30_func, NULL);
+    abts_run_test(suite, test31_func, NULL);
 
     return suite;
 }

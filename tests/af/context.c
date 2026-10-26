@@ -167,6 +167,10 @@ af_sess_t *af_sess_add_by_ue_address(ogs_ip_t *ue_address)
             OGS_SBI_NPCF_POLICYAUTHORIZATION_IMS_SBI);
     OGS_SBI_FEATURES_SET(sess->policyauthorization_features,
             OGS_SBI_NPCF_POLICYAUTHORIZATION_L4S);
+    OGS_SBI_FEATURES_SET(sess->policyauthorization_features,
+            OGS_SBI_NPCF_POLICYAUTHORIZATION_AUTHORIZATION_WITH_REQUIRED_QOS);
+    OGS_SBI_FEATURES_SET(sess->policyauthorization_features,
+            OGS_SBI_NPCF_POLICYAUTHORIZATION_PDU_SET_HANDLING);
 
     sess->notify_l4s_med_comp_n = -1;
     sess->notify_qm_dl = sess->notify_qm_ul = sess->notify_qm_rt = -1;

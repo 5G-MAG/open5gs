@@ -291,6 +291,18 @@ pcf:
       qos_index: 1
     - reference: "test-video"
       qos_index: 2
+    - reference: "test-audio-alt1"
+      qos_index: 1
+      packet_delay_budget: 100
+      packet_error_rate: "1E-2"
+      gbr_downlink: 64000
+      gbr_uplink: 48000
+    - reference: "test-audio-alt2"
+      qos_index: 1
+      packet_delay_budget: 150
+      packet_error_rate: "1E-3"
+      gbr_downlink: 32000
+      gbr_uplink: 24000
   bdt:
     transfer_policies:
       - rating_group: 10

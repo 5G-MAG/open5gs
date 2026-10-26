@@ -1711,6 +1711,11 @@ smf_sess_t *smf_sess_add_by_psi(smf_ue_t *smf_ue, uint8_t psi)
             OGS_SBI_NPCF_SMPOLICYCONTROL_SPONSORED_CONNECTIVITY);
     OGS_SBI_FEATURES_SET(sess->smpolicycontrol_features,
             OGS_SBI_NPCF_SMPOLICYCONTROL_QOS_MONITORING);
+    /* the alternative QoS parameter sets and the PDU Set QoS parameters go to the NG-RAN (TS 29.512 V19.7.0 clauses 4.2.6.2.1 and 4.2.6.6.2) */
+    OGS_SBI_FEATURES_SET(sess->smpolicycontrol_features,
+            OGS_SBI_NPCF_SMPOLICYCONTROL_AUTHORIZATION_WITH_REQUIRED_QOS);
+    OGS_SBI_FEATURES_HI_SET(sess->smpolicycontrol_features_hi,
+            OGS_SBI_NPCF_SMPOLICYCONTROL_PDU_SET_HANDLING);
 
     ogs_pfcp_pool_init(&sess->pfcp);
     smf_qfi_pool_init(sess);

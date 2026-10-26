@@ -1503,6 +1503,14 @@ OpenAPI_pcc_rule_t *ogs_sbi_build_pcc_rule(
 
     OpenAPI_list_add(PccRule->ref_qos_data, PccRule->pcc_rule_id);
 
+    /* the Alternative QoS parameter sets, highest priority first (TS 29.512 V19.7.0 clause 4.2.6.2.1, "refAltQosParams") */
+    if (pcc_rule->alt_qos.num_of_set) {
+        PccRule->ref_alt_qos_params = OpenAPI_list_create();
+        ogs_assert(PccRule->ref_alt_qos_params);
+        for (i = 0; i < pcc_rule->alt_qos.num_of_set; i++)
+            OpenAPI_list_add(PccRule->ref_alt_qos_params, pcc_rule->alt_qos.set[i].id);
+    }
+
     PccRule->is_precedence = true;
     PccRule->precedence = pcc_rule->precedence;
 
@@ -1555,6 +1563,8 @@ void ogs_sbi_free_pcc_rule(OpenAPI_pcc_rule_t *PccRule)
 
     if (PccRule->ref_qos_data)
         OpenAPI_list_free(PccRule->ref_qos_data);
+    if (PccRule->ref_alt_qos_params)
+        OpenAPI_list_free(PccRule->ref_alt_qos_params);
     if (PccRule->ref_tc_data)
         OpenAPI_list_free(PccRule->ref_tc_data);
     if (PccRule->ref_um_data)
@@ -1906,6 +1916,69 @@ void ogs_sbi_decision_add_us_re_trigger(OpenAPI_sm_policy_decision_t *decision)
             (void *)OpenAPI_policy_control_request_trigger_US_RE);
 }
 
+static OpenAPI_pdu_set_qos_para_rm_t *build_pdu_set_qos(const ogs_pdu_set_qos_t *pdu_set)
+{
+    OpenAPI_pdu_set_qos_para_rm_t *Para = NULL;
+
+    if (!pdu_set->presence)
+        return NULL;
+
+    Para = ogs_calloc(1, sizeof(*Para));
+    ogs_assert(Para);
+    if (pdu_set->delay_budget_presence) {
+        Para->is_pdu_set_delay_budget = true;
+        Para->pdu_set_delay_budget = pdu_set->delay_budget;
+    }
+    if (pdu_set->error_rate[0]) {
+        Para->pdu_set_err_rate = ogs_strdup(pdu_set->error_rate);
+        ogs_assert(Para->pdu_set_err_rate);
+    }
+    if (pdu_set->handling_info == OGS_PDU_SET_ALL_PDUS_NEEDED)
+        Para->pdu_set_handling_info = OpenAPI_pdu_set_handling_info_ALL_PDUS_NEEDED;
+    else if (pdu_set->handling_info == OGS_PDU_SET_ALL_PDUS_NOT_NEEDED)
+        Para->pdu_set_handling_info = OpenAPI_pdu_set_handling_info_ALL_PDUS_NOT_NEEDED;
+    return Para;
+}
+
+static void free_pdu_set_qos(OpenAPI_pdu_set_qos_para_rm_t *Para)
+{
+    if (!Para)
+        return;
+    if (Para->pdu_set_err_rate)
+        ogs_free(Para->pdu_set_err_rate);
+    ogs_free(Para);
+}
+
+OpenAPI_qos_data_t *ogs_sbi_build_alt_qos_data(ogs_pcc_rule_t *pcc_rule, int index)
+{
+    OpenAPI_qos_data_t *QosData = NULL;
+
+    ogs_assert(pcc_rule);
+    ogs_assert(index >= 0 && index < pcc_rule->alt_qos.num_of_set);
+
+    QosData = ogs_calloc(1, sizeof(*QosData));
+    ogs_assert(QosData);
+
+    /* TS 29.512 V19.7.0 clause 4.2.3.30 of TS 29.514 V19.8.0 and clause 4.2.6.2.1: qosId, packetDelayBudget, packetErrorRate, gbrUl and gbrDl of the set */
+    QosData->qos_id = pcc_rule->alt_qos.set[index].id;
+    if (pcc_rule->alt_qos.set[index].pdb_presence) {
+        QosData->is_packet_delay_budget = true;
+        QosData->packet_delay_budget = pcc_rule->alt_qos.set[index].pdb;
+    }
+    if (pcc_rule->alt_qos.set[index].per[0]) {
+        QosData->packet_error_rate = ogs_strdup(pcc_rule->alt_qos.set[index].per);
+        ogs_assert(QosData->packet_error_rate);
+    }
+    if (pcc_rule->alt_qos.set[index].gbr.uplink)
+        QosData->gbr_ul = ogs_sbi_bitrate_to_string(pcc_rule->alt_qos.set[index].gbr.uplink, OGS_SBI_BITRATE_BPS);
+    if (pcc_rule->alt_qos.set[index].gbr.downlink)
+        QosData->gbr_dl = ogs_sbi_bitrate_to_string(pcc_rule->alt_qos.set[index].gbr.downlink, OGS_SBI_BITRATE_BPS);
+    QosData->pdu_set_qos_dl = build_pdu_set_qos(&pcc_rule->alt_qos.set[index].pdu_set_dl);
+    QosData->pdu_set_qos_ul = build_pdu_set_qos(&pcc_rule->alt_qos.set[index].pdu_set_ul);
+
+    return QosData;
+}
+
 OpenAPI_qos_data_t *ogs_sbi_build_qos_data(ogs_pcc_rule_t *pcc_rule)
 {
     OpenAPI_qos_data_t *QosData = NULL;
@@ -1964,7 +2037,31 @@ OpenAPI_qos_data_t *ogs_sbi_build_qos_data(ogs_pcc_rule_t *pcc_rule)
         QosData->gbr_dl = ogs_sbi_bitrate_to_string(
                 pcc_rule->qos.gbr.downlink, OGS_SBI_BITRATE_BPS);
 
+    /* TS 29.512 V19.7.0 clause 4.2.6.6.2: the authorized PDU Set QoS parameters of the rule */
+    QosData->pdu_set_qos_dl = build_pdu_set_qos(&pcc_rule->pdu_set_dl);
+    QosData->pdu_set_qos_ul = build_pdu_set_qos(&pcc_rule->pdu_set_ul);
+
     return QosData;
+}
+
+void ogs_sbi_decision_add_qos_data(OpenAPI_list_t *QosDecisionList, ogs_pcc_rule_t *pcc_rule)
+{
+    OpenAPI_qos_data_t *QosData = NULL;
+    int i;
+
+    ogs_assert(QosDecisionList);
+    ogs_assert(pcc_rule);
+
+    QosData = ogs_sbi_build_qos_data(pcc_rule);
+    ogs_assert(QosData);
+    ogs_assert(QosData->qos_id);
+    OpenAPI_list_add(QosDecisionList, OpenAPI_map_create(QosData->qos_id, QosData));
+
+    /* the QosData that refAltQosParams of the rule refer to (TS 29.512 V19.7.0 clause 4.2.6.2.1) */
+    for (i = 0; i < pcc_rule->alt_qos.num_of_set; i++) {
+        QosData = ogs_sbi_build_alt_qos_data(pcc_rule, i);
+        OpenAPI_list_add(QosDecisionList, OpenAPI_map_create(QosData->qos_id, QosData));
+    }
 }
 
 void ogs_sbi_free_qos_data(OpenAPI_qos_data_t *QosData)
@@ -1976,6 +2073,9 @@ void ogs_sbi_free_qos_data(OpenAPI_qos_data_t *QosData)
     if (QosData->maxbr_dl) ogs_free(QosData->maxbr_dl);
     if (QosData->gbr_ul) ogs_free(QosData->gbr_ul);
     if (QosData->gbr_dl) ogs_free(QosData->gbr_dl);
+    if (QosData->packet_error_rate) ogs_free(QosData->packet_error_rate);
+    free_pdu_set_qos(QosData->pdu_set_qos_dl);
+    free_pdu_set_qos(QosData->pdu_set_qos_ul);
 
     ogs_free(QosData);
 }

@@ -1096,6 +1096,7 @@ int ogs_pcc_rule_num_of_flow_equal_to_media(
     for (i = 0; i < media_component->num_of_sub; i++) {
         ogs_media_sub_component_t *sub = &media_component->sub[i];
 
+        if (sub->removed) continue;
         for (j = 0; j < sub->num_of_flow; j++) {
             new++;
         }
@@ -1109,6 +1110,7 @@ int ogs_pcc_rule_num_of_flow_equal_to_media(
     for (i = 0; i < media_component->num_of_sub; i++) {
         ogs_media_sub_component_t *sub = &media_component->sub[i];
 
+        if (sub->removed) continue;
         for (j = 0; j < sub->num_of_flow &&
                     j < OGS_MAX_NUM_OF_FLOW_IN_MEDIA_SUB_COMPONENT; j++) {
             ogs_flow_t gx_flow;
@@ -1133,6 +1135,14 @@ int ogs_pcc_rule_num_of_flow_equal_to_media(
         }
     }
 
+    /*
+     * A flow of the media component that the rule does not have makes the sets differ even when every flow of the rule is named again
+     * (TS 29.514 V19.8.0 clause 4.2.3.2: the flows of the media component replace the previously provided ones): the caller compares the
+     * result with the number of flows of the rule, so give a result that is not equal to it.
+     */
+    if (matched != new && matched == pcc_rule->num_of_flow)
+        return matched + 1;
+
     return matched;
 }
 
@@ -1153,6 +1163,9 @@ int ogs_pcc_rule_install_flow_from_media(
 
     for (i = 0; i < media_component->num_of_sub; i++) {
         ogs_media_sub_component_t *sub = &media_component->sub[i];
+
+        /* the flows of a sub component with fStatus REMOVED are not installed */
+        if (sub->removed) continue;
 
         /* Copy Flow to PCC Rule */
         for (j = 0; j < sub->num_of_flow &&

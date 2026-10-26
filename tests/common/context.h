@@ -468,6 +468,24 @@ typedef struct test_sess_s {
     int ecn_request;    /* the ECN Marking at UPF Request of the last QoS flow of a modify request, plus 1 (0 none) */
     int ecn_status;     /* what the gNB answers a modify with: 0 no status, 1 active, 2 not active (TS 38.413 clause 9.3.1.267) */
 
+    /*
+     * The Alternative QoS Parameters Set List and the PDU Set QoS Parameters of the last QoS flow of a modify request (TS 38.413 V19.1.0
+     * clauses 9.3.1.151 and 9.3.1.152); the units are those of the NGAP IEs (0.5 ms, 0.01 ms).
+     */
+    struct {
+        int count;
+        struct {
+            long index;
+            uint64_t gfbr_dl, gfbr_ul;
+            long pdb;           /* -1 when absent */
+            long per_scalar, per_exponent;  /* -1 when absent */
+        } set[8];
+        bool pdu_set;
+        long pdu_set_dl_budget;     /* -1 when absent */
+        long pdu_set_dl_per_scalar, pdu_set_dl_per_exponent;
+        long pdu_set_dl_handling;   /* -1 when absent, 0 true, 1 false */
+    } qos_ext;
+
     test_ue_t *test_ue;
 } test_sess_t;
 

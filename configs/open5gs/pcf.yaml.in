@@ -58,6 +58,21 @@ pcf:
 #        priority_level: 4
 #        pre_emption_capability: 1
 #        pre_emption_vulnerability: 1
+#
+# An entry that an AF lists in altSerReqs (the alternative QoS references of its media component, TS 29.514 clause 4.2.2.32) becomes an
+# Alternative QoS parameter set of the PCC rule (TS 29.512 clause 4.2.6.2.1). The set takes what the entry says of the QoS parameters of the
+# reference; what is not given is not in the set:
+#   packet_delay_budget   ms
+#   packet_error_rate     one digit, E-, one digit (TS 29.571 PacketErrRate), e.g. "1E-3"
+#   gbr_downlink, gbr_uplink   bit/s
+#
+#  qos_profiles:
+#    - reference: "hd-video-medium"
+#      qos_index: 2
+#      packet_delay_budget: 150
+#      packet_error_rate: "1E-3"
+#      gbr_downlink: 4000000
+#      gbr_uplink: 500000
 
 ################################################################################
 # PCF Background Data Transfer policies (Npcf_BDTPolicyControl, TS 29.554)

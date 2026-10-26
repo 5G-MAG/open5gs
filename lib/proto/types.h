@@ -565,6 +565,36 @@ typedef struct ogs_flow_s {
  *
  * PCC Rule Structure
  */
+/* PDU Set level QoS parameters (PduSetQosPara of TS 29.571): the delay budget in ms, the error rate as the string of PacketErrRate */
+#define OGS_QOS_ERROR_RATE_LEN 8
+typedef struct ogs_pdu_set_qos_s {
+    bool presence;
+    bool delay_budget_presence;
+    uint32_t delay_budget;
+    char error_rate[OGS_QOS_ERROR_RATE_LEN];
+#define OGS_PDU_SET_HANDLING_NONE 0
+#define OGS_PDU_SET_ALL_PDUS_NEEDED 1
+#define OGS_PDU_SET_ALL_PDUS_NOT_NEEDED 2
+    uint8_t handling_info;
+    bool removed;       /* a null value of the update removes the parameters */
+} ogs_pdu_set_qos_t;
+
+#define OGS_MAX_NUM_OF_ALT_QOS 8
+#define OGS_ALT_QOS_ID_LEN 96
+/* The Alternative QoS parameter sets of a rule, highest priority first (TS 29.512 V19.7.0 clause 4.2.6.2.1, "refAltQosParams") */
+typedef struct ogs_alt_qos_s {
+    int num_of_set;
+    struct {
+        char id[OGS_ALT_QOS_ID_LEN];        /* qosId of the QosData of the set */
+        char reference[OGS_ALT_QOS_ID_LEN]; /* the QoS reference of the AF that the set stands for, "" when none */
+        bool pdb_presence;
+        uint32_t pdb;                       /* packet delay budget in ms */
+        char per[OGS_QOS_ERROR_RATE_LEN];   /* packet error rate, "" when absent */
+        ogs_bitrate_t gbr;
+        ogs_pdu_set_qos_t pdu_set_dl, pdu_set_ul;
+    } set[OGS_MAX_NUM_OF_ALT_QOS];
+} ogs_alt_qos_t;
+
 typedef struct ogs_pcc_rule_s {
 #define OGS_PCC_RULE_TYPE_INSTALL               1
 #define OGS_PCC_RULE_TYPE_REMOVE                2
@@ -609,6 +639,13 @@ typedef struct ogs_pcc_rule_s {
         uint32_t rep_period;
     } qos_mon;
 
+    /*
+     * 5GC: Alternative QoS parameter sets of the rule (refAltQosParams and the QosData they refer to, TS 29.512 V19.7.0 clauses 4.2.6.2.1 and
+     * 5.6.2.7), the first set has the highest priority; PDU Set QoS parameters of the rule (pduSetQosDl and pduSetQosUl of its QosData, clause 4.2.6.6.2).
+     */
+    ogs_alt_qos_t alt_qos;
+    ogs_pdu_set_qos_t pdu_set_dl, pdu_set_ul;
+
     ogs_qos_t  qos;
 } ogs_pcc_rule_t;
 
@@ -643,6 +680,9 @@ typedef struct ogs_pcc_rule_s {
         } \
         (__dST)->precedence = (__sRC)->precedence; \
         memcpy(&(__dST)->qos_mon, &(__sRC)->qos_mon, sizeof((__sRC)->qos_mon)); \
+        memcpy(&(__dST)->alt_qos, &(__sRC)->alt_qos, sizeof((__sRC)->alt_qos)); \
+        memcpy(&(__dST)->pdu_set_dl, &(__sRC)->pdu_set_dl, sizeof((__sRC)->pdu_set_dl)); \
+        memcpy(&(__dST)->pdu_set_ul, &(__sRC)->pdu_set_ul, sizeof((__sRC)->pdu_set_ul)); \
         memcpy(&(__dST)->qos, &(__sRC)->qos, sizeof(ogs_qos_t)); \
     } while(0)
 
@@ -975,6 +1015,7 @@ typedef struct ogs_session_data_s {
 
 typedef struct ogs_media_sub_component_s {
     uint32_t            flow_number;
+    bool                removed;    /* fStatus REMOVED (TS 29.514 V19.8.0 clause 4.2.3.2): its flows are not part of the PCC rule */
 /*
  * TS29.214
  * 5.3.12 Flow-Usage AVP
@@ -1012,6 +1053,15 @@ typedef struct ogs_media_component_s {
 
     int                 flow_status;
     int                 l4s_ind;        /* OGS_PCC_RULE_L4S_*: l4sInd of the media component */
+
+    /* altSerReqs: the QoS references of the alternative service requirements, highest priority first (the strings belong to the request) */
+    const char          *alt_ser_reqs[OGS_MAX_NUM_OF_ALT_QOS];
+    int                 num_of_alt_ser_reqs;
+#define OGS_MEDIA_ATTR_ABSENT 0
+#define OGS_MEDIA_ATTR_PRESENT 1
+#define OGS_MEDIA_ATTR_NULL 2   /* a null value of the update removes what was provisioned */
+    int                 alt_ser_reqs_state;
+    ogs_pdu_set_qos_t   pdu_set_dl, pdu_set_ul;     /* pduSetQosDl and pduSetQosUl */
 
 #define OGS_MAX_NUM_OF_MEDIA_SUB_COMPONENT     8
     ogs_media_sub_component_t sub[OGS_MAX_NUM_OF_MEDIA_SUB_COMPONENT];

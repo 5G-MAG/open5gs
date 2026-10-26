@@ -72,6 +72,7 @@ typedef struct af_sess_s {
     int notify_qnc_count;             /* the notifications of the event QOS_NOTIF */
     char notify_qnc_type[24];         /* notifType of the last, medCompN of its first flow */
     int notify_qnc_med_comp_n;
+    char notify_qnc_alt[96];          /* altSerReq of the last QOS_NOTIF notification, empty if none */
     long notify_usg_total;            /* usgRep.totalVolume of the last notification that carried a usgRep, -1 if none yet */
     int notify_usg_count;             /* the notifications of the event USAGE_REPORT */
     long delete_usg_total;            /* usgRep.totalVolume in the answer of the last deletion, -1 if none */

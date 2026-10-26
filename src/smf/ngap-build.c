@@ -106,6 +106,178 @@ static void fill_qos_level_parameters(
     }
 }
 
+
+/*
+ * The Alternative QoS Parameters Set List and the PDU Set QoS Parameters of a QoS flow (TS 38.413 V19.1.0 clauses 9.3.1.152 and 9.3.1.153 and the
+ * PDU Set QoS Parameters IE of the QoS Flow Level QoS Parameters IE; TS 29.512 V19.7.0 clauses 4.2.6.2.1 and 4.2.6.6.2). The list is an
+ * extension of the GBR QoS Information, so it goes with GBR flows only; the index of an item is its position in the list, 1 having the
+ * highest priority. The packet delay budget is in units of 0.5 ms (clause 9.3.1.80) and the PDU Set delay budget in 0.01 ms (clause 9.3.1.135).
+ */
+static NGAP_PacketErrorRate_t *per_alloc(const char *string)
+{
+    NGAP_PacketErrorRate_t *per = NULL;
+
+    if (!string || strlen(string) != 4)
+        return NULL;
+    per = CALLOC(1, sizeof(*per));
+    ogs_assert(per);
+    /* PacketErrRate of TS 29.571: one digit, "E-", one digit */
+    per->pERScalar = string[0] - '0';
+    per->pERExponent = string[3] - '0';
+    return per;
+}
+
+static void alt_item_add_ext(NGAP_AlternativeQoSParaSetItem_t *item, long id, int present, void *value)
+{
+    NGAP_ProtocolExtensionContainer_14713P19_t *container = (NGAP_ProtocolExtensionContainer_14713P19_t *)item->iE_Extensions;
+    NGAP_AlternativeQoSParaSetItem_ExtIEs_t *ext = NULL;
+
+    if (!container) {
+        container = CALLOC(1, sizeof(*container));
+        ogs_assert(container);
+        item->iE_Extensions = (struct NGAP_ProtocolExtensionContainer *)container;
+    }
+    ext = CALLOC(1, sizeof(*ext));
+    ogs_assert(ext);
+    ASN_SEQUENCE_ADD(&container->list, ext);
+    ext->id = id;
+    ext->criticality = NGAP_Criticality_ignore;
+    ext->extensionValue.present = present;
+    switch (present) {
+    case NGAP_AlternativeQoSParaSetItem_ExtIEs__extensionValue_PR_ExtendedPacketDelayBudget:
+        ext->extensionValue.choice.ExtendedPacketDelayBudget = value;
+        break;
+    case NGAP_AlternativeQoSParaSetItem_ExtIEs__extensionValue_PR_ExtendedPacketDelayBudget_1:
+        ext->extensionValue.choice.ExtendedPacketDelayBudget_1 = value;
+        break;
+    case NGAP_AlternativeQoSParaSetItem_ExtIEs__extensionValue_PR_PacketErrorRate:
+        ext->extensionValue.choice.PacketErrorRate = value;
+        break;
+    default:
+        ext->extensionValue.choice.PacketErrorRate_1 = value;
+        break;
+    }
+}
+
+static long *long_alloc(long value)
+{
+    long *p = CALLOC(1, sizeof(*p));
+
+    ogs_assert(p);
+    *p = value;
+    return p;
+}
+
+static NGAP_PDUsetQoSInformation_t *pdu_set_information(const ogs_pdu_set_qos_t *pdu_set)
+{
+    NGAP_PDUsetQoSInformation_t *info = NULL;
+
+    if (!pdu_set->presence)
+        return NULL;
+    info = CALLOC(1, sizeof(*info));
+    ogs_assert(info);
+    if (pdu_set->delay_budget_presence && pdu_set->delay_budget >= 1 && pdu_set->delay_budget <= 65535)
+        info->pduSetDelayBudget = long_alloc(pdu_set->delay_budget);
+    else if (pdu_set->delay_budget_presence)
+        ogs_error("The PDU Set delay budget [%u] is outside of 1 to 65535 (0.01 ms) and is not sent", pdu_set->delay_budget);
+    info->pduSetErrorRate = per_alloc(pdu_set->error_rate);
+    if (pdu_set->handling_info == OGS_PDU_SET_ALL_PDUS_NEEDED)
+        info->pduSetIntegratedHandlingInformation =
+            long_alloc(NGAP_PDUsetQoSInformation__pduSetIntegratedHandlingInformation_true);
+    else if (pdu_set->handling_info == OGS_PDU_SET_ALL_PDUS_NOT_NEEDED)
+        info->pduSetIntegratedHandlingInformation =
+            long_alloc(NGAP_PDUsetQoSInformation__pduSetIntegratedHandlingInformation_false);
+    return info;
+}
+
+static void qos_flow_alt_and_pdu_set(NGAP_QosFlowLevelQosParameters_t *params, const smf_bearer_t *qos_flow)
+{
+    NGAP_PacketErrorRate_t *per = NULL;
+    int i;
+
+    if (!qos_flow)
+        return;
+
+    if (params->gBR_QosInformation && qos_flow->alt_qos.num_of_set) {
+        NGAP_ProtocolExtensionContainer_14713P128_t *container = CALLOC(1, sizeof(*container));
+        NGAP_GBR_QosInformation_ExtIEs_t *ext = CALLOC(1, sizeof(*ext));
+        NGAP_AlternativeQoSParaSetList_t *list = CALLOC(1, sizeof(*list));
+
+        ogs_assert(container);
+        ogs_assert(ext);
+        ogs_assert(list);
+        for (i = 0; i < qos_flow->alt_qos.num_of_set; i++) {
+            const ogs_alt_qos_t *alt = &qos_flow->alt_qos;
+            NGAP_AlternativeQoSParaSetItem_t *item = CALLOC(1, sizeof(*item));
+
+            ogs_assert(item);
+            ASN_SEQUENCE_ADD(&list->list, item);
+            item->alternativeQoSParaSetIndex = i + 1;
+            if (alt->set[i].gbr.downlink) {
+                item->guaranteedFlowBitRateDL = CALLOC(1, sizeof(*item->guaranteedFlowBitRateDL));
+                ogs_assert(item->guaranteedFlowBitRateDL);
+                asn_uint642INTEGER(item->guaranteedFlowBitRateDL, alt->set[i].gbr.downlink);
+            }
+            if (alt->set[i].gbr.uplink) {
+                item->guaranteedFlowBitRateUL = CALLOC(1, sizeof(*item->guaranteedFlowBitRateUL));
+                ogs_assert(item->guaranteedFlowBitRateUL);
+                asn_uint642INTEGER(item->guaranteedFlowBitRateUL, alt->set[i].gbr.uplink);
+            }
+            if (alt->set[i].pdb_presence) {
+                if (alt->set[i].pdb * 2 <= 1023)
+                    item->packetDelayBudget = long_alloc(alt->set[i].pdb * 2);
+                else
+                    ogs_error("The packet delay budget [%u ms] of the alternative set is outside of 0.5 ms units up to 1023 and is not sent",
+                            alt->set[i].pdb);
+            }
+            item->packetErrorRate = per_alloc(alt->set[i].per);
+
+            /* the PDU Set delay budgets and error rates of the set (clause 9.3.1.151) */
+            if (alt->set[i].pdu_set_dl.presence && alt->set[i].pdu_set_dl.delay_budget_presence)
+                alt_item_add_ext(item, NGAP_ProtocolIE_ID_id_PduSetDelayBudgetDownlink,
+                        NGAP_AlternativeQoSParaSetItem_ExtIEs__extensionValue_PR_ExtendedPacketDelayBudget,
+                        long_alloc(alt->set[i].pdu_set_dl.delay_budget));
+            if (alt->set[i].pdu_set_ul.presence && alt->set[i].pdu_set_ul.delay_budget_presence)
+                alt_item_add_ext(item, NGAP_ProtocolIE_ID_id_PduSetDelayBudgetUplink,
+                        NGAP_AlternativeQoSParaSetItem_ExtIEs__extensionValue_PR_ExtendedPacketDelayBudget_1,
+                        long_alloc(alt->set[i].pdu_set_ul.delay_budget));
+            if (alt->set[i].pdu_set_dl.presence && (per = per_alloc(alt->set[i].pdu_set_dl.error_rate)))
+                alt_item_add_ext(item, NGAP_ProtocolIE_ID_id_PduSetErrorRateDownlink,
+                        NGAP_AlternativeQoSParaSetItem_ExtIEs__extensionValue_PR_PacketErrorRate, per);
+            if (alt->set[i].pdu_set_ul.presence && (per = per_alloc(alt->set[i].pdu_set_ul.error_rate)))
+                alt_item_add_ext(item, NGAP_ProtocolIE_ID_id_PduSetErrorRateUplink,
+                        NGAP_AlternativeQoSParaSetItem_ExtIEs__extensionValue_PR_PacketErrorRate_1, per);
+        }
+        ASN_SEQUENCE_ADD(&container->list, ext);
+        ext->id = NGAP_ProtocolIE_ID_id_AlternativeQoSParaSetList;
+        ext->criticality = NGAP_Criticality_ignore;
+        ext->extensionValue.present = NGAP_GBR_QosInformation_ExtIEs__extensionValue_PR_AlternativeQoSParaSetList;
+        ext->extensionValue.choice.AlternativeQoSParaSetList = list;
+        params->gBR_QosInformation->iE_Extensions = (struct NGAP_ProtocolExtensionContainer *)container;
+    }
+
+    if (qos_flow->pdu_set_dl.presence || qos_flow->pdu_set_ul.presence) {
+        NGAP_ProtocolExtensionContainer_14713P343_t *container = (NGAP_ProtocolExtensionContainer_14713P343_t *)params->iE_Extensions;
+        NGAP_QosFlowLevelQosParameters_ExtIEs_t *ext = CALLOC(1, sizeof(*ext));
+        NGAP_PDUsetQoSParameters_t *pdu_set = CALLOC(1, sizeof(*pdu_set));
+
+        ogs_assert(ext);
+        ogs_assert(pdu_set);
+        if (!container) {
+            container = CALLOC(1, sizeof(*container));
+            ogs_assert(container);
+            params->iE_Extensions = (struct NGAP_ProtocolExtensionContainer *)container;
+        }
+        pdu_set->dlPDUSetQoSInformation = pdu_set_information(&qos_flow->pdu_set_dl);
+        pdu_set->ulPDUSetQoSInformation = pdu_set_information(&qos_flow->pdu_set_ul);
+        ASN_SEQUENCE_ADD(&container->list, ext);
+        ext->id = NGAP_ProtocolIE_ID_id_PDUsetQoSParameters;
+        ext->criticality = NGAP_Criticality_ignore;
+        ext->extensionValue.present = NGAP_QosFlowLevelQosParameters_ExtIEs__extensionValue_PR_PDUsetQoSParameters;
+        ext->extensionValue.choice.PDUsetQoSParameters = pdu_set;
+    }
+}
+
 /*
  * TS 38.413 V19.1.0 clause 9.3.1.266: ECN Marking at UPF Request tells the NG-RAN node to report the congestion information of a
  * QoS flow, as the UP function marks the packets for L4S (TS 29.512 V19.7.0 clause 4.2.6.2.21).
@@ -451,6 +623,7 @@ ogs_pkbuf_t *ngap_build_pdu_session_resource_setup_request_transfer(
         fill_qos_level_parameters(
                 QosFlowSetupRequestItem->qosFlowLevelQosParameters,
                 &qos, true);
+        qos_flow_alt_and_pdu_set(QosFlowSetupRequestItem->qosFlowLevelQosParameters, smf_qos_flow_find_by_qfi(sess, qosFlowSetupItem->qfi));
         l4s_setup_item_ext(QosFlowSetupRequestItem, smf_qos_flow_find_by_qfi(sess, qosFlowSetupItem->qfi));
 
     } else {
@@ -471,6 +644,7 @@ ogs_pkbuf_t *ngap_build_pdu_session_resource_setup_request_transfer(
             fill_qos_level_parameters(
                     QosFlowSetupRequestItem->qosFlowLevelQosParameters,
                     &qos_flow->qos, true);
+            qos_flow_alt_and_pdu_set(QosFlowSetupRequestItem->qosFlowLevelQosParameters, qos_flow);
             l4s_setup_item_ext(QosFlowSetupRequestItem, qos_flow);
         }
     }
@@ -599,6 +773,8 @@ ogs_pkbuf_t *ngap_build_pdu_session_resource_modify_request_transfer(
                     fill_qos_level_parameters(
                             QosFlowAddOrModifyRequestItem->
                                 qosFlowLevelQosParameters, &qos, true);
+                    qos_flow_alt_and_pdu_set(QosFlowAddOrModifyRequestItem->qosFlowLevelQosParameters,
+                            smf_qos_flow_find_by_qfi(sess, qosFlowAddModRequestItem->qfi));
                     l4s_modify_item_ext(QosFlowAddOrModifyRequestItem, smf_qos_flow_find_by_qfi(sess, qosFlowAddModRequestItem->qfi));
                 }
             }
@@ -623,6 +799,7 @@ ogs_pkbuf_t *ngap_build_pdu_session_resource_modify_request_transfer(
             fill_qos_level_parameters(
                     QosFlowAddOrModifyRequestItem->qosFlowLevelQosParameters,
                     &qos_flow->qos, include_gbr);
+            qos_flow_alt_and_pdu_set(QosFlowAddOrModifyRequestItem->qosFlowLevelQosParameters, qos_flow);
             l4s_modify_item_ext(QosFlowAddOrModifyRequestItem, qos_flow);
         }
     }

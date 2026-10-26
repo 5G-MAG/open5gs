@@ -69,6 +69,116 @@ static uint8_t pcf_qos_index_from_media(
     }
 }
 
+
+/*
+ * The alternative service requirements of a media component (TS 29.514 V19.8.0 clauses 4.2.2.32 and 4.2.3.30): altSerReqs is the ordered
+ * list of QoS references that the AF accepts, the first having the highest priority; a null value of the update removes the list.
+ */
+static void media_read_alt_ser_reqs(ogs_media_component_t *media_component, OpenAPI_list_t *alt_ser_reqs, bool is_null)
+{
+    OpenAPI_lnode_t *node = NULL;
+
+    if (is_null) {
+        media_component->alt_ser_reqs_state = OGS_MEDIA_ATTR_NULL;
+        return;
+    }
+    if (!alt_ser_reqs)
+        return;
+    media_component->alt_ser_reqs_state = OGS_MEDIA_ATTR_PRESENT;
+    OpenAPI_list_for_each(alt_ser_reqs, node) {
+        if (!node->data)
+            continue;
+        if (media_component->num_of_alt_ser_reqs >= OGS_MAX_NUM_OF_ALT_QOS) {
+            ogs_error("OVERFLOW num_of_alt_ser_reqs [%d]", OGS_MAX_NUM_OF_ALT_QOS);
+            break;
+        }
+        media_component->alt_ser_reqs[media_component->num_of_alt_ser_reqs++] = node->data;
+    }
+}
+
+/* pduSetQosDl and pduSetQosUl of a media component (TS 29.514 V19.8.0 clause 4.2.2.39) */
+static void media_read_pdu_set(ogs_pdu_set_qos_t *out, bool is_null, bool has_budget, int budget, const char *error_rate,
+        OpenAPI_pdu_set_handling_info_e handling, bool given)
+{
+    memset(out, 0, sizeof(*out));
+    if (is_null) {
+        out->removed = true;
+        return;
+    }
+    if (!given)
+        return;
+    out->presence = true;
+    if (has_budget) {
+        out->delay_budget_presence = true;
+        out->delay_budget = budget;
+    }
+    if (error_rate)
+        ogs_cpystrn(out->error_rate, error_rate, sizeof(out->error_rate));
+    if (handling == OpenAPI_pdu_set_handling_info_ALL_PDUS_NEEDED)
+        out->handling_info = OGS_PDU_SET_ALL_PDUS_NEEDED;
+    else if (handling == OpenAPI_pdu_set_handling_info_ALL_PDUS_NOT_NEEDED)
+        out->handling_info = OGS_PDU_SET_ALL_PDUS_NOT_NEEDED;
+}
+
+/*
+ * What the media component asks of the rule beyond the QoS reference: the alternative QoS parameter sets and the PDU Set QoS parameters.
+ * Each is applied only when the feature of the AF and of the SMF is negotiated (TS 29.514 V19.8.0 clause 5.8, TS 29.512 V19.7.0 clause 5.8);
+ * without it the attribute is not used. An alternative QoS reference that is not configured is refused like an unknown qosReference.
+ * The alternative sets take the packet delay budget, the packet error rate and the guaranteed bit rates configured for the reference
+ * (TS 29.512 V19.7.0 clause 4.2.6.2.1 and its NOTE: the PCF is configured with the QoS parameters of each pre-defined information set).
+ */
+static bool media_apply_qos_extensions(pcf_sess_t *sess, ogs_pcc_rule_t *pcc_rule, ogs_media_component_t *media_component,
+        const char **err_out)
+{
+    int i;
+
+    ogs_assert(err_out);
+    *err_out = NULL;
+
+    if (OGS_SBI_FEATURES_IS_SET(sess->policyauthorization_features, OGS_SBI_NPCF_POLICYAUTHORIZATION_AUTHORIZATION_WITH_REQUIRED_QOS) &&
+        OGS_SBI_FEATURES_IS_SET(sess->smpolicycontrol_features, OGS_SBI_NPCF_SMPOLICYCONTROL_AUTHORIZATION_WITH_REQUIRED_QOS)) {
+        if (media_component->alt_ser_reqs_state == OGS_MEDIA_ATTR_NULL) {
+            memset(&pcc_rule->alt_qos, 0, sizeof(pcc_rule->alt_qos));
+        } else if (media_component->alt_ser_reqs_state == OGS_MEDIA_ATTR_PRESENT) {
+            memset(&pcc_rule->alt_qos, 0, sizeof(pcc_rule->alt_qos));
+            for (i = 0; i < media_component->num_of_alt_ser_reqs; i++) {
+                pcf_qos_profile_t *profile = pcf_qos_profile_find(media_component->alt_ser_reqs[i]);
+                int n = pcc_rule->alt_qos.num_of_set;
+
+                if (!profile) {
+                    *err_out = "Unknown qosReference in altSerReqs - check PCF qos_profiles config";
+                    return false;
+                }
+                /* the id of the set: the rule and the position in the list */
+                ogs_snprintf(pcc_rule->alt_qos.set[n].id, sizeof(pcc_rule->alt_qos.set[n].id), "%s-alt%d", pcc_rule->id, i + 1);
+                ogs_cpystrn(pcc_rule->alt_qos.set[n].reference, media_component->alt_ser_reqs[i], sizeof(pcc_rule->alt_qos.set[n].reference));
+                pcc_rule->alt_qos.set[n].pdb_presence = profile->alt.pdb_presence;
+                pcc_rule->alt_qos.set[n].pdb = profile->alt.pdb;
+                ogs_cpystrn(pcc_rule->alt_qos.set[n].per, profile->alt.per, sizeof(pcc_rule->alt_qos.set[n].per));
+                pcc_rule->alt_qos.set[n].gbr = profile->alt.gbr;
+                pcc_rule->alt_qos.num_of_set++;
+            }
+        }
+    } else if (media_component->alt_ser_reqs_state == OGS_MEDIA_ATTR_PRESENT) {
+        ogs_warn("altSerReqs ignored: AuthorizationWithRequiredQoS is not supported by the AF and the SMF");
+    }
+
+    if (OGS_SBI_FEATURES_IS_SET(sess->policyauthorization_features, OGS_SBI_NPCF_POLICYAUTHORIZATION_PDU_SET_HANDLING) &&
+        OGS_SBI_FEATURES_HI_IS_SET(sess->smpolicycontrol_features_hi, OGS_SBI_NPCF_SMPOLICYCONTROL_PDU_SET_HANDLING)) {
+        if (media_component->pdu_set_dl.presence)
+            pcc_rule->pdu_set_dl = media_component->pdu_set_dl;
+        else if (media_component->pdu_set_dl.removed)
+            memset(&pcc_rule->pdu_set_dl, 0, sizeof(pcc_rule->pdu_set_dl));
+        if (media_component->pdu_set_ul.presence)
+            pcc_rule->pdu_set_ul = media_component->pdu_set_ul;
+        else if (media_component->pdu_set_ul.removed)
+            memset(&pcc_rule->pdu_set_ul, 0, sizeof(pcc_rule->pdu_set_ul));
+    } else if (media_component->pdu_set_dl.presence || media_component->pdu_set_ul.presence) {
+        ogs_warn("pduSetQosDl and pduSetQosUl ignored: PDUSetHandling is not supported by the AF and the SMF");
+    }
+    return true;
+}
+
 bool pcf_npcf_am_policy_control_handle_create(pcf_ue_am_t *pcf_ue_am,
         ogs_sbi_stream_t *stream, ogs_sbi_message_t *message)
 {
@@ -382,12 +492,14 @@ bool pcf_npcf_smpolicycontrol_handle_create(pcf_sess_t *sess,
     }
 
     if (SmPolicyContextData->supp_feat) {
-        uint64_t supported_features =
-            ogs_uint64_from_string_hexadecimal(
-                    SmPolicyContextData->supp_feat);
+        uint64_t supported_features, supported_features_hi;
+
+        ogs_sbi_features_from_string(SmPolicyContextData->supp_feat, &supported_features, &supported_features_hi);
         sess->smpolicycontrol_features &= supported_features;
+        sess->smpolicycontrol_features_hi &= supported_features_hi;
     } else {
         sess->smpolicycontrol_features = 0;
+        sess->smpolicycontrol_features_hi = 0;
     }
 
     sess->pdu_session_type = SmPolicyContextData->pdu_session_type;
@@ -893,10 +1005,11 @@ static void app_qnc_decisions(pcf_app_t *app, OpenAPI_list_t *QosDecisionList)
         for (i = 0; i < app->num_of_pcc_rule; i++) {
             ogs_pcc_rule_t *rule = &app->pcc_rule[i];
 
+            /* the alternative QoS parameter sets need the notification of the NG-RAN as well (TS 29.512 V19.7.0 clause 4.2.6.2.1: "enable QoS Notification Control") */
             if (rule->id && !strcmp(rule->id, qos->qos_id) &&
                 (rule->qos.gbr.downlink || rule->qos.gbr.uplink)) {
                 qos->is_qnc = true;
-                qos->qnc = app->ev_qos_notif;
+                qos->qnc = app->ev_qos_notif || rule->alt_qos.num_of_set;
             }
         }
     }
@@ -904,7 +1017,13 @@ static void app_qnc_decisions(pcf_app_t *app, OpenAPI_list_t *QosDecisionList)
 
 static void app_qnc_trigger(pcf_app_t *app, OpenAPI_sm_policy_decision_t *decision)
 {
-    if (!app->ev_qos_notif)
+    bool alternative = false;
+    int i;
+
+    for (i = 0; i < app->num_of_pcc_rule; i++)
+        if (app->pcc_rule[i].alt_qos.num_of_set)
+            alternative = true;
+    if (!app->ev_qos_notif && !alternative)
         return;
     if (!decision->policy_ctrl_req_triggers) {
         decision->policy_ctrl_req_triggers = OpenAPI_list_create();
@@ -1179,7 +1298,6 @@ static void app_usage_send(pcf_sess_t *sess, pcf_app_t *app, const usage_params_
     for (i = 0; i < app->num_of_pcc_rule; i++) {
         ogs_pcc_rule_t *pcc_rule = &app->pcc_rule[i];
         OpenAPI_pcc_rule_t *PccRule = ogs_sbi_build_pcc_rule(pcc_rule, 0);
-        OpenAPI_qos_data_t *QosData = NULL;
 
         ogs_assert(PccRule);
         ogs_sbi_decision_add_traffic_control(&SmPolicyDecision, PccRule, pcc_rule);
@@ -1190,9 +1308,7 @@ static void app_usage_send(pcf_sess_t *sess, pcf_app_t *app, const usage_params_
                     p->total, p->uplink, p->downlink, p->duration);
         OpenAPI_list_add(PccRuleList, OpenAPI_map_create(PccRule->pcc_rule_id, PccRule));
 
-        QosData = ogs_sbi_build_qos_data(pcc_rule);
-        ogs_assert(QosData);
-        OpenAPI_list_add(QosDecisionList, OpenAPI_map_create(QosData->qos_id, QosData));
+        ogs_sbi_decision_add_qos_data(QosDecisionList, pcc_rule);
     }
     app_qnc_decisions(app, QosDecisionList);
     app_qnc_trigger(app, &SmPolicyDecision);
@@ -1431,7 +1547,7 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
     OpenAPI_app_session_context_t *AppSessionContext = NULL;
     OpenAPI_app_session_context_req_data_t *AscReqData = NULL;
 
-    uint64_t supported_features = 0;
+    uint64_t supported_features = 0, supported_features_hi = 0;
 
     ogs_sbi_server_t *server = NULL;
     ogs_sbi_header_t header;
@@ -1524,14 +1640,15 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
         goto cleanup;
     }
 
-    supported_features = ogs_uint64_from_string_hexadecimal(
-            AscReqData->supp_feat);
+    ogs_sbi_features_from_string(AscReqData->supp_feat, &supported_features, &supported_features_hi);
     sess->policyauthorization_features &= supported_features;
+    sess->policyauthorization_features_hi &= supported_features_hi;
 
-    if (sess->policyauthorization_features != supported_features) {
+    if (sess->policyauthorization_features != supported_features ||
+            sess->policyauthorization_features_hi != supported_features_hi) {
         ogs_free(AscReqData->supp_feat);
         AscReqData->supp_feat =
-            ogs_uint64_to_string(sess->policyauthorization_features);
+            ogs_sbi_features_to_string(sess->policyauthorization_features, sess->policyauthorization_features_hi);
         ogs_assert(AscReqData->supp_feat);
     }
 
@@ -1573,6 +1690,15 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
                     MediaComponent->med_comp_n;
                 media_component->media_type = MediaComponent->med_type;
                 media_component->l4s_ind = l4s_ind_from_model(MediaComponent->l4s_ind);
+                media_read_alt_ser_reqs(media_component, MediaComponent->alt_ser_reqs, false);
+                media_read_pdu_set(&media_component->pdu_set_dl, false,
+                        MediaComponent->pdu_set_qos_dl ? MediaComponent->pdu_set_qos_dl->is_pdu_set_delay_budget : false, MediaComponent->pdu_set_qos_dl ? MediaComponent->pdu_set_qos_dl->pdu_set_delay_budget : 0,
+                        MediaComponent->pdu_set_qos_dl ? MediaComponent->pdu_set_qos_dl->pdu_set_err_rate : NULL,
+                        MediaComponent->pdu_set_qos_dl ? MediaComponent->pdu_set_qos_dl->pdu_set_handling_info : OpenAPI_pdu_set_handling_info_NULL, MediaComponent->pdu_set_qos_dl != NULL);
+                media_read_pdu_set(&media_component->pdu_set_ul, false,
+                        MediaComponent->pdu_set_qos_ul ? MediaComponent->pdu_set_qos_ul->is_pdu_set_delay_budget : false, MediaComponent->pdu_set_qos_ul ? MediaComponent->pdu_set_qos_ul->pdu_set_delay_budget : 0,
+                        MediaComponent->pdu_set_qos_ul ? MediaComponent->pdu_set_qos_ul->pdu_set_err_rate : NULL,
+                        MediaComponent->pdu_set_qos_ul ? MediaComponent->pdu_set_qos_ul->pdu_set_handling_info : OpenAPI_pdu_set_handling_info_NULL, MediaComponent->pdu_set_qos_ul != NULL);
                 if (MediaComponent->mar_bw_dl)
                     media_component->max_requested_bandwidth_dl =
                         ogs_sbi_bitrate_from_string(MediaComponent->mar_bw_dl);
@@ -1612,6 +1738,8 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
                         if (SubComponent) {
                             sub->flow_number = SubComponent->f_num;
                             sub->flow_usage = SubComponent->flow_usage;
+                            sub->removed = SubComponent->f_status ==
+                                    OpenAPI_flow_status_REMOVED;
 
                             fDescList = SubComponent->f_descs;
                             OpenAPI_list_for_each(fDescList, node3) {
@@ -1872,6 +2000,13 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
             goto cleanup;
         }
 
+        if (!media_apply_qos_extensions(sess, pcc_rule, media_component, &err_str)) {
+            strerror = ogs_msprintf("[%s:%d] %s", pcf_ue_sm->supi, sess->psi, err_str);
+            /* TS 29.514 V19.8.0 clauses 4.2.2.2 and 4.2.3.2: invalid service information is 400 */
+            status = OGS_SBI_HTTP_STATUS_BAD_REQUEST;
+            goto cleanup;
+        }
+
         /* fStatus of the media component: the gate of the flows (TS 29.514 clause 5.6.2.7) */
         if (media_component->flow_status != OpenAPI_flow_status_NULL)
             pcc_rule->flow_status =
@@ -1905,14 +2040,7 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
 
         OpenAPI_list_add(PccRuleList, PccRuleMap);
 
-        QosData = ogs_sbi_build_qos_data(pcc_rule);
-        ogs_assert(QosData);
-        ogs_assert(QosData->qos_id);
-
-        QosDecisionMap = OpenAPI_map_create(QosData->qos_id, QosData);
-        ogs_assert(QosDecisionMap);
-
-        OpenAPI_list_add(QosDecisionList, QosDecisionMap);
+        ogs_sbi_decision_add_qos_data(QosDecisionList, pcc_rule);
     }
 
     if (PccRuleList->count)
@@ -2189,6 +2317,15 @@ bool pcf_npcf_policyauthorization_handle_update(
                     MediaComponent->med_comp_n;
                 media_component->media_type = MediaComponent->med_type;
                 media_component->l4s_ind = l4s_ind_from_model(MediaComponent->l4s_ind);
+                media_read_alt_ser_reqs(media_component, MediaComponent->alt_ser_reqs, MediaComponent->is_alt_ser_reqs_null);
+                media_read_pdu_set(&media_component->pdu_set_dl, MediaComponent->is_pdu_set_qos_dl_null,
+                        MediaComponent->pdu_set_qos_dl ? MediaComponent->pdu_set_qos_dl->is_pdu_set_delay_budget : false, MediaComponent->pdu_set_qos_dl ? MediaComponent->pdu_set_qos_dl->pdu_set_delay_budget : 0,
+                        MediaComponent->pdu_set_qos_dl ? MediaComponent->pdu_set_qos_dl->pdu_set_err_rate : NULL,
+                        MediaComponent->pdu_set_qos_dl ? MediaComponent->pdu_set_qos_dl->pdu_set_handling_info : OpenAPI_pdu_set_handling_info_NULL, MediaComponent->pdu_set_qos_dl != NULL);
+                media_read_pdu_set(&media_component->pdu_set_ul, MediaComponent->is_pdu_set_qos_ul_null,
+                        MediaComponent->pdu_set_qos_ul ? MediaComponent->pdu_set_qos_ul->is_pdu_set_delay_budget : false, MediaComponent->pdu_set_qos_ul ? MediaComponent->pdu_set_qos_ul->pdu_set_delay_budget : 0,
+                        MediaComponent->pdu_set_qos_ul ? MediaComponent->pdu_set_qos_ul->pdu_set_err_rate : NULL,
+                        MediaComponent->pdu_set_qos_ul ? MediaComponent->pdu_set_qos_ul->pdu_set_handling_info : OpenAPI_pdu_set_handling_info_NULL, MediaComponent->pdu_set_qos_ul != NULL);
                 if (MediaComponent->mar_bw_dl)
                     media_component->max_requested_bandwidth_dl =
                         ogs_sbi_bitrate_from_string(MediaComponent->mar_bw_dl);
@@ -2228,6 +2365,8 @@ bool pcf_npcf_policyauthorization_handle_update(
                         if (SubComponent) {
                             sub->flow_number = SubComponent->f_num;
                             sub->flow_usage = SubComponent->flow_usage;
+                            sub->removed = SubComponent->f_status ==
+                                    OpenAPI_flow_status_REMOVED;
 
                             fDescList = SubComponent->f_descs;
                             OpenAPI_list_for_each(fDescList, node3) {
@@ -2252,6 +2391,32 @@ bool pcf_npcf_policyauthorization_handle_update(
                             }
                             media_component->num_of_sub++;
                         }
+                    }
+                }
+                {
+                    /*
+                     * TS 29.514 V19.8.0 clause 4.2.3.2: fStatus REMOVED on every media sub component removes the service data flows of the
+                     * media component, which is the removal of its PCC rule; with some sub components left the rule keeps their flows.
+                     */
+                    int k, all_removed = media_component->num_of_sub > 0;
+
+                    for (k = 0; k < media_component->num_of_sub; k++)
+                        if (!media_component->sub[k].removed) all_removed = 0;
+                    if (all_removed) {
+                        if (num_of_remove < OGS_ARRAY_SIZE(remove_med_comp_n)) {
+                            remove_med_comp_n[num_of_remove++] = MediaComponent->med_comp_n;
+                        } else {
+                            ogs_error("OVERFLOW remove_med_comp_n [%d]", num_of_remove);
+                        }
+                        for (k = 0; k < media_component->num_of_sub; k++) {
+                            int f;
+
+                            for (f = 0; f < media_component->sub[k].num_of_flow; f++)
+                                if (media_component->sub[k].flow[f].description)
+                                    ogs_free(media_component->sub[k].flow[f].description);
+                        }
+                        memset(media_component, 0, sizeof(*media_component));
+                        continue;
                     }
                 }
                 ims_data.num_of_media_component++;
@@ -2287,8 +2452,26 @@ bool pcf_npcf_policyauthorization_handle_update(
         ogs_media_component_t *media_component = &ims_data.media_component[i];
         const char *reference = qos_reference[i];
         const char *err_str = NULL;
+        ogs_pcc_rule_t *existing = NULL;
+        bool attr_only = false;
 
-        qos_index = pcf_qos_index_from_media(
+        /*
+         * A media component that names no QoS reference, no media type, no sub component and no bit rate changes attributes of the rule
+         * only (TS 29.514 V19.8.0 clause 4.2.3.2: the update carries what changes): the rule keeps its flows and its QoS.
+         */
+        for (j = 0; j < app_session->num_of_pcc_rule; j++) {
+            if (app_session->med_comp_n[j] == media_component->media_component_number) {
+                existing = &app_session->pcc_rule[j];
+                break;
+            }
+        }
+        attr_only = existing && !reference && media_component->media_type == OpenAPI_media_type_NULL &&
+            media_component->num_of_sub == 0 &&
+            !media_component->max_requested_bandwidth_dl && !media_component->max_requested_bandwidth_ul &&
+            !media_component->min_requested_bandwidth_dl && !media_component->min_requested_bandwidth_ul &&
+            !media_component->rr_bandwidth && !media_component->rs_bandwidth;
+
+        qos_index = attr_only ? existing->qos.index : pcf_qos_index_from_media(
                 reference, media_component->media_type, &err_str);
         if (qos_index == 0) {
             strerror = ogs_msprintf("[%s:%d] %s",
@@ -2389,7 +2572,7 @@ bool pcf_npcf_policyauthorization_handle_update(
 
             app_session->num_of_pcc_rule++;
 
-        } else {
+        } else if (!attr_only) {
             int count = 0;
 
             /* The media component names another QoS reference: the rule takes the QoS of that reference */
@@ -2424,7 +2607,7 @@ bool pcf_npcf_policyauthorization_handle_update(
         }
 
         /* Update QoS */
-        rv = ogs_pcc_rule_update_qos_from_media(pcc_rule, media_component);
+        rv = attr_only ? OGS_OK : ogs_pcc_rule_update_qos_from_media(pcc_rule, media_component);
         if (rv != OGS_OK) {
             strerror = ogs_msprintf("[%s:%d] update_qos() failed",
                 pcf_ue_sm->supi, sess->psi);
@@ -2432,13 +2615,20 @@ bool pcf_npcf_policyauthorization_handle_update(
             goto cleanup;
         }
 
+        if (!media_apply_qos_extensions(sess, pcc_rule, media_component, &err_str)) {
+            strerror = ogs_msprintf("[%s:%d] %s", pcf_ue_sm->supi, sess->psi, err_str);
+            /* TS 29.514 V19.8.0 clauses 4.2.2.2 and 4.2.3.2: invalid service information is 400 */
+            status = OGS_SBI_HTTP_STATUS_BAD_REQUEST;
+            goto cleanup;
+        }
+
         /* fStatus of the media component: the gate of the flows (TS 29.514 clause 5.6.2.7) */
-        if (media_component->flow_status != OpenAPI_flow_status_NULL)
+        if (!attr_only && media_component->flow_status != OpenAPI_flow_status_NULL)
             pcc_rule->flow_status =
                 ogs_sbi_flow_status_to_pcc_rule(media_component->flow_status);
 
         /* l4sInd of the media component: the explicit indication of ECN marking for L4S (TS 29.514 V19.8.0 clause 4.2.2.43) */
-        if (OGS_SBI_FEATURES_IS_SET(sess->policyauthorization_features, OGS_SBI_NPCF_POLICYAUTHORIZATION_L4S))
+        if (!attr_only && OGS_SBI_FEATURES_IS_SET(sess->policyauthorization_features, OGS_SBI_NPCF_POLICYAUTHORIZATION_L4S))
             pcc_rule->l4s_ind = media_component->l4s_ind;
 
         /* if we failed to get QoS from IMS, apply WEBUI QoS */
@@ -2465,14 +2655,7 @@ bool pcf_npcf_policyauthorization_handle_update(
 
         OpenAPI_list_add(PccRuleList, PccRuleMap);
 
-        QosData = ogs_sbi_build_qos_data(pcc_rule);
-        ogs_assert(QosData);
-        ogs_assert(QosData->qos_id);
-
-        QosDecisionMap = OpenAPI_map_create(QosData->qos_id, QosData);
-        ogs_assert(QosDecisionMap);
-
-        OpenAPI_list_add(QosDecisionList, QosDecisionMap);
+        ogs_sbi_decision_add_qos_data(QosDecisionList, pcc_rule);
     }
 
     for (i = 0; i < num_of_remove; i++) {
@@ -2990,6 +3173,7 @@ static void qnc_reports_notify(pcf_sess_t *sess, const char *content)
         ogs_list_for_each(&sess->app_list, app) {
             OpenAPI_list_t *owned = OpenAPI_list_create();
             cJSON *id = NULL, *evs = NULL, *notifs = NULL, *notif = NULL, *info = NULL, *flows = NULL, *arr = NULL;
+            cJSON *alt = NULL;
             ogs_sbi_server_t *server = ogs_sbi_server_first();
             ogs_sbi_header_t header;
             char *location = NULL;
@@ -3030,6 +3214,19 @@ static void qnc_reports_notify(pcf_sess_t *sess, const char *content)
                 cJSON_AddItemToObject(info, "flows", flows);
             else
                 cJSON_Delete(flows);
+            /*
+             * The alternative service requirement that the NG-RAN can guarantee (TS 29.514 V19.8.0 table 5.6.2.15-1, "altSerReq"): the SMF
+             * names the alternative QoS parameter set (altQosParamId, TS 29.512 V19.7.0), the AF knows it by the QoS reference it gave.
+             */
+            alt = cJSON_GetObjectItem(report, "altQosParamId");
+            if (cJSON_IsString(alt)) {
+                int r, k;
+
+                for (r = 0; r < app->num_of_pcc_rule; r++)
+                    for (k = 0; k < app->pcc_rule[r].alt_qos.num_of_set; k++)
+                        if (!strcmp(app->pcc_rule[r].alt_qos.set[k].id, alt->valuestring) && app->pcc_rule[r].alt_qos.set[k].reference[0])
+                            cJSON_AddStringToObject(info, "altSerReq", app->pcc_rule[r].alt_qos.set[k].reference);
+            }
             cJSON_AddItemToArray(arr, info);
 
             pcf_sbi_send_policyauthorization_event_notify(app, evs);

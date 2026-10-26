@@ -443,6 +443,65 @@ void testngap_handle_pdu_session_resource_setup_request(
     }
 }
 
+/* The Alternative QoS Parameters Set List and the PDU Set QoS Parameters of a QoS Flow Level QoS Parameters IE, for the tests to check */
+static void record_qos_extensions(test_sess_t *sess, NGAP_QosFlowLevelQosParameters_t *params)
+{
+    int e, i;
+
+    memset(&sess->qos_ext, 0, sizeof(sess->qos_ext));
+    if (!params)
+        return;
+
+    if (params->gBR_QosInformation && params->gBR_QosInformation->iE_Extensions) {
+        NGAP_ProtocolExtensionContainer_14713P128_t *list =
+            (NGAP_ProtocolExtensionContainer_14713P128_t *)params->gBR_QosInformation->iE_Extensions;
+
+        for (e = 0; e < list->list.count; e++) {
+            NGAP_GBR_QosInformation_ExtIEs_t *x = list->list.array[e];
+            NGAP_AlternativeQoSParaSetList_t *alt = NULL;
+
+            if (!x || x->id != NGAP_ProtocolIE_ID_id_AlternativeQoSParaSetList)
+                continue;
+            alt = x->extensionValue.choice.AlternativeQoSParaSetList;
+            for (i = 0; alt && i < alt->list.count && i < 8; i++) {
+                NGAP_AlternativeQoSParaSetItem_t *item = alt->list.array[i];
+                int n = sess->qos_ext.count++;
+
+                sess->qos_ext.set[n].index = item->alternativeQoSParaSetIndex;
+                if (item->guaranteedFlowBitRateDL)
+                    asn_INTEGER2uint64(item->guaranteedFlowBitRateDL, &sess->qos_ext.set[n].gfbr_dl);
+                if (item->guaranteedFlowBitRateUL)
+                    asn_INTEGER2uint64(item->guaranteedFlowBitRateUL, &sess->qos_ext.set[n].gfbr_ul);
+                sess->qos_ext.set[n].pdb = item->packetDelayBudget ? *item->packetDelayBudget : -1;
+                sess->qos_ext.set[n].per_scalar = item->packetErrorRate ? item->packetErrorRate->pERScalar : -1;
+                sess->qos_ext.set[n].per_exponent = item->packetErrorRate ? item->packetErrorRate->pERExponent : -1;
+            }
+        }
+    }
+
+    if (params->iE_Extensions) {
+        NGAP_ProtocolExtensionContainer_14713P343_t *list = (NGAP_ProtocolExtensionContainer_14713P343_t *)params->iE_Extensions;
+
+        for (e = 0; e < list->list.count; e++) {
+            NGAP_QosFlowLevelQosParameters_ExtIEs_t *x = list->list.array[e];
+            NGAP_PDUsetQoSParameters_t *pdu_set = NULL;
+            NGAP_PDUsetQoSInformation_t *dl = NULL;
+
+            if (!x || x->id != NGAP_ProtocolIE_ID_id_PDUsetQoSParameters)
+                continue;
+            pdu_set = x->extensionValue.choice.PDUsetQoSParameters;
+            if (!pdu_set)
+                continue;
+            sess->qos_ext.pdu_set = true;
+            dl = pdu_set->dlPDUSetQoSInformation;
+            sess->qos_ext.pdu_set_dl_budget = dl && dl->pduSetDelayBudget ? *dl->pduSetDelayBudget : -1;
+            sess->qos_ext.pdu_set_dl_per_scalar = dl && dl->pduSetErrorRate ? dl->pduSetErrorRate->pERScalar : -1;
+            sess->qos_ext.pdu_set_dl_per_exponent = dl && dl->pduSetErrorRate ? dl->pduSetErrorRate->pERExponent : -1;
+            sess->qos_ext.pdu_set_dl_handling = dl && dl->pduSetIntegratedHandlingInformation ? *dl->pduSetIntegratedHandlingInformation : -1;
+        }
+    }
+}
+
 void testngap_handle_pdu_session_resource_modify_request(
         test_ue_t *test_ue, ogs_ngap_message_t *message)
 {
@@ -532,6 +591,7 @@ void testngap_handle_pdu_session_resource_modify_request(
                                                 qosFlowIdentifier;
 
                             sess->ecn_request = 0;
+                            record_qos_extensions(sess, QosFlowAddOrModifyRequestItem->qosFlowLevelQosParameters);
                             if (QosFlowAddOrModifyRequestItem->iE_Extensions) {
                                 NGAP_ProtocolExtensionContainer_14713P339_t *ext =
                                     (NGAP_ProtocolExtensionContainer_14713P339_t *)

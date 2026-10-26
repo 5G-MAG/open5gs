@@ -683,6 +683,9 @@ void smf_qos_flow_binding(smf_sess_t *sess)
                 qos_flow->pcc_rule.flow_status = pcc_rule->flow_status;
 
                 memcpy(&qos_flow->qos, &pcc_rule->qos, sizeof(ogs_qos_t));
+                memcpy(&qos_flow->alt_qos, &pcc_rule->alt_qos, sizeof(ogs_alt_qos_t));
+                qos_flow->pdu_set_dl = pcc_rule->pdu_set_dl;
+                qos_flow->pdu_set_ul = pcc_rule->pdu_set_ul;
 
                 qos_flow_created = true;
 
@@ -730,6 +733,16 @@ void smf_qos_flow_binding(smf_sess_t *sess)
                         qos_presence = true;
                     }
                 }
+            }
+
+            /* new Alternative QoS parameter sets or PDU Set QoS parameters are an update of the QoS profile of the flow */
+            if (!qos_flow_created && (memcmp(&qos_flow->alt_qos, &pcc_rule->alt_qos, sizeof(ogs_alt_qos_t)) ||
+                    memcmp(&qos_flow->pdu_set_dl, &pcc_rule->pdu_set_dl, sizeof(ogs_pdu_set_qos_t)) ||
+                    memcmp(&qos_flow->pdu_set_ul, &pcc_rule->pdu_set_ul, sizeof(ogs_pdu_set_qos_t)))) {
+                memcpy(&qos_flow->alt_qos, &pcc_rule->alt_qos, sizeof(ogs_alt_qos_t));
+                qos_flow->pdu_set_dl = pcc_rule->pdu_set_dl;
+                qos_flow->pdu_set_ul = pcc_rule->pdu_set_ul;
+                qos_presence = true;
             }
 
             /* TS 29.512 V19.7.0 clause 4.2.3.25: the QoS monitoring of the packet delay that the rule asks for, or none any more */

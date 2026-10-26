@@ -50,6 +50,17 @@ typedef struct pcf_qos_profile_s {
      */
     bool           dynamic;
     ogs_pcc_rule_t dynamic_rule;
+
+    /*
+     * The pre-defined QoS parameters of the reference that an Alternative QoS parameter set takes (TS 29.512 V19.7.0 clause 4.2.6.2.1: the
+     * packet delay budget, the packet error rate and the guaranteed bit rates); what is not configured is not in the set.
+     */
+    struct {
+        bool pdb_presence;
+        uint32_t pdb;                       /* ms */
+        char per[OGS_QOS_ERROR_RATE_LEN];   /* "" when not configured */
+        ogs_bitrate_t gbr;                  /* bit/s */
+    } alt;
 } pcf_qos_profile_t;
 
 typedef struct pcf_context_s {
@@ -188,8 +199,10 @@ struct pcf_sess_s {
 
     /* SBI Features */
     uint64_t smpolicycontrol_features;
+    uint64_t smpolicycontrol_features_hi;       /* the features above number 64 (OGS_SBI_FEATURES_HI_SET) */
     uint64_t management_features;
     uint64_t policyauthorization_features;
+    uint64_t policyauthorization_features_hi;
 
     OpenAPI_ambr_t *subscribed_sess_ambr;
     OpenAPI_subscribed_default_qos_t *subscribed_default_qos;
@@ -258,6 +271,9 @@ pcf_context_t *pcf_self(void);
 
 /* The PCC rule template of the qos_profiles entry with this reference, or NULL if the entry has none */
 ogs_pcc_rule_t *pcf_qos_profile_dynamic_pcc_rule(const char *reference);
+
+/* The qos_profiles entry with this reference, or NULL */
+pcf_qos_profile_t *pcf_qos_profile_find(const char *reference);
 
 /* The same for a request without a reference: the first qos_profiles entry with this QoS index that has a template */
 ogs_pcc_rule_t *pcf_qos_profile_dynamic_pcc_rule_by_index(uint8_t qos_index);

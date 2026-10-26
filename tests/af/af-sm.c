@@ -228,6 +228,12 @@ void af_state_operational(ogs_fsm_t *s, af_event_t *e)
                             ogs_cpystrn(app_session->notify_qnc_type, qtype->valuestring,
                                     sizeof(app_session->notify_qnc_type));
                             app_session->notify_qnc_med_comp_n = cJSON_IsNumber(qmed) ? qmed->valueint : -1;
+                            {
+                                cJSON *qalt = qnc ? cJSON_GetObjectItem(qnc, "altSerReq") : NULL;
+
+                                ogs_cpystrn(app_session->notify_qnc_alt, cJSON_IsString(qalt) ? qalt->valuestring : "",
+                                        sizeof(app_session->notify_qnc_alt));
+                            }
                         }
                         if (cJSON_IsString(event) && !strcmp(event->valuestring, "USAGE_REPORT")) {
                             cJSON *usg = cJSON_GetObjectItem(body, "usgRep");

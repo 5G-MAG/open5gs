@@ -25,6 +25,25 @@
 
 #include "npcf-handler.h"
 
+/* PduSetQosParaRm of a QosData (TS 29.571) into the PDU Set QoS parameters of the rule */
+static void read_pdu_set_qos(ogs_pdu_set_qos_t *out, OpenAPI_pdu_set_qos_para_rm_t *in)
+{
+    memset(out, 0, sizeof(*out));
+    if (!in)
+        return;
+    out->presence = true;
+    if (in->is_pdu_set_delay_budget) {
+        out->delay_budget_presence = true;
+        out->delay_budget = in->pdu_set_delay_budget;
+    }
+    if (in->pdu_set_err_rate)
+        ogs_cpystrn(out->error_rate, in->pdu_set_err_rate, sizeof(out->error_rate));
+    if (in->pdu_set_handling_info == OpenAPI_pdu_set_handling_info_ALL_PDUS_NEEDED)
+        out->handling_info = OGS_PDU_SET_ALL_PDUS_NEEDED;
+    else if (in->pdu_set_handling_info == OpenAPI_pdu_set_handling_info_ALL_PDUS_NOT_NEEDED)
+        out->handling_info = OGS_PDU_SET_ALL_PDUS_NOT_NEEDED;
+}
+
 static void update_authorized_pcc_rule_and_qos(
         smf_sess_t *sess, OpenAPI_sm_policy_decision_t *SmPolicyDecision)
 {
@@ -487,6 +506,55 @@ static void update_authorized_pcc_rule_and_qos(
                     pcc_rule->qos.gbr.uplink = OGS_MAX_BITRATE_NGAP;
             }
 
+            /* the PDU Set QoS parameters of the QosData (TS 29.512 V19.7.0 clause 4.2.6.6.2) */
+            read_pdu_set_qos(&pcc_rule->pdu_set_dl, QosData->pdu_set_qos_dl);
+            read_pdu_set_qos(&pcc_rule->pdu_set_ul, QosData->pdu_set_qos_ul);
+
+            /* the Alternative QoS parameter sets that refAltQosParams refers to, in the order of the rule (clause 4.2.6.2.1) */
+            if (PccRule->ref_alt_qos_params) {
+                OpenAPI_lnode_t *node_alt = NULL;
+
+                OpenAPI_list_for_each(PccRule->ref_alt_qos_params, node_alt) {
+                    OpenAPI_qos_data_t *Alt = NULL;
+                    OpenAPI_lnode_t *node_dec = NULL;
+                    int a = pcc_rule->alt_qos.num_of_set;
+
+                    if (!node_alt->data)
+                        continue;
+                    if (a >= OGS_MAX_NUM_OF_ALT_QOS) {
+                        ogs_error("Too many alternative QoS parameter sets [%d]", OGS_MAX_NUM_OF_ALT_QOS);
+                        break;
+                    }
+                    OpenAPI_list_for_each(SmPolicyDecision->qos_decs, node_dec) {
+                        OpenAPI_map_t *Dec = node_dec->data;
+
+                        if (Dec && Dec->value && ((OpenAPI_qos_data_t *)Dec->value)->qos_id &&
+                                !strcmp(((OpenAPI_qos_data_t *)Dec->value)->qos_id, node_alt->data)) {
+                            Alt = Dec->value;
+                            break;
+                        }
+                    }
+                    if (!Alt) {
+                        ogs_error("The alternative QoS data [%s] is not in qosDecs", (char *)node_alt->data);
+                        continue;
+                    }
+                    ogs_cpystrn(pcc_rule->alt_qos.set[a].id, Alt->qos_id, sizeof(pcc_rule->alt_qos.set[a].id));
+                    if (Alt->is_packet_delay_budget) {
+                        pcc_rule->alt_qos.set[a].pdb_presence = true;
+                        pcc_rule->alt_qos.set[a].pdb = Alt->packet_delay_budget;
+                    }
+                    if (Alt->packet_error_rate)
+                        ogs_cpystrn(pcc_rule->alt_qos.set[a].per, Alt->packet_error_rate, sizeof(pcc_rule->alt_qos.set[a].per));
+                    if (Alt->gbr_ul)
+                        pcc_rule->alt_qos.set[a].gbr.uplink = ogs_sbi_bitrate_from_string(Alt->gbr_ul);
+                    if (Alt->gbr_dl)
+                        pcc_rule->alt_qos.set[a].gbr.downlink = ogs_sbi_bitrate_from_string(Alt->gbr_dl);
+                    read_pdu_set_qos(&pcc_rule->alt_qos.set[a].pdu_set_dl, Alt->pdu_set_qos_dl);
+                    read_pdu_set_qos(&pcc_rule->alt_qos.set[a].pdu_set_ul, Alt->pdu_set_qos_ul);
+                    pcc_rule->alt_qos.num_of_set++;
+                }
+            }
+
             sess->policy.num_of_pcc_rule++;
         }
     }
@@ -598,11 +666,14 @@ bool smf_npcf_smpolicycontrol_handle_create(
 
     /* SBI Features */
     if (SmPolicyDecision->supp_feat) {
-        uint64_t supported_features =
-            ogs_uint64_from_string_hexadecimal(SmPolicyDecision->supp_feat);
+        uint64_t supported_features, supported_features_hi;
+
+        ogs_sbi_features_from_string(SmPolicyDecision->supp_feat, &supported_features, &supported_features_hi);
         sess->smpolicycontrol_features &= supported_features;
+        sess->smpolicycontrol_features_hi &= supported_features_hi;
     } else {
         sess->smpolicycontrol_features = 0;
+        sess->smpolicycontrol_features_hi = 0;
     }
 
     /*********************************************************************
