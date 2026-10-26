@@ -120,6 +120,14 @@ typedef struct smf_nsmf_pdusession_param_s {
 } smf_nsmf_pdusession_param_t;
 
 typedef struct smf_context_s {
+    /*
+     * The features of Npcf_SMPolicyControl that the SMF offers beyond the ones it acts on (policy_features of the configuration; the
+     * numbers of TS 29.512 table 5.8-1, the second word for the ones above 64). For tests and interoperability only: the user plane
+     * does not act on them.
+     */
+    uint64_t            extra_policy_features;
+    uint64_t            extra_policy_features_hi;
+
     smf_ctf_config_t    ctf_config;
     const char*         diam_conf_path;   /* SMF Diameter conf path */
     ogs_diam_config_t   *diam_config;     /* SMF Diameter config */
@@ -273,6 +281,7 @@ typedef struct smf_bearer_s {
      */
     ogs_alt_qos_t   alt_qos;
     ogs_pdu_set_qos_t pdu_set_dl, pdu_set_ul;
+    long            alt_current;    /* the alternative set that the NG-RAN fulfils at the setup or the modification (its index in the list), 0 for the QoS of the rule */
 
     /*
      * QoS monitoring of the packet delay of the flow (TS 29.512 V19.7.0 clause 4.2.3.25; TS 29.244 V19.6.0 clause 5.39.2): what the

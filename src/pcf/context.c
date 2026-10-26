@@ -773,6 +773,11 @@ pcf_sess_t *pcf_sess_add(pcf_ue_sm_t *pcf_ue_sm, uint8_t psi)
     /* PDU Set QoS parameters of the AF (TS 29.514 V19.8.0 clause 4.2.2.39, TS 29.512 V19.7.0 clause 4.2.6.6.2) */
     OGS_SBI_FEATURES_HI_SET(sess->smpolicycontrol_features_hi,
             OGS_SBI_NPCF_SMPOLICYCONTROL_PDU_SET_HANDLING);
+    /* the (S)RTP multiplexed media identification and the dynamically changing traffic characteristics of the AF (TS 29.514 V19.8.0 clauses 4.2.2.47 and 4.2.2.48) */
+    OGS_SBI_FEATURES_HI_SET(sess->smpolicycontrol_features_hi,
+            OGS_SBI_NPCF_SMPOLICYCONTROL_MPX_MEDIA);
+    OGS_SBI_FEATURES_HI_SET(sess->smpolicycontrol_features_hi,
+            OGS_SBI_NPCF_SMPOLICYCONTROL_TRAFFIC_CHAR_CHANGE);
 
     OGS_SBI_FEATURES_SET(sess->management_features,
             OGS_SBI_NBSF_MANAGEMENT_BINDING_UPDATE);
@@ -790,6 +795,10 @@ pcf_sess_t *pcf_sess_add(pcf_ue_sm_t *pcf_ue_sm, uint8_t psi)
             OGS_SBI_NPCF_POLICYAUTHORIZATION_AUTHORIZATION_WITH_REQUIRED_QOS);
     OGS_SBI_FEATURES_SET(sess->policyauthorization_features,
             OGS_SBI_NPCF_POLICYAUTHORIZATION_PDU_SET_HANDLING);
+    OGS_SBI_FEATURES_HI_SET(sess->policyauthorization_features_hi,
+            OGS_SBI_NPCF_POLICYAUTHORIZATION_MPX_MEDIA);
+    OGS_SBI_FEATURES_HI_SET(sess->policyauthorization_features_hi,
+            OGS_SBI_NPCF_POLICYAUTHORIZATION_TRAFFIC_CHAR_CHANGE);
 
     sess->sm_policy_id = ogs_msprintf("%d",
             (int)ogs_pool_index(&pcf_sess_pool, sess));

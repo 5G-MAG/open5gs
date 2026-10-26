@@ -1288,8 +1288,8 @@ void smf_sbi_send_smpolicycontrol_qos_monitoring_report(
     ogs_expect(r == OGS_OK);
 }
 
-void smf_sbi_send_smpolicycontrol_rule_report(
-        smf_sess_t *sess, bool success, smf_bearer_t **qos_flow, int num_of_qos_flow)
+static void rule_report_send(
+        smf_sess_t *sess, bool success, smf_bearer_t **qos_flow, int num_of_qos_flow, const char *alt_qos_param_id)
 {
     smf_npcf_smpolicycontrol_rule_report_t *report = NULL;
     int i, j, r;
@@ -1305,6 +1305,8 @@ void smf_sbi_send_smpolicycontrol_rule_report(
         OpenAPI_rule_status_ACTIVE : OpenAPI_rule_status_INACTIVE;
     report->failure_code = success ?
         OpenAPI_failure_code_NULL : OpenAPI_failure_code_RES_ALLO_FAIL;
+    if (alt_qos_param_id)
+        report->alt_qos_param_id = ogs_strdup(alt_qos_param_id);
 
     for (i = 0; i < num_of_qos_flow; i++) {
         if (!qos_flow[i] || !qos_flow[i]->pcc_rule.id)
@@ -1335,6 +1337,8 @@ void smf_sbi_send_smpolicycontrol_rule_report(
     }
 
     if (report->num_of_rule == 0) {
+        if (report->alt_qos_param_id)
+            ogs_free(report->alt_qos_param_id);
         ogs_free(report);
         return;
     }
@@ -1343,4 +1347,26 @@ void smf_sbi_send_smpolicycontrol_rule_report(
             OpenAPI_service_name_npcf_smpolicycontrol, NULL,
             smf_npcf_smpolicycontrol_build_update, sess, NULL, 0, report);
     ogs_expect(r == OGS_OK);
+}
+
+/*
+ * TS 29.512 V19.7.0 clause 4.2.4.14: the report of the resources of the rules. The rules of the flows that the NG-RAN set up with one of
+ * the alternative QoS parameter sets are reported with that set (altQosParamId), each in a report of its own.
+ */
+void smf_sbi_send_smpolicycontrol_rule_report(
+        smf_sess_t *sess, bool success, smf_bearer_t **qos_flow, int num_of_qos_flow)
+{
+    smf_bearer_t *plain[OGS_MAX_NUM_OF_PCC_RULE];
+    int i, num_of_plain = 0;
+
+    for (i = 0; i < num_of_qos_flow; i++) {
+        long alt = qos_flow[i] ? qos_flow[i]->alt_current : 0;
+
+        if (success && alt >= 1 && alt <= qos_flow[i]->alt_qos.num_of_set)
+            rule_report_send(sess, true, &qos_flow[i], 1, qos_flow[i]->alt_qos.set[alt - 1].id);
+        else if (num_of_plain < OGS_ARRAY_SIZE(plain))
+            plain[num_of_plain++] = qos_flow[i];
+    }
+    if (num_of_plain)
+        rule_report_send(sess, success, plain, num_of_plain, NULL);
 }

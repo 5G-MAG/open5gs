@@ -38,7 +38,7 @@ void af_npcf_policyauthorization_handle_create(
     OpenAPI_app_session_context_t *AppSessionContext = NULL;
     OpenAPI_app_session_context_req_data_t *AscReqData = NULL;
 
-    uint64_t supported_features = 0;
+    uint64_t supported_features = 0, supported_features_hi = 0;
 
     if (!recvmsg->http.location) {
         ogs_error("[%s:%s] No http.location",
@@ -116,9 +116,9 @@ void af_npcf_policyauthorization_handle_create(
 
     PCF_APP_SESSION_STORE(sess, header.uri, message.h.resource.component[1]);
 
-    supported_features = ogs_uint64_from_string_hexadecimal(
-            AscReqData->supp_feat);
+    ogs_sbi_features_from_string(AscReqData->supp_feat, &supported_features, &supported_features_hi);
     sess->policyauthorization_features &= supported_features;
+    sess->policyauthorization_features_hi &= supported_features_hi;
 
 cleanup:
     ogs_sbi_header_free(&header);

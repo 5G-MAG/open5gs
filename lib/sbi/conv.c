@@ -1478,6 +1478,55 @@ void ogs_sbi_free_nr_location(OpenAPI_nr_location_t *NrLocation)
     ogs_free(NrLocation);
 }
 
+/* The model of a ProtocolDescription or of an array of MpxMediaInfo from its JSON text (the text of a rule is built from a valid model); NULL if it does not parse */
+static OpenAPI_protocol_description_t *parse_proto_desc(const char *json)
+{
+    OpenAPI_protocol_description_t *desc = NULL;
+    cJSON *item = cJSON_Parse(json);
+
+    if (!item)
+        return NULL;
+    desc = OpenAPI_protocol_description_parseFromJSON(item);
+    cJSON_Delete(item);
+    return desc;
+}
+
+static OpenAPI_list_t *parse_mpx_infos(const char *json)
+{
+    OpenAPI_list_t *list = NULL;
+    cJSON *array = cJSON_Parse(json), *item = NULL;
+
+    if (!array)
+        return NULL;
+    list = OpenAPI_list_create();
+    ogs_assert(list);
+    cJSON_ArrayForEach(item, array) {
+        OpenAPI_mpx_media_info_t *info = OpenAPI_mpx_media_info_parseFromJSON(item);
+
+        if (info)
+            OpenAPI_list_add(list, info);
+    }
+    cJSON_Delete(array);
+    if (list->count == 0) {
+        OpenAPI_list_free(list);
+        return NULL;
+    }
+    return list;
+}
+
+static void free_mpx_infos(OpenAPI_list_t *list)
+{
+    OpenAPI_lnode_t *node = NULL;
+
+    if (!list)
+        return;
+    OpenAPI_list_for_each(list, node) {
+        if (node->data)
+            OpenAPI_mpx_media_info_free(node->data);
+    }
+    OpenAPI_list_free(list);
+}
+
 OpenAPI_pcc_rule_t *ogs_sbi_build_pcc_rule(
         ogs_pcc_rule_t *pcc_rule, int flow_presence)
 {
@@ -1514,6 +1563,16 @@ OpenAPI_pcc_rule_t *ogs_sbi_build_pcc_rule(
     PccRule->is_precedence = true;
     PccRule->precedence = pcc_rule->precedence;
 
+    /* the Protocol Description for the PDU Set identification and the dynamically changing traffic characteristics (TS 29.512 V19.7.0 clause 4.2.6.10) */
+    if (pcc_rule->proto_desc_dl[0])
+        PccRule->proto_desc_dl = parse_proto_desc(pcc_rule->proto_desc_dl);
+    if (pcc_rule->proto_desc_ul[0])
+        PccRule->proto_desc_ul = parse_proto_desc(pcc_rule->proto_desc_ul);
+    if (pcc_rule->exp_tran_ind) {
+        PccRule->is_exp_tran_ind = true;
+        PccRule->exp_tran_ind = true;
+    }
+
     if (flow_presence == 1) {
         FlowInformationList = OpenAPI_list_create();
         ogs_assert(FlowInformationList);
@@ -1541,6 +1600,11 @@ OpenAPI_pcc_rule_t *ogs_sbi_build_pcc_rule(
 
             ogs_assert(flow->description);
             FlowInformation->flow_description = flow->description;
+            /* the (S)RTP Multiplexed Media Identification Information of the flow (clause 4.2.6.10.5) */
+            if (pcc_rule->mpx[i].ul[0])
+                FlowInformation->mpx_media_ul_infos = parse_mpx_infos(pcc_rule->mpx[i].ul);
+            if (pcc_rule->mpx[i].dl[0])
+                FlowInformation->mpx_media_dl_infos = parse_mpx_infos(pcc_rule->mpx[i].dl);
 
             OpenAPI_list_add(FlowInformationList, FlowInformation);
         }
@@ -1576,10 +1640,18 @@ void ogs_sbi_free_pcc_rule(OpenAPI_pcc_rule_t *PccRule)
     if (PccRule->flow_infos) {
         OpenAPI_list_for_each(PccRule->flow_infos, node) {
             FlowInformation = node->data;
-            if (FlowInformation) ogs_free(FlowInformation);
+            if (FlowInformation) {
+                free_mpx_infos(FlowInformation->mpx_media_ul_infos);
+                free_mpx_infos(FlowInformation->mpx_media_dl_infos);
+                ogs_free(FlowInformation);
+            }
         }
         OpenAPI_list_free(PccRule->flow_infos);
     }
+    if (PccRule->proto_desc_dl)
+        OpenAPI_protocol_description_free(PccRule->proto_desc_dl);
+    if (PccRule->proto_desc_ul)
+        OpenAPI_protocol_description_free(PccRule->proto_desc_ul);
     ogs_free(PccRule);
 }
 
@@ -1623,6 +1695,15 @@ void ogs_sbi_decision_add_traffic_control(
     TcData->tc_id = pcc_rule->id;
     TcData->flow_status = ogs_sbi_flow_status_from_pcc_rule(pcc_rule->flow_status);
     /* l4sInd: the explicit indication of ECN marking for L4S support (TS 29.512 V19.7.0 clause 4.2.6.2.21) */
+    /* datBurstSizeInd and timetoNextBurstInd: the PSA UPF detects and marks them with the protoDescDl of the rule (clauses 4.2.6.10.6 and 4.2.6.10.9) */
+    if (pcc_rule->dat_burst_size_ind) {
+        TcData->is_dat_burst_size_ind = true;
+        TcData->dat_burst_size_ind = true;
+    }
+    if (pcc_rule->time_to_next_burst_ind) {
+        TcData->is_timeto_next_burst_ind = true;
+        TcData->timeto_next_burst_ind = true;
+    }
     switch (pcc_rule->l4s_ind) {
     case OGS_PCC_RULE_L4S_UL: TcData->l4s_ind = OpenAPI_uplink_downlink_support_UL; break;
     case OGS_PCC_RULE_L4S_DL: TcData->l4s_ind = OpenAPI_uplink_downlink_support_DL; break;

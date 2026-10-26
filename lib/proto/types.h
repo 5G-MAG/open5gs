@@ -646,6 +646,25 @@ typedef struct ogs_pcc_rule_s {
     ogs_alt_qos_t alt_qos;
     ogs_pdu_set_qos_t pdu_set_dl, pdu_set_ul;
 
+    /*
+     * 5GC: the Protocol Description of the downlink and the uplink as JSON text, "" when none (protoDescDl and protoDescUl of the PCC rule,
+     * TS 29.512 V19.7.0 clause 4.2.6.10.3); the indications of dynamically changing traffic characteristics (datBurstSizeInd and
+     * timetoNextBurstInd of the TrafficControlData, expTranInd of the PCC rule, clauses 4.2.6.10.6, 4.2.6.10.9 and 4.2.6.10.7); the
+     * (S)RTP Multiplexed Media Identification Information of each flow as JSON text of the arrays of MpxMediaInfo, parallel to flow[]
+     * (mpxMediaUlInfos and mpxMediaDlInfos of its FlowInformation, clause 4.2.6.10.5).
+     */
+#define OGS_PROTO_DESC_LEN 1024
+#define OGS_MPX_INFO_LEN 192
+    char proto_desc_dl[OGS_PROTO_DESC_LEN];
+    char proto_desc_ul[OGS_PROTO_DESC_LEN];
+    bool dat_burst_size_ind;
+    bool time_to_next_burst_ind;
+    bool exp_tran_ind;
+    struct {
+        char ul[OGS_MPX_INFO_LEN];
+        char dl[OGS_MPX_INFO_LEN];
+    } mpx[OGS_MAX_NUM_OF_FLOW_IN_PCC_RULE];
+
     ogs_qos_t  qos;
 } ogs_pcc_rule_t;
 
@@ -683,6 +702,12 @@ typedef struct ogs_pcc_rule_s {
         memcpy(&(__dST)->alt_qos, &(__sRC)->alt_qos, sizeof((__sRC)->alt_qos)); \
         memcpy(&(__dST)->pdu_set_dl, &(__sRC)->pdu_set_dl, sizeof((__sRC)->pdu_set_dl)); \
         memcpy(&(__dST)->pdu_set_ul, &(__sRC)->pdu_set_ul, sizeof((__sRC)->pdu_set_ul)); \
+        memcpy((__dST)->proto_desc_dl, (__sRC)->proto_desc_dl, sizeof((__sRC)->proto_desc_dl)); \
+        memcpy((__dST)->proto_desc_ul, (__sRC)->proto_desc_ul, sizeof((__sRC)->proto_desc_ul)); \
+        (__dST)->dat_burst_size_ind = (__sRC)->dat_burst_size_ind; \
+        (__dST)->time_to_next_burst_ind = (__sRC)->time_to_next_burst_ind; \
+        (__dST)->exp_tran_ind = (__sRC)->exp_tran_ind; \
+        memcpy((__dST)->mpx, (__sRC)->mpx, sizeof((__sRC)->mpx)); \
         memcpy(&(__dST)->qos, &(__sRC)->qos, sizeof(ogs_qos_t)); \
     } while(0)
 
@@ -1038,6 +1063,9 @@ typedef struct ogs_media_sub_component_s {
     uint32_t            flow_usage;
     ogs_flow_t          flow[OGS_MAX_NUM_OF_FLOW_IN_MEDIA_SUB_COMPONENT];
     int                 num_of_flow;
+    /* mpxMediaUlInfos and mpxMediaDlInfos as JSON text of the arrays, NULL when none; they belong to the request and are freed with it */
+    char                *mpx_ul;
+    char                *mpx_dl;
 } ogs_media_sub_component_t;
 
 typedef struct ogs_media_component_s {
@@ -1061,6 +1089,13 @@ typedef struct ogs_media_component_s {
 #define OGS_MEDIA_ATTR_PRESENT 1
 #define OGS_MEDIA_ATTR_NULL 2   /* a null value of the update removes what was provisioned */
     int                 alt_ser_reqs_state;
+
+    /* protoDescDl and protoDescUl as JSON text (NULL when none, owned by the request) with the state of the attribute */
+    char                *proto_desc_dl, *proto_desc_ul;
+    int                 proto_desc_dl_state, proto_desc_ul_state;
+    /* datBurstSizeInd, timetoNextBurstInd and expTranInd: the state of the attribute and its value */
+    int                 dat_burst_size_ind_state, time_to_next_burst_ind_state, exp_tran_ind_state;
+    bool                dat_burst_size_ind, time_to_next_burst_ind, exp_tran_ind;
     ogs_pdu_set_qos_t   pdu_set_dl, pdu_set_ul;     /* pduSetQosDl and pduSetQosUl */
 
 #define OGS_MAX_NUM_OF_MEDIA_SUB_COMPONENT     8

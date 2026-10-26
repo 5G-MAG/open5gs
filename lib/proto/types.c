@@ -1002,7 +1002,15 @@ void ogs_ims_data_free(ogs_ims_data_t *ims_data)
                 } else
                     ogs_assert_if_reached();
             }
+            if (sub->mpx_ul)
+                ogs_free(sub->mpx_ul);
+            if (sub->mpx_dl)
+                ogs_free(sub->mpx_dl);
         }
+        if (media_component->proto_desc_dl)
+            ogs_free(media_component->proto_desc_dl);
+        if (media_component->proto_desc_ul)
+            ogs_free(media_component->proto_desc_ul);
     }
 }
 
@@ -1125,7 +1133,9 @@ int ogs_pcc_rule_num_of_flow_equal_to_media(
             for (k = 0; k < pcc_rule->num_of_flow; k++) {
                 if (gx_flow.direction == pcc_rule->flow[k].direction &&
                     !strcmp(gx_flow.description,
-                        pcc_rule->flow[k].description)) {
+                        pcc_rule->flow[k].description) &&
+                    !strcmp(sub->mpx_ul ? sub->mpx_ul : "", pcc_rule->mpx[k].ul) &&
+                    !strcmp(sub->mpx_dl ? sub->mpx_dl : "", pcc_rule->mpx[k].dl)) {
                     matched++;
                     break;
                 }
@@ -1183,6 +1193,17 @@ int ogs_pcc_rule_install_flow_from_media(
                     return OGS_ERROR;
                 }
 
+                /* the (S)RTP Multiplexed Media Identification Information of the sub component goes with each of its flows */
+                memset(&pcc_rule->mpx[pcc_rule->num_of_flow], 0, sizeof(pcc_rule->mpx[0]));
+                if ((sub->mpx_ul && strlen(sub->mpx_ul) >= OGS_MPX_INFO_LEN) || (sub->mpx_dl && strlen(sub->mpx_dl) >= OGS_MPX_INFO_LEN)) {
+                    /* a value that does not fit is refused, not cut: a cut JSON text is no longer valid */
+                    ogs_error("The multiplexed media information does not fit [%d] characters", OGS_MPX_INFO_LEN);
+                    return OGS_ERROR;
+                }
+                if (sub->mpx_ul)
+                    ogs_cpystrn(pcc_rule->mpx[pcc_rule->num_of_flow].ul, sub->mpx_ul, OGS_MPX_INFO_LEN);
+                if (sub->mpx_dl)
+                    ogs_cpystrn(pcc_rule->mpx[pcc_rule->num_of_flow].dl, sub->mpx_dl, OGS_MPX_INFO_LEN);
                 pcc_rule->num_of_flow++;
             } else {
                 ogs_error("Overflow: Number of Flow");

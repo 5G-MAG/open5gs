@@ -987,6 +987,32 @@ int smf_context_parse_config(void)
                                             &security_indication_iter);
                         }
                     }
+                } else if (!strcmp(smf_key, "policy_features")) {
+                    ogs_yaml_iter_t feature_iter;
+                    ogs_yaml_iter_recurse(&smf_iter, &feature_iter);
+                    ogs_assert(ogs_yaml_iter_type(&feature_iter) !=
+                        YAML_MAPPING_NODE);
+
+                    do {
+                        const char *v = NULL;
+                        long n;
+
+                        if (ogs_yaml_iter_type(&feature_iter) ==
+                                YAML_SEQUENCE_NODE) {
+                            if (!ogs_yaml_iter_next(&feature_iter))
+                                break;
+                        }
+
+                        v = ogs_yaml_iter_value(&feature_iter);
+                        n = v ? strtol(v, NULL, 10) : 0;
+                        if (n >= 1 && n <= 64)
+                            OGS_SBI_FEATURES_SET(self.extra_policy_features, n);
+                        else if (n > 64 && n <= 128)
+                            OGS_SBI_FEATURES_HI_SET(self.extra_policy_features_hi, n);
+                        else if (v && strlen(v))
+                            ogs_warn("Ignore policy_features [%s]", v);
+                    } while (ogs_yaml_iter_type(&feature_iter) ==
+                            YAML_SEQUENCE_NODE);
                 } else if (!strcmp(smf_key, "pfcp")) {
                     /* handle config in pfcp library */
                 } else if (!strcmp(smf_key, "upf")) {
@@ -1716,6 +1742,8 @@ smf_sess_t *smf_sess_add_by_psi(smf_ue_t *smf_ue, uint8_t psi)
             OGS_SBI_NPCF_SMPOLICYCONTROL_AUTHORIZATION_WITH_REQUIRED_QOS);
     OGS_SBI_FEATURES_HI_SET(sess->smpolicycontrol_features_hi,
             OGS_SBI_NPCF_SMPOLICYCONTROL_PDU_SET_HANDLING);
+    sess->smpolicycontrol_features |= self.extra_policy_features;
+    sess->smpolicycontrol_features_hi |= self.extra_policy_features_hi;
 
     ogs_pfcp_pool_init(&sess->pfcp);
     smf_qfi_pool_init(sess);

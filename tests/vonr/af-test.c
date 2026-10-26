@@ -6114,6 +6114,100 @@ static void test31_func(abts_case *tc, void *data)
     test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
 }
 
+
+/*
+ * TS 29.514 V19.8.0 clauses 4.2.2.39, 4.2.2.47 and 4.2.2.48, TS 29.512 V19.7.0 clauses 4.2.6.10.3 to 4.2.6.10.9: the AF gives a protocol
+ * description, the indications of the data burst size and the time to the next burst, the expedited transfer indication and the multiplexed
+ * media identification of a sub component. The PCF has MpxMedia and TrafficCharChange only because the SMF offers them, and tells the AF so.
+ */
+static void test32_func(abts_case *tc, void *data)
+{
+    ogs_socknode_t *ngap = NULL;
+    ogs_socknode_t *gtpu = NULL;
+    test_ue_t *test_ue = NULL;
+    test_sess_t *sess = NULL;
+    test_bearer_t *qos_flow = NULL;
+    af_sess_t *af_sess = NULL;
+    af_npcf_policyauthorization_param_t af_param;
+    af_npcf_policyauthorization_raw_t raw;
+
+    test_af_qos_reference_setup(tc, "0000000032",
+            &test_ue, &sess, &af_sess, &ngap, &gtpu);
+
+    memset(&af_param, 0, sizeof(af_param));
+    af_param.med_type = OpenAPI_media_type_VIDEO;
+    af_param.qos_reference = "test-video";
+    af_param.proto_desc = true;
+    af_param.burst_inds = true;
+    af_param.exp_tran = true;
+    af_param.mpx = true;
+    af_param.qos_type = 1;
+    af_param.flow_type = 1;
+    af_local_send_to_pcf(af_sess, &af_param,
+            af_npcf_policyauthorization_build_create);
+    qos_flow = test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_assert(qos_flow);
+    ogs_msleep(300);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_CREATED, af_sess->last_pcf_status);
+    ABTS_TRUE(tc, OGS_SBI_FEATURES_HI_IS_SET(af_sess->policyauthorization_features_hi, OGS_SBI_NPCF_POLICYAUTHORIZATION_MPX_MEDIA));
+    ABTS_TRUE(tc, OGS_SBI_FEATURES_HI_IS_SET(af_sess->policyauthorization_features_hi, OGS_SBI_NPCF_POLICYAUTHORIZATION_TRAFFIC_CHAR_CHANGE));
+
+    /* a null protoDescDl and indications that are given up */
+    raw.method = "PATCH";
+    raw.path = "";
+    raw.body = "{\"ascReqData\":{\"medComponents\":{\"0\":{\"medCompN\":0,\"protoDescDl\":null,\"datBurstSizeInd\":null,"
+        "\"timetoNextBurstInd\":null,\"expTranInd\":null}}}}";
+    af_local_send_to_pcf(af_sess, &raw, af_npcf_policyauthorization_build_raw);
+    ogs_msleep(300);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_pcf_status);
+
+    test_af_qos_reference_delete(tc, test_ue, sess, af_sess, ngap);
+    test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
+}
+
+
+/*
+ * TS 29.514 V19.8.0 clause 4.2.5.8, TS 29.512 V19.7.0 clause 4.2.4.14, TS 38.413 V19.1.0 clause 9.3.1.152: the NG-RAN sets the QoS flow up with the
+ * second alternative QoS parameters set (Current QoS Parameters Set Index), the SMF reports the rule with that set (altQosParamId) and the AF is told
+ * the alternative service requirement as the QoS reference it gave.
+ */
+static void test33_func(abts_case *tc, void *data)
+{
+    ogs_socknode_t *ngap = NULL;
+    ogs_socknode_t *gtpu = NULL;
+    test_ue_t *test_ue = NULL;
+    test_sess_t *sess = NULL;
+    test_bearer_t *qos_flow = NULL;
+    af_sess_t *af_sess = NULL;
+    af_npcf_policyauthorization_param_t af_param;
+
+    test_af_qos_reference_setup(tc, "0000000033",
+            &test_ue, &sess, &af_sess, &ngap, &gtpu);
+
+    memset(&af_param, 0, sizeof(af_param));
+    af_param.med_type = OpenAPI_media_type_AUDIO;
+    af_param.qos_reference = "test-audio";
+    af_param.alt_ser_req1 = "test-audio-alt1";
+    af_param.alt_ser_req2 = "test-audio-alt2";
+    af_param.ev_resources_allocation = true;
+    af_param.qos_type = 1;
+    af_param.flow_type = 99;
+    sess->alt_current_index = 2;
+    af_local_send_to_pcf(af_sess, &af_param,
+            af_npcf_policyauthorization_build_create);
+    qos_flow = test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_assert(qos_flow);
+    ogs_msleep(300);
+
+    ABTS_INT_EQUAL(tc, 1, af_sess->notify_count);
+    ABTS_STR_EQUAL(tc, "SUCCESSFUL_RESOURCES_ALLOCATION", af_sess->notify_event);
+    ABTS_STR_EQUAL(tc, "test-audio-alt2", af_sess->notify_succ_alt);
+
+    sess->alt_current_index = 0;
+    test_af_qos_reference_delete(tc, test_ue, sess, af_sess, ngap);
+    test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
+}
+
 abts_suite *test_af(abts_suite *suite)
 {
     suite = ADD_SUITE(suite)
@@ -6156,6 +6250,8 @@ abts_suite *test_af(abts_suite *suite)
     abts_run_test(suite, test29_func, NULL);
     abts_run_test(suite, test30_func, NULL);
     abts_run_test(suite, test31_func, NULL);
+    abts_run_test(suite, test32_func, NULL);
+    abts_run_test(suite, test33_func, NULL);
 
     return suite;
 }

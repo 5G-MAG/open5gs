@@ -51,6 +51,7 @@ typedef struct af_sess_s {
     ogs_sbi_object_t sbi;
 
     uint64_t policyauthorization_features;
+    uint64_t policyauthorization_features_hi;    /* the features above number 64 */
     int last_pcf_status;
     char last_pcf_asc_af_app_id[64]; /* afAppId and the qosRef of the first media component of the last AppSessionContext that the PCF returned */
     char last_pcf_asc_qos_ref[64];
@@ -72,6 +73,7 @@ typedef struct af_sess_s {
     int notify_qnc_count;             /* the notifications of the event QOS_NOTIF */
     char notify_qnc_type[24];         /* notifType of the last, medCompN of its first flow */
     int notify_qnc_med_comp_n;
+    char notify_succ_alt[96];         /* altSerReq of the first succResourcAllocReports entry of the last notification that had one, empty if none */
     char notify_qnc_alt[96];          /* altSerReq of the last QOS_NOTIF notification, empty if none */
     long notify_usg_total;            /* usgRep.totalVolume of the last notification that carried a usgRep, -1 if none yet */
     int notify_usg_count;             /* the notifications of the event USAGE_REPORT */

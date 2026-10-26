@@ -90,7 +90,7 @@ ogs_sbi_request_t *af_npcf_policyauthorization_build_create(
     ogs_assert(AscReqData.notif_uri);
 
     AscReqData.supp_feat =
-        ogs_uint64_to_string(sess->policyauthorization_features);
+        ogs_sbi_features_to_string(sess->policyauthorization_features, sess->policyauthorization_features_hi);
     ogs_assert(AscReqData.supp_feat);
 
     AscReqData.ue_ipv4 = sess->ipv4addr;
@@ -218,6 +218,19 @@ ogs_sbi_request_t *af_npcf_policyauthorization_build_create(
         if (af_param->alt_ser_req2)
             OpenAPI_list_add(MediaComponent->alt_ser_reqs, ogs_strdup(af_param->alt_ser_req2));
     }
+    if (af_param->proto_desc)
+        MediaComponent->proto_desc_dl = OpenAPI_protocol_description_create(OpenAPI_media_transport_proto_RTP, NULL, NULL, NULL,
+                OpenAPI_mri_transfer_method_NULL);
+    if (af_param->burst_inds) {
+        MediaComponent->is_dat_burst_size_ind = true;
+        MediaComponent->dat_burst_size_ind = true;
+        MediaComponent->is_timeto_next_burst_ind = true;
+        MediaComponent->timeto_next_burst_ind = true;
+    }
+    if (af_param->exp_tran) {
+        MediaComponent->is_exp_tran_ind = true;
+        MediaComponent->exp_tran_ind = true;
+    }
     if (af_param->pdu_set_qos) {
         MediaComponent->pdu_set_qos_dl = ogs_calloc(1, sizeof(*MediaComponent->pdu_set_qos_dl));
         ogs_assert(MediaComponent->pdu_set_qos_dl);
@@ -315,6 +328,13 @@ ogs_sbi_request_t *af_npcf_policyauthorization_build_create(
         SubComponent->f_descs = fDescList;
     else
         OpenAPI_list_free(fDescList);
+    if (af_param->mpx) {
+        SubComponent->mpx_media_ul_infos = OpenAPI_list_create();
+        SubComponent->mpx_media_dl_infos = OpenAPI_list_create();
+        ogs_assert(SubComponent->mpx_media_ul_infos && SubComponent->mpx_media_dl_infos);
+        OpenAPI_list_add(SubComponent->mpx_media_ul_infos, OpenAPI_mpx_media_info_create(true, 1111, true, 96, NULL, false, 0, false, 0));
+        OpenAPI_list_add(SubComponent->mpx_media_dl_infos, OpenAPI_mpx_media_info_create(true, 2222, true, 97, NULL, false, 0, false, 0));
+    }
 
     /* Sub Component #2 */
     SubComponent = ogs_calloc(1, sizeof(*SubComponent));
@@ -413,6 +433,8 @@ ogs_sbi_request_t *af_npcf_policyauthorization_build_create(
                         ogs_free(alt_node->data);
                     OpenAPI_list_free(MediaComponent->alt_ser_reqs);
                 }
+                if (MediaComponent->proto_desc_dl)
+                    OpenAPI_protocol_description_free(MediaComponent->proto_desc_dl);
                 if (MediaComponent->pdu_set_qos_dl) {
                     if (MediaComponent->pdu_set_qos_dl->pdu_set_err_rate)
                         ogs_free(MediaComponent->pdu_set_qos_dl->pdu_set_err_rate);
@@ -437,6 +459,16 @@ ogs_sbi_request_t *af_npcf_policyauthorization_build_create(
                                 if (node3->data) ogs_free(node3->data);
                             }
                             OpenAPI_list_free(fDescList);
+                            if (SubComponent->mpx_media_ul_infos) {
+                                OpenAPI_list_for_each(SubComponent->mpx_media_ul_infos, node3)
+                                    OpenAPI_mpx_media_info_free(node3->data);
+                                OpenAPI_list_free(SubComponent->mpx_media_ul_infos);
+                            }
+                            if (SubComponent->mpx_media_dl_infos) {
+                                OpenAPI_list_for_each(SubComponent->mpx_media_dl_infos, node3)
+                                    OpenAPI_mpx_media_info_free(node3->data);
+                                OpenAPI_list_free(SubComponent->mpx_media_dl_infos);
+                            }
 
                             ogs_free(SubComponent);
                         }
@@ -948,7 +980,7 @@ ogs_sbi_request_t *af_npcf_policyauthorization_build_create_video(
     ogs_assert(AscReqData.notif_uri);
 
     AscReqData.supp_feat =
-        ogs_uint64_to_string(sess->policyauthorization_features);
+        ogs_sbi_features_to_string(sess->policyauthorization_features, sess->policyauthorization_features_hi);
     ogs_assert(AscReqData.supp_feat);
 
     AscReqData.ue_ipv4 = sess->ipv4addr;

@@ -45,6 +45,14 @@ smf:
     - 2001:4860:4860::8888
     - 2001:4860:4860::8844
   mtu: 1400
+#
+#  The features of Npcf_SMPolicyControl (TS 29.512 table 5.8-1, by number) that the SMF offers to the PCF beyond the ones it acts on
+#  (AuthorizationWithRequiredQoS, number 25, and PDUSetHandling, number 94, are always offered). The user plane does not act on
+#  these; for tests and interoperability only, so leave it unset in a deployment:
+#    104 MpxMedia, 107 TrafficCharChange.
+#  policy_features:
+#    - 104
+#    - 107
 #  p-cscf:
 #    - 127.0.0.1
 #    - ::1

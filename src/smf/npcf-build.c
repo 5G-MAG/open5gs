@@ -637,6 +637,7 @@ ogs_sbi_request_t *smf_npcf_smpolicycontrol_build_update(
     RuleReport.pcc_rule_ids = Ids;
     RuleReport.rule_status = report->status;
     RuleReport.failure_code = report->failure_code;
+    RuleReport.alt_qos_param_id = report->alt_qos_param_id;
 
     RuleReports = OpenAPI_list_create();
     ogs_assert(RuleReports);
@@ -656,6 +657,8 @@ ogs_sbi_request_t *smf_npcf_smpolicycontrol_build_update(
 
     for (i = 0; i < report->num_of_rule; i++)
         ogs_free(report->rule_id[i]);
+    if (report->alt_qos_param_id)
+        ogs_free(report->alt_qos_param_id);
     ogs_free(report);
 
     return request;

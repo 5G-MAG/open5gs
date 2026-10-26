@@ -102,6 +102,40 @@ static void handle_l4s_status_ext(smf_sess_t *sess, struct NGAP_ProtocolExtensio
         qos_flow->l4s.stop = false;
 }
 
+/*
+ * The Current QoS Parameters Set Index that the NG-RAN gives for a QoS flow at the setup or the modification (TS 38.413 V19.1.0 clause
+ * 9.3.1.152, "Index to the currently fulfilled alternative QoS parameters set"); 0 when it gives none, the QoS of the rule being fulfilled.
+ */
+static long current_set_index(NGAP_ProtocolExtensionContainer_14713P340_t *list)
+{
+    int i;
+
+    for (i = 0; list && i < list->list.count; i++) {
+        NGAP_QosFlowAddOrModifyResponseItem_ExtIEs_t *ie = list->list.array[i];
+
+        if (ie && ie->id == NGAP_ProtocolIE_ID_id_CurrentQoSParaSetIndex &&
+                ie->extensionValue.present == NGAP_QosFlowAddOrModifyResponseItem_ExtIEs__extensionValue_PR_AlternativeQoSParaSetIndex &&
+                ie->extensionValue.choice.AlternativeQoSParaSetIndex)
+            return *ie->extensionValue.choice.AlternativeQoSParaSetIndex;
+    }
+    return 0;
+}
+
+static long associated_set_index(NGAP_ProtocolExtensionContainer_14713P33_t *list)
+{
+    int i;
+
+    for (i = 0; list && i < list->list.count; i++) {
+        NGAP_AssociatedQosFlowItem_ExtIEs_t *ie = list->list.array[i];
+
+        if (ie && ie->id == NGAP_ProtocolIE_ID_id_CurrentQoSParaSetIndex &&
+                ie->extensionValue.present == NGAP_AssociatedQosFlowItem_ExtIEs__extensionValue_PR_AlternativeQoSParaSetIndex &&
+                ie->extensionValue.choice.AlternativeQoSParaSetIndex)
+            return *ie->extensionValue.choice.AlternativeQoSParaSetIndex;
+    }
+    return 0;
+}
+
 int ngap_handle_pdu_session_resource_setup_response_transfer(
         smf_sess_t *sess, ogs_sbi_stream_t *stream, ogs_pkbuf_t *pkbuf)
 {
@@ -124,6 +158,8 @@ int ngap_handle_pdu_session_resource_setup_response_transfer(
     NGAP_GTPTunnel_t *gTPTunnel = NULL;
 
     NGAP_AssociatedQosFlowList_t *associatedQosFlowList = NULL;
+    smf_bearer_t *set_up[OGS_MAX_NUM_OF_PCC_RULE];
+    int num_of_set_up = 0;
 
     ogs_assert(pkbuf);
     ogs_assert(stream);
@@ -269,6 +305,8 @@ int ngap_handle_pdu_session_resource_setup_response_transfer(
                 if (qos_flow) {
                     ogs_pfcp_far_t *dl_far = qos_flow->dl_far;
                     ogs_assert(dl_far);
+                    qos_flow->alt_current = associated_set_index(
+                            (NGAP_ProtocolExtensionContainer_14713P33_t *)associatedQosFlowItem->iE_Extensions);
                     if (dl_far->apply_action != OGS_PFCP_APPLY_ACTION_FORW) {
                         far_update = true;
                     }
@@ -281,9 +319,14 @@ int ngap_handle_pdu_session_resource_setup_response_transfer(
                                 &dl_far->outer_header_creation_len));
                     dl_far->outer_header_creation.teid = remote_dl_teid;
                     num_of_qos_flow_modified++;
+                    if (num_of_set_up < OGS_ARRAY_SIZE(set_up))
+                        set_up[num_of_set_up++] = qos_flow;
                 }
             }
         }
+        /* TS 29.512 V19.7.0 clause 4.2.4.14: the rules that the PCF asked to be told about, with the alternative set that the NG-RAN fulfils */
+        if (num_of_set_up)
+            smf_sbi_send_smpolicycontrol_rule_report(sess, true, set_up, num_of_set_up);
     }
 
     /*
@@ -730,6 +773,8 @@ int ngap_handle_pdu_session_resource_modify_response_transfer(
                 qos_flow = smf_qos_flow_find_by_qfi(sess,
                         qosFlowAddOrModifyResponseItem->qosFlowIdentifier);
                 if (qos_flow) {
+                    qos_flow->alt_current = current_set_index(
+                            (NGAP_ProtocolExtensionContainer_14713P340_t *)qosFlowAddOrModifyResponseItem->iE_Extensions);
                     dl_far = qos_flow->dl_far;
                     ogs_assert(dl_far);
 

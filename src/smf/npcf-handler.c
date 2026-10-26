@@ -44,6 +44,44 @@ static void read_pdu_set_qos(ogs_pdu_set_qos_t *out, OpenAPI_pdu_set_qos_para_rm
         out->handling_info = OGS_PDU_SET_ALL_PDUS_NOT_NEEDED;
 }
 
+/* The JSON text of a model that the PCC rule keeps (a Protocol Description, an array of MpxMediaInfo), empty when it does not fit the rule */
+static void copy_json_text(char *to, size_t size, cJSON *item)
+{
+    char *printed = NULL;
+
+    to[0] = 0;
+    if (!item)
+        return;
+    printed = cJSON_PrintUnformatted(item);
+    cJSON_Delete(item);
+    if (!printed)
+        return;
+    if (strlen(printed) < size)
+        ogs_cpystrn(to, printed, size);
+    else
+        ogs_error("The JSON text of [%.40s] does not fit [%d] characters and is dropped", printed, (int)size);
+    cJSON_free(printed);
+}
+
+static void mpx_text(char *to, OpenAPI_list_t *list)
+{
+    OpenAPI_lnode_t *node = NULL;
+    cJSON *array = NULL;
+
+    to[0] = 0;
+    if (!list || !list->count)
+        return;
+    array = cJSON_CreateArray();
+    ogs_assert(array);
+    OpenAPI_list_for_each(list, node) {
+        cJSON *item = node->data ? OpenAPI_mpx_media_info_convertToJSON(node->data) : NULL;
+
+        if (item)
+            cJSON_AddItemToArray(array, item);
+    }
+    copy_json_text(to, OGS_MPX_INFO_LEN, array);
+}
+
 static void update_authorized_pcc_rule_and_qos(
         smf_sess_t *sess, OpenAPI_sm_policy_decision_t *SmPolicyDecision)
 {
@@ -375,6 +413,9 @@ static void update_authorized_pcc_rule_and_qos(
                             pcc_rule->flow_status =
                                 ogs_sbi_flow_status_to_pcc_rule(
                                         TcData->flow_status);
+                        /* datBurstSizeInd and timetoNextBurstInd: the UPF detects and marks them (clauses 4.2.6.10.6 and 4.2.6.10.9) */
+                        pcc_rule->dat_burst_size_ind = TcData->is_dat_burst_size_ind && TcData->dat_burst_size_ind;
+                        pcc_rule->time_to_next_burst_ind = TcData->is_timeto_next_burst_ind && TcData->timeto_next_burst_ind;
                         /* l4sInd: ECN marking for L4S is supported for the UL, the DL or both (clause 4.2.6.2.21) */
                         switch (TcData->l4s_ind) {
                         case OpenAPI_uplink_downlink_support_UL: pcc_rule->l4s_ind = OGS_PCC_RULE_L4S_UL; break;
@@ -386,6 +427,13 @@ static void update_authorized_pcc_rule_and_qos(
                     }
                 }
             }
+
+            /* protoDescDl and protoDescUl (clause 4.2.6.10.3) and expTranInd (clause 4.2.6.10.7) */
+            if (PccRule->proto_desc_dl)
+                copy_json_text(pcc_rule->proto_desc_dl, OGS_PROTO_DESC_LEN, OpenAPI_protocol_description_convertToJSON(PccRule->proto_desc_dl));
+            if (PccRule->proto_desc_ul)
+                copy_json_text(pcc_rule->proto_desc_ul, OGS_PROTO_DESC_LEN, OpenAPI_protocol_description_convertToJSON(PccRule->proto_desc_ul));
+            pcc_rule->exp_tran_ind = PccRule->is_exp_tran_ind && PccRule->exp_tran_ind;
 
             if (PccRule->flow_infos) {
                 ogs_assert(pcc_rule->num_of_flow == 0);
@@ -432,6 +480,10 @@ static void update_authorized_pcc_rule_and_qos(
                     flow->description =
                         ogs_strdup(FlowInformation->flow_description);
                     ogs_assert(flow->description);
+
+                    /* the (S)RTP Multiplexed Media Identification Information of the flow (clause 4.2.6.10.5) */
+                    mpx_text(pcc_rule->mpx[pcc_rule->num_of_flow].ul, FlowInformation->mpx_media_ul_infos);
+                    mpx_text(pcc_rule->mpx[pcc_rule->num_of_flow].dl, FlowInformation->mpx_media_dl_infos);
 
                     pcc_rule->num_of_flow++;
                 }

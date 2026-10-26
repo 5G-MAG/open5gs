@@ -31,6 +31,7 @@ static void app_qm_apply(pcf_app_t *app, OpenAPI_sm_policy_decision_t *decision,
 static void app_l4s_trigger(pcf_app_t *app, OpenAPI_sm_policy_decision_t *decision);
 static void l4s_reports_notify(pcf_sess_t *sess, const char *content);
 static char *app_qm_signature(pcf_app_t *app);
+static bool rule_proto_desc(char *to, const char *from);
 static void qos_mon_reports_notify(pcf_sess_t *sess, const char *content);
 
 static uint8_t pcf_qos_index_from_media(
@@ -131,6 +132,7 @@ static bool media_apply_qos_extensions(pcf_sess_t *sess, ogs_pcc_rule_t *pcc_rul
         const char **err_out)
 {
     int i;
+    bool pdu_set, traffic;
 
     ogs_assert(err_out);
     *err_out = NULL;
@@ -147,6 +149,11 @@ static bool media_apply_qos_extensions(pcf_sess_t *sess, ogs_pcc_rule_t *pcc_rul
 
                 if (!profile) {
                     *err_out = "Unknown qosReference in altSerReqs - check PCF qos_profiles config";
+                    return false;
+                }
+                /* TS 29.512 V19.7.0 clause 4.2.6.2.1: the set has the packet delay budget and the packet error rate; the PCF does not leave them out */
+                if (!profile->alt.pdb_presence || !profile->alt.per[0]) {
+                    *err_out = "The qos_profiles entry of a qosReference in altSerReqs has no packet_delay_budget and packet_error_rate";
                     return false;
                 }
                 /* the id of the set: the rule and the position in the list */
@@ -176,6 +183,124 @@ static bool media_apply_qos_extensions(pcf_sess_t *sess, ogs_pcc_rule_t *pcc_rul
     } else if (media_component->pdu_set_dl.presence || media_component->pdu_set_ul.presence) {
         ogs_warn("pduSetQosDl and pduSetQosUl ignored: PDUSetHandling is not supported by the AF and the SMF");
     }
+
+    /*
+     * The Protocol Description serves the PDU Set identification (PDUSetHandling) and the detection of the data burst size, the time
+     * to the next burst and the expedited transfer (TrafficCharChange); the indications are given together with the protoDescDl
+     * (TS 29.514 V19.8.0 clause 4.2.2.48), so without one they are not applied.
+     */
+    pdu_set = OGS_SBI_FEATURES_IS_SET(sess->policyauthorization_features, OGS_SBI_NPCF_POLICYAUTHORIZATION_PDU_SET_HANDLING) &&
+        OGS_SBI_FEATURES_HI_IS_SET(sess->smpolicycontrol_features_hi, OGS_SBI_NPCF_SMPOLICYCONTROL_PDU_SET_HANDLING);
+    traffic = OGS_SBI_FEATURES_HI_IS_SET(sess->policyauthorization_features_hi, OGS_SBI_NPCF_POLICYAUTHORIZATION_TRAFFIC_CHAR_CHANGE) &&
+        OGS_SBI_FEATURES_HI_IS_SET(sess->smpolicycontrol_features_hi, OGS_SBI_NPCF_SMPOLICYCONTROL_TRAFFIC_CHAR_CHANGE);
+    if (pdu_set || traffic) {
+        if (media_component->proto_desc_dl_state == OGS_MEDIA_ATTR_NULL) {
+            pcc_rule->proto_desc_dl[0] = 0;
+        } else if (media_component->proto_desc_dl_state == OGS_MEDIA_ATTR_PRESENT &&
+                !rule_proto_desc(pcc_rule->proto_desc_dl, media_component->proto_desc_dl)) {
+            *err_out = "protoDescDl does not fit the PCC rule";
+            return false;
+        }
+        if (media_component->proto_desc_ul_state == OGS_MEDIA_ATTR_NULL) {
+            pcc_rule->proto_desc_ul[0] = 0;
+        } else if (media_component->proto_desc_ul_state == OGS_MEDIA_ATTR_PRESENT &&
+                !rule_proto_desc(pcc_rule->proto_desc_ul, media_component->proto_desc_ul)) {
+            *err_out = "protoDescUl does not fit the PCC rule";
+            return false;
+        }
+    } else if (media_component->proto_desc_dl_state == OGS_MEDIA_ATTR_PRESENT || media_component->proto_desc_ul_state == OGS_MEDIA_ATTR_PRESENT) {
+        ogs_warn("protoDescDl and protoDescUl ignored: neither PDUSetHandling nor TrafficCharChange is supported by the AF and the SMF");
+    }
+    if (traffic) {
+        if (media_component->dat_burst_size_ind_state != OGS_MEDIA_ATTR_ABSENT)
+            pcc_rule->dat_burst_size_ind = media_component->dat_burst_size_ind;
+        if (media_component->time_to_next_burst_ind_state != OGS_MEDIA_ATTR_ABSENT)
+            pcc_rule->time_to_next_burst_ind = media_component->time_to_next_burst_ind;
+        if (media_component->exp_tran_ind_state != OGS_MEDIA_ATTR_ABSENT)
+            pcc_rule->exp_tran_ind = media_component->exp_tran_ind;
+        if ((pcc_rule->dat_burst_size_ind || pcc_rule->time_to_next_burst_ind || pcc_rule->exp_tran_ind) && !pcc_rule->proto_desc_dl[0]) {
+            ogs_warn("datBurstSizeInd, timetoNextBurstInd and expTranInd are not applied without protoDescDl");
+            pcc_rule->dat_burst_size_ind = pcc_rule->time_to_next_burst_ind = pcc_rule->exp_tran_ind = false;
+        }
+    } else if (media_component->dat_burst_size_ind_state == OGS_MEDIA_ATTR_PRESENT || media_component->time_to_next_burst_ind_state == OGS_MEDIA_ATTR_PRESENT ||
+            media_component->exp_tran_ind_state == OGS_MEDIA_ATTR_PRESENT) {
+        ogs_warn("datBurstSizeInd, timetoNextBurstInd and expTranInd ignored: TrafficCharChange is not supported by the AF and the SMF");
+    }
+    return true;
+}
+
+
+/*
+ * The Protocol Description, the indications of dynamically changing traffic characteristics and the (S)RTP Multiplexed Media Identification
+ * Information of a media component (TS 29.514 V19.8.0 clauses 4.2.2.39, 4.2.2.47 and 4.2.2.48). The models are kept as JSON text, which the
+ * PCC rule holds in a fixed size.
+ */
+static char *json_to_text(cJSON *item)
+{
+    char *printed = NULL, *text = NULL;
+
+    if (!item)
+        return NULL;
+    printed = cJSON_PrintUnformatted(item);
+    cJSON_Delete(item);
+    if (!printed)
+        return NULL;
+    text = ogs_strdup(printed);
+    ogs_assert(text);
+    cJSON_free(printed);
+    return text;
+}
+
+static char *mpx_list_to_text(OpenAPI_list_t *list)
+{
+    OpenAPI_lnode_t *node = NULL;
+    cJSON *array = NULL;
+
+    if (!list || !list->count)
+        return NULL;
+    array = cJSON_CreateArray();
+    ogs_assert(array);
+    OpenAPI_list_for_each(list, node) {
+        cJSON *item = node->data ? OpenAPI_mpx_media_info_convertToJSON(node->data) : NULL;
+
+        if (item)
+            cJSON_AddItemToArray(array, item);
+    }
+    return json_to_text(array);
+}
+
+static void media_read_flag(int *state, bool *value, bool is_null, bool is_present, bool v)
+{
+    if (is_null) {
+        *state = OGS_MEDIA_ATTR_NULL;
+        *value = false;
+    } else if (is_present) {
+        *state = OGS_MEDIA_ATTR_PRESENT;
+        *value = v;
+    }
+}
+
+static void media_read_proto_desc(ogs_media_component_t *media_component, bool downlink, cJSON *json, bool is_null)
+{
+    char **text = downlink ? &media_component->proto_desc_dl : &media_component->proto_desc_ul;
+    int *state = downlink ? &media_component->proto_desc_dl_state : &media_component->proto_desc_ul_state;
+
+    if (is_null) {
+        *state = OGS_MEDIA_ATTR_NULL;
+        if (json)
+            cJSON_Delete(json);
+    } else if (json) {
+        *state = OGS_MEDIA_ATTR_PRESENT;
+        *text = json_to_text(json);
+    }
+}
+
+/* Copies a Protocol Description into the rule; false when it does not fit (the PCF does not cut it) */
+static bool rule_proto_desc(char *to, const char *from)
+{
+    if (strlen(from) >= OGS_PROTO_DESC_LEN)
+        return false;
+    ogs_cpystrn(to, from, OGS_PROTO_DESC_LEN);
     return true;
 }
 
@@ -1644,6 +1769,19 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
     sess->policyauthorization_features &= supported_features;
     sess->policyauthorization_features_hi &= supported_features_hi;
 
+    /*
+     * The PCF offers a feature to the AF only when the SMF that enforces its policy has the matching feature of Npcf_SMPolicyControl
+     * (TS 29.514 V19.8.0 clause 5.8 and TS 29.512 V19.7.0 clause 5.8); otherwise the attributes of the feature would be accepted and dropped.
+     */
+    if (!OGS_SBI_FEATURES_IS_SET(sess->smpolicycontrol_features, OGS_SBI_NPCF_SMPOLICYCONTROL_AUTHORIZATION_WITH_REQUIRED_QOS))
+        sess->policyauthorization_features &= ~((uint64_t)1 << (OGS_SBI_NPCF_POLICYAUTHORIZATION_AUTHORIZATION_WITH_REQUIRED_QOS - 1));
+    if (!OGS_SBI_FEATURES_HI_IS_SET(sess->smpolicycontrol_features_hi, OGS_SBI_NPCF_SMPOLICYCONTROL_PDU_SET_HANDLING))
+        sess->policyauthorization_features &= ~((uint64_t)1 << (OGS_SBI_NPCF_POLICYAUTHORIZATION_PDU_SET_HANDLING - 1));
+    if (!OGS_SBI_FEATURES_HI_IS_SET(sess->smpolicycontrol_features_hi, OGS_SBI_NPCF_SMPOLICYCONTROL_MPX_MEDIA))
+        sess->policyauthorization_features_hi &= ~((uint64_t)1 << (OGS_SBI_NPCF_POLICYAUTHORIZATION_MPX_MEDIA - 65));
+    if (!OGS_SBI_FEATURES_HI_IS_SET(sess->smpolicycontrol_features_hi, OGS_SBI_NPCF_SMPOLICYCONTROL_TRAFFIC_CHAR_CHANGE))
+        sess->policyauthorization_features_hi &= ~((uint64_t)1 << (OGS_SBI_NPCF_POLICYAUTHORIZATION_TRAFFIC_CHAR_CHANGE - 65));
+
     if (sess->policyauthorization_features != supported_features ||
             sess->policyauthorization_features_hi != supported_features_hi) {
         ogs_free(AscReqData->supp_feat);
@@ -1699,6 +1837,11 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
                         MediaComponent->pdu_set_qos_ul ? MediaComponent->pdu_set_qos_ul->is_pdu_set_delay_budget : false, MediaComponent->pdu_set_qos_ul ? MediaComponent->pdu_set_qos_ul->pdu_set_delay_budget : 0,
                         MediaComponent->pdu_set_qos_ul ? MediaComponent->pdu_set_qos_ul->pdu_set_err_rate : NULL,
                         MediaComponent->pdu_set_qos_ul ? MediaComponent->pdu_set_qos_ul->pdu_set_handling_info : OpenAPI_pdu_set_handling_info_NULL, MediaComponent->pdu_set_qos_ul != NULL);
+                media_read_proto_desc(media_component, true, MediaComponent->proto_desc_dl ? OpenAPI_protocol_description_convertToJSON(MediaComponent->proto_desc_dl) : NULL, false);
+                media_read_proto_desc(media_component, false, MediaComponent->proto_desc_ul ? OpenAPI_protocol_description_convertToJSON(MediaComponent->proto_desc_ul) : NULL, false);
+                media_read_flag(&media_component->dat_burst_size_ind_state, &media_component->dat_burst_size_ind, false, MediaComponent->is_dat_burst_size_ind, MediaComponent->dat_burst_size_ind);
+                media_read_flag(&media_component->time_to_next_burst_ind_state, &media_component->time_to_next_burst_ind, false, MediaComponent->is_timeto_next_burst_ind, MediaComponent->timeto_next_burst_ind);
+                media_read_flag(&media_component->exp_tran_ind_state, &media_component->exp_tran_ind, false, MediaComponent->is_exp_tran_ind, MediaComponent->exp_tran_ind);
                 if (MediaComponent->mar_bw_dl)
                     media_component->max_requested_bandwidth_dl =
                         ogs_sbi_bitrate_from_string(MediaComponent->mar_bw_dl);
@@ -1738,6 +1881,8 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
                         if (SubComponent) {
                             sub->flow_number = SubComponent->f_num;
                             sub->flow_usage = SubComponent->flow_usage;
+                            sub->mpx_ul = mpx_list_to_text(SubComponent->mpx_media_ul_infos);
+                            sub->mpx_dl = mpx_list_to_text(SubComponent->mpx_media_dl_infos);
                             sub->removed = SubComponent->f_status ==
                                     OpenAPI_flow_status_REMOVED;
 
@@ -2175,6 +2320,7 @@ bool pcf_npcf_policyauthorization_handle_update(
         const char *content)
 {
     int i, j, rv, status = 0;
+    bool has_evsubsc = false;
     char *strerror = NULL;
     pcf_ue_sm_t *pcf_ue_sm = NULL;
 
@@ -2326,6 +2472,11 @@ bool pcf_npcf_policyauthorization_handle_update(
                         MediaComponent->pdu_set_qos_ul ? MediaComponent->pdu_set_qos_ul->is_pdu_set_delay_budget : false, MediaComponent->pdu_set_qos_ul ? MediaComponent->pdu_set_qos_ul->pdu_set_delay_budget : 0,
                         MediaComponent->pdu_set_qos_ul ? MediaComponent->pdu_set_qos_ul->pdu_set_err_rate : NULL,
                         MediaComponent->pdu_set_qos_ul ? MediaComponent->pdu_set_qos_ul->pdu_set_handling_info : OpenAPI_pdu_set_handling_info_NULL, MediaComponent->pdu_set_qos_ul != NULL);
+                media_read_proto_desc(media_component, true, MediaComponent->proto_desc_dl ? OpenAPI_protocol_description_rm_convertToJSON(MediaComponent->proto_desc_dl) : NULL, MediaComponent->is_proto_desc_dl_null);
+                media_read_proto_desc(media_component, false, MediaComponent->proto_desc_ul ? OpenAPI_protocol_description_rm_convertToJSON(MediaComponent->proto_desc_ul) : NULL, MediaComponent->is_proto_desc_ul_null);
+                media_read_flag(&media_component->dat_burst_size_ind_state, &media_component->dat_burst_size_ind, MediaComponent->is_dat_burst_size_ind_null, MediaComponent->is_dat_burst_size_ind, MediaComponent->dat_burst_size_ind);
+                media_read_flag(&media_component->time_to_next_burst_ind_state, &media_component->time_to_next_burst_ind, MediaComponent->is_timeto_next_burst_ind_null, MediaComponent->is_timeto_next_burst_ind, MediaComponent->timeto_next_burst_ind);
+                media_read_flag(&media_component->exp_tran_ind_state, &media_component->exp_tran_ind, MediaComponent->is_exp_tran_ind_null, MediaComponent->is_exp_tran_ind, MediaComponent->exp_tran_ind);
                 if (MediaComponent->mar_bw_dl)
                     media_component->max_requested_bandwidth_dl =
                         ogs_sbi_bitrate_from_string(MediaComponent->mar_bw_dl);
@@ -2365,6 +2516,8 @@ bool pcf_npcf_policyauthorization_handle_update(
                         if (SubComponent) {
                             sub->flow_number = SubComponent->f_num;
                             sub->flow_usage = SubComponent->flow_usage;
+                            sub->mpx_ul = mpx_list_to_text(SubComponent->mpx_media_ul_infos);
+                            sub->mpx_dl = mpx_list_to_text(SubComponent->mpx_media_dl_infos);
                             sub->removed = SubComponent->f_status ==
                                     OpenAPI_flow_status_REMOVED;
 
@@ -2414,7 +2567,15 @@ bool pcf_npcf_policyauthorization_handle_update(
                             for (f = 0; f < media_component->sub[k].num_of_flow; f++)
                                 if (media_component->sub[k].flow[f].description)
                                     ogs_free(media_component->sub[k].flow[f].description);
+                            if (media_component->sub[k].mpx_ul)
+                                ogs_free(media_component->sub[k].mpx_ul);
+                            if (media_component->sub[k].mpx_dl)
+                                ogs_free(media_component->sub[k].mpx_dl);
                         }
+                        if (media_component->proto_desc_dl)
+                            ogs_free(media_component->proto_desc_dl);
+                        if (media_component->proto_desc_ul)
+                            ogs_free(media_component->proto_desc_ul);
                         memset(media_component, 0, sizeof(*media_component));
                         continue;
                     }
@@ -2466,7 +2627,7 @@ bool pcf_npcf_policyauthorization_handle_update(
             }
         }
         attr_only = existing && !reference && media_component->media_type == OpenAPI_media_type_NULL &&
-            media_component->num_of_sub == 0 &&
+            media_component->num_of_sub == 0 && media_component->flow_status == OpenAPI_flow_status_NULL &&
             !media_component->max_requested_bandwidth_dl && !media_component->max_requested_bandwidth_ul &&
             !media_component->min_requested_bandwidth_dl && !media_component->min_requested_bandwidth_ul &&
             !media_component->rr_bandwidth && !media_component->rs_bandwidth;
@@ -2745,6 +2906,8 @@ bool pcf_npcf_policyauthorization_handle_update(
             cJSON_Delete(patch);
     }
     app_events_refresh(app_session);
+    /* the request belongs to the stream, which the answer closes: what it says is read before */
+    has_evsubsc = content_has_evsubsc(content);
 
     /* TS 29.514 V19.8.0 table 5.3.3.3.2-3: the 200 carries the AppSessionContext after the modification */
     send_app_session_context(stream, app_session, OGS_SBI_HTTP_STATUS_OK, NULL);
@@ -2757,7 +2920,7 @@ bool pcf_npcf_policyauthorization_handle_update(
     ogs_sbi_decision_free_traffic_control(&SmPolicyDecision);
 
     /* the sponsor and the usage thresholds that the PATCH changes (clause 4.2.3.5) */
-    app_usage_apply(sess, app_session, content_has_evsubsc(content));
+    app_usage_apply(sess, app_session, has_evsubsc);
 
     OpenAPI_list_for_each(PccRuleList, node) {
         PccRuleMap = node->data;
@@ -3075,6 +3238,18 @@ static cJSON *delete_events_report(pcf_app_t *app, const char *content, const Op
     return asc;
 }
 
+/* The QoS reference of the AF that an alternative QoS parameter set of the application session stands for, NULL if there is none */
+static const char *alt_reference_of(pcf_app_t *app, const char *alt_qos_param_id)
+{
+    int r, k;
+
+    for (r = 0; r < app->num_of_pcc_rule; r++)
+        for (k = 0; k < app->pcc_rule[r].alt_qos.num_of_set; k++)
+            if (!strcmp(app->pcc_rule[r].alt_qos.set[k].id, alt_qos_param_id) && app->pcc_rule[r].alt_qos.set[k].reference[0])
+                return app->pcc_rule[r].alt_qos.set[k].reference;
+    return NULL;
+}
+
 static cJSON *flows_of_rules(pcf_app_t *app, OpenAPI_list_t *rule_ids)
 {
     cJSON *flows = cJSON_CreateArray();
@@ -3219,14 +3394,8 @@ static void qnc_reports_notify(pcf_sess_t *sess, const char *content)
              * names the alternative QoS parameter set (altQosParamId, TS 29.512 V19.7.0), the AF knows it by the QoS reference it gave.
              */
             alt = cJSON_GetObjectItem(report, "altQosParamId");
-            if (cJSON_IsString(alt)) {
-                int r, k;
-
-                for (r = 0; r < app->num_of_pcc_rule; r++)
-                    for (k = 0; k < app->pcc_rule[r].alt_qos.num_of_set; k++)
-                        if (!strcmp(app->pcc_rule[r].alt_qos.set[k].id, alt->valuestring) && app->pcc_rule[r].alt_qos.set[k].reference[0])
-                            cJSON_AddStringToObject(info, "altSerReq", app->pcc_rule[r].alt_qos.set[k].reference);
-            }
+            if (cJSON_IsString(alt) && alt_reference_of(app, alt->valuestring))
+                cJSON_AddStringToObject(info, "altSerReq", alt_reference_of(app, alt->valuestring));
             cJSON_AddItemToArray(arr, info);
 
             pcf_sbi_send_policyauthorization_event_notify(app, evs);
@@ -3474,6 +3643,28 @@ bool pcf_npcf_smpolicycontrol_handle_update(pcf_sess_t *sess,
             else
                 cJSON_Delete(flows);
             cJSON_AddItemToArray(notifs, notif);
+
+            /*
+             * The alternative service requirement that the NG-RAN set the flows up with (TS 29.514 V19.8.0 clause 4.2.5.8, table 5.6.2.14-1):
+             * the SMF names the alternative QoS parameter set (altQosParamId), the AF knows it by the QoS reference it gave.
+             */
+            if (active && report->alt_qos_param_id) {
+                const char *reference = alt_reference_of(app, report->alt_qos_param_id);
+
+                if (reference) {
+                    reports = cJSON_AddArrayToObject(notification, "succResourcAllocReports");
+                    ogs_assert(reports);
+                    alloc = cJSON_CreateObject();
+                    ogs_assert(alloc);
+                    cJSON_AddStringToObject(alloc, "altSerReq", reference);
+                    flows = flows_of_rules(app, report->pcc_rule_ids);
+                    if (cJSON_GetArraySize(flows) > 0)
+                        cJSON_AddItemToObject(alloc, "flows", flows);
+                    else
+                        cJSON_Delete(flows);
+                    cJSON_AddItemToArray(reports, alloc);
+                }
+            }
 
             if (!active) {
                 reports = cJSON_AddArrayToObject(notification,

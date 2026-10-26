@@ -1005,6 +1005,104 @@ static void sbi_message_test11(abts_case *tc, void *param)
     ogs_free(src);
 }
 
+
+/*
+ * The policy decision of a PCC rule with alternative QoS parameter sets, PDU Set QoS parameters, protocol descriptions, the indications of
+ * dynamically changing traffic characteristics and multiplexed media identification (TS 29.512 V19.7.0 clauses 4.2.6.2.1 and 4.2.6.10).
+ */
+static void sbi_message_test12(abts_case *tc, void *param)
+{
+    ogs_pcc_rule_t rule;
+    OpenAPI_pcc_rule_t *PccRule = NULL;
+    OpenAPI_list_t *QosList = NULL;
+    OpenAPI_sm_policy_decision_t decision;
+    OpenAPI_lnode_t *node = NULL;
+    cJSON *json = NULL;
+    char *text = NULL;
+
+    memset(&rule, 0, sizeof(rule));
+    memset(&decision, 0, sizeof(decision));
+    rule.id = "rule1";
+    rule.precedence = 10;
+    rule.qos.index = 1;
+    rule.qos.arp.priority_level = 3;
+    rule.qos.arp.pre_emption_capability = OGS_5GC_PRE_EMPTION_DISABLED;
+    rule.qos.arp.pre_emption_vulnerability = OGS_5GC_PRE_EMPTION_DISABLED;
+    rule.num_of_flow = 1;
+    rule.flow[0].direction = OGS_FLOW_DOWNLINK_ONLY;
+    rule.flow[0].description = "permit out 17 from 10.1.1.1 2000 to 10.45.0.2 1000";
+    ogs_cpystrn(rule.mpx[0].ul, "[{\"ssrcId\":1111,\"payloadType\":96}]", OGS_MPX_INFO_LEN);
+    ogs_cpystrn(rule.proto_desc_dl, "{\"transportProto\":\"RTP\"}", OGS_PROTO_DESC_LEN);
+    rule.dat_burst_size_ind = rule.time_to_next_burst_ind = rule.exp_tran_ind = true;
+    rule.pdu_set_dl.presence = true;
+    rule.pdu_set_dl.delay_budget_presence = true;
+    rule.pdu_set_dl.delay_budget = 1500;
+    ogs_cpystrn(rule.pdu_set_dl.error_rate, "1E-3", OGS_QOS_ERROR_RATE_LEN);
+    rule.pdu_set_dl.handling_info = OGS_PDU_SET_ALL_PDUS_NEEDED;
+    rule.alt_qos.num_of_set = 2;
+    ogs_cpystrn(rule.alt_qos.set[0].id, "rule1-alt1", OGS_ALT_QOS_ID_LEN);
+    rule.alt_qos.set[0].pdb_presence = true;
+    rule.alt_qos.set[0].pdb = 100;
+    ogs_cpystrn(rule.alt_qos.set[0].per, "1E-2", OGS_QOS_ERROR_RATE_LEN);
+    rule.alt_qos.set[0].gbr.downlink = 64000;
+    ogs_cpystrn(rule.alt_qos.set[1].id, "rule1-alt2", OGS_ALT_QOS_ID_LEN);
+
+    PccRule = ogs_sbi_build_pcc_rule(&rule, 1);
+    ABTS_PTR_NOTNULL(tc, PccRule);
+    ogs_sbi_decision_add_traffic_control(&decision, PccRule, &rule);
+    QosList = OpenAPI_list_create();
+    ogs_sbi_decision_add_qos_data(QosList, &rule);
+
+    /* the rule: the sets in order, the protocol description, the indication of the expedited transfer, the multiplexed media of the flow */
+    json = OpenAPI_pcc_rule_convertToJSON(PccRule);
+    ABTS_PTR_NOTNULL(tc, json);
+    text = cJSON_PrintUnformatted(json);
+    ABTS_PTR_NOTNULL(tc, strstr(text, "\"refAltQosParams\":[\"rule1-alt1\",\"rule1-alt2\"]"));
+    ABTS_PTR_NOTNULL(tc, strstr(text, "\"protoDescDl\":{\"transportProto\":\"RTP\"}"));
+    ABTS_PTR_NOTNULL(tc, strstr(text, "\"expTranInd\":true"));
+    ABTS_PTR_NOTNULL(tc, strstr(text, "\"mpxMediaUlInfos\":[{\"ssrcId\":1111,\"payloadType\":96}]"));
+    ABTS_PTR_EQUAL(tc, NULL, strstr(text, "mpxMediaDlInfos"));
+    cJSON_free(text);
+    cJSON_Delete(json);
+
+    /* the traffic control data of the rule: the burst indications */
+    ABTS_INT_EQUAL(tc, 1, decision.traff_cont_decs->count);
+    json = OpenAPI_traffic_control_data_convertToJSON(((OpenAPI_map_t *)decision.traff_cont_decs->first->data)->value);
+    text = cJSON_PrintUnformatted(json);
+    ABTS_PTR_NOTNULL(tc, strstr(text, "\"datBurstSizeInd\":true"));
+    ABTS_PTR_NOTNULL(tc, strstr(text, "\"timetoNextBurstInd\":true"));
+    cJSON_free(text);
+    cJSON_Delete(json);
+
+    /* the QosData: the rule with its PDU Set QoS parameters, then the two sets with their parameters */
+    ABTS_INT_EQUAL(tc, 3, QosList->count);
+    node = QosList->first;
+    json = OpenAPI_qos_data_convertToJSON(((OpenAPI_map_t *)node->data)->value);
+    text = cJSON_PrintUnformatted(json);
+    ABTS_PTR_NOTNULL(tc, strstr(text, "\"pduSetQosDl\":{\"pduSetDelayBudget\":1500,\"pduSetErrRate\":\"1E-3\",\"pduSetHandlingInfo\":\"ALL_PDUS_NEEDED\"}"));
+    cJSON_free(text);
+    cJSON_Delete(json);
+    node = node->next;
+    json = OpenAPI_qos_data_convertToJSON(((OpenAPI_map_t *)node->data)->value);
+    text = cJSON_PrintUnformatted(json);
+    ABTS_PTR_NOTNULL(tc, strstr(text, "\"qosId\":\"rule1-alt1\""));
+    ABTS_PTR_NOTNULL(tc, strstr(text, "\"packetDelayBudget\":100"));
+    ABTS_PTR_NOTNULL(tc, strstr(text, "\"packetErrorRate\":\"1E-2\""));
+    ABTS_PTR_NOTNULL(tc, strstr(text, "\"gbrDl\":\"64000 bps\""));
+    cJSON_free(text);
+    cJSON_Delete(json);
+
+    OpenAPI_list_for_each(QosList, node) {
+        OpenAPI_map_t *map = node->data;
+
+        ogs_sbi_free_qos_data(map->value);
+        ogs_free(map);
+    }
+    OpenAPI_list_free(QosList);
+    ogs_sbi_decision_free_traffic_control(&decision);
+    ogs_sbi_free_pcc_rule(PccRule);
+}
+
 abts_suite *test_sbi_message(abts_suite *suite)
 {
     suite = ADD_SUITE(suite)
@@ -1020,6 +1118,7 @@ abts_suite *test_sbi_message(abts_suite *suite)
     abts_run_test(suite, sbi_message_test9, NULL);
     abts_run_test(suite, sbi_message_test10, NULL);
     abts_run_test(suite, sbi_message_test11, NULL);
+    abts_run_test(suite, sbi_message_test12, NULL);
 
     return suite;
 }

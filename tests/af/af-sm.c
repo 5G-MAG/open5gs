@@ -243,6 +243,13 @@ void af_state_operational(ogs_fsm_t *s, af_event_t *e)
                             app_session->notify_usg_count++;
                             app_session->notify_usg_total = cJSON_IsNumber(total) ? (long)total->valuedouble : -1;
                         }
+                        {
+                            cJSON *succ = body ? cJSON_GetArrayItem(cJSON_GetObjectItem(body, "succResourcAllocReports"), 0) : NULL;
+                            cJSON *succ_alt = succ ? cJSON_GetObjectItem(succ, "altSerReq") : NULL;
+
+                            if (cJSON_IsString(succ_alt))
+                                ogs_cpystrn(app_session->notify_succ_alt, succ_alt->valuestring, sizeof(app_session->notify_succ_alt));
+                        }
                         ogs_cpystrn(app_session->notify_event,
                                 cJSON_IsString(event) ? event->valuestring : "",
                                 sizeof(app_session->notify_event));

@@ -3025,6 +3025,19 @@ static ogs_pkbuf_t *testngap_build_pdu_session_resource_modify_response_trasfer(
                 qosFlowAddOrModifyResponseItem);
 
         qosFlowAddOrModifyResponseItem->qosFlowIdentifier = qos_flow->qfi;
+
+        if (sess->alt_current_index > 0) {
+            NGAP_ProtocolExtensionContainer_14713P340_t *container = CALLOC(1, sizeof(*container));
+            NGAP_QosFlowAddOrModifyResponseItem_ExtIEs_t *ext = CALLOC(1, sizeof(*ext));
+
+            ASN_SEQUENCE_ADD(&container->list, ext);
+            ext->id = NGAP_ProtocolIE_ID_id_CurrentQoSParaSetIndex;
+            ext->criticality = NGAP_Criticality_ignore;
+            ext->extensionValue.present = NGAP_QosFlowAddOrModifyResponseItem_ExtIEs__extensionValue_PR_AlternativeQoSParaSetIndex;
+            ext->extensionValue.choice.AlternativeQoSParaSetIndex = CALLOC(1, sizeof(long));
+            *ext->extensionValue.choice.AlternativeQoSParaSetIndex = sess->alt_current_index;
+            qosFlowAddOrModifyResponseItem->iE_Extensions = (struct NGAP_ProtocolExtensionContainer *)container;
+        }
     }
 
     if (sess->ecn_status) {

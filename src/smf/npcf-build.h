@@ -32,6 +32,7 @@ ogs_sbi_request_t *smf_npcf_smpolicycontrol_build_create(
 typedef struct smf_npcf_smpolicycontrol_rule_report_s {
     OpenAPI_rule_status_e status;
     OpenAPI_failure_code_e failure_code;
+    char *alt_qos_param_id;     /* the alternative QoS parameter set that the NG-RAN set up the flows with, NULL when none */
     int num_of_rule;
     char *rule_id[OGS_MAX_NUM_OF_PCC_RULE];
 } smf_npcf_smpolicycontrol_rule_report_t;

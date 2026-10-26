@@ -90,6 +90,7 @@ sgwc:
         - address: 127.0.0.6
 
 smf:
+  policy_features: [104, 107]
   sbi:
     server:
       - address: 127.0.0.4
