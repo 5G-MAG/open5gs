@@ -395,7 +395,14 @@ bool bsf_nbsf_management_handle_pcf_binding(
                 SendPcfBinding.ipv6_frame_route_list =
                     sess->ipv6_frame_route_list;
                 set_registered_properties(&SendPcfBinding, sess);
-                if (sess->management_features)
+                if (recvmsg->param.supp_feat) {
+                    /* TS 29.521 V19.7.0 clause 5.6.2.2: with the "supp-feat" query parameter the response carries suppFeat, the features that both sides support */
+                    uint64_t negotiated = sess->management_features &
+                        ogs_uint64_from_string_hexadecimal(recvmsg->param.supp_feat);
+
+                    SendPcfBinding.supp_feat = negotiated ? ogs_uint64_to_string(negotiated) : ogs_strdup("0");
+                    ogs_assert(SendPcfBinding.supp_feat);
+                } else if (sess->management_features)
                     SendPcfBinding.supp_feat =
                         ogs_uint64_to_string(sess->management_features);
 

@@ -267,6 +267,13 @@ static struct {
     ogs_pfcp_f_teid_t f_teid;
     char dnn[OGS_MAX_DNN_LEN+1];
     char *sdf_filter[OGS_MAX_NUM_OF_FLOW_IN_PDR];
+    struct {
+        uint8_t transport_protocol;
+        uint8_t rtp_he_type;
+        uint8_t rtp_he_id;
+        uint8_t payload_type[OGS_PFCP_MAX_RTP_PAYLOAD_TYPE];
+        uint8_t payload_format;
+    } protocol_description;
 } pdrbuf[OGS_MAX_NUM_OF_PDR];
 
 void ogs_pfcp_pdrbuf_init(void)
@@ -281,6 +288,52 @@ void ogs_pfcp_pdrbuf_clear(void)
         for (j = 0; j < OGS_MAX_NUM_OF_FLOW_IN_PDR; j++) {
             if (pdrbuf[i].sdf_filter[j])
                 ogs_free(pdrbuf[i].sdf_filter[j]);
+        }
+    }
+}
+
+/* The Protocol Description IE of a PDR (TS 29.244 V19.6.0 table 7.5.2.2-7) */
+static void build_protocol_description(
+    ogs_pfcp_tlv_protocol_description_t *message, int i, ogs_pfcp_pdr_t *pdr)
+{
+    int j;
+
+    if (!pdr->protocol_description.presence)
+        return;
+
+    pdrbuf[i].protocol_description.transport_protocol = pdr->protocol_description.transport_protocol;
+    pdrbuf[i].protocol_description.rtp_he_type = pdr->protocol_description.rtp_he_type;
+    pdrbuf[i].protocol_description.rtp_he_id = pdr->protocol_description.rtp_he_id;
+    pdrbuf[i].protocol_description.payload_format = pdr->protocol_description.payload_format;
+    memcpy(pdrbuf[i].protocol_description.payload_type, pdr->protocol_description.payload_type,
+            sizeof(pdrbuf[i].protocol_description.payload_type));
+
+    message->presence = 1;
+    if (pdr->protocol_description.transport_protocol) {
+        message->transport_protocol.presence = 1;
+        message->transport_protocol.data = &pdrbuf[i].protocol_description.transport_protocol;
+        message->transport_protocol.len = 1;
+    }
+    if (pdr->protocol_description.rtp_he_type) {
+        message->rtp_header_extension_information.presence = 1;
+        message->rtp_header_extension_information.rtp_header_extension_type.presence = 1;
+        message->rtp_header_extension_information.rtp_header_extension_type.data = &pdrbuf[i].protocol_description.rtp_he_type;
+        message->rtp_header_extension_information.rtp_header_extension_type.len = 1;
+        message->rtp_header_extension_information.rtp_header_extension_id.presence = 1;
+        message->rtp_header_extension_information.rtp_header_extension_id.data = &pdrbuf[i].protocol_description.rtp_he_id;
+        message->rtp_header_extension_information.rtp_header_extension_id.len = 1;
+    }
+    if (pdr->protocol_description.num_of_payload_type || pdr->protocol_description.payload_format) {
+        message->rtp_payload_information.presence = 1;
+        for (j = 0; j < pdr->protocol_description.num_of_payload_type; j++) {
+            message->rtp_payload_information.rtp_payload_type[j].presence = 1;
+            message->rtp_payload_information.rtp_payload_type[j].data = &pdrbuf[i].protocol_description.payload_type[j];
+            message->rtp_payload_information.rtp_payload_type[j].len = 1;
+        }
+        if (pdr->protocol_description.payload_format) {
+            message->rtp_payload_information.rtp_payload_format.presence = 1;
+            message->rtp_payload_information.rtp_payload_format.data = &pdrbuf[i].protocol_description.payload_format;
+            message->rtp_payload_information.rtp_payload_format.len = 1;
         }
     }
 }
@@ -340,8 +393,16 @@ void ogs_pfcp_build_create_pdr(
             pfcp_sdf_filter[j].sdf_filter_id = pdr->flow[j].sdf_filter_id;
         }
 
+        if (pdr->flow[j].smmii && pdr->flow[j].num_of_mpx) {
+            pfcp_sdf_filter[j].smmii = 1;
+            pfcp_sdf_filter[j].num_of_mpx = pdr->flow[j].num_of_mpx;
+            pfcp_sdf_filter[j].mpx = pdr->flow[j].mpx;
+        }
+
         len = sizeof(ogs_pfcp_sdf_filter_t) +
-                pfcp_sdf_filter[j].flow_description_len;
+                pfcp_sdf_filter[j].flow_description_len +
+                (pfcp_sdf_filter[j].smmii ?
+                    ogs_pfcp_mpx_encoded_len(pfcp_sdf_filter[j].mpx, pfcp_sdf_filter[j].num_of_mpx) : 0);
 
         message->pdi.sdf_filter[j].presence = 1;
         pdrbuf[i].sdf_filter[j] = ogs_calloc(1, len);
@@ -385,6 +446,8 @@ void ogs_pfcp_build_create_pdr(
         message->pdi.qfi.presence = 1;
         message->pdi.qfi.u8 = pdr->qfi;
     }
+
+    build_protocol_description(&message->pdi.protocol_description, i, pdr);
 
     if (pdr->outer_header_removal_len) {
         message->outer_header_removal.presence = 1;
@@ -454,11 +517,19 @@ void ogs_pfcp_build_update_pdr(
              OGS_PFCP_MODIFY_TFT_REPLACE|OGS_PFCP_MODIFY_TFT_DELETE|
              OGS_PFCP_MODIFY_EPC_TFT_UPDATE|
              OGS_PFCP_MODIFY_OUTER_HEADER_REMOVAL|
-             OGS_PFCP_MODIFY_PDR_URR));
+             OGS_PFCP_MODIFY_PDR_URR|OGS_PFCP_MODIFY_PDR_PROTO_DESC));
 
     message->presence = 1;
     message->pdr_id.presence = 1;
     message->pdr_id.u16 = pdr->id;
+
+    /* the Protocol Description of the PDR (TS 29.244 V19.6.0 table 7.5.4.2-1, PDI) */
+    if (modify_flags & OGS_PFCP_MODIFY_PDR_PROTO_DESC) {
+        message->pdi.presence = 1;
+        message->pdi.source_interface.presence = 1;
+        message->pdi.source_interface.u8 = pdr->src_if;
+        build_protocol_description(&message->pdi.protocol_description, i, pdr);
+    }
 
     /* the URRs of the PDR (TS 29.244 table 7.5.4.2-1, URR ID) */
     if (modify_flags & OGS_PFCP_MODIFY_PDR_URR) {
@@ -497,8 +568,16 @@ void ogs_pfcp_build_update_pdr(
                 pfcp_sdf_filter[j].sdf_filter_id = pdr->flow[j].sdf_filter_id;
             }
 
+            if (pdr->flow[j].smmii && pdr->flow[j].num_of_mpx) {
+                pfcp_sdf_filter[j].smmii = 1;
+                pfcp_sdf_filter[j].num_of_mpx = pdr->flow[j].num_of_mpx;
+                pfcp_sdf_filter[j].mpx = pdr->flow[j].mpx;
+            }
+
             len = sizeof(ogs_pfcp_sdf_filter_t) +
-                    pfcp_sdf_filter[j].flow_description_len;
+                    pfcp_sdf_filter[j].flow_description_len +
+                    (pfcp_sdf_filter[j].smmii ?
+                        ogs_pfcp_mpx_encoded_len(pfcp_sdf_filter[j].mpx, pfcp_sdf_filter[j].num_of_mpx) : 0);
 
             message->pdi.sdf_filter[j].presence = 1;
             pdrbuf[i].sdf_filter[j] = ogs_calloc(1, len);
@@ -858,9 +937,13 @@ void ogs_pfcp_build_create_qer(
         message->qos_flow_identifier.u8 = qer->qfi;
     }
 
-    /* EML4S: the UPF performs ECN marking for L4S (bit 3); PDUSM: the UPF performs PDU Set marking (bit 4) */
-    if (qer->ecn_marking_l4s || qer->pdu_set_marking) {
-        create_qer_buf[i].indications = (qer->ecn_marking_l4s ? 0x04 : 0) | (qer->pdu_set_marking ? 0x08 : 0);
+    /*
+     * EML4S: the UPF performs ECN marking for L4S (bit 3); PDUSM: the UPF performs PDU Set marking (bit 4); DBSMI: the UPF marks the
+     * Data Burst Size (bit 5); TNBMI: the UPF marks the Time to Next Burst (bit 6)
+     */
+    if (qer->ecn_marking_l4s || qer->pdu_set_marking || qer->data_burst_size_marking || qer->time_to_next_burst_marking) {
+        create_qer_buf[i].indications = (qer->ecn_marking_l4s ? 0x04 : 0) | (qer->pdu_set_marking ? 0x08 : 0) |
+            (qer->data_burst_size_marking ? 0x10 : 0) | (qer->time_to_next_burst_marking ? 0x20 : 0);
         message->qer_indications.presence = 1;
         message->qer_indications.data = &create_qer_buf[i].indications;
         message->qer_indications.len = 1;
@@ -902,8 +985,12 @@ void ogs_pfcp_build_update_qer(
                     &qer->gbr, update_qer_buf[i].gbr, OGS_PFCP_BITRATE_LEN);
         }
 
-        /* the ECN marking for L4S and the PDU Set marking are on or off (QER Indications EML4S, bit 3, and PDUSM, bit 4) */
-        update_qer_buf[i].indications = (qer->ecn_marking_l4s ? 0x04 : 0x00) | (qer->pdu_set_marking ? 0x08 : 0x00);
+        /*
+         * the ECN marking for L4S, the PDU Set marking and the burst markings are on or off (QER Indications EML4S, bit 3, PDUSM, bit 4,
+         * DBSMI, bit 5, and TNBMI, bit 6)
+         */
+        update_qer_buf[i].indications = (qer->ecn_marking_l4s ? 0x04 : 0x00) | (qer->pdu_set_marking ? 0x08 : 0x00) |
+            (qer->data_burst_size_marking ? 0x10 : 0x00) | (qer->time_to_next_burst_marking ? 0x20 : 0x00);
         message->qer_indications.presence = 1;
         message->qer_indications.data = &update_qer_buf[i].indications;
         message->qer_indications.len = 1;

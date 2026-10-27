@@ -29,10 +29,12 @@ extern "C" {
 
 /*
  * PDU Set marking of a downlink packet of a QoS flow (TS 29.244 V19.6.0 clause 5.38.3): the PDU Set information that the packet gets in the PDU
- * Set Information Container is left in the QER for the encapsulation. The PDU Sets are identified by implementation specific means: the
- * RTP packets of one PDU Set have the same RTP timestamp and the packet with the marker bit is the last one; any other packet is a PDU Set of its own.
+ * Set Information Container is left in the QER for the encapsulation. With a Protocol Description of the DL PDR that names the RTP Header
+ * Extension for PDU Set Marking the PDU Sets are the ones that the sender marks (TS 26.522 V19.4.0 clause 4.2); otherwise they are identified
+ * by implementation specific means: the RTP packets of one PDU Set have the same RTP timestamp and the packet with the marker bit is the last
+ * one; any other packet is a PDU Set of its own.
  */
-void upf_pdu_set_mark(ogs_pfcp_qer_t *qer, const ogs_pkbuf_t *pkbuf);
+void upf_pdu_set_mark(ogs_pfcp_pdr_t *pdr, const ogs_pkbuf_t *pkbuf);
 
 #ifdef __cplusplus
 }

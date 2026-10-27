@@ -5607,7 +5607,14 @@ static void test25_func(abts_case *tc, void *data)
 
 
 /* One downlink RTP packet (UDP) from the test to the UE: the UPF gets it from the network side (TUN device) like any packet from the data network */
+static bool test_af_send_rtp_ssrc(test_sess_t *sess, uint32_t timestamp, uint16_t seq, bool marker, uint8_t pt, uint32_t ssrc);
+
 static bool test_af_send_rtp(test_sess_t *sess, uint32_t timestamp, uint16_t seq, bool marker)
+{
+    return test_af_send_rtp_ssrc(sess, timestamp, seq, marker, 96, 1);
+}
+
+static bool test_af_send_rtp_ssrc(test_sess_t *sess, uint32_t timestamp, uint16_t seq, bool marker, uint8_t pt, uint32_t ssrc)
 {
     struct sockaddr_in to;
     uint8_t rtp[16 + 20];
@@ -5621,10 +5628,10 @@ static bool test_af_send_rtp(test_sess_t *sess, uint32_t timestamp, uint16_t seq
     (void)addr;
     memset(rtp, 0, sizeof(rtp));
     rtp[0] = 0x80;                                  /* version 2 */
-    rtp[1] = (marker ? 0x80 : 0) | 96;              /* marker bit and payload type */
+    rtp[1] = (marker ? 0x80 : 0) | pt;              /* marker bit and payload type */
     rtp[2] = seq >> 8; rtp[3] = seq & 0xff;
     rtp[4] = timestamp >> 24; rtp[5] = timestamp >> 16; rtp[6] = timestamp >> 8; rtp[7] = timestamp;
-    rtp[11] = 0x01;                                 /* SSRC */
+    rtp[8] = ssrc >> 24; rtp[9] = ssrc >> 16; rtp[10] = ssrc >> 8; rtp[11] = ssrc;   /* SSRC */
     fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) return false;
     rv = sendto(fd, rtp, sizeof(rtp), 0, (struct sockaddr *)&to, sizeof(to));
@@ -6254,6 +6261,47 @@ static void test33_func(abts_case *tc, void *data)
 }
 
 
+/* An RTP packet with the RTP header extension for PDU Set marking (TS 26.522 V19.4.0 clause 4.2) in the one-byte or the two-byte format, with the PDU Set Size if pssize is not 0 */
+static bool test_af_send_rtp_he(test_sess_t *sess, uint32_t timestamp, uint16_t seq, uint8_t pt, bool two_byte, uint8_t id,
+        bool end, uint8_t psi, uint16_t pssn, uint8_t psn, uint32_t pssize)
+{
+    struct sockaddr_in to;
+    uint8_t rtp[64], *e;
+    int fd, rv, len = 0, data_len = pssize ? 6 : 3, element_len = (two_byte ? 2 : 1) + data_len, words;
+
+    memset(&to, 0, sizeof(to));
+    to.sin_family = AF_INET;
+    to.sin_port = htons(30000);
+    memcpy(&to.sin_addr, &sess->ue_ip.addr, sizeof(to.sin_addr));
+    memset(rtp, 0, sizeof(rtp));
+    rtp[0] = 0x90;                                  /* version 2, extension */
+    rtp[1] = (end ? 0x80 : 0) | pt;
+    rtp[2] = seq >> 8; rtp[3] = seq & 0xff;
+    rtp[4] = timestamp >> 24; rtp[5] = timestamp >> 16; rtp[6] = timestamp >> 8; rtp[7] = timestamp;
+    rtp[11] = 0x01;                                 /* SSRC */
+    words = (element_len + 3) / 4;
+    rtp[12] = two_byte ? 0x10 : 0xbe; rtp[13] = two_byte ? 0x00 : 0xde;
+    rtp[14] = 0; rtp[15] = words;
+    e = rtp + 16;
+    if (two_byte) {
+        *e++ = id;
+        *e++ = data_len;
+    } else
+        *e++ = (id << 4) | (data_len - 1);
+    *e++ = (end ? 0x80 : 0) | (psi & 0x0f);
+    *e++ = pssn >> 2;
+    *e++ = ((pssn & 3) << 6) | (psn & 0x3f);
+    if (pssize) {
+        *e++ = pssize >> 16; *e++ = pssize >> 8; *e++ = pssize;
+    }
+    len = 16 + 4 * words + 4;                       /* header, extension, a payload of four octets */
+    fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return false;
+    rv = sendto(fd, rtp, len, 0, (struct sockaddr *)&to, sizeof(to));
+    close(fd);
+    return rv == len;
+}
+
 /*
  * TS 29.244 V19.6.0 clause 5.38.3, TS 29.281 V19.2.0 clause 5.2.2.8, TS 38.415 V19.1.0 clause 6.5.2.1, TS 38.413 V19.1.0 clause 9.3.1.268: the AF gives
  * PDU Set QoS parameters, the NG-RAN says that it supports PDU Set based Handling, and the SMF has the UPF mark the downlink packets of the QoS
@@ -6329,6 +6377,201 @@ static void test34_func(abts_case *tc, void *data)
 
     sess->pdu_set_indicator = false;
     test_af_qos_reference_delete(tc, test_ue, sess, af_sess, ngap);
+    test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
+}
+
+
+/*
+ * TS 29.244 V19.6.0 clause 5.38.3 and tables 7.5.2.2-7 and 8.2.233 to 8.2.237, TS 26.522 V19.4.0 clause 4.2: the AF gives PDU Set QoS parameters and a
+ * Protocol Description (protoDescDl) with the RTP header extension for PDU Set marking and a payload type; the SMF sends the Protocol Description in the
+ * DL PDR and the UPF takes the PDU Set information from the extension of the RTP packets of that payload type, in the one-byte and in the two-byte
+ * format, with the PDU Set Size when the extension has it. A packet without the extension, and one of another payload type, is a PDU Set of its own.
+ */
+static void test36_func(abts_case *tc, void *data)
+{
+    ogs_socknode_t *ngap = NULL;
+    ogs_socknode_t *gtpu = NULL;
+    test_ue_t *test_ue = NULL;
+    test_sess_t *sess = NULL;
+    test_bearer_t *qos_flow = NULL;
+    af_sess_t *af_sess = NULL;
+    af_npcf_policyauthorization_param_t af_param;
+    af_npcf_policyauthorization_raw_t raw;
+    ogs_gtp2_header_desc_t d;
+
+    test_af_qos_reference_setup(tc, "0000000036",
+            &test_ue, &sess, &af_sess, &ngap, &gtpu);
+
+    memset(&af_param, 0, sizeof(af_param));
+    af_param.med_type = OpenAPI_media_type_AUDIO;
+    af_param.qos_reference = "test-audio";
+    af_param.pdu_set_qos = true;
+    af_param.proto_desc = true;
+    af_param.proto_desc_he_id = 5;
+    af_param.proto_desc_pt = 96;
+    af_param.qos_type = 1;
+    af_param.flow_type = 98;
+    sess->pdu_set_indicator = true;
+    af_local_send_to_pcf(af_sess, &af_param,
+            af_npcf_policyauthorization_build_create);
+    qos_flow = test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_assert(qos_flow);
+    ogs_msleep(800);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_CREATED, af_sess->last_pcf_status);
+
+    /* the one-byte format: the sender's PDU Set Sequence Number, PDU Sequence Number, importance and end */
+    ABTS_TRUE(tc, test_af_send_rtp_he(sess, 1000, 1, 96, false, 5, false, 3, 700, 0, 0));
+    ABTS_TRUE(tc, test_af_gtpu_read_header(gtpu, 2000, &d));
+    ABTS_TRUE(tc, d.pdu_set.presence);
+    ABTS_INT_EQUAL(tc, qos_flow->qfi, d.qos_flow_identifier);
+    ABTS_INT_EQUAL(tc, 700, d.pdu_set.pssn);
+    ABTS_INT_EQUAL(tc, 0, d.pdu_set.psn);
+    ABTS_INT_EQUAL(tc, 3, d.pdu_set.psi);
+    ABTS_TRUE(tc, !d.pdu_set.end_pdu);
+    ABTS_TRUE(tc, !d.pdu_set.pssize_presence);
+    ABTS_TRUE(tc, test_af_send_rtp_he(sess, 1000, 2, 96, false, 5, true, 3, 700, 1, 0));
+    ABTS_TRUE(tc, test_af_gtpu_read_header(gtpu, 2000, &d));
+    ABTS_INT_EQUAL(tc, 700, d.pdu_set.pssn);
+    ABTS_INT_EQUAL(tc, 1, d.pdu_set.psn);
+    ABTS_TRUE(tc, d.pdu_set.end_pdu);
+
+    /* the two-byte format with the PDU Set Size of 1200 octets, the PDU Set Sequence Number at its limit of 1023 */
+    ABTS_TRUE(tc, test_af_send_rtp_he(sess, 2000, 3, 96, true, 5, true, 1, 1023, 63, 1200));
+    ABTS_TRUE(tc, test_af_gtpu_read_header(gtpu, 2000, &d));
+    ABTS_INT_EQUAL(tc, 1023, d.pdu_set.pssn);
+    ABTS_INT_EQUAL(tc, 63, d.pdu_set.psn);
+    ABTS_INT_EQUAL(tc, 1, d.pdu_set.psi);
+    ABTS_TRUE(tc, d.pdu_set.end_pdu);
+    ABTS_TRUE(tc, d.pdu_set.pssize_presence);
+    ABTS_INT_EQUAL(tc, 1200, (int)d.pdu_set.pssize);
+
+    /* an element with another ID is not the one of the Protocol Description; neither is a packet of a payload type that the UPF does not parse */
+    ABTS_TRUE(tc, test_af_send_rtp_he(sess, 3000, 4, 96, false, 6, false, 5, 12, 0, 0));
+    ABTS_TRUE(tc, test_af_gtpu_read_header(gtpu, 2000, &d));
+    ABTS_INT_EQUAL(tc, 0, d.pdu_set.pssn);
+    ABTS_INT_EQUAL(tc, 0, d.pdu_set.psi);
+    ABTS_TRUE(tc, d.pdu_set.end_pdu);
+    ABTS_TRUE(tc, test_af_send_rtp_he(sess, 4000, 5, 97, false, 5, false, 5, 500, 0, 0));
+    ABTS_TRUE(tc, test_af_gtpu_read_header(gtpu, 2000, &d));
+    ABTS_INT_EQUAL(tc, 1, d.pdu_set.pssn);
+    ABTS_INT_EQUAL(tc, 0, d.pdu_set.psi);
+    ABTS_TRUE(tc, d.pdu_set.end_pdu);
+
+    /* a new Protocol Description (another extension ID) reaches the UPF in an Update PDR */
+    raw.method = "PATCH";
+    raw.path = "";
+    raw.body = "{\"ascReqData\":{\"medComponents\":{\"0\":{\"medCompN\":0,\"protoDescDl\":{\"transportProto\":\"RTP\","
+        "\"rtpHeaderExtInfo\":{\"rtpHeaderExtType\":\"PDU_SET_MARKING\",\"rtpHeaderExtId\":7},"
+        "\"rtpPayloadInfoList\":[{\"rtpPayloadTypeList\":[96]}]}}}}}";
+    af_local_send_to_pcf(af_sess, &raw, af_npcf_policyauthorization_build_raw);
+    ogs_msleep(800);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_pcf_status);
+    ABTS_TRUE(tc, test_af_send_rtp_he(sess, 5000, 6, 96, false, 7, true, 2, 33, 4, 0));
+    ABTS_TRUE(tc, test_af_gtpu_read_header(gtpu, 2000, &d));
+    ABTS_INT_EQUAL(tc, 33, d.pdu_set.pssn);
+    ABTS_INT_EQUAL(tc, 4, d.pdu_set.psn);
+    ABTS_INT_EQUAL(tc, 2, d.pdu_set.psi);
+    ABTS_TRUE(tc, test_af_send_rtp_he(sess, 6000, 7, 96, false, 5, true, 2, 99, 0, 0));
+    ABTS_TRUE(tc, test_af_gtpu_read_header(gtpu, 2000, &d));
+    ABTS_INT_EQUAL(tc, 34, d.pdu_set.pssn);
+    ABTS_INT_EQUAL(tc, 0, d.pdu_set.psi);
+
+    sess->pdu_set_indicator = false;
+    test_af_qos_reference_delete(tc, test_ue, sess, af_sess, ngap);
+    test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
+}
+
+
+/*
+ * TS 29.244 V19.6.0 clause 5.38.6 and clause 8.2.5 (the SDF Filter with (S)RTP Multiplexed Media Identification Information): the AF gives the multiplexed
+ * media information of a flow (mpxMediaDlInfos: an SSRC and a payload type), the SMF sends it in the SDF Filter of the DL PDR to a UPF that supports MUXMF,
+ * and the UPF puts only the RTP packets that match an instance on the QoS flow; the packets of another SSRC or payload type go the default way.
+ */
+static void test37_func(abts_case *tc, void *data)
+{
+    ogs_socknode_t *ngap = NULL;
+    ogs_socknode_t *gtpu = NULL;
+    test_ue_t *test_ue = NULL;
+    test_sess_t *sess = NULL;
+    test_bearer_t *qos_flow = NULL;
+    af_sess_t *af_sess = NULL;
+    af_npcf_policyauthorization_param_t af_param;
+    ogs_gtp2_header_desc_t d;
+
+    test_af_qos_reference_setup(tc, "0000000037",
+            &test_ue, &sess, &af_sess, &ngap, &gtpu);
+
+    memset(&af_param, 0, sizeof(af_param));
+    af_param.med_type = OpenAPI_media_type_AUDIO;
+    af_param.qos_reference = "test-audio";
+    af_param.qos_type = 1;
+    af_param.flow_type = 98;
+    af_param.mpx = true;
+    af_param.mpx_dl_ssrc = 1;
+    af_param.mpx_dl_pt = 96;
+    af_local_send_to_pcf(af_sess, &af_param,
+            af_npcf_policyauthorization_build_create);
+    qos_flow = test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_assert(qos_flow);
+    ogs_msleep(800);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_CREATED, af_sess->last_pcf_status);
+
+    /* the SSRC and the payload type of the instance: the QoS flow */
+    ABTS_TRUE(tc, test_af_send_rtp_ssrc(sess, 1000, 1, false, 96, 1));
+    ABTS_TRUE(tc, test_af_gtpu_read_header(gtpu, 2000, &d));
+    ABTS_INT_EQUAL(tc, qos_flow->qfi, d.qos_flow_identifier);
+    /* another SSRC, and another payload type: not the QoS flow */
+    ABTS_TRUE(tc, test_af_send_rtp_ssrc(sess, 2000, 2, false, 96, 2));
+    ABTS_TRUE(tc, test_af_gtpu_read_header(gtpu, 2000, &d));
+    ABTS_TRUE(tc, d.qos_flow_identifier != qos_flow->qfi);
+    ABTS_TRUE(tc, test_af_send_rtp_ssrc(sess, 3000, 3, false, 97, 1));
+    ABTS_TRUE(tc, test_af_gtpu_read_header(gtpu, 2000, &d));
+    ABTS_TRUE(tc, d.qos_flow_identifier != qos_flow->qfi);
+    /* the instance again */
+    ABTS_TRUE(tc, test_af_send_rtp_ssrc(sess, 4000, 4, true, 96, 1));
+    ABTS_TRUE(tc, test_af_gtpu_read_header(gtpu, 2000, &d));
+    ABTS_INT_EQUAL(tc, qos_flow->qfi, d.qos_flow_identifier);
+
+    test_af_qos_reference_delete(tc, test_ue, sess, af_sess, ngap);
+    test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
+}
+
+
+/*
+ * TS 29.514 V19.8.0 table 5.6.2.3-1 (medComponents is optional) and clause 4.2.6.3 (subscription to events without service information): the PCF accepts an
+ * application session context with an events subscription and no media components, makes no PCC rule for it, and the session can be deleted.
+ */
+static void test38_func(abts_case *tc, void *data)
+{
+    ogs_socknode_t *ngap = NULL;
+    ogs_socknode_t *gtpu = NULL;
+    test_ue_t *test_ue = NULL;
+    test_sess_t *sess = NULL;
+    af_sess_t *af_sess = NULL;
+    af_npcf_policyauthorization_param_t af_param;
+    af_npcf_policyauthorization_raw_t raw;
+
+    test_af_qos_reference_setup(tc, "0000000038",
+            &test_ue, &sess, &af_sess, &ngap, &gtpu);
+
+    memset(&af_param, 0, sizeof(af_param));
+    af_param.med_type = OpenAPI_media_type_AUDIO;
+    af_param.qos_reference = "test-audio";
+    af_param.qos_type = 1;
+    af_param.flow_type = 98;
+    af_param.no_med_components = true;
+    af_local_send_to_pcf(af_sess, &af_param,
+            af_npcf_policyauthorization_build_create);
+    ogs_msleep(800);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_CREATED, af_sess->last_pcf_status);
+
+    raw.method = "POST";
+    raw.path = "/delete";
+    raw.body = NULL;
+    af_local_send_to_pcf(af_sess, &raw, af_npcf_policyauthorization_build_raw);
+    ogs_msleep(500);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_NO_CONTENT, af_sess->last_pcf_status);
+
     test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
 }
 
@@ -6436,6 +6679,9 @@ abts_suite *test_af(abts_suite *suite)
     abts_run_test(suite, test33_func, NULL);
     abts_run_test(suite, test34_func, NULL);
     abts_run_test(suite, test35_func, NULL);
+    abts_run_test(suite, test36_func, NULL);
+    abts_run_test(suite, test37_func, NULL);
+    abts_run_test(suite, test38_func, NULL);
 
     return suite;
 }

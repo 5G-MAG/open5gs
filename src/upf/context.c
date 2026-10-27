@@ -53,7 +53,9 @@ void upf_context_init(void)
     ogs_pfcp_self()->up_function_features.eml4s = 1;
     /* PDU Set marking (TS 29.244 V19.6.0 clause 5.38.3), octet 13 of the features */
     ogs_pfcp_self()->up_function_features.pdusm = 1;
-    ogs_pfcp_self()->up_function_features_len = 9;
+    /* TS 29.244 V19.6.0 clause 5.38.6: traffic identification and differentiated QoS for multiplexed media flows */
+    ogs_pfcp_self()->up_function_features.muxmf = 1;
+    ogs_pfcp_self()->up_function_features_len = 10;
 
     ogs_list_init(&self.sess_list);
     ogs_pool_init(&upf_sess_pool, ogs_app()->pool.sess);

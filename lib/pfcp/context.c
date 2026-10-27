@@ -2230,6 +2230,7 @@ void ogs_pfcp_rule_remove(ogs_pfcp_rule_t *rule)
     ogs_assert(pdr);
 
     ogs_list_remove(&pdr->rule_list, rule);
+    ogs_pfcp_mpx_free(rule->mpx, rule->num_of_mpx);
     ogs_pool_free(&ogs_pfcp_rule_pool, rule);
 }
 

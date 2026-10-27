@@ -787,6 +787,10 @@ ogs_sbi_request_t *ogs_sbi_build_request(ogs_sbi_message_t *message)
         ogs_sbi_header_set(request->http.params,
                 OGS_SBI_PARAM_MAC_ADDR48, message->param.mac_addr48);
     }
+    if (message->param.supp_feat) {
+        ogs_sbi_header_set(request->http.params,
+                OGS_SBI_PARAM_SUPP_FEAT, message->param.supp_feat);
+    }
     if (message->param.bsf_supi) {
         ogs_sbi_header_set(request->http.params,
                 OGS_SBI_PARAM_BSF_SUPI, message->param.bsf_supi);
@@ -1263,6 +1267,8 @@ int ogs_sbi_parse_request(
             message->param.ip_domain = ogs_hash_this_val(hi);
         } else if (!strcmp(ogs_hash_this_key(hi), OGS_SBI_PARAM_MAC_ADDR48)) {
             message->param.mac_addr48 = ogs_hash_this_val(hi);
+        } else if (!strcmp(ogs_hash_this_key(hi), OGS_SBI_PARAM_SUPP_FEAT)) {
+            message->param.supp_feat = ogs_hash_this_val(hi);
         } else if (!strcmp(ogs_hash_this_key(hi), OGS_SBI_PARAM_BSF_SUPI)) {
             message->param.bsf_supi = ogs_hash_this_val(hi);
         } else if (!strcmp(ogs_hash_this_key(hi), OGS_SBI_PARAM_BSF_GPSI)) {

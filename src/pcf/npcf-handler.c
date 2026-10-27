@@ -1749,13 +1749,6 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
         goto cleanup;
     }
 
-    if (!AscReqData->med_components) {
-        strerror = ogs_msprintf("[%s:%d] No AscReqData->MediaCompoenent",
-                pcf_ue_sm->supi, sess->psi);
-        status = OGS_SBI_HTTP_STATUS_BAD_REQUEST;
-        goto cleanup;
-    }
-
     rc = ogs_sbi_getaddr_from_uri(&scheme, &fqdn, &fqdn_port, &addr, &addr6,
             AscReqData->notif_uri);
     if (rc == false || scheme == OpenAPI_uri_scheme_NULL) {

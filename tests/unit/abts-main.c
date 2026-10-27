@@ -37,6 +37,7 @@ abts_suite *test_ngap_message(abts_suite *suite);
 abts_suite *test_sbi_message(abts_suite *suite);
 abts_suite *test_security(abts_suite *suite);
 abts_suite *test_nrf_discovery(abts_suite *suite);
+abts_suite *test_pfcp_qer(abts_suite *suite);
 abts_suite *test_crash(abts_suite *suite);
 
 const struct testlist {
@@ -50,6 +51,7 @@ const struct testlist {
     {test_sbi_message},
     {test_security},
     {test_nrf_discovery},
+    {test_pfcp_qer},
     {test_crash},
     {NULL},
 };

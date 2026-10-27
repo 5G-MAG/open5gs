@@ -677,6 +677,17 @@ int smf_5gc_pfcp_send_qos_flow_list_modification_request(
     xact->local_seid = sess->smf_n4_seid;
     xact->modify_flags = flags | OGS_PFCP_MODIFY_SESSION;
 
+    /* what the answer is about: a decision that comes before it re-creates the session list */
+    {
+        smf_bearer_t *qos_flow = NULL;
+
+        /* a list longer than a decision can make (OGS_MAX_NUM_OF_PCC_RULE) is not remembered: the answer then uses the session list as before */
+        if (ogs_list_count(&sess->qos_flow_to_modify_list) <= OGS_ARRAY_SIZE(xact->qos_flow_id)) {
+            ogs_list_for_each_entry(&sess->qos_flow_to_modify_list, qos_flow, to_modify_node)
+                xact->qos_flow_id[xact->num_of_qos_flow_id++] = qos_flow->id;
+        }
+    }
+
     rv = smf_pfcp_send_modify_list(
             sess, smf_n4_build_qos_flow_to_modify_list, xact, duration);
     ogs_expect(rv == OGS_OK);

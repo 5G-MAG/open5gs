@@ -218,9 +218,27 @@ ogs_sbi_request_t *af_npcf_policyauthorization_build_create(
         if (af_param->alt_ser_req2)
             OpenAPI_list_add(MediaComponent->alt_ser_reqs, ogs_strdup(af_param->alt_ser_req2));
     }
-    if (af_param->proto_desc)
-        MediaComponent->proto_desc_dl = OpenAPI_protocol_description_create(OpenAPI_media_transport_proto_RTP, NULL, NULL, NULL,
+    if (af_param->proto_desc) {
+        OpenAPI_rtp_header_ext_info_t *he = NULL;
+        OpenAPI_list_t *payload_infos = NULL;
+
+        if (af_param->proto_desc_he_id)
+            he = OpenAPI_rtp_header_ext_info_create(OpenAPI_rtp_header_ext_type_PDU_SET_MARKING, true, af_param->proto_desc_he_id,
+                    false, 0, false, 0, false, 0);
+        if (af_param->proto_desc_pt) {
+            OpenAPI_list_t *types = OpenAPI_list_create();
+            double *pt = ogs_malloc(sizeof(double));
+
+            ogs_assert(types && pt);
+            *pt = af_param->proto_desc_pt;
+            OpenAPI_list_add(types, pt);
+            payload_infos = OpenAPI_list_create();
+            ogs_assert(payload_infos);
+            OpenAPI_list_add(payload_infos, OpenAPI_rtp_payload_info_create(types, OpenAPI_rtp_payload_format_NULL));
+        }
+        MediaComponent->proto_desc_dl = OpenAPI_protocol_description_create(OpenAPI_media_transport_proto_RTP, he, NULL, payload_infos,
                 OpenAPI_mri_transfer_method_NULL);
+    }
     if (af_param->burst_inds) {
         MediaComponent->is_dat_burst_size_ind = true;
         MediaComponent->dat_burst_size_ind = true;
@@ -339,7 +357,8 @@ ogs_sbi_request_t *af_npcf_policyauthorization_build_create(
         SubComponent->mpx_media_dl_infos = OpenAPI_list_create();
         ogs_assert(SubComponent->mpx_media_ul_infos && SubComponent->mpx_media_dl_infos);
         OpenAPI_list_add(SubComponent->mpx_media_ul_infos, OpenAPI_mpx_media_info_create(true, 1111, true, 96, NULL, false, 0, false, 0));
-        OpenAPI_list_add(SubComponent->mpx_media_dl_infos, OpenAPI_mpx_media_info_create(true, 2222, true, 97, NULL, false, 0, false, 0));
+        OpenAPI_list_add(SubComponent->mpx_media_dl_infos, OpenAPI_mpx_media_info_create(true, af_param->mpx_dl_ssrc ? af_param->mpx_dl_ssrc : 2222, true,
+                af_param->mpx_dl_pt ? af_param->mpx_dl_pt : 97, NULL, false, 0, false, 0));
     }
 
     /* Sub Component #2 */
@@ -384,7 +403,7 @@ ogs_sbi_request_t *af_npcf_policyauthorization_build_create(
     MediaComponent->med_sub_comps = SubComponentList;
 
     ogs_assert(MediaComponentList->count);
-    AscReqData.med_components = MediaComponentList;
+    AscReqData.med_components = af_param->no_med_components ? NULL : MediaComponentList;
 
     request = ogs_sbi_build_request(&message);
     ogs_expect(request);

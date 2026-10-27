@@ -387,6 +387,7 @@ char *ogs_sbi_features_to_string(uint64_t low, uint64_t high);
 #define OGS_SBI_PARAM_IPV6PREFIX                    "ipv6Prefix"
 #define OGS_SBI_PARAM_IP_DOMAIN                     "ipDomain"
 #define OGS_SBI_PARAM_MAC_ADDR48                    "macAddr48"
+#define OGS_SBI_PARAM_SUPP_FEAT                     "supp-feat"
 #define OGS_SBI_PARAM_BSF_SUPI                      "supi"
 #define OGS_SBI_PARAM_BSF_GPSI                      "gpsi"
 #define OGS_SBI_PARAM_HOME_PLMN_ID                  "home-plmn-id"
@@ -564,6 +565,7 @@ typedef struct ogs_sbi_message_s {
         char *ipv6prefix;
         char *ip_domain;   /* Nbsf_Management query (TS 29.521 V19.7.0 table 5.3.2.3.2-1) */
         char *mac_addr48;
+        char *supp_feat;
         char *bsf_supi;
         char *bsf_gpsi;
 

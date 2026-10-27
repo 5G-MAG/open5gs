@@ -270,6 +270,8 @@ bool ogs_pfcp_up_handle_pdr(
                 sendhdr.pdu_set.pssn = pdr->qer->pdu_set_mark.pssn;
                 sendhdr.pdu_set.psi = pdr->qer->pdu_set_mark.psi;
                 sendhdr.pdu_set.psn = pdr->qer->pdu_set_mark.psn;
+                sendhdr.pdu_set.pssize_presence = pdr->qer->pdu_set_mark.pssize_presence;
+                sendhdr.pdu_set.pssize = pdr->qer->pdu_set_mark.pssize;
                 pdr->qer->pdu_set_mark.presence = false;
             }
         } else if (pdr->src_if == OGS_PFCP_INTERFACE_ACCESS &&
@@ -405,6 +407,45 @@ bool ogs_pfcp_up_handle_error_indication(
     return true;
 }
 
+/* The Protocol Description IE of the PDI of a PDR (TS 29.244 V19.6.0 table 7.5.2.2-7): what the UP function needs to identify PDU Sets */
+static void handle_protocol_description(
+        ogs_pfcp_pdr_t *pdr, ogs_pfcp_tlv_protocol_description_t *message)
+{
+    int i;
+
+    memset(&pdr->protocol_description, 0, sizeof(pdr->protocol_description));
+    if (!message->presence)
+        return;
+
+    pdr->protocol_description.presence = true;
+    if (message->transport_protocol.presence && message->transport_protocol.len >= 1)
+        pdr->protocol_description.transport_protocol = ((uint8_t *)message->transport_protocol.data)[0] & 0x0f;
+    /* several RTP Header Extension Information IEs may be present: the first one is the one for PDU Set identification (note 4) */
+    if (message->rtp_header_extension_information.presence &&
+            message->rtp_header_extension_information.rtp_header_extension_type.presence &&
+            message->rtp_header_extension_information.rtp_header_extension_type.len >= 1 &&
+            message->rtp_header_extension_information.rtp_header_extension_id.presence &&
+            message->rtp_header_extension_information.rtp_header_extension_id.len >= 1) {
+        pdr->protocol_description.rtp_he_type =
+            ((uint8_t *)message->rtp_header_extension_information.rtp_header_extension_type.data)[0];
+        pdr->protocol_description.rtp_he_id =
+            ((uint8_t *)message->rtp_header_extension_information.rtp_header_extension_id.data)[0];
+    }
+    if (message->rtp_payload_information.presence) {
+        for (i = 0; i < OGS_ARRAY_SIZE(message->rtp_payload_information.rtp_payload_type); i++) {
+            if (!message->rtp_payload_information.rtp_payload_type[i].presence)
+                break;
+            if (message->rtp_payload_information.rtp_payload_type[i].len >= 1)
+                pdr->protocol_description.payload_type[pdr->protocol_description.num_of_payload_type++] =
+                    ((uint8_t *)message->rtp_payload_information.rtp_payload_type[i].data)[0] & 0x7f;
+        }
+        if (message->rtp_payload_information.rtp_payload_format.presence &&
+                message->rtp_payload_information.rtp_payload_format.len >= 1)
+            pdr->protocol_description.payload_format =
+                ((uint8_t *)message->rtp_payload_information.rtp_payload_format.data)[0];
+    }
+}
+
 ogs_pfcp_pdr_t *ogs_pfcp_handle_create_pdr(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_create_pdr_t *message,
         ogs_pfcp_sereq_flags_t *sereq_flags,
@@ -526,6 +567,7 @@ ogs_pfcp_pdr_t *ogs_pfcp_handle_create_pdr(ogs_pfcp_sess_t *sess,
                 &sdf_filter, &message->pdi.sdf_filter[i]);
         if (message->pdi.sdf_filter[i].len != len) {
             ogs_error("Invalid SDF Filter");
+            ogs_pfcp_mpx_free(sdf_filter.mpx, sdf_filter.num_of_mpx);
             break;
         }
 
@@ -541,14 +583,19 @@ ogs_pfcp_pdr_t *ogs_pfcp_handle_create_pdr(ogs_pfcp_sess_t *sess,
             ogs_log_hexdump(OGS_LOG_ERROR,
                     message->pdi.sdf_filter[i].data,
                     message->pdi.sdf_filter[i].len);
+            ogs_pfcp_mpx_free(sdf_filter.mpx, sdf_filter.num_of_mpx);
             continue;
         }
 
         rule = ogs_pfcp_rule_add(pdr);
         ogs_assert(rule);
 
-        /* Set All Flags (BID, FL, SPI, TTC, FD) */
+        /* Set All Flags (SMMII, BID, FL, SPI, TTC, FD) */
         rule->flags = sdf_filter.flags;
+        /* the rule owns the (S)RTP Multiplexed Media Identification Information of the filter */
+        rule->num_of_mpx = sdf_filter.num_of_mpx;
+        rule->mpx = sdf_filter.mpx;
+        sdf_filter.mpx = NULL;
 
         if (oppsite_direction_rule) {
             /* Copy oppsite direction rule and Swap */
@@ -673,6 +720,8 @@ ogs_pfcp_pdr_t *ogs_pfcp_handle_create_pdr(ogs_pfcp_sess_t *sess,
     if (message->pdi.qfi.presence) {
         pdr->qfi = message->pdi.qfi.u8;
     }
+
+    handle_protocol_description(pdr, &message->pdi.protocol_description);
 
     memset(&pdr->ue_ip_addr, 0, sizeof(pdr->ue_ip_addr));
     pdr->ue_ip_addr_len = 0;
@@ -916,6 +965,7 @@ ogs_pfcp_pdr_t *ogs_pfcp_handle_update_pdr(ogs_pfcp_sess_t *sess,
                     &sdf_filter, &message->pdi.sdf_filter[i]);
             if (message->pdi.sdf_filter[i].len != len) {
                 ogs_error("Invalid SDF Filter");
+                ogs_pfcp_mpx_free(sdf_filter.mpx, sdf_filter.num_of_mpx);
                 break;
             }
 
@@ -932,14 +982,19 @@ ogs_pfcp_pdr_t *ogs_pfcp_handle_update_pdr(ogs_pfcp_sess_t *sess,
                 ogs_log_hexdump(OGS_LOG_ERROR,
                         message->pdi.sdf_filter[i].data,
                         message->pdi.sdf_filter[i].len);
+                ogs_pfcp_mpx_free(sdf_filter.mpx, sdf_filter.num_of_mpx);
                 continue;
             }
 
             rule = ogs_pfcp_rule_add(pdr);
             ogs_assert(rule);
 
-            /* Set All Flags (BID, FL, SPI, TTC, FD) */
+            /* Set All Flags (SMMII, BID, FL, SPI, TTC, FD) */
             rule->flags = sdf_filter.flags;
+            /* the rule owns the (S)RTP Multiplexed Media Identification Information of the filter */
+            rule->num_of_mpx = sdf_filter.num_of_mpx;
+            rule->mpx = sdf_filter.mpx;
+            sdf_filter.mpx = NULL;
 
             if (oppsite_direction_rule) {
                 /* Copy oppsite direction rule and Swap */
@@ -1039,6 +1094,9 @@ ogs_pfcp_pdr_t *ogs_pfcp_handle_update_pdr(ogs_pfcp_sess_t *sess,
         if (message->pdi.qfi.presence) {
             pdr->qfi = message->pdi.qfi.u8;
         }
+
+        if (message->pdi.protocol_description.presence)
+            handle_protocol_description(pdr, &message->pdi.protocol_description);
     }
 
     if (message->outer_header_removal.presence) {
@@ -1433,9 +1491,13 @@ ogs_pfcp_qer_t *ogs_pfcp_handle_create_qer(ogs_pfcp_sess_t *sess,
     /* QER Indications: EML4S, bit 3 */
     qer->ecn_marking_l4s = false;
     qer->pdu_set_marking = false;
+    qer->data_burst_size_marking = false;
+    qer->time_to_next_burst_marking = false;
     if (message->qer_indications.presence && message->qer_indications.len >= 1) {
         qer->ecn_marking_l4s = (((uint8_t *)message->qer_indications.data)[0] & 0x04) ? true : false;
         qer->pdu_set_marking = (((uint8_t *)message->qer_indications.data)[0] & 0x08) ? true : false;
+        qer->data_burst_size_marking = (((uint8_t *)message->qer_indications.data)[0] & 0x10) ? true : false;
+        qer->time_to_next_burst_marking = (((uint8_t *)message->qer_indications.data)[0] & 0x20) ? true : false;
     }
 
     return qer;
@@ -1499,6 +1561,8 @@ ogs_pfcp_qer_t *ogs_pfcp_handle_update_qer(ogs_pfcp_sess_t *sess,
         qer->pdu_set_marking = (((uint8_t *)message->qer_indications.data)[0] & 0x08) ? true : false;
         if (!qer->pdu_set_marking)
             memset(&qer->pdu_set, 0, sizeof(qer->pdu_set));
+        qer->data_burst_size_marking = (((uint8_t *)message->qer_indications.data)[0] & 0x10) ? true : false;
+        qer->time_to_next_burst_marking = (((uint8_t *)message->qer_indications.data)[0] & 0x20) ? true : false;
     }
 
     return qer;

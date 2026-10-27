@@ -3224,6 +3224,8 @@ smf_bearer_t *smf_bearer_find_by_pdr_id(
 void smf_bearer_tft_update(smf_bearer_t *bearer)
 {
     smf_pf_t *pf = NULL;
+    smf_sess_t *sess = NULL;
+    bool mpx_ok;
     ogs_pfcp_pdr_t *dl_pdr = NULL, *ul_pdr = NULL;
 
     ogs_assert(bearer);
@@ -3236,16 +3238,38 @@ void smf_bearer_tft_update(smf_bearer_t *bearer)
     dl_pdr->num_of_flow = 0;
     ul_pdr->num_of_flow = 0;
 
+    /* the filters carry the (S)RTP multiplexed media information only to a UP function that supports it (TS 29.244 V19.6.0 clause 5.38.6) */
+    sess = smf_sess_find_by_id(bearer->sess_id);
+    ogs_assert(sess);
+    mpx_ok = sess->pfcp_node && sess->pfcp_node->up_function_features.muxmf;
+
+    memset(dl_pdr->flow, 0, sizeof(dl_pdr->flow));
+    memset(ul_pdr->flow, 0, sizeof(ul_pdr->flow));
+    dl_pdr->num_of_flow = 0;
+    ul_pdr->num_of_flow = 0;
+
     ogs_list_for_each(&bearer->pf_list, pf) {
+        if (!mpx_ok && (pf->num_of_mpx_dl || pf->num_of_mpx_ul))
+            ogs_warn("The UP function does not support MUXMF: the (S)RTP multiplexed media information of a flow is not sent");
         if (pf->direction == OGS_FLOW_DOWNLINK_ONLY) {
             dl_pdr->flow[dl_pdr->num_of_flow].fd = 1;
             dl_pdr->flow[dl_pdr->num_of_flow].description =
                 pf->flow_description;
+            if (mpx_ok && pf->num_of_mpx_dl) {
+                dl_pdr->flow[dl_pdr->num_of_flow].smmii = 1;
+                dl_pdr->flow[dl_pdr->num_of_flow].num_of_mpx = pf->num_of_mpx_dl;
+                dl_pdr->flow[dl_pdr->num_of_flow].mpx = pf->mpx_dl;
+            }
             dl_pdr->num_of_flow++;
         } else if (pf->direction == OGS_FLOW_UPLINK_ONLY) {
             ul_pdr->flow[ul_pdr->num_of_flow].fd = 1;
             ul_pdr->flow[ul_pdr->num_of_flow].description =
                 pf->flow_description;
+            if (mpx_ok && pf->num_of_mpx_ul) {
+                ul_pdr->flow[ul_pdr->num_of_flow].smmii = 1;
+                ul_pdr->flow[ul_pdr->num_of_flow].num_of_mpx = pf->num_of_mpx_ul;
+                ul_pdr->flow[ul_pdr->num_of_flow].mpx = pf->mpx_ul;
+            }
             ul_pdr->num_of_flow++;
         } else if (pf->direction == OGS_FLOW_BIDIRECTIONAL) {
             dl_pdr->flow[dl_pdr->num_of_flow].fd = 1;
@@ -3253,9 +3277,19 @@ void smf_bearer_tft_update(smf_bearer_t *bearer)
                 pf->flow_description;
             dl_pdr->flow[dl_pdr->num_of_flow].bid = 1;
             dl_pdr->flow[dl_pdr->num_of_flow].sdf_filter_id = pf->sdf_filter_id;
+            if (mpx_ok && pf->num_of_mpx_dl) {
+                dl_pdr->flow[dl_pdr->num_of_flow].smmii = 1;
+                dl_pdr->flow[dl_pdr->num_of_flow].num_of_mpx = pf->num_of_mpx_dl;
+                dl_pdr->flow[dl_pdr->num_of_flow].mpx = pf->mpx_dl;
+            }
             dl_pdr->num_of_flow++;
             ul_pdr->flow[ul_pdr->num_of_flow].bid = 1;
             ul_pdr->flow[ul_pdr->num_of_flow].sdf_filter_id = pf->sdf_filter_id;
+            if (mpx_ok && pf->num_of_mpx_ul) {
+                ul_pdr->flow[ul_pdr->num_of_flow].smmii = 1;
+                ul_pdr->flow[ul_pdr->num_of_flow].num_of_mpx = pf->num_of_mpx_ul;
+                ul_pdr->flow[ul_pdr->num_of_flow].mpx = pf->mpx_ul;
+            }
             ul_pdr->num_of_flow++;
         } else {
             ogs_fatal("Unsupported direction [%d]", pf->direction);
@@ -3386,6 +3420,8 @@ int smf_pf_remove(smf_pf_t *pf)
     ogs_list_remove(&bearer->pf_list, pf);
     if (pf->flow_description)
         ogs_free(pf->flow_description);
+    ogs_pfcp_mpx_free(pf->mpx_dl, pf->num_of_mpx_dl);
+    ogs_pfcp_mpx_free(pf->mpx_ul, pf->num_of_mpx_ul);
 
     if (pf->identifier_node)
         ogs_pool_free(&bearer->pf_identifier_pool, pf->identifier_node);
@@ -3396,6 +3432,83 @@ int smf_pf_remove(smf_pf_t *pf)
     ogs_pool_id_free(&smf_pf_pool, pf);
 
     return OGS_OK;
+}
+
+static void mpx_from_text(const char *text, uint8_t *num, ogs_pfcp_mpx_t **mpx)
+{
+    cJSON *array = NULL, *item = NULL;
+    int count = 0;
+
+    *num = 0;
+    *mpx = NULL;
+    if (!text || !text[0])
+        return;
+    array = cJSON_Parse(text);
+    if (!cJSON_IsArray(array)) {
+        ogs_error("The (S)RTP multiplexed media information is not a JSON array [%.40s]", text);
+        cJSON_Delete(array);
+        return;
+    }
+    *mpx = ogs_calloc(cJSON_GetArraySize(array), sizeof(ogs_pfcp_mpx_t));
+    ogs_assert(*mpx);
+    cJSON_ArrayForEach(item, array) {
+        OpenAPI_mpx_media_info_t *info = OpenAPI_mpx_media_info_parseFromJSON(item);
+        ogs_pfcp_mpx_t *m = &(*mpx)[count];
+
+        if (!info) {
+            ogs_error("Cannot parse an (S)RTP multiplexed media information");
+            continue;
+        }
+        if (info->identification_tag && strlen(info->identification_tag) > 255) {
+            /* its length is one octet (TS 29.244 V19.6.0 clause 8.2.5) */
+            ogs_error("The Media Identification Tag is longer than 255 octets: the instance is dropped");
+            OpenAPI_mpx_media_info_free(info);
+            continue;
+        }
+        if (info->is_ssrc_id) {
+            m->ssrc_presence = true;
+            m->ssrc = (uint32_t)info->ssrc_id;
+        }
+        if (info->is_payload_type) {
+            m->pt_presence = true;
+            m->pt = info->payload_type & 0x7f;
+        }
+        if (info->identification_tag) {
+            m->mid_presence = true;
+            m->mid_len = strlen(info->identification_tag);
+            if (m->mid_len) {
+                m->mid = ogs_malloc(m->mid_len);
+                ogs_assert(m->mid);
+                memcpy(m->mid, info->identification_tag, m->mid_len);
+            }
+        }
+        if (info->is_rtp_sdes_hdr_ext_id) {
+            m->rhid_presence = true;
+            m->rhid = info->rtp_sdes_hdr_ext_id;
+        }
+        if (info->is_rtcp_packet_type) {
+            m->rtcp_presence = true;
+            m->rtcp_type = info->rtcp_packet_type;
+        }
+        OpenAPI_mpx_media_info_free(info);
+        count++;
+    }
+    cJSON_Delete(array);
+    if (!count) {
+        ogs_free(*mpx);
+        *mpx = NULL;
+    }
+    *num = count;
+}
+
+void smf_pf_set_mpx(smf_pf_t *pf, const char *dl, const char *ul)
+{
+    ogs_assert(pf);
+
+    ogs_pfcp_mpx_free(pf->mpx_dl, pf->num_of_mpx_dl);
+    ogs_pfcp_mpx_free(pf->mpx_ul, pf->num_of_mpx_ul);
+    mpx_from_text(dl, &pf->num_of_mpx_dl, &pf->mpx_dl);
+    mpx_from_text(ul, &pf->num_of_mpx_ul, &pf->mpx_ul);
 }
 
 void smf_pf_remove_all(smf_bearer_t *bearer)

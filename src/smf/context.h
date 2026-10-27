@@ -238,6 +238,10 @@ ED3(uint8_t spare:2;,
     ogs_ipfw_rule_t ipfw_rule;
     char *flow_description;
 
+    /* the (S)RTP multiplexed media identification information of the flow for the downlink and the uplink filter (TS 29.244 V19.6.0 clause 8.2.5) */
+    uint8_t num_of_mpx_dl, num_of_mpx_ul;
+    ogs_pfcp_mpx_t *mpx_dl, *mpx_ul;
+
     ogs_pool_id_t bearer_id;
 } smf_pf_t;
 
@@ -882,6 +886,8 @@ smf_pf_t *smf_pf_find_by_id(ogs_pool_id_t id);
 smf_pf_t *smf_pf_add(smf_bearer_t *bearer);
 int smf_pf_remove(smf_pf_t *pf);
 void smf_pf_remove_all(smf_bearer_t *bearer);
+/* The (S)RTP multiplexed media information of a PCC rule flow, as the JSON text of its mpxMediaDlInfos and mpxMediaUlInfos (TS 29.512 V19.7.0 clause 4.2.6.10.5) */
+void smf_pf_set_mpx(smf_pf_t *pf, const char *dl, const char *ul);
 smf_pf_t *smf_pf_find_by_identifier(
         smf_bearer_t *bearer, uint8_t identifier);
 smf_pf_t *smf_pf_find_by_flow(

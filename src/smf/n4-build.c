@@ -838,10 +838,15 @@ ogs_pkbuf_t *smf_n4_build_l4s_request(
     }
     req = &pfcp_message->pfcp_session_modification_request;
     ogs_pfcp_build_update_qer(&req->update_qer[0], 0, qos_flow->qer, OGS_PFCP_MODIFY_QOS_MODIFY);
+    ogs_pfcp_pdrbuf_init();
+    /* the Protocol Description of the traffic with the SDF filters of the DL PDR, which an Update PDR with a PDI replaces (TS 29.244 V19.6.0 clause 5.38.3) */
+    if (qos_flow->dl_pdr && qos_flow->dl_pdr->protocol_description.presence)
+        ogs_pfcp_build_update_pdr(&req->update_pdr[0], 0, qos_flow->dl_pdr, OGS_PFCP_MODIFY_TFT_REPLACE|OGS_PFCP_MODIFY_PDR_PROTO_DESC);
 
     pfcp_message->h.type = type;
     pkbuf = ogs_pfcp_build_msg(pfcp_message);
     ogs_expect(pkbuf);
+    ogs_pfcp_pdrbuf_clear();
     ogs_free(pfcp_message);
 
     return pkbuf;

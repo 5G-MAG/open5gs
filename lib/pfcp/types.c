@@ -73,6 +73,63 @@ const char *ogs_pfcp_cause_get_name(uint8_t cause)
     return "OGS_PFCP_CAUSE_UNKNOWN";
 }
 
+
+void ogs_pfcp_mpx_free(ogs_pfcp_mpx_t *mpx, int num_of_mpx)
+{
+    int i;
+
+    if (!mpx)
+        return;
+    for (i = 0; i < num_of_mpx; i++) {
+        if (mpx[i].mid)
+            ogs_free(mpx[i].mid);
+    }
+    ogs_free(mpx);
+}
+
+ogs_pfcp_mpx_t *ogs_pfcp_mpx_copy(const ogs_pfcp_mpx_t *mpx, int num_of_mpx)
+{
+    ogs_pfcp_mpx_t *copy = NULL;
+    int i;
+
+    if (!mpx || num_of_mpx <= 0)
+        return NULL;
+    copy = ogs_calloc(num_of_mpx, sizeof(*copy));
+    ogs_assert(copy);
+    memcpy(copy, mpx, num_of_mpx * sizeof(*copy));
+    for (i = 0; i < num_of_mpx; i++) {
+        copy[i].mid = NULL;
+        if (mpx[i].mid && mpx[i].mid_len) {
+            copy[i].mid = ogs_malloc(mpx[i].mid_len);
+            ogs_assert(copy[i].mid);
+            memcpy(copy[i].mid, mpx[i].mid, mpx[i].mid_len);
+        }
+    }
+    return copy;
+}
+
+/* octet 1 of figure 8.2.5-2: SSRCPI bit 1, PTPI bit 2, MIDPI bit 3, RHIDMPI bit 4, RPTPI bit 5 */
+static uint8_t mpx_flags(const ogs_pfcp_mpx_t *m)
+{
+    return (m->ssrc_presence ? 0x01 : 0) | (m->pt_presence ? 0x02 : 0) | (m->mid_presence ? 0x04 : 0) |
+        (m->rhid_presence ? 0x08 : 0) | (m->rtcp_presence ? 0x10 : 0);
+}
+
+static int mpx_instance_len(const ogs_pfcp_mpx_t *m)
+{
+    return 1 + (m->ssrc_presence ? 4 : 0) + (m->pt_presence ? 1 : 0) + (m->mid_presence ? 1 + m->mid_len : 0) +
+        (m->rhid_presence ? 1 : 0) + (m->rtcp_presence ? 1 : 0);
+}
+
+int ogs_pfcp_mpx_encoded_len(const ogs_pfcp_mpx_t *mpx, int num_of_mpx)
+{
+    int i, len = 1;     /* the Number of instances */
+
+    for (i = 0; i < num_of_mpx; i++)
+        len += 2 + mpx_instance_len(&mpx[i]);
+    return len;
+}
+
 int16_t ogs_pfcp_build_sdf_filter(
         ogs_tlv_octet_t *octet, ogs_pfcp_sdf_filter_t *filter,
         void *data, int data_len)
@@ -146,6 +203,42 @@ int16_t ogs_pfcp_build_sdf_filter(
         memcpy((unsigned char *)octet->data + size,
                 &target.sdf_filter_id, sizeof(target.sdf_filter_id));
         size += sizeof(target.sdf_filter_id);
+    }
+
+    if (target.smmii) {
+        int i;
+        unsigned char *p = (unsigned char *)octet->data;
+
+        ogs_assert(target.num_of_mpx >= 1 && target.mpx);
+        ogs_assert(size + ogs_pfcp_mpx_encoded_len(target.mpx, target.num_of_mpx) <= data_len);
+        p[size++] = target.num_of_mpx;
+        for (i = 0; i < target.num_of_mpx; i++) {
+            const ogs_pfcp_mpx_t *m = &target.mpx[i];
+            uint16_t ilen = htobe16(mpx_instance_len(m));
+
+            memcpy(p + size, &ilen, sizeof(ilen));
+            size += sizeof(ilen);
+            p[size++] = mpx_flags(m);
+            if (m->ssrc_presence) {
+                uint32_t ssrc = htobe32(m->ssrc);
+
+                memcpy(p + size, &ssrc, sizeof(ssrc));
+                size += sizeof(ssrc);
+            }
+            if (m->pt_presence)
+                p[size++] = m->pt;
+            if (m->mid_presence) {
+                p[size++] = m->mid_len;
+                if (m->mid_len) {
+                    memcpy(p + size, m->mid, m->mid_len);
+                    size += m->mid_len;
+                }
+            }
+            if (m->rhid_presence)
+                p[size++] = m->rhid;
+            if (m->rtcp_presence)
+                p[size++] = m->rtcp_type;
+        }
     }
 
     octet->len = size;
@@ -253,6 +346,89 @@ int16_t ogs_pfcp_parse_sdf_filter(
                 sizeof(filter->sdf_filter_id));
         filter->sdf_filter_id = be32toh(filter->sdf_filter_id);
         size += sizeof(filter->sdf_filter_id);
+    }
+
+    if (filter->smmii) {
+        const unsigned char *p = (const unsigned char *)octet->data;
+        int i, n;
+
+        if (size + 1 > octet->len) {
+            ogs_error("No Number of (S)RTP Multiplexed Media Identification Information [IE Length:%d]", octet->len);
+            return 0;
+        }
+        n = p[size++];
+        if (n < 1) {
+            ogs_error("Number of (S)RTP Multiplexed Media Identification Information is 0");
+            return 0;
+        }
+        filter->mpx = ogs_calloc(n, sizeof(ogs_pfcp_mpx_t));
+        ogs_assert(filter->mpx);
+        for (i = 0; i < n; i++) {
+            ogs_pfcp_mpx_t *m = &filter->mpx[i];
+            uint16_t ilen;
+            uint32_t end;
+            uint8_t f;
+
+            if (size + 3 > octet->len) {
+                ogs_error("Truncated (S)RTP Multiplexed Media Identification Information %d", i);
+                goto mpx_error;
+            }
+            memcpy(&ilen, p + size, sizeof(ilen));
+            ilen = be16toh(ilen);
+            size += sizeof(ilen);
+            if (ilen < 1 || size + ilen > octet->len) {
+                ogs_error("Invalid length %d of (S)RTP Multiplexed Media Identification Information %d", ilen, i);
+                goto mpx_error;
+            }
+            end = size + ilen;
+            f = p[size++];
+            if (f & 0x01) {
+                uint32_t ssrc;
+
+                if (size + 4 > end) goto mpx_short;
+                memcpy(&ssrc, p + size, sizeof(ssrc));
+                m->ssrc = be32toh(ssrc);
+                m->ssrc_presence = true;
+                size += 4;
+            }
+            if (f & 0x02) {
+                if (size + 1 > end) goto mpx_short;
+                m->pt = p[size++] & 0x7f;
+                m->pt_presence = true;
+            }
+            if (f & 0x04) {
+                if (size + 1 > end) goto mpx_short;
+                m->mid_len = p[size++];
+                if (size + m->mid_len > end) goto mpx_short;
+                m->mid_presence = true;
+                if (m->mid_len) {
+                    m->mid = ogs_malloc(m->mid_len);
+                    ogs_assert(m->mid);
+                    memcpy(m->mid, p + size, m->mid_len);
+                }
+                size += m->mid_len;
+            }
+            if (f & 0x08) {
+                if (size + 1 > end) goto mpx_short;
+                m->rhid = p[size++];
+                m->rhid_presence = true;
+            }
+            if (f & 0x10) {
+                if (size + 1 > end) goto mpx_short;
+                m->rtcp_type = p[size++];
+                m->rtcp_presence = true;
+            }
+            size = end;     /* octets that are present only if explicitly specified are skipped */
+            filter->num_of_mpx = i + 1;
+            continue;
+mpx_short:
+            ogs_error("(S)RTP Multiplexed Media Identification Information %d is shorter than its flags say", i);
+mpx_error:
+            ogs_pfcp_mpx_free(filter->mpx, i + 1);
+            filter->mpx = NULL;
+            filter->num_of_mpx = 0;
+            return 0;
+        }
     }
 
     if (size != octet->len)

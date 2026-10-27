@@ -45,9 +45,13 @@ typedef struct af_npcf_policyauthorization_param_s {
     const char *alt_ser_req1;      /* altSerReqs of the media component (TS 29.514 V19.8.0 clause 4.2.2.32), highest priority first, NULL for none */
     const char *alt_ser_req2;
     bool proto_desc;               /* protoDescDl of the media component: RTP (clause 4.2.2.39) */
+    int proto_desc_he_id;          /* with proto_desc: the ID of the RTP header extension for PDU Set marking in rtpHeaderExtInfo, 0 for none */
+    int proto_desc_pt;             /* with proto_desc: the one RTP payload type of rtpPayloadInfoList, 0 for none */
     bool burst_inds;               /* datBurstSizeInd and timetoNextBurstInd (clause 4.2.2.48) */
     bool exp_tran;                 /* expTranInd (clause 4.2.2.48) */
     bool mpx;                      /* mpxMediaUlInfos and mpxMediaDlInfos of the first sub component (clause 4.2.2.47) */
+    bool no_med_components;        /* create: no medComponents in the AscReqData, only the events subscription (TS 29.514 V19.8.0 table 5.6.2.3-1: medComponents is optional) */
+    int mpx_dl_ssrc, mpx_dl_pt;    /* with mpx: the SSRC and the payload type of the downlink information instead of 2222 and 97, 0 for the default */
     bool pdu_set_qos;              /* pduSetQosDl of the media component (clause 4.2.2.39): a delay budget, an error rate and the integrated handling information */
 } af_npcf_policyauthorization_param_t;
 

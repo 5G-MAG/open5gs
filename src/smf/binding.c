@@ -287,6 +287,7 @@ void smf_bearer_binding(smf_sess_t *sess)
                 pf->direction = flow->direction;
                 pf->flow_description = ogs_strdup(flow->description);
                 ogs_assert(pf->flow_description);
+                smf_pf_set_mpx(pf, pcc_rule->mpx[j].dl, pcc_rule->mpx[j].ul);
 
                 rv = ogs_ipfw_compile_rule(
                         &pf->ipfw_rule, pf->flow_description);
@@ -523,6 +524,59 @@ static void qos_flow_gate_update(smf_bearer_t *qos_flow, int flow_status)
  * feature does the marking (TS 29.244 V19.6.0 QER Indications EML4S) and the NG-RAN is asked to report the congestion information.
  * Returns true when the flow has to be told (PFCP QER and NGAP).
  */
+/*
+ * TS 29.244 V19.6.0 clause 5.38.3: the DL PDR of a QoS flow may carry the Protocol Description of the traffic (the protoDescDl of the PCC rule)
+ * that the UP function uses to identify PDU Sets. Returns true if what the PDR carries changed.
+ */
+static bool qos_flow_protocol_description_update(smf_bearer_t *qos_flow, ogs_pcc_rule_t *pcc_rule)
+{
+    ogs_pfcp_pdr_t *dl_pdr = qos_flow->dl_pdr;
+    typeof(dl_pdr->protocol_description) desc;
+    OpenAPI_protocol_description_t *proto = NULL;
+    cJSON *json = NULL;
+
+    ogs_assert(dl_pdr);
+    memset(&desc, 0, sizeof(desc));
+    if (pcc_rule->proto_desc_dl[0] && (json = cJSON_Parse(pcc_rule->proto_desc_dl))) {
+        proto = OpenAPI_protocol_description_parseFromJSON(json);
+        cJSON_Delete(json);
+    }
+    if (proto) {
+        OpenAPI_lnode_t *node = NULL;
+
+        desc.presence = true;
+        desc.transport_protocol = proto->transport_proto;
+        if (proto->rtp_header_ext_info && proto->rtp_header_ext_info->is_rtp_header_ext_id &&
+                proto->rtp_header_ext_info->rtp_header_ext_id >= 1 && proto->rtp_header_ext_info->rtp_header_ext_id <= 255) {
+            desc.rtp_he_type = proto->rtp_header_ext_info->rtp_header_ext_type;
+            desc.rtp_he_id = proto->rtp_header_ext_info->rtp_header_ext_id;
+        }
+        if (proto->rtp_payload_info_list && proto->rtp_payload_info_list->count) {
+            OpenAPI_rtp_payload_info_t *info = proto->rtp_payload_info_list->first->data;
+
+            desc.payload_format = info->rtp_payload_format;
+            /* more payload types than the IE list holds: none is sent, and the UP function parses all the RTP packets (table 7.5.2.2-7, NOTE 1) */
+            if (info->rtp_payload_type_list && info->rtp_payload_type_list->count <= OGS_PFCP_MAX_RTP_PAYLOAD_TYPE) {
+                OpenAPI_list_for_each(info->rtp_payload_type_list, node) {
+                    double pt = *(double *)node->data;
+
+                    if (pt >= 0 && pt <= 127)
+                        desc.payload_type[desc.num_of_payload_type++] = (uint8_t)pt;
+                }
+            } else if (info->rtp_payload_type_list)
+                ogs_warn("[%s] %ld RTP payload types: the Protocol Description lists none", pcc_rule->id, (long)info->rtp_payload_type_list->count);
+        }
+        /* the RTP Payload Type IE shall be present when the RTP Payload Format is (table 7.5.2.2-9) */
+        if (!desc.num_of_payload_type)
+            desc.payload_format = 0;
+        OpenAPI_protocol_description_free(proto);
+    }
+    if (!memcmp(&dl_pdr->protocol_description, &desc, sizeof(desc)))
+        return false;
+    memcpy(&dl_pdr->protocol_description, &desc, sizeof(desc));
+    return true;
+}
+
 static bool qos_flow_l4s_update(smf_sess_t *sess, smf_bearer_t *qos_flow, ogs_pcc_rule_t *pcc_rule)
 {
     int ind = OGS_PCC_RULE_L4S_NONE;
@@ -544,6 +598,26 @@ static bool qos_flow_l4s_update(smf_sess_t *sess, smf_bearer_t *qos_flow, ogs_pc
     qos_flow->qer->ecn_marking_l4s = on;
     if (ind == OGS_PCC_RULE_L4S_NONE)
         qos_flow->l4s.ran_status = 0;
+    return true;
+}
+
+/*
+ * TS 29.512 V19.7.0 clauses 4.2.6.10.6 and 4.2.6.10.9: the datBurstSizeInd and timetoNextBurstInd of the Traffic Control Data of a rule make the
+ * SMF request the UP function to detect and send the Data Burst Size and the Time to Next Burst (TS 29.244 V19.6.0 clause 5.38.5, QER Indications
+ * DBSMI and TNBMI). Only a UP function that indicates the DYNTR feature is asked. Returns true when the QER has to be told.
+ */
+static bool qos_flow_burst_marking_update(smf_sess_t *sess, smf_bearer_t *qos_flow, ogs_pcc_rule_t *pcc_rule)
+{
+    bool upf = sess->pfcp_node && sess->pfcp_node->up_function_features.dyntr;
+    bool dbs = upf && pcc_rule->dat_burst_size_ind;
+    bool ttnb = upf && pcc_rule->time_to_next_burst_ind;
+
+    if (!qos_flow->qer)
+        return false;
+    if (qos_flow->qer->data_burst_size_marking == dbs && qos_flow->qer->time_to_next_burst_marking == ttnb)
+        return false;
+    qos_flow->qer->data_burst_size_marking = dbs;
+    qos_flow->qer->time_to_next_burst_marking = ttnb;
     return true;
 }
 
@@ -686,6 +760,7 @@ void smf_qos_flow_binding(smf_sess_t *sess)
                 memcpy(&qos_flow->alt_qos, &pcc_rule->alt_qos, sizeof(ogs_alt_qos_t));
                 qos_flow->pdu_set_dl = pcc_rule->pdu_set_dl;
                 qos_flow->pdu_set_ul = pcc_rule->pdu_set_ul;
+                qos_flow_protocol_description_update(qos_flow, pcc_rule);
 
                 qos_flow_created = true;
 
@@ -750,10 +825,18 @@ void smf_qos_flow_binding(smf_sess_t *sess)
                 }
             }
 
+            /* a changed protoDescDl goes to the UP function in the DL PDR; a new flow carries it in its Create PDR */
+            if (qos_flow_protocol_description_update(qos_flow, pcc_rule) && !qos_flow_created && qos_flow->qer)
+                ogs_assert(OGS_OK == smf_5gc_pfcp_send_l4s_request(sess, qos_flow));
+
             /* TS 29.512 V19.7.0 clause 4.2.3.25: the QoS monitoring of the packet delay that the rule asks for, or none any more */
             qos_flow_qos_monitoring_update(qos_flow, pcc_rule);
             if (qos_flow_l4s_update(sess, qos_flow, pcc_rule) && !qos_flow_created)
                 qos_presence = true;
+
+            /* a flow that exists is told in a Session Modification Request of its own; a new flow carries it in its Create QER */
+            if (qos_flow_burst_marking_update(sess, qos_flow, pcc_rule) && !qos_flow_created)
+                ogs_assert(OGS_OK == smf_5gc_pfcp_send_l4s_request(sess, qos_flow));
 
             /*
              * TS 29.512 V19.7.0 clause 4.2.4.10: the PDRs of a rule that refers to a usage monitoring control instance report to
@@ -821,6 +904,7 @@ void smf_qos_flow_binding(smf_sess_t *sess)
                 pf->direction = flow->direction;
                 pf->flow_description = ogs_strdup(flow->description);
                 ogs_assert(pf->flow_description);
+                smf_pf_set_mpx(pf, pcc_rule->mpx[j].dl, pcc_rule->mpx[j].ul);
 
                 rv = ogs_ipfw_compile_rule(
                         &pf->ipfw_rule, pf->flow_description);

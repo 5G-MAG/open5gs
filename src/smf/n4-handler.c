@@ -322,6 +322,18 @@ void smf_5gc_n4_handle_session_modification_response(
     ogs_assert(flags);
     trigger = xact->delete_trigger;
 
+    /* the QoS flows that the request of this transaction modified, not the ones of a decision that came after it */
+    if (xact->num_of_qos_flow_id) {
+        int i;
+
+        ogs_list_init(&sess->qos_flow_to_modify_list);
+        for (i = 0; i < xact->num_of_qos_flow_id; i++) {
+            qos_flow = smf_qos_flow_find_by_id(xact->qos_flow_id[i]);
+            if (qos_flow)
+                ogs_list_add(&sess->qos_flow_to_modify_list, &qos_flow->to_modify_node);
+        }
+    }
+
     /* The ECN marking for L4S of a QER: nothing to read in the answer */
     if (flags & OGS_PFCP_MODIFY_L4S) {
         ogs_pfcp_xact_commit(xact);

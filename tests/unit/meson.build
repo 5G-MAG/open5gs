@@ -25,6 +25,7 @@ testunit_unit_sources = files('''
     sbi-message-test.c
     security-test.c
     nrf-discovery-test.c
+    pfcp-qer-test.c
     crash-test.c
 '''.split())
 
@@ -33,6 +34,7 @@ testunit_unit_exe = executable('unit',
     c_args : [testunit_core_cc_flags, sbi_cc_flags],
     dependencies : [libs1ap_dep,
                     libgtp_dep,
+                    libpfcp_dep,
                     libngap_dep,
                     libnas_eps_dep,
                     libsbi_dep])

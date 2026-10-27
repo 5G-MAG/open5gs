@@ -250,6 +250,164 @@ done:
     return OGS_OK;
 }
 
+/*
+ * (S)RTP Multiplexed Media Identification Information (TS 29.244 V19.6.0 clause 8.2.5): the UDP payload is taken as RTCP when its second octet is an
+ * RTCP packet type (192 to 223), as RTP when it has version 2 and the fixed header, because the endpoints that multiplex them keep the RTP payload
+ * types (and the types plus 128) apart from the RTCP packet types (note 5). The SSRC of an RTCP packet is the one of its first packet.
+ */
+static bool rtp_header_extension_element(const uint8_t *rtp, int len, uint8_t id, const uint8_t **value, int *value_len)
+{
+    int offset = 12 + 4 * (rtp[0] & 0x0f), end;
+    uint16_t profile;
+
+    if (!(rtp[0] & 0x10) || len < offset + 4)
+        return false;
+    profile = (rtp[offset] << 8) | rtp[offset + 1];
+    end = offset + 4 + 4 * ((rtp[offset + 2] << 8) | rtp[offset + 3]);
+    if (end > len)
+        return false;
+    offset += 4;
+    while (offset < end) {
+        int element_id, element_len;
+
+        if (rtp[offset] == 0) {
+            offset++;
+            continue;
+        }
+        if (profile == 0xbede) {
+            element_id = rtp[offset] >> 4;
+            if (element_id == 15)
+                return false;
+            element_len = (rtp[offset] & 0x0f) + 1;
+            offset += 1;
+        } else if ((profile & 0xfff0) == 0x1000) {
+            if (offset + 2 > end)
+                return false;
+            element_id = rtp[offset];
+            element_len = rtp[offset + 1];
+            offset += 2;
+        } else
+            return false;
+        if (offset + element_len > end)
+            return false;
+        if (element_id == id) {
+            *value = rtp + offset;
+            *value_len = element_len;
+            return true;
+        }
+        offset += element_len;
+    }
+    return false;
+}
+
+/* the Media Identification Tag of an RTCP compound packet: the item of type 15 (MID) of its SDES packet(s) */
+static bool rtcp_mid_matches(const uint8_t *p, int len, const uint8_t *mid, int mid_len)
+{
+    int offset = 0;
+
+    while (offset + 4 <= len) {
+        int words = (p[offset + 2] << 8) | p[offset + 3];
+        int packet_len = 4 * (words + 1);
+
+        if (offset + packet_len > len)
+            return false;
+        if (p[offset + 1] == 202) {         /* SDES */
+            int chunks = p[offset] & 0x1f, pos = offset + 4, c;
+
+            for (c = 0; c < chunks && pos + 4 <= offset + packet_len; c++) {
+                pos += 4;                   /* the SSRC/CSRC of the chunk */
+                while (pos < offset + packet_len && p[pos] != 0) {
+                    int item_type = p[pos], item_len;
+
+                    if (pos + 2 > offset + packet_len)
+                        return false;
+                    item_len = p[pos + 1];
+                    if (pos + 2 + item_len > offset + packet_len)
+                        return false;
+                    if (item_type == 15 && item_len == mid_len && (mid_len == 0 || memcmp(p + pos + 2, mid, mid_len) == 0))
+                        return true;
+                    pos += 2 + item_len;
+                }
+                pos = (pos + 4) & ~3;       /* the chunk ends with a null octet and is padded to a multiple of four octets */
+                pos = offset + 4 + ((pos - offset - 4 + 3) & ~3);
+            }
+        }
+        offset += packet_len;
+    }
+    return false;
+}
+
+static bool rtcp_has_packet_type(const uint8_t *p, int len, uint8_t type)
+{
+    int offset = 0;
+
+    while (offset + 4 <= len) {
+        int packet_len = 4 * (((p[offset + 2] << 8) | p[offset + 3]) + 1);
+
+        if (offset + packet_len > len)
+            return false;
+        if (p[offset + 1] == type)
+            return true;
+        offset += packet_len;
+    }
+    return false;
+}
+
+static bool mpx_instance_match(const ogs_pfcp_mpx_t *m, const uint8_t *p, int len)
+{
+    if (len >= 8 && p[1] >= 192 && p[1] <= 223) {
+        /* RTCP: an instance with a payload type is for RTP only */
+        if (m->pt_presence)
+            return false;
+        if (m->rtcp_presence && !rtcp_has_packet_type(p, len, m->rtcp_type))
+            return false;
+        if (m->ssrc_presence) {
+            uint32_t ssrc = ((uint32_t)p[4] << 24) | (p[5] << 16) | (p[6] << 8) | p[7];
+
+            if (ssrc != m->ssrc)
+                return false;
+        }
+        if (m->mid_presence && !rtcp_mid_matches(p, len, m->mid, m->mid_len))
+            return false;
+        return true;
+    }
+    if (len >= 12 && (p[0] >> 6) == 2) {
+        /* RTP: an instance with an RTCP packet type is for RTCP only */
+        if (m->rtcp_presence)
+            return false;
+        if (m->pt_presence && (p[1] & 0x7f) != m->pt)
+            return false;
+        if (m->ssrc_presence) {
+            uint32_t ssrc = ((uint32_t)p[8] << 24) | (p[9] << 16) | (p[10] << 8) | p[11];
+
+            if (ssrc != m->ssrc)
+                return false;
+        }
+        if (m->mid_presence) {
+            const uint8_t *value = NULL;
+            int value_len = 0;
+
+            if (!m->rhid_presence || !rtp_header_extension_element(p, len, m->rhid, &value, &value_len) ||
+                    value_len != m->mid_len || (m->mid_len && memcmp(value, m->mid, m->mid_len) != 0))
+                return false;
+        }
+        return true;
+    }
+    return false;
+}
+
+/* a packet matches the filter if it matches at least one instance (clause 8.2.5) */
+static bool mpx_rule_match(const ogs_pfcp_rule_t *rule, const uint8_t *udp_payload, int len)
+{
+    int i;
+
+    for (i = 0; i < rule->num_of_mpx; i++) {
+        if (mpx_instance_match(&rule->mpx[i], udp_payload, len))
+            return true;
+    }
+    return false;
+}
+
 ogs_pfcp_rule_t *ogs_pfcp_pdr_rule_find_by_packet(
                     ogs_pfcp_pdr_t *pdr, ogs_pkbuf_t *pkbuf)
 {
@@ -390,7 +548,13 @@ ogs_pfcp_rule_t *ogs_pfcp_pdr_rule_find_by_packet(
             memcmp(dst_mask, ipfw->ip.dst.addr, addr_len) == 0) {
             /* Protocol match */
             if (ipfw->proto == 0) { /* IP */
-                /* No need to match port */
+                /* No need to match port; a filter with (S)RTP multiplexed media information needs UDP */
+                if (rule->num_of_mpx) {
+                    if (proto != IPPROTO_UDP ||
+                            !mpx_rule_match(rule, (uint8_t *)pkbuf->data + ip_hlen + sizeof(struct udphdr),
+                                pkt_len - ip_hlen - sizeof(struct udphdr)))
+                        continue;
+                }
                 return rule;
             }
 
@@ -421,6 +585,10 @@ ogs_pfcp_rule_t *ogs_pfcp_pdr_rule_find_by_packet(
                         continue;
                     }
 
+                    /* (S)RTP multiplexed media information is for UDP */
+                    if (rule->num_of_mpx)
+                        continue;
+
                     /* Matched */
                     return rule;
 
@@ -450,12 +618,19 @@ ogs_pfcp_rule_t *ogs_pfcp_pdr_rule_find_by_packet(
                         continue;
                     }
 
+                    if (rule->num_of_mpx &&
+                            !mpx_rule_match(rule, (uint8_t *)udph + sizeof(struct udphdr),
+                                pkt_len - ip_hlen - sizeof(struct udphdr)))
+                        continue;
+
                     /* Matched */
                     return rule;
 
                 } else {
 
-                    /* No need to match port */
+                    /* No need to match port; (S)RTP multiplexed media information is for UDP */
+                    if (rule->num_of_mpx)
+                        continue;
                     return rule;
 
                 }

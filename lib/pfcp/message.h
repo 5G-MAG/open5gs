@@ -1251,7 +1251,7 @@ typedef struct ogs_pfcp_tlv_rtp_header_extension_information_s {
 
 typedef struct ogs_pfcp_tlv_rtp_payload_information_s {
     ogs_tlv_presence_t presence;
-    ogs_pfcp_tlv_rtp_payload_type_t rtp_payload_type;
+    ogs_pfcp_tlv_rtp_payload_type_t rtp_payload_type[16];
     ogs_pfcp_tlv_rtp_payload_format_t rtp_payload_format;
 } ogs_pfcp_tlv_rtp_payload_information_t;
 

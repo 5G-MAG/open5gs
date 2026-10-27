@@ -137,6 +137,8 @@ typedef struct ogs_pfcp_object_s {
 } ogs_pfcp_object_t;
 
 typedef struct ogs_pfcp_sess_s ogs_pfcp_sess_t;
+#define OGS_PFCP_MAX_RTP_PAYLOAD_TYPE   16
+
 typedef struct ogs_pfcp_pdr_s ogs_pfcp_pdr_t;
 typedef struct ogs_pfcp_far_s ogs_pfcp_far_t;
 typedef struct ogs_pfcp_urr_s ogs_pfcp_urr_t;
@@ -201,7 +203,8 @@ typedef struct ogs_pfcp_pdr_s {
     struct {
         union {
             struct {
-    ED6(uint8_t     spare1:3;,
+    ED7(uint8_t     spare1:2;,
+        uint8_t     smmii:1;,
         uint8_t     bid:1;,
         uint8_t     fl:1;,
         uint8_t     spi:1;,
@@ -212,7 +215,24 @@ typedef struct ogs_pfcp_pdr_s {
         };
         char *description;
         uint32_t sdf_filter_id;
+        /* with smmii: the (S)RTP Multiplexed Media Identification Information of the filter, owned by whoever fills the PDR */
+        uint8_t num_of_mpx;
+        ogs_pfcp_mpx_t *mpx;
     } flow[OGS_MAX_NUM_OF_FLOW_IN_PDR];;
+
+    /*
+     * Protocol Description of the downlink traffic (TS 29.244 V19.6.0 table 7.5.2.2-7). It is not used to match packets, it assists the
+     * identification of PDU Sets. The payload types are the ones the UP function may parse; none means that it parses all RTP packets.
+     */
+    struct {
+        bool                presence;
+        uint8_t             transport_protocol;     /* Media Transport Protocol, clause 8.2.233 */
+        uint8_t             rtp_he_type;            /* RTP Header Extension Type, clause 8.2.234; 0 if no extension is described */
+        uint8_t             rtp_he_id;              /* RTP Header Extension ID, clause 8.2.235 */
+        int                 num_of_payload_type;
+        uint8_t             payload_type[OGS_PFCP_MAX_RTP_PAYLOAD_TYPE];
+        uint8_t             payload_format;         /* RTP Payload Format, clause 8.2.237 */
+    } protocol_description;
 
     ogs_list_t              rule_list;      /* Rule List */
 
@@ -326,6 +346,12 @@ typedef struct ogs_pfcp_qer_s {
      * number of PDUs so far.
      */
     bool                    pdu_set_marking;
+    /*
+     * Data Burst Size and Time to Next Burst marking requested by the SMF (QER Indications DBSMI and TNBMI, TS 29.244 V19.6.0 clauses
+     * 8.2.216, 5.38.5.2 and 5.38.5.3); only a UPF that has the DYNTR feature is asked
+     */
+    bool                    data_burst_size_marking;
+    bool                    time_to_next_burst_marking;
     struct {
         bool                active;
         uint32_t            rtp_timestamp;
@@ -340,6 +366,8 @@ typedef struct ogs_pfcp_qer_s {
         uint16_t            pssn;
         uint8_t             psi;
         uint8_t             psn;
+        bool                pssize_presence;
+        uint32_t            pssize;
     } pdu_set_mark;
 
     ogs_pfcp_sess_t         *sess;
@@ -426,7 +454,8 @@ typedef struct ogs_pfcp_rule_s {
 
     union {
         struct {
-ED6(uint8_t     spare1:3;,
+ED7(uint8_t     spare1:2;,
+    uint8_t     smmii:1;,
     uint8_t     bid:1;,
     uint8_t     fl:1;,
     uint8_t     spi:1;,
@@ -438,6 +467,10 @@ ED6(uint8_t     spare1:3;,
 
     ogs_ipfw_rule_t ipfw;
     uint32_t sdf_filter_id;
+
+    /* (S)RTP Multiplexed Media Identification Information of the filter (TS 29.244 V19.6.0 clause 8.2.5): a packet matches the rule if it matches one instance */
+    uint8_t num_of_mpx;
+    ogs_pfcp_mpx_t *mpx;
 
     /* Related Context */
     ogs_pfcp_pdr_t  *pdr;

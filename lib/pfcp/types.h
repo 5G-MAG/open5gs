@@ -410,6 +410,24 @@ ED8(uint8_t un6tu:1;,
         };
         uint8_t octet13;
     };
+    union {
+        struct {
+/*
+ * 14/8 MUXMF N4 UPF support of Traffic identification and differentiated QoS for multiplexed media flows (see clause 5.38.6).
+ * 14/7 DYNTR N4 UPF support of dynamically changing traffic characteristics via the User Plane (see clause 5.38.5).
+ * 14/1 to 14/6: not used here.
+ */
+ED8(uint8_t muxmf:1;,
+    uint8_t dyntr:1;,
+    uint8_t octet14_6:1;,
+    uint8_t octet14_5:1;,
+    uint8_t octet14_4:1;,
+    uint8_t octet14_3:1;,
+    uint8_t octet14_2:1;,
+    uint8_t octet14_1:1;)
+        };
+        uint8_t octet14;
+    };
 } __attribute__ ((packed)) ogs_pfcp_up_function_features_t;
 
 /*
@@ -920,10 +938,33 @@ ED4(uint8_t     spare:5;,
  * the UP function shall apply the SDF filter as specified in clause 5.2.1A.2A.
  */
 
+/*
+ * (S)RTP Multiplexed Media Identification Information of an SDF Filter (TS 29.244 V19.6.0 clause 8.2.5, figure 8.2.5-2). The presence
+ * flags are the ones of the octet 1 of the figure; the Media Identification Tag is not terminated and at most 255 octets (its length
+ * is one octet).
+ */
+typedef struct ogs_pfcp_mpx_s {
+    bool        ssrc_presence;
+    bool        pt_presence;
+    bool        mid_presence;
+    bool        rhid_presence;
+    bool        rtcp_presence;
+    uint32_t    ssrc;
+    uint8_t     pt;
+    uint8_t     mid_len;
+    uint8_t     *mid;
+    uint8_t     rhid;               /* RTP SDES Header Extension ID for MID */
+    uint8_t     rtcp_type;
+} ogs_pfcp_mpx_t;
+
+void ogs_pfcp_mpx_free(ogs_pfcp_mpx_t *mpx, int num_of_mpx);
+ogs_pfcp_mpx_t *ogs_pfcp_mpx_copy(const ogs_pfcp_mpx_t *mpx, int num_of_mpx);
+
 typedef struct ogs_pfcp_sdf_filter_s {
     union {
         struct {
-ED6(uint8_t     spare1:3;,
+ED7(uint8_t     spare1:2;,
+    uint8_t     smmii:1;,
     uint8_t     bid:1;,
     uint8_t     fl:1;,
     uint8_t     spi:1;,
@@ -940,7 +981,13 @@ ED6(uint8_t     spare1:3;,
     uint32_t    security_parameter_index;
     uint32_t    flow_label;
     uint32_t    sdf_filter_id;
+    /* with smmii: the instances (a parsed filter owns them: ogs_pfcp_mpx_free) */
+    uint8_t     num_of_mpx;
+    ogs_pfcp_mpx_t *mpx;
 } __attribute__ ((packed)) ogs_pfcp_sdf_filter_t;
+
+/* the octets that the (S)RTP Multiplexed Media Identification Information of an SDF Filter takes */
+int ogs_pfcp_mpx_encoded_len(const ogs_pfcp_mpx_t *mpx, int num_of_mpx);
 
 int16_t ogs_pfcp_build_sdf_filter(
         ogs_tlv_octet_t *octet, ogs_pfcp_sdf_filter_t *filter,

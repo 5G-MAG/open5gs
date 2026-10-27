@@ -228,7 +228,7 @@ static void _gtpv1_tun_recv_common_cb(
 
     /* PDU Set marking of the downlink packets of the QoS flow (clause 5.38.3) */
     if (pdr->qer && pdr->qer->pdu_set_marking)
-        upf_pdu_set_mark(pdr->qer, recvbuf);
+        upf_pdu_set_mark(pdr, recvbuf);
 
     ogs_assert(true == ogs_pfcp_up_handle_pdr(
                 pdr, OGS_GTPU_MSGTYPE_GPDU, 0, NULL, recvbuf, &report));

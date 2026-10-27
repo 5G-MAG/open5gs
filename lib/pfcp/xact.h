@@ -78,6 +78,10 @@ typedef struct ogs_pfcp_xact_s {
 
     ogs_pool_id_t   assoc_stream_id;  /**< Associated SBI session ID */
 
+    /**< The QoS flows (IDs) that this transaction modifies: the session list of the QoS flows to modify is rebuilt from them when the answer comes, because a later decision may have emptied it */
+    int             num_of_qos_flow_id;
+    ogs_pool_id_t   qos_flow_id[OGS_MAX_NUM_OF_PCC_RULE];
+
     bool            epc;            /**< EPC or 5GC */
 
 #define OGS_PFCP_CREATE_RESTORATION_INDICATION ((uint64_t)1<<0)
@@ -122,6 +126,7 @@ typedef struct ogs_pfcp_xact_s {
 #define OGS_PFCP_MODIFY_QOS_MONITORING ((uint64_t)1<<37) /* Session Reporting Rules for QoS monitoring change */
 #define OGS_PFCP_MODIFY_L4S ((uint64_t)1<<38) /* the ECN marking for L4S of a QER changes (the QoS flow is not modified) */
 #define OGS_PFCP_MODIFY_USAGE_MONITORING ((uint64_t)1<<36) /* usage monitoring control instances change (create, update or query URR) */
+#define OGS_PFCP_MODIFY_PDR_PROTO_DESC ((uint64_t)1<<39) /* the Protocol Description of a PDR changes */
     uint64_t        modify_flags;
 
 #define OGS_PFCP_DELETE_TRIGGER_LOCAL_INITIATED 1

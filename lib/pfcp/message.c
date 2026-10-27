@@ -3349,6 +3349,7 @@ ogs_tlv_desc_t ogs_pfcp_tlv_desc_rtp_payload_information =
     sizeof(ogs_pfcp_tlv_rtp_payload_information_t),
     {
         &ogs_pfcp_tlv_desc_rtp_payload_type,
+        &ogs_tlv_desc_more16,
         &ogs_pfcp_tlv_desc_rtp_payload_format,
         NULL,
     }
