@@ -330,6 +330,17 @@ typedef struct ogs_pfcp_qer_s {
     ogs_pfcp_bitrate_t      mbr;
     ogs_pfcp_bitrate_t      gbr;
 
+    /*
+     * Averaging Window of the QER in milliseconds (IE 8.2.115, TS 29.244 V19.6.0), 0 when the CP function did not provide one, and the state
+     * with which the UP function enforces the maximum bit rate of each direction (0 uplink, 1 downlink): the bytes that may still be sent
+     * and the time at which they were last counted
+     */
+    uint32_t                averaging_window;
+    struct {
+        double              tokens;
+        ogs_time_t          last;
+    } meter[2];
+
     uint8_t                 qfi;
 
     /*
@@ -560,6 +571,14 @@ void ogs_pfcp_urr_remove(ogs_pfcp_urr_t *urr);
 void ogs_pfcp_urr_remove_all(ogs_pfcp_sess_t *sess);
 
 ogs_pfcp_qer_t *ogs_pfcp_qer_add(ogs_pfcp_sess_t *sess);
+
+/*
+ * Enforcement of the maximum bit rate of a QER (TS 29.244 V19.6.0 clause 7.5.2.5, Create QER, Maximum Bitrate: "When present, this IE
+ * shall indicate the uplink and/or downlink maximum bit rate to be enforced for packets matching the PDR."). The bytes that the QER may
+ * send in the direction accumulate at the maximum bit rate up to what its averaging window allows (the Averaging Window of the QER, else
+ * default_window_ms); a packet that finds fewer bytes than its length is not allowed. Returns true when the packet may be forwarded.
+ */
+bool ogs_pfcp_qer_rate_allow(ogs_pfcp_qer_t *qer, bool downlink, uint32_t octets, ogs_time_t now, uint32_t default_window_ms);
 ogs_pfcp_qer_t *ogs_pfcp_qer_find(
         ogs_pfcp_sess_t *sess, ogs_pfcp_qer_id_t id);
 ogs_pfcp_qer_t *ogs_pfcp_qer_find_or_add(

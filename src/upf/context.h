@@ -60,6 +60,13 @@ typedef struct upf_context_s {
     struct upf_route_trie_node *ipv6_framed_routes;
 
     ogs_list_t sess_list;
+
+    /*
+     * Default averaging window in milliseconds for the enforcement of the maximum bit rate of a QER that has no Averaging Window IE.
+     * TS 29.244 V19.6.0: "The default value for Averaging Window for non-GBR QoS Flows is 2000ms."; the operator may change it with
+     * upf.averaging_window.
+     */
+    uint32_t qer_averaging_window;
 } upf_context_t;
 
 /* trie mapping from IP framed routes to session. */

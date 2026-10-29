@@ -2059,6 +2059,44 @@ void ogs_pfcp_urr_remove_all(ogs_pfcp_sess_t *sess)
         ogs_pfcp_urr_remove(urr);
 }
 
+/* A QER whose burst allowance is smaller than this would never pass a full size packet */
+#define OGS_PFCP_QER_RATE_MIN_BURST 3000
+
+bool ogs_pfcp_qer_rate_allow(ogs_pfcp_qer_t *qer, bool downlink, uint32_t octets, ogs_time_t now, uint32_t default_window_ms)
+{
+    uint64_t rate;
+    uint32_t window_ms;
+    double burst, elapsed;
+    int dir = downlink ? 1 : 0;
+
+    ogs_assert(qer);
+
+    rate = downlink ? qer->mbr.downlink : qer->mbr.uplink; /* bit/s, 0 when the QER has no maximum bit rate in the direction */
+    if (!rate)
+        return true;
+
+    window_ms = qer->averaging_window ? qer->averaging_window : default_window_ms;
+    burst = (double)rate / 8.0 * window_ms / 1000.0;
+    if (burst < OGS_PFCP_QER_RATE_MIN_BURST)
+        burst = OGS_PFCP_QER_RATE_MIN_BURST;
+
+    if (!qer->meter[dir].last) {
+        qer->meter[dir].tokens = burst;
+    } else {
+        elapsed = (double)(now - qer->meter[dir].last) / (double)OGS_USEC_PER_SEC;
+        qer->meter[dir].tokens += elapsed * (double)rate / 8.0;
+        if (qer->meter[dir].tokens > burst)
+            qer->meter[dir].tokens = burst;
+    }
+    qer->meter[dir].last = now;
+
+    if (qer->meter[dir].tokens < octets)
+        return false;
+
+    qer->meter[dir].tokens -= octets;
+    return true;
+}
+
 ogs_pfcp_qer_t *ogs_pfcp_qer_add(ogs_pfcp_sess_t *sess)
 {
     ogs_pfcp_qer_t *qer = NULL;

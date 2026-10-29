@@ -218,6 +218,12 @@ static void _gtpv1_tun_recv_common_cb(
         goto cleanup;
     }
 
+    /* TS 29.244 clause 7.5.2.5: the maximum bit rate of the QER is enforced, a packet above it is dropped */
+    if (pdr->qer && !ogs_pfcp_qer_rate_allow(pdr->qer, true, recvbuf->len, ogs_get_monotonic_time(), upf_self()->qer_averaging_window)) {
+        ogs_debug("DL packet dropped, QER[%d] is above its maximum bit rate", pdr->qer->id);
+        goto cleanup;
+    }
+
     /* Increment total & dl octets + pkts */
     for (i = 0; i < pdr->num_of_urr; i++)
         upf_sess_urr_acc_add(sess, pdr->urr[i], recvbuf->len, false);
@@ -556,6 +562,13 @@ static void _gtpv1_u_recv_cb(short when, ogs_socket_t fd, void *data)
         if (pdr->src_if == OGS_PFCP_INTERFACE_ACCESS &&
             pdr->qer && pdr->qer->gate_status.uplink == OGS_PFCP_GATE_CLOSE) {
             ogs_debug("UL packet dropped, the gate of QER[%d] is closed", pdr->qer->id);
+            goto cleanup;
+        }
+
+        /* TS 29.244 clause 7.5.2.5: the maximum bit rate of the QER is enforced, a packet above it is dropped */
+        if (pdr->src_if == OGS_PFCP_INTERFACE_ACCESS && pdr->qer &&
+            !ogs_pfcp_qer_rate_allow(pdr->qer, false, pkbuf->len, ogs_get_monotonic_time(), upf_self()->qer_averaging_window)) {
+            ogs_debug("UL packet dropped, QER[%d] is above its maximum bit rate", pdr->qer->id);
             goto cleanup;
         }
 

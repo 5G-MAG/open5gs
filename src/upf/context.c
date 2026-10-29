@@ -38,6 +38,7 @@ void upf_context_init(void)
 
     /* Initialize UPF context */
     memset(&self, 0, sizeof(upf_context_t));
+    self.qer_averaging_window = 2000;
 
     ogs_log_install_domain(&__upf_log_domain, "upf", ogs_core()->log.level);
 
@@ -168,6 +169,12 @@ int upf_context_parse_config(void)
                     /* handle config in pfcp library */
                 } else if (!strcmp(upf_key, "metrics")) {
                     /* handle config in metrics library */
+                } else if (!strcmp(upf_key, "averaging_window")) {
+                    const char *v = ogs_yaml_iter_value(&upf_iter);
+                    if (v && atoi(v) > 0)
+                        self.qer_averaging_window = atoi(v);
+                    else
+                        ogs_warn("upf.averaging_window must be a number of milliseconds greater than 0");
                 } else
                     ogs_warn("unknown key `%s`", upf_key);
             }

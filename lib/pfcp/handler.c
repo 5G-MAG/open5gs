@@ -1462,6 +1462,11 @@ ogs_pfcp_qer_t *ogs_pfcp_handle_create_qer(ogs_pfcp_sess_t *sess,
 
     memset(&qer->mbr, 0, sizeof(qer->mbr));
     memset(&qer->gbr, 0, sizeof(qer->gbr));
+    qer->averaging_window = 0;
+    memset(qer->meter, 0, sizeof(qer->meter));
+
+    if (message->averaging_window.presence)
+        qer->averaging_window = message->averaging_window.u32;
 
     if (message->maximum_bitrate.presence) {
         rv = ogs_pfcp_parse_bitrate(&qer->mbr, &message->maximum_bitrate);
@@ -1533,6 +1538,9 @@ ogs_pfcp_qer_t *ogs_pfcp_handle_update_qer(ogs_pfcp_sess_t *sess,
 
     if (message->gate_status.presence)
         qer->gate_status.value = message->gate_status.u8;
+
+    if (message->averaging_window.presence)
+        qer->averaging_window = message->averaging_window.u32;
 
     if (message->maximum_bitrate.presence) {
         rv = ogs_pfcp_parse_bitrate(&qer->mbr, &message->maximum_bitrate);
