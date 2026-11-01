@@ -525,7 +525,7 @@ def t_U06_3_fssm_without_mbs_multicast_parameters():
     assert r and cause(r) == CAUSE_CONDITIONAL_MISSING, 'cause %s' % (cause(r) if r else None)
     assert offending(r) == T_MBS_MC_PARAMS, 'offending IE %s' % offending(r)
     # without FSSM the parameters are not required (DROP, FAR for unicast transport only)
-    accepted_and_deleted(U.establish(replace_ie(good(cp_seid=0x6002, flags=0x00), T_CREATE_FAR, far(apply=0x0002, params=False))), 'DROP')
+    accepted_and_deleted(U.establish(replace_ie(good(cp_seid=0x6002, flags=0x00), T_CREATE_FAR, far(apply=0x0100, params=False))), 'DROP')
     accepted_and_deleted(U.establish(good(cp_seid=0x6003)), 'FSSM with its parameters')
 
 
@@ -953,6 +953,31 @@ def t_U04_data_from_the_joined_channel_reaches_n3mb():
         U.delete(s)
     finally:
         U.restart()
+
+
+@test
+def t_U06_11_drop_drops():
+    # DROP together with the multicast parameters: the FAR has a destination, the packet must still be dropped
+    r = U.establish(replace_ie(mc_request(0xc001, b'\x02' + V4G, None), T_CREATE_FAR, far(apply=0x0100)))
+    s = accepted(r, 'DROP FAR')
+    lst = N3mbListener(mc_group_of(r))
+    try:
+        send_multicast('10.46.0.1', '232.1.1.1')
+        assert not inner_payload_seen(lst.packets()), 'a FAR with DROP forwarded'
+        assert 'Not implemented =' not in U.log_text(), 'DROP reported as not implemented'
+    finally:
+        lst.close()
+        U.delete(s)
+    # without DROP the same request forwards
+    r = U.establish(mc_request(0xc002, b'\x02' + V4G, None))
+    s = accepted(r, 'FSSM FAR')
+    lst = N3mbListener(mc_group_of(r))
+    try:
+        send_multicast('10.46.0.1', '232.1.1.1')
+        assert inner_payload_seen(lst.packets()), 'the FSSM FAR did not forward'
+    finally:
+        lst.close()
+        U.delete(s)
 
 
 # E-TESTS-BELOW

@@ -245,6 +245,12 @@ bool ogs_pfcp_up_handle_pdr(
 
     buffering = false;
 
+    /* DROP: the packet is discarded, whether or not the FAR has a destination */
+    if (far->apply_action & OGS_PFCP_APPLY_ACTION_DROP) {
+        ogs_pkbuf_free(sendbuf);
+        return true;
+    }
+
     if (!far->gnode) {
         buffering = true;
 
