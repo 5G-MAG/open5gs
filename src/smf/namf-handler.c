@@ -475,30 +475,12 @@ static void handle_ngran_failure_event(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *
         smf_mbs_sess_send_tunnel_changes(mbs_sess, &changes);
 
     if (restore.restore) {
-        smf_namf_context_update_param_t *param = NULL;
-        const char **ran_ids = NULL;
-
-        if (!amf || !amf->mbs_context_ref) {
-            ogs_error("MBS Broadcast ContextStatusNotify: NG-RAN [%s] cannot be restored, the AMF that reported it "
-                    "holds no context of the MBS session", restore.ran_id);
-            ogs_free(restore.ran_id);
-            return;
-        }
-        param = ogs_calloc(1, sizeof(*param));
-        ogs_assert(param);
-        ran_ids = ogs_calloc(1, sizeof(*ran_ids));
-        ogs_assert(ran_ids);
-        ran_ids[0] = restore.ran_id;
-        param->amf = amf;
-        param->no_n2_info_change_ind = true;
-        param->ran_ids = ran_ids;
-        param->num_ran_ids = 1;
-        param->heap_owned = true;
-        ogs_info("MBS Broadcast ContextStatusNotify: restoring the MBS session in NG-RAN [%s]", restore.ran_id);
-        /* the builder frees param, ran_ids and the text once it ran; when sending fails it may or may not have
-         * run, so nothing is freed here (a failed send leaks these few bytes rather than risk a double free) */
-        if (smf_sbi_send_mbs_broadcast_context_update(mbs_sess, param) != OGS_OK)
-            ogs_error("Failed to send MBS Broadcast ContextUpdate to restore an NG-RAN");
+        smf_mbs_sess_send_ngran_restoration(mbs_sess, amf, restore.ran_id);
+        ogs_free(restore.ran_id);
+    } else if (restore.restore_later) {
+        if (amf)
+            smf_mbs_sess_schedule_ngran_restoration(mbs_sess, amf, restore.ran_id);
+        ogs_free(restore.ran_id);
     }
 }
 

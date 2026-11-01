@@ -23,6 +23,7 @@
 #include "context.h"
 #include "gtp-path.h"
 #include "pfcp-path.h"
+#include "mbs-restore.h"
 
 static smf_context_t self;
 static ogs_diam_config_t g_diam_conf;
@@ -171,6 +172,7 @@ void smf_context_final(void)
     ogs_assert(context_initialized == 1);
 
     smf_ue_remove_all();
+    smf_mbs_ngran_restoration_remove_all();
     smf_mbs_sess_remove_all();
     smf_tmgi_remove_all();
 
@@ -1099,6 +1101,22 @@ int smf_context_parse_config(void)
                     }
                     self.has_mbs_max_response_time = true;
                     self.mbs_max_response_time = (int)seconds;
+                } else if (!strcmp(smf_key, "ngranRestoreDelay")) {
+                    /* TS 29.518 V18.14.0 cl. 5.6.2.5: on a report of the release required by NG-RANs "the MB-SMF
+                     * may attempt to re-establish the MBS session after some operator configurable time in these
+                     * NG-RANs". No clause or documented default names the time (rule 12): it is the operator's, in
+                     * seconds, and with none configured the MB-SMF does not re-establish the session. */
+                    const char *value = ogs_yaml_iter_value(&smf_iter);
+                    char *end = NULL;
+                    long seconds = value ? strtol(value, &end, 10) : 0;
+
+                    if (!value || !*value || *end || seconds <= 0 || seconds > INT_MAX) {
+                        ogs_error("`smf.ngranRestoreDelay` [%s] is not a positive number of seconds",
+                                value ? value : "");
+                        return OGS_ERROR;
+                    }
+                    self.has_mbs_ngran_restore_delay = true;
+                    self.mbs_ngran_restore_delay = (int)seconds;
                 } else if (!strcmp(smf_key, "mbsServiceArea")) {
                     /* TS 29.532 V18.6.0 cl.5.3.2.2.1/5.3.2.3.1 step 2b: this MB-SMF instance's own
                      * configured coverage, used by smf_mbs_service_area_reduce(). No clause,
@@ -3507,6 +3525,17 @@ bool smf_mbs_max_response_time(int *seconds)
     if (!self.has_mbs_max_response_time)
         return false;
     *seconds = self.mbs_max_response_time;
+    return true;
+}
+
+/* The time after which an NG-RAN that required the release of a broadcast MBS session gets it again, if configured. */
+bool smf_mbs_ngran_restore_delay(int *seconds)
+{
+    ogs_assert(seconds);
+
+    if (!self.has_mbs_ngran_restore_delay)
+        return false;
+    *seconds = self.mbs_ngran_restore_delay;
     return true;
 }
 

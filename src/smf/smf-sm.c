@@ -32,6 +32,7 @@
 #include "npcf-handler.h"
 #include "nmbsmf-handler.h"
 #include "mbs-subsc.h"
+#include "mbs-restore.h"
 
 void smf_state_initial(ogs_fsm_t *s, smf_event_t *e)
 {
@@ -451,6 +452,11 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
         ogs_pkbuf_free(recvbuf);
         ogs_pfcp_message_free(pfcp_message);
         break;
+    case SMF_EVT_MBS_NGRAN_RESTORE:
+        ogs_assert(e->mbs_ngran_restoration);
+        smf_mbs_ngran_restoration_expired(e->mbs_ngran_restoration);
+        break;
+
     case SMF_EVT_N4_TIMER:
     case SMF_EVT_N4_NO_HEARTBEAT:
         ogs_assert(e);

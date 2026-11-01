@@ -138,6 +138,11 @@ typedef struct smf_context_s {
      * `maxResponseTime`, seconds); unset when not configured, and then not sent. */
     bool has_mbs_max_response_time;
     int mbs_max_response_time;
+
+    /* Time, in seconds, after which the MB-SMF restores a broadcast MBS session in an NG-RAN that required its
+     * release (smf.yaml `ngranRestoreDelay`); unset when not configured, and then the MB-SMF does not. */
+    bool has_mbs_ngran_restore_delay;
+    int mbs_ngran_restore_delay;
 } smf_context_t;
 
 typedef struct smf_gtp_node_s {
@@ -864,6 +869,7 @@ OpenAPI_list_t *smf_mbs_sess_build_fsa_id_list(const smf_mbs_sess_t *mbs_sess);
 smf_mbs_nr_red_cap_e smf_mbs_nr_red_cap_from_string(const char *value);
 const char *smf_own_nid(void);
 bool smf_mbs_max_response_time(int *seconds);
+bool smf_mbs_ngran_restore_delay(int *seconds);
 ogs_tmgi_t *smf_tmgi_allocate(char *expiration_time);
 char *smf_tmgi_pick_mbs_service_id(
         ogs_list_t *tmgi_list, const ogs_plmn_id_t *plmn_id, uint32_t start);

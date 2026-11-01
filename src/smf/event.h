@@ -63,6 +63,8 @@ typedef enum {
     SMF_EVT_5GSM_MESSAGE,
     SMF_EVT_5GSM_TIMER,
 
+    SMF_EVT_MBS_NGRAN_RESTORE,
+
     SMF_EVT_TOP,
 
 } smf_event_e;
@@ -102,6 +104,7 @@ typedef struct smf_event_s {
 
     ogs_pool_id_t sess_id;
     ogs_pool_id_t mbs_sess_id;
+    void *mbs_ngran_restoration;    /* SMF_EVT_MBS_NGRAN_RESTORE: smf_mbs_ngran_restoration_t */
 } smf_event_t;
 
 OGS_STATIC_ASSERT(OGS_EVENT_SIZE >= sizeof(smf_event_t));

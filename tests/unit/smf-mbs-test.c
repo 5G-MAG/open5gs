@@ -2849,15 +2849,59 @@ static void test_ngran_failure_events(void)
     CHECK(changes.count == 1 && changes.change[0].remove_id == id_b);
     CHECK(smf_mbs_sess_dl_tunnel_find(mbs_sess, text_b) == NULL);
 
-    /* the other indications change nothing */
+    /* an NG-RAN that is not reachable: nothing */
     smf_mbs_sess_dl_tunnel_set(mbs_sess, text_b, &addr, 0x22, &changed);
     event.ngran_failure_indication = OpenAPI_ngran_failure_indication_NG_RAN_NOT_REACHABLE;
     memset(&changes, 0, sizeof(changes));
     CHECK(smf_mbs_sess_take_ngran_failure_event(mbs_sess, &event, &changes, &restore) == 0);
-    CHECK(!restore.restore && changes.count == 0 && smf_mbs_sess_dl_tunnel_find(mbs_sess, text_b));
+    CHECK(!restore.restore && !restore.restore_later && changes.count == 0 &&
+            smf_mbs_sess_dl_tunnel_find(mbs_sess, text_b));
+
+    /* the release required by the NG-RAN: restored later, the tunnel stays (the release answer takes it away) */
     event.ngran_failure_indication = OpenAPI_ngran_failure_indication_NG_RAN_REQUIRED_RELEASE;
     CHECK(smf_mbs_sess_take_ngran_failure_event(mbs_sess, &event, &changes, &restore) == 0);
-    CHECK(!restore.restore && changes.count == 0);
+    CHECK(!restore.restore && restore.restore_later && restore.ran_id && strcmp(restore.ran_id, text_b) == 0 &&
+            changes.count == 0 && smf_mbs_sess_dl_tunnel_find(mbs_sess, text_b));
+    {
+        smf_mbs_amf_t *amf = smf_mbs_sess_amf_add(mbs_sess);
+        smf_mbs_ngran_restoration_t *pending;
+
+        amf->mbs_context_ref = ogs_strdup("4");
+
+        /* no smf.ngranRestoreDelay: no restoration is scheduled */
+        smf_self()->has_mbs_ngran_restore_delay = false;
+        CHECK(smf_mbs_sess_schedule_ngran_restoration(mbs_sess, amf, restore.ran_id) == 0);
+        CHECK(smf_mbs_ngran_restorations_pending() == 0);
+
+        /* with it: scheduled once; the same one again is not scheduled twice, another NG-RAN is */
+        smf_self()->has_mbs_ngran_restore_delay = true;
+        smf_self()->mbs_ngran_restore_delay = 3600;
+        CHECK(smf_mbs_sess_schedule_ngran_restoration(mbs_sess, amf, restore.ran_id) == 1);
+        CHECK(smf_mbs_ngran_restorations_pending() == 1);
+        CHECK(smf_mbs_sess_schedule_ngran_restoration(mbs_sess, amf, restore.ran_id) == 0);
+        CHECK(smf_mbs_sess_schedule_ngran_restoration(mbs_sess, amf, text_a) == 1);
+        CHECK(smf_mbs_ngran_restorations_pending() == 2);
+
+        /* the time elapsed after the session was released: nothing is sent, the entry goes */
+        pending = smf_mbs_ngran_restoration_first();
+        CHECK(pending && pending->mbs_sess_id == mbs_sess->id && pending->amf_id == amf->id);
+        if (pending) {
+            smf_mbs_sess_t *other = new_broadcast_session();
+            smf_mbs_amf_t *other_amf = other ? smf_mbs_sess_amf_add(other) : NULL;
+
+            /* the AMF of the entry is gone from the session */
+            smf_mbs_sess_amf_remove(mbs_sess, amf);
+            smf_mbs_ngran_restoration_expired(pending);
+            CHECK(smf_mbs_ngran_restorations_pending() == 1);
+            (void)other_amf;
+            if (other)
+                smf_mbs_sess_release(other);
+        }
+        smf_mbs_ngran_restoration_remove_all();
+        CHECK(smf_mbs_ngran_restorations_pending() == 0);
+        smf_self()->has_mbs_ngran_restore_delay = false;
+    }
+    if (restore.ran_id) ogs_free(restore.ran_id);
 
     /* an event without the NG-RAN ID (mandatory in the table) is ignored */
     event.ngran_id = NULL;
