@@ -90,6 +90,14 @@ uint8_t smf_n4mb_handle_session_establishment_response(
 
     ogs_pfcp_xact_commit(xact);
 
+    if (!sbi_stream) {
+        // The consumer closed its connection while the MB-UPF was answering: nobody can be told the
+        // outcome and nobody holds the session reference, so the session is not kept.
+        ogs_warn("The consumer of the MBS Session Create is gone, abandoning the session");
+        _abandon_failed_establishment(mbs_sess, rsp);
+        return OGS_PFCP_CAUSE_REQUEST_REJECTED;
+    }
+
     if (rsp->up_f_seid.presence == 0) {
         ogs_error("No UP F-SEID");
         cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
