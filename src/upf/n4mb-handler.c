@@ -672,12 +672,16 @@ void upf_n4mb_handle_session_establishment_request(
                     mbs_sess->mbs_session_id.is_tmgi = 1;
                     mbs_sess->mbs_session_id.tmgi = (ogs_tmgi_t*)ogs_calloc(1, sizeof(*mbs_sess->mbs_session_id.tmgi));
                     mbs_sess->mbs_session_id.tmgi->mbs_service_id = ogs_msprintf("%.2X%.2X%.2X", mbs_session_identifier.tmgi.mbs_service_id[2], mbs_session_identifier.tmgi.mbs_service_id[1], mbs_session_identifier.tmgi.mbs_service_id[0]);
-                    mbs_sess->mbs_session_id.tmgi->plmn_id.mcc1 = mbs_session_identifier.tmgi.mcc1;
-                    mbs_sess->mbs_session_id.tmgi->plmn_id.mcc2 = mbs_session_identifier.tmgi.mcc2;
-                    mbs_sess->mbs_session_id.tmgi->plmn_id.mcc3 = mbs_session_identifier.tmgi.mcc3;
-                    mbs_sess->mbs_session_id.tmgi->plmn_id.mnc1 = mbs_session_identifier.tmgi.mnc1;
-                    mbs_sess->mbs_session_id.tmgi->plmn_id.mnc2 = mbs_session_identifier.tmgi.mnc2;
-                    mbs_sess->mbs_session_id.tmgi->plmn_id.mnc3 = mbs_session_identifier.tmgi.mnc3;
+                    /* The three PLMN octets are those of TS 24.008 figure 10.5.154 (TS 29.244 cl. 8.2.206: "The
+                     * TMGI field shall be encoded as octets 3 to octet 8 in the figure 10.5.154"), the layout of
+                     * ogs_nas_plmn_id_t: converted, not copied digit by digit, since ogs_plmn_id_t names the
+                     * digits differently. */
+                    ogs_nas_to_plmn_id(&mbs_sess->mbs_session_id.tmgi->plmn_id,
+                            (ogs_nas_plmn_id_t *)mbs_session_identifier.tmgi.plmn_id);
+                    ogs_debug("MBS Session Identifier: TMGI PLMN [%03d/%0*d]",
+                            ogs_plmn_id_mcc(&mbs_sess->mbs_session_id.tmgi->plmn_id),
+                            ogs_plmn_id_mnc_len(&mbs_sess->mbs_session_id.tmgi->plmn_id),
+                            ogs_plmn_id_mnc(&mbs_sess->mbs_session_id.tmgi->plmn_id));
                     /* mbs_sess->mbs_session_id.tmgi->expiration_time = ; */
                 } else if (mbs_session_identifier.ssmif) {
                     mbs_sess->mbs_session_id.is_ssm = 1;

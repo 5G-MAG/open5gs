@@ -1143,6 +1143,17 @@ def t_U13_2_U12_9_U13_3_dl_mbs_qfi_sequence_number():
         U.delete(s)
 
 
+@test
+def t_tmgi_plmn_octets_of_ts_24_008():
+    # PLMN 001/01 is 00 f1 10 and PLMN 310/014 is 13 40 10 in figure 10.5.154 (octet 6: MCC2 MCC1, octet 7: MNC3 MCC3,
+    # octet 8: MNC2 MNC1)
+    for plmn, want, seid in ((b'\x00\xf1\x10', 'TMGI PLMN [001/01]', 0xf001), (b'\x13\x40\x10', 'TMGI PLMN [310/014]', 0xf002),
+                            (b'\x62\xf2\x20', 'TMGI PLMN [262/02]', 0xf003)):
+        s = accepted(U.establish(good(cp_seid=seid)[:-1] + [n4mb_ctrl(tmgi_id(plmn=plmn))]), want)
+        assert want in U.log_text(), '%s not read from %s' % (want, plmn.hex())
+        U.delete(s)
+
+
 # E-TESTS-BELOW
 
 
