@@ -12,6 +12,7 @@
 #include "ogs-sbi.h"
 #include "context.h"
 #include "n4mb-build.h"
+#include "ngap-build.h"
 #include "namf-build.h"
 #include "namf-handler.h"
 #include "nmbsmf-handler.h"
@@ -683,6 +684,73 @@ static void test_nr_red_cap_ue_info_model(void)
     CHECK(back && cJSON_GetObjectItemCaseSensitive(back, "nrRedCapUeInfo") == NULL);
     if (back) cJSON_Delete(back);
     if (session) OpenAPI_ext_mbs_session_free(session);
+}
+
+/* The Supported UE Type List of the MBS Session Setup or Modification Request Transfer. TS 38.413 V18.8.0 clause
+ * 9.3.5.3: "Supported UE Type List |  | 0..<maxnoofUETypes> |  | YES | ignore" with "Supported UE Type | M |  |
+ * ENUMERATED (Non-(e)RedCap UE, (e)RedCap UE, ...)". TS 23.247 V18.8.0 clause 7.3.1: "the MB-SMF includes the "NR
+ * RedCap UE Information" parameter in N2 SM information." */
+static int supported_ue_types_of(smf_mbs_sess_t *mbs_sess, long *types, int max)
+{
+    ogs_pkbuf_t *pkbuf = ngap_build_mbs_session_setup_or_modification_request_transfer(mbs_sess);
+    NGAP_MBSSessionSetupOrModRequestTransfer_t message;
+    int i, count = -1;
+
+    CHECK(pkbuf != NULL);
+    if (!pkbuf)
+        return -1;
+    memset(&message, 0, sizeof(message));
+    CHECK(ogs_asn_decode(&asn_DEF_NGAP_MBSSessionSetupOrModRequestTransfer, &message, sizeof(message), pkbuf) ==
+            OGS_OK);
+    for (i = 0; i < message.protocolIEs.list.count; i++) {
+        NGAP_MBSSessionSetupOrModRequestTransferIEs_t *ie = message.protocolIEs.list.array[i];
+
+        if (ie->id == NGAP_ProtocolIE_ID_id_SupportedUETypeList) {
+            int n;
+
+            CHECK(ie->criticality == NGAP_Criticality_ignore);
+            count = ie->value.choice.SupportedUETypeList.list.count;
+            for (n = 0; n < count && n < max; n++)
+                types[n] = *ie->value.choice.SupportedUETypeList.list.array[n];
+        }
+    }
+    ogs_asn_free(&asn_DEF_NGAP_MBSSessionSetupOrModRequestTransfer, &message);
+    ogs_pkbuf_free(pkbuf);
+    return count;
+}
+
+static void test_nr_red_cap_ue_info_n2(void)
+{
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    long types[8];
+
+    CHECK(smf_mbs_nr_red_cap_from_string(NULL) == SMF_MBS_NR_RED_CAP_NONE);
+    CHECK(smf_mbs_nr_red_cap_from_string("NR_REDCAP_UE_ONLY") == SMF_MBS_NR_RED_CAP_UE_ONLY);
+    CHECK(smf_mbs_nr_red_cap_from_string("BOTH_NR_REDCAP_UE_AND_NON_REDCAP_UE") == SMF_MBS_NR_RED_CAP_BOTH);
+    CHECK(smf_mbs_nr_red_cap_from_string("NON_REDCAP_UE_ONLY") == SMF_MBS_NR_RED_CAP_NON_REDCAP_UE_ONLY);
+    CHECK(smf_mbs_nr_red_cap_from_string("SOMETHING_ELSE") == SMF_MBS_NR_RED_CAP_NONE);
+    if (!mbs_sess) {
+        CHECK(0);
+        return;
+    }
+
+    /* absent: the IE is left out */
+    CHECK(supported_ue_types_of(mbs_sess, types, 8) == -1);
+
+    mbs_sess->nr_red_cap_ue_info = SMF_MBS_NR_RED_CAP_UE_ONLY;
+    CHECK(supported_ue_types_of(mbs_sess, types, 8) == 1 && types[0] == NGAP_SupportedUEType_redCap_eRedCap_UE);
+    mbs_sess->nr_red_cap_ue_info = SMF_MBS_NR_RED_CAP_NON_REDCAP_UE_ONLY;
+    CHECK(supported_ue_types_of(mbs_sess, types, 8) == 1 && types[0] == NGAP_SupportedUEType_non_RedCap_eRedCap_UE);
+    mbs_sess->nr_red_cap_ue_info = SMF_MBS_NR_RED_CAP_BOTH;
+    CHECK(supported_ue_types_of(mbs_sess, types, 8) == 2 && types[0] == NGAP_SupportedUEType_non_RedCap_eRedCap_UE &&
+            types[1] == NGAP_SupportedUEType_redCap_eRedCap_UE);
+
+    /* a multicast session carries no NR RedCap UE information */
+    ogs_free(mbs_sess->service_type);
+    mbs_sess->service_type = ogs_strdup("MULTICAST");
+    CHECK(supported_ue_types_of(mbs_sess, types, 8) == -1);
+
+    smf_mbs_sess_release(mbs_sess);
 }
 
 static void test_fsa_id_list(void)
@@ -2262,6 +2330,7 @@ int main(void)
     test_create_outcomes();
     test_reduced_area_is_used();
     test_nr_red_cap_ue_info_model();
+    test_nr_red_cap_ue_info_n2();
     test_fsa_id_list();
     test_context_create_optional_ids();
     test_date_time();

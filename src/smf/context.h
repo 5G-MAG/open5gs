@@ -559,6 +559,15 @@ typedef struct smf_mbs_qos_flow_s {
 
 /* TS 29.571 MbsFsaId (a 24-bit value, hex-encoded on the wire), as carried in TS 29.532's
  * MbsSession.mbsFsaIdList (MBS Session Create/Update request). */
+/* TS 29.571 NrRedCapUeInfo of an MbsSession: NONE when the attribute is absent or holds a value this MB-SMF does
+ * not know (the type is an anyOf of an enumeration and a string). */
+typedef enum smf_mbs_nr_red_cap_e {
+    SMF_MBS_NR_RED_CAP_NONE = 0,
+    SMF_MBS_NR_RED_CAP_UE_ONLY,                 /* "NR_REDCAP_UE_ONLY" */
+    SMF_MBS_NR_RED_CAP_BOTH,                    /* "BOTH_NR_REDCAP_UE_AND_NON_REDCAP_UE" */
+    SMF_MBS_NR_RED_CAP_NON_REDCAP_UE_ONLY,      /* "NON_REDCAP_UE_ONLY" */
+} smf_mbs_nr_red_cap_e;
+
 typedef struct smf_mbs_fsa_id_s {
     ogs_lnode_t lnode;
     ogs_uint24_t id;
@@ -713,6 +722,9 @@ typedef struct smf_mbs_sess_s {
      * smf_nmbsmf_handle_mbs_session_create()'s own comment for what this closes. */
     ogs_list_t mbs_fsa_id_list;
 
+    /* TS 29.532 MbsSession.nrRedCapUeInfo of a broadcast session, from the Create request or the last Update */
+    smf_mbs_nr_red_cap_e nr_red_cap_ue_info;
+
     /* TS 29.532 V18.6.0 cl.5.3.2.2.1: "For a location dependent MBS service, the MB-SMF shall allocate
      * a unique Area Session ID within the MBS session for the MBS Service Area." smf_mbs_sess_create()
      * allocates it: the lowest value from 1 that no other location dependent session of the TMGI holds. */
@@ -849,6 +861,7 @@ bool smf_nid_is_valid(const char *nid);
 bool smf_is_date_time(const char *date_time);
 OpenAPI_snssai_t *smf_mbs_sess_build_snssai(const smf_mbs_sess_t *mbs_sess);
 OpenAPI_list_t *smf_mbs_sess_build_fsa_id_list(const smf_mbs_sess_t *mbs_sess);
+smf_mbs_nr_red_cap_e smf_mbs_nr_red_cap_from_string(const char *value);
 const char *smf_own_nid(void);
 bool smf_mbs_max_response_time(int *seconds);
 ogs_tmgi_t *smf_tmgi_allocate(char *expiration_time);

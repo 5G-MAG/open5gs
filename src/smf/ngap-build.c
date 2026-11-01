@@ -733,6 +733,42 @@ ogs_pkbuf_t *ngap_build_mbs_session_setup_or_modification_request_transfer(smf_m
         }
     }
 
+    /* Supported UE Type List (TS 38.413 V18.8.0 clause 9.3.5.3, optional, ignore): the "NR RedCap UE information" of
+     * a broadcast session, forwarded as the UE types the session is intended for. TS 23.247 V18.8.0 clause 6.19: "The
+     * "NR RedCap UE information" parameter comprises an indication for a broadcast MBS session that can take the
+     * following values: "MBS session expected to be received only by (e)RedCap UEs", "MBS session expected to be
+     * received by any kind of UEs", or "MBS session expected to be received only by UEs that are neither RedCap UEs
+     * nor eRedCap UEs"." and clause 7.3.1: "the MB-SMF includes the "NR RedCap UE Information" parameter in N2 SM
+     * information." The mapping to the two UE types is the reading of those three values; no clause states it. */
+    if (mbs_sess->service_type && strcmp(mbs_sess->service_type, "BROADCAST") == 0 &&
+            mbs_sess->nr_red_cap_ue_info != SMF_MBS_NR_RED_CAP_NONE) {
+        NGAP_SupportedUETypeList_t *supportedUETypeList = NULL;
+        NGAP_SupportedUEType_t *supportedUEType = NULL;
+
+        ie = CALLOC(1, sizeof(NGAP_MBSSessionSetupOrModRequestTransferIEs_t));
+        ogs_assert(ie);
+        ASN_SEQUENCE_ADD(&message.protocolIEs, ie);
+
+        ie->id = NGAP_ProtocolIE_ID_id_SupportedUETypeList;
+        ie->criticality = NGAP_Criticality_ignore;
+        ie->value.present = NGAP_MBSSessionSetupOrModRequestTransferIEs__value_PR_SupportedUETypeList;
+
+        supportedUETypeList = &ie->value.choice.SupportedUETypeList;
+
+        if (mbs_sess->nr_red_cap_ue_info != SMF_MBS_NR_RED_CAP_UE_ONLY) {
+            supportedUEType = CALLOC(1, sizeof(NGAP_SupportedUEType_t));
+            ogs_assert(supportedUEType);
+            *supportedUEType = NGAP_SupportedUEType_non_RedCap_eRedCap_UE;
+            ASN_SEQUENCE_ADD(&supportedUETypeList->list, supportedUEType);
+        }
+        if (mbs_sess->nr_red_cap_ue_info != SMF_MBS_NR_RED_CAP_NON_REDCAP_UE_ONLY) {
+            supportedUEType = CALLOC(1, sizeof(NGAP_SupportedUEType_t));
+            ogs_assert(supportedUEType);
+            *supportedUEType = NGAP_SupportedUEType_redCap_eRedCap_UE;
+            ASN_SEQUENCE_ADD(&supportedUETypeList->list, supportedUEType);
+        }
+    }
+
     return ogs_asn_encode(
             &asn_DEF_NGAP_MBSSessionSetupOrModRequestTransfer, &message);
 }

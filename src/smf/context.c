@@ -4311,6 +4311,19 @@ OpenAPI_list_t *smf_mbs_sess_build_fsa_id_list(const smf_mbs_sess_t *mbs_sess)
     return list;
 }
 
+smf_mbs_nr_red_cap_e smf_mbs_nr_red_cap_from_string(const char *value)
+{
+    if (!value)
+        return SMF_MBS_NR_RED_CAP_NONE;
+    if (strcmp(value, "NR_REDCAP_UE_ONLY") == 0)
+        return SMF_MBS_NR_RED_CAP_UE_ONLY;
+    if (strcmp(value, "BOTH_NR_REDCAP_UE_AND_NON_REDCAP_UE") == 0)
+        return SMF_MBS_NR_RED_CAP_BOTH;
+    if (strcmp(value, "NON_REDCAP_UE_ONLY") == 0)
+        return SMF_MBS_NR_RED_CAP_NON_REDCAP_UE_ONLY;
+    return SMF_MBS_NR_RED_CAP_NONE;
+}
+
 smf_mbs_sess_t *smf_mbs_sess_find_by_seid(uint64_t seid)
 {
     smf_mbs_sess_t *mbs_sess = ogs_hash_get(self.smf_n4_seid_hash, &seid, sizeof(seid));

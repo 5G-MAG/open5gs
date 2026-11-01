@@ -1100,6 +1100,10 @@ bool smf_nmbsmf_handle_mbs_session_create(
         }
     }
 
+    /* TS 29.532 V18.6.0 cl. 5.3.2.2.1: the Create request of a broadcast session may carry the "NR RedCap UE
+     * information"; the MB-SMF forwards it in the N2 SM information (see the builder of the transfer). */
+    mbs_sess->nr_red_cap_ue_info = smf_mbs_nr_red_cap_from_string(CreateReqData->mbs_session->nr_red_cap_ue_info);
+
     /*********************************************************************
      * Send PFCP N4mb Session Establishment Request to the UPF
      *********************************************************************/
