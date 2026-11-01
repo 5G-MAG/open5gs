@@ -493,6 +493,11 @@ bool upf_n4mb_check_session_establishment_request(
         ogs_error("No Create FAR in N4mb Session Establishment Request");
         cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
         offending_ie_value = OGS_PFCP_CREATE_FAR_TYPE;
+    } else if (req->mbs_session_n4mb_control_information.mbs_session_identifier.presence == 0) {
+        /* Table 7.5.2.1-4: "MBS Session Identifier", M */
+        ogs_error("No MBS Session Identifier in the MBS Session N4mb Control Information");
+        cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+        offending_ie_value = OGS_PFCP_MBS_SESSION_IDENTIFIER_TYPE;
     } else {
         int i;
 

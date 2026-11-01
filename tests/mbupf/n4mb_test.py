@@ -2060,6 +2060,15 @@ def t_empty_grouped_ie_is_a_message_with_its_members_missing():
     assert r is not None and r['type'] == 6, 'Association Setup Request with an empty grouped IE: no response'
 
 
+@test
+def t_U01_mbs_session_identifier_is_mandatory():
+    # Table 7.5.2.1-4: MBS Session Identifier, M. The IE that makes the request an N4mb one is present, without it.
+    for what, ctrl in (('empty', ie(T_N4MB_CTRL, b'')), ('flags only', ie(T_N4MB_CTRL, [ie(T_N4MB_FLAGS, b'\x01')]))):
+        r = U.establish(replace_ie(good(0xf011), T_N4MB_CTRL, ctrl))
+        assert r is not None, what + ': no response'
+        assert cause(r) == CAUSE_MANDATORY_MISSING and offending(r) == T_MBS_ID, '%s: cause %s offending %s' % (what, cause(r), offending(r))
+
+
 # E-TESTS-BELOW
 
 
