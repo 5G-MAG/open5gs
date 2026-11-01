@@ -2194,7 +2194,8 @@ static bool amf_gnb_takes_mbs_session(amf_gnb_t *gnb, amf_mbs_context_t *mbs_con
  * session in a list of NG-RANs as identified by the NG-RAN ID(s), as specified in clause 8.3.2.3 of TS 23.527"): the listed
  * NG-RAN nodes get a Broadcast Session Setup Request and no other node gets anything (TS 23.527 V18.6.0 cl. 8.3.2.3 step 7:
  * "The AMF sends the N2 MBS Session Setup Request message to the NG-RAN node(s) including the MBS Session Setup or
- * Modification Request Transfer IE."). With n2MbsInfoChangeInd false (plan->n2_info_unchanged) the nodes that the change
+ * Modification Request Transfer IE."). A node that enters the service area (serves the new one and did not serve the old
+ * one) gets a Setup Request, not a Modification Request. With n2MbsInfoChangeInd false (plan->n2_info_unchanged) the nodes that the change
  * of the service area does not affect get nothing. With noNgapSignallingInd true (TS 29.518 V18.14.0 Table 6.5.6.2.5-1: "true: the AMF
  * may consider to not trigger a NGAP signaling message to any NG-RAN."; TS 23.527 V18.6.0 cl. 8.3.2.4 step 8: "The AMF
  * may consider to not trigger any NGAP signalling towards NG-RANs covering the MBS service area.") no node gets anything.
@@ -2223,6 +2224,12 @@ amf_mbs_update_action_e amf_namf_mbs_update_action(
     involved = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
     if (involved && involved->release_required)
         return AMF_MBS_UPDATE_SKIP;
+
+    // TS 23.247 V18.8.0 cl. 7.3.3 step 3: "Depending on the change of the MBS service area, the AMF may send MBS Session
+    // Resource Setup to some NG-RANs in new MBS service area (see clause 7.3.1)": a node that serves the new service area
+    // and did not serve the old one holds no session, so it gets a Setup Request, not a Modification Request.
+    if (!amf_namf_gnb_serves_tai_list(gnb, plan->old_area))
+        return AMF_MBS_UPDATE_SETUP;
 
     // TS 29.518 V18.14.0 cl. 5.6.2.3: "If the n2MbsInfoChangeInd IE is present in the request and set to "false", the AMF
     // does not need to contact NG-RAN nodes unaffected by the MBS service area change."
@@ -2870,16 +2877,14 @@ int amf_namf_handle_mbs_broadcast_context_update(
     amf_mbs_n2_info_remove_all(&mbs_context->pending_n2_info_list);
     ogs_timer_stop(mbs_context->t_response);
 
-    if (plan.ran_id_list)
-        n2setupreq = ngap_build_broadcast_session_setup_request(mbs_context, n2mbssmbuf);
-    else
+    if (!plan.ran_id_list)
         n2msgreq = ngap_build_broadcast_session_modification_request(mbs_context, has_service_area, n2mbssmbuf);
 
         // As in ContextCreate: a request that cannot be built, or that no gNB accepts, is answered here, since
         // no NG-RAN response will ever complete the deferred one. No clause names the status for this;
         // UNSPECIFIED_NF_FAILURE is TS 29.500 Table 5.2.7.2-1's generic 500 cause. The context itself stays: an
         // update that failed does not end the session.
-    if (!n2msgreq && !n2setupreq) {
+    if (!n2msgreq && !plan.ran_id_list) {
         ogs_error("MBS Broadcast ContextUpdate: the Broadcast Session Modification Request could not be built");
         ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
             recvmsg, "Internal Server Error",
@@ -2897,6 +2902,19 @@ int amf_namf_handle_mbs_broadcast_context_update(
             unaffected++;
         if (action == AMF_MBS_UPDATE_SKIP || action == AMF_MBS_UPDATE_UNAFFECTED)
             continue;
+        // The Setup Request carries the container of the request, or else the last one received (TS 23.527 V18.6.0
+        // cl. 8.3.2.2 step 1).
+        if (action == AMF_MBS_UPDATE_SETUP && !n2setupreq) {
+            ogs_pkbuf_t *container = n2mbssmbuf ? n2mbssmbuf : mbs_context->n2_mbs_sm_request;
+
+            if (container)
+                n2setupreq = ngap_build_broadcast_session_setup_request(mbs_context, container);
+            if (!n2setupreq) {
+                ogs_error("MBS Broadcast ContextUpdate: the Broadcast Session Setup Request could not be built");
+                send_failed = true;
+                continue;
+            }
+        }
         n2msgreq_copy = ogs_pkbuf_copy(action == AMF_MBS_UPDATE_SETUP ? n2setupreq : n2msgreq);
         if (!n2msgreq_copy) {
             ogs_error("ogs_pkbuf_copy() failed");

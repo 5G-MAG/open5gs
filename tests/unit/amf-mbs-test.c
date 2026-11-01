@@ -713,6 +713,49 @@ static void gnb_serves(amf_gnb_t *gnb, int n, const uint32_t *tacs)
     }
 }
 
+/* TS 23.247 V18.8.0 cl. 7.3.3 step 3: "Depending on the change of the MBS service area, the AMF may send MBS Session
+ * Resource Setup to some NG-RANs in new MBS service area (see clause 7.3.1)" */
+static void test_update_action_enters_area(void)
+{
+    static const uint32_t t1[] = { 1 }, t2[] = { 2 }, t12[] = { 1, 2 };
+    amf_gnb_t *a = make_gnb(0x100, 22), *b = make_gnb(0x200, 22), *c = make_gnb(0x300, 22);
+    amf_mbs_context_t ctx = make_context();
+    amf_mbs_update_plan_t plan;
+    ogs_mbs_service_area_t *old_area = area_of(1, t1), *new_area = area_of(2, t12);
+
+    ogs_list_init(&ctx.involved_gnb_list);
+    a->id = 1; b->id = 2; c->id = 3;
+    gnb_serves(a, 1, t1);
+    gnb_serves(b, 1, t2);
+    gnb_serves(c, 2, t12);
+
+    /* {1} to {1,2}: only a node that serves 2 and did not serve 1 enters, whatever n2MbsInfoChangeInd says */
+    ctx.mbs_service_area = new_area;
+    memset(&plan, 0, sizeof(plan));
+    plan.old_area = old_area;
+    CHECK(amf_namf_mbs_update_action(&ctx, a, &plan) == AMF_MBS_UPDATE_MODIFY);
+    CHECK(amf_namf_mbs_update_action(&ctx, b, &plan) == AMF_MBS_UPDATE_SETUP);
+    CHECK(amf_namf_mbs_update_action(&ctx, c, &plan) == AMF_MBS_UPDATE_MODIFY);
+    plan.n2_info_unchanged = true;
+    CHECK(amf_namf_mbs_update_action(&ctx, b, &plan) == AMF_MBS_UPDATE_SETUP);
+
+    /* an update that does not change the area: nobody enters */
+    plan.old_area = new_area;
+    plan.n2_info_unchanged = false;
+    CHECK(amf_namf_mbs_update_action(&ctx, b, &plan) == AMF_MBS_UPDATE_MODIFY);
+
+    /* an old area that cannot be told by TAI (none): nobody is taken to enter */
+    plan.old_area = NULL;
+    CHECK(amf_namf_mbs_update_action(&ctx, b, &plan) == AMF_MBS_UPDATE_MODIFY);
+
+    ctx.mbs_service_area = NULL;
+    ogs_mbs_service_area_free(new_area);
+    ogs_mbs_service_area_free(old_area);
+    ogs_free(a);
+    ogs_free(b);
+    ogs_free(c);
+}
+
 /* TS 29.518 V18.14.0 cl. 5.6.2.3: "If the n2MbsInfoChangeInd IE is present in the request and set to "false", the AMF
  * does not need to contact NG-RAN nodes unaffected by the MBS service area change." */
 static void test_update_action_info_unchanged(void)
@@ -735,8 +778,8 @@ static void test_update_action_info_unchanged(void)
     plan.old_area = old_area;
     plan.n2_info_unchanged = true;
     CHECK(amf_namf_mbs_update_action(&ctx, a, &plan) == AMF_MBS_UPDATE_UNAFFECTED);  /* serves 1 only: not in the difference */
-    CHECK(amf_namf_mbs_update_action(&ctx, b, &plan) == AMF_MBS_UPDATE_MODIFY);      /* serves 2: enters the area */
-    CHECK(amf_namf_mbs_update_action(&ctx, c, &plan) == AMF_MBS_UPDATE_MODIFY);      /* serves 2 as well */
+    CHECK(amf_namf_mbs_update_action(&ctx, b, &plan) == AMF_MBS_UPDATE_SETUP);       /* serves 2: enters the area */
+    CHECK(amf_namf_mbs_update_action(&ctx, c, &plan) == AMF_MBS_UPDATE_MODIFY);      /* served 1 before: holds the session */
 
     /* the indication true, or absent: every node that takes the session is contacted */
     plan.n2_info_unchanged = false;
@@ -784,6 +827,7 @@ int main(int argc, const char *argv[])
     test_transport_relay();
     test_store_n2_container();
     test_update_action_ran_id_list();
+    test_update_action_enters_area();
     test_update_action_info_unchanged();
     test_context_update_req_data_no_ngap_signalling_ind();
 
