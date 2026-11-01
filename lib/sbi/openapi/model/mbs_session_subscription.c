@@ -122,13 +122,13 @@ cJSON *OpenAPI_mbs_session_subscription_convertToJSON(OpenAPI_mbs_session_subscr
         cJSON_AddItemToArray(event_listList, itemLocal);
     }
 
-    if (!mbs_session_subscription->notify_uri) {
-        ogs_error("OpenAPI_mbs_session_subscription_convertToJSON() failed [notify_uri]");
-        return NULL;
-    }
+    /* hand-patched: notifyUri is "Write-Only: true" (TS 29.571 V18.12.0 table 5.9.4.7-1), so a representation that
+     * the MB-SMF returns does not carry it; the generator made it a mandatory member of every serialisation. */
+    if (mbs_session_subscription->notify_uri) {
     if (cJSON_AddStringToObject(item, "notifyUri", mbs_session_subscription->notify_uri) == NULL) {
         ogs_error("OpenAPI_mbs_session_subscription_convertToJSON() failed [notify_uri]");
         goto end;
+    }
     }
 
     if (mbs_session_subscription->notify_correlation_id) {

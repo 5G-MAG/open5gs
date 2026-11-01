@@ -216,6 +216,14 @@ void ogs_sbi_message_free(ogs_sbi_message_t *message)
         OpenAPI_create_rsp_data_free(message->CreateRspData);
     if (message->UpdateRspData)
         OpenAPI_update_rsp_data_free(message->UpdateRspData);
+    if (message->StatusSubscribeReqData)
+        OpenAPI_status_subscribe_req_data_free(message->StatusSubscribeReqData);
+    if (message->StatusSubscribeRspData)
+        OpenAPI_status_subscribe_rsp_data_free(message->StatusSubscribeRspData);
+    if (message->MbsSessionSubscription)
+        OpenAPI_mbs_session_subscription_free(message->MbsSessionSubscription);
+    if (message->StatusNotifyReqData)
+        OpenAPI_status_notify_req_data_free(message->StatusNotifyReqData);
     if (message->ContextCreateReqData)
         OpenAPI_context_create_req_data_free(message->ContextCreateReqData);
         // ContextCreateRspData is parsed on every 201-Created Namf_MBSBroadcast ContextCreate response and needs
@@ -1487,6 +1495,22 @@ static char *build_json(ogs_sbi_message_t *message)
         item = OpenAPI_update_rsp_data_convertToJSON(
                 message->UpdateRspData);
         ogs_assert(item);
+    } else if (message->StatusSubscribeReqData) {
+        item = OpenAPI_status_subscribe_req_data_convertToJSON(
+                message->StatusSubscribeReqData);
+        ogs_assert(item);
+    } else if (message->StatusSubscribeRspData) {
+        item = OpenAPI_status_subscribe_rsp_data_convertToJSON(
+                message->StatusSubscribeRspData);
+        ogs_assert(item);
+    } else if (message->MbsSessionSubscription) {
+        item = OpenAPI_mbs_session_subscription_convertToJSON(
+                message->MbsSessionSubscription);
+        ogs_assert(item);
+    } else if (message->StatusNotifyReqData) {
+        item = OpenAPI_status_notify_req_data_convertToJSON(
+                message->StatusNotifyReqData);
+        ogs_assert(item);
     } else if (message->ContextCreateReqData) {
         item = OpenAPI_context_create_req_data_convertToJSON(
                 message->ContextCreateReqData);
@@ -2714,6 +2738,44 @@ static int parse_json(ogs_sbi_message_t *message,
         CASE(OGS_SBI_SERVICE_NAME_NMBSMF_MBS_SESSION)
             SWITCH(message->h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_MBS_SESSIONS)
+                /* The subscriptions of the StatusSubscribe service operation (TS 29.532 V18.6.0 cl. 6.2.3.4 and
+                 * 6.2.3.5): POST /mbs-sessions/subscriptions (StatusSubscribeReqData, the 201 answer
+                 * StatusSubscribeRspData) and PATCH /mbs-sessions/subscriptions/{subscriptionId} (the patch is
+                 * parsed above, the 200 answer is the MbsSessionSubscription). */
+                if (message->h.resource.component[1] &&
+                        !strcmp(message->h.resource.component[1],
+                            OGS_SBI_RESOURCE_NAME_SUBSCRIPTIONS)) {
+                    if (!strcmp(message->h.method, OGS_SBI_HTTP_METHOD_POST)) {
+                        if (message->res_status == 0) {
+                            message->StatusSubscribeReqData =
+                                OpenAPI_status_subscribe_req_data_parseFromJSON(item);
+                            if (!message->StatusSubscribeReqData) {
+                                rv = OGS_ERROR;
+                                ogs_error("JSON parse error");
+                            }
+                        } else if (message->res_status ==
+                                OGS_SBI_HTTP_STATUS_CREATED) {
+                            message->StatusSubscribeRspData =
+                                OpenAPI_status_subscribe_rsp_data_parseFromJSON(item);
+                            if (!message->StatusSubscribeRspData) {
+                                rv = OGS_ERROR;
+                                ogs_error("JSON parse error");
+                            }
+                        }
+                    } else if (!strcmp(message->h.method,
+                                OGS_SBI_HTTP_METHOD_PATCH)) {
+                        if (message->res_status == OGS_SBI_HTTP_STATUS_OK) {
+                            message->MbsSessionSubscription =
+                                OpenAPI_mbs_session_subscription_parseFromJSON(item);
+                            if (!message->MbsSessionSubscription) {
+                                rv = OGS_ERROR;
+                                ogs_error("JSON parse error");
+                            }
+                        }
+                    }
+                    break;
+                }
+
                 SWITCH(message->h.method)
                 CASE(OGS_SBI_HTTP_METHOD_POST)
                     if (message->res_status == 0) {

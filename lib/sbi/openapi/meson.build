@@ -1401,6 +1401,9 @@ libsbi_openapi_sources = files('''
     model/op_event_type.c
     model/context_update_req_data.c
     model/context_update_rsp_data.c
+    model/status_subscribe_req_data.c
+    model/status_subscribe_rsp_data.c
+    model/status_notify_req_data.c
     model/mbs_comm_n2_mbs_sm_info.c
     model/mbs_n2_message_transfer_req_data.c
     model/mbs_n2_message_transfer_rsp_data.c
