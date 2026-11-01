@@ -1295,6 +1295,11 @@ ogs_pfcp_qer_t *ogs_pfcp_handle_create_qer(ogs_pfcp_sess_t *sess,
     if (message->qos_flow_identifier.presence)
         qer->qfi = message->qos_flow_identifier.u8;
 
+    /* QER Indications, octet 5 bit 1: IQFISN (TS 29.244 cl. 8.2.216) */
+    qer->insert_mbs_qfi_sn = false;
+    if (message->qer_indications.presence && message->qer_indications.len >= 1)
+        qer->insert_mbs_qfi_sn = *(const uint8_t *)message->qer_indications.data & 0x01;
+
     return qer;
 }
 

@@ -67,7 +67,7 @@ class Upf:
         self.pre_net()
         self.start()
 
-    def write_config(self, port_yaml, extra_upf=''):
+    def write_config(self, port_yaml, extra_upf='', gtpu_port=None):
         open(self.cfg, 'w').write("""logger:
   level: debug
   file:
@@ -80,7 +80,7 @@ upf:
   gtpu:
     server:
       - address: 127.0.0.31
-  session:
+%s  session:
     - subnet: 10.46.0.0/16
       gateway: 10.46.0.1
       dev: ogstunt
@@ -88,11 +88,11 @@ upf:
     udptunnel:
       address: 127.0.0.31
       port: %s
-%s""" % (self.log, port_yaml, extra_upf))
+%s""" % (self.log, '        port: %d\n' % gtpu_port if gtpu_port else '', port_yaml, extra_upf))
 
-    def restart(self, port_yaml='0', extra_upf=''):
+    def restart(self, port_yaml='0', extra_upf='', gtpu_port=None):
         self.stop()
-        self.write_config(port_yaml, extra_upf)
+        self.write_config(port_yaml, extra_upf, gtpu_port)
         self.start()
 
     def start(self):
@@ -220,8 +220,11 @@ def far(far_id=1, apply=0x0008, params=True, drop=(), mc_extra=()):
     return ie(T_CREATE_FAR, parts)
 
 
-def qer(qer_id=1, gate=0):
-    return ie(T_CREATE_QER, [ie(T_QER_ID, struct.pack('>I', qer_id)), ie(T_GATE, bytes([gate])), ie(T_QFI, b'\x01')])
+def qer(qer_id=1, gate=0, qfi=1, indications=None):
+    parts = [ie(T_QER_ID, struct.pack('>I', qer_id)), ie(T_GATE, bytes([gate])), ie(T_QFI, bytes([qfi]))]
+    if indications is not None:
+        parts.append(ie(319, bytes([indications])))
+    return ie(T_CREATE_QER, parts)
 
 
 def lit_choose(v4=True, v6=False):
@@ -1037,6 +1040,104 @@ def t_U13_4_closed_downlink_gate_discards():
     try:
         send_multicast('10.46.0.1', '232.1.1.1')
         assert inner_payload_seen(lst.packets()), 'an open downlink gate did not forward'
+    finally:
+        lst.close()
+        U.delete(s)
+
+
+def gtpu_parse(p):
+    """The GTP-U header (TS 29.281 cl. 5.1) and the extension headers of a G-PDU, and the T-PDU."""
+    flags, mtype, length, teid = p[0], p[1], struct.unpack('>H', p[2:4])[0], struct.unpack('>I', p[4:8])[0]
+    out = dict(flags=flags, type=mtype, length=length, teid=teid, ext=[])
+    pos = 8
+    if flags & 0x07:
+        out['seq'], out['npdu'], nxt = struct.unpack('>H', p[8:10])[0], p[10], p[11]
+        pos = 12
+        while flags & 0x04 and nxt:
+            n = p[pos] * 4
+            out['ext'].append((nxt, p[pos + 1:pos + n - 1]))
+            nxt = p[pos + n - 1]
+            pos += n
+    out['tpdu'] = p[pos:]
+    return out
+
+
+def c_teid_of(r):
+    info = dict(parse_ies(find(r, T_N4MB_INFO)))[T_MC_TRANSPORT]
+    return struct.unpack('>I', info[1:5])[0]
+
+
+@test
+def t_U12_6_U12_8_gpdu_header_and_pdu_session_container():
+    r = U.establish(mc_request(0xe001, b'\x02' + V4G, None))
+    s = accepted(r, 'session')
+    lst = N3mbListener(mc_group_of(r))
+    try:
+        send_multicast('10.46.0.1', '232.1.1.1')
+        pk = lst.packets()
+        assert pk, 'nothing on N3mb'
+        g = gtpu_parse(pk[0])
+        assert g['flags'] == 0x34, 'flags %02x: version 1, PT 1, spare 0, E 1, S 0, PN 0 expected 0x34' % g['flags']
+        assert g['type'] == 255, 'message type %d' % g['type']
+        assert g['length'] == len(pk[0]) - 8, 'length %d for %d octets' % (g['length'], len(pk[0]))
+        assert g['teid'] == c_teid_of(r), 'TEID %08x, C-TEID of the response %08x' % (g['teid'], c_teid_of(r))
+        assert g['ext'] == [(0x85, b'\x00\x01')], 'extension headers %s' % g['ext']
+        # the extension: length 1 (4 octets) = PDU Type 0 with QMP, SNP, MSNP clear, then PPP, RQI and QFI 1
+        assert b'mbs-data' in g['tpdu'] and g['tpdu'][0] >> 4 == 4, 'T-PDU is not the IPv4 packet'
+    finally:
+        lst.close()
+        U.delete(s)
+
+
+@test
+def t_U12_10_destination_port_is_2152():
+    U.restart('0', '', gtpu_port=2153)
+    try:
+        r = U.establish(mc_request(0xe011, b'\x02' + V4G, None))
+        s = accepted(r, 'session, UPF listening on 2153')
+        lst = N3mbListener(mc_group_of(r))
+        try:
+            send_multicast('10.46.0.1', '232.1.1.1')
+            assert inner_payload_seen(lst.packets()), 'the N3mb group did not receive on 2152'
+        finally:
+            lst.close()
+        U.delete(s)
+    finally:
+        U.restart()
+
+
+@test
+def t_U13_2_U12_9_U13_3_dl_mbs_qfi_sequence_number():
+    ies = replace_ie(mc_request(0xe021, b'\x02' + V4G, None), T_CREATE_QER, qer(indications=0x01))
+    r = U.establish(ies)
+    s = accepted(r, 'IQFISN')
+    lst = N3mbListener(mc_group_of(r))
+    try:
+        for _ in range(3):
+            send_multicast('10.46.0.1', '232.1.1.1')
+            time.sleep(0.05)
+        pk = [gtpu_parse(p) for p in lst.packets()]
+        assert len(pk) == 3, '%d packets' % len(pk)
+        seqs = []
+        for g in pk:
+            assert len(g['ext']) == 1 and g['ext'][0][0] == 0x85, 'extension headers %s' % g['ext']
+            c = g['ext'][0][1]
+            # extension header length 2: PDU Type 0 with MSNP (bit 1), PPP/RQI/QFI, the 4 octets, next type
+            assert len(c) == 6 and c[0] == 0x02 and c[1] == 0x01, 'container %s' % c.hex()
+            seqs.append(struct.unpack('>I', c[2:6])[0])
+        assert seqs == [0, 1, 2], 'sequence numbers %s' % seqs
+    finally:
+        lst.close()
+        U.delete(s)
+    # another session, its own flow: its number starts at 0 again, and without IQFISN there is none
+    ies = replace_ie(mc_request(0xe022, b'\x02' + V4G, None), T_CREATE_QER, qer(indications=0x01, qfi=2))
+    r = U.establish(ies)
+    s = accepted(r, 'second flow')
+    lst = N3mbListener(mc_group_of(r))
+    try:
+        send_multicast('10.46.0.1', '232.1.1.1')
+        g = gtpu_parse(lst.packets()[0])
+        assert struct.unpack('>I', g['ext'][0][1][2:6])[0] == 0 and g['ext'][0][1][1] == 0x02, 'second flow container %s' % g['ext'][0][1].hex()
     finally:
         lst.close()
         U.delete(s)

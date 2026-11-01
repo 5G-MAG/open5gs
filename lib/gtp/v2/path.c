@@ -48,6 +48,14 @@ int ogs_gtp2_send_user_plane(
         ext_hdesc.array[i].pdu_type = header_desc->pdu_type;
         ext_hdesc.array[i].qos_flow_identifier =
             header_desc->qos_flow_identifier;
+        if (header_desc->mbs_sequence_number_presence) {
+            /* TS 38.415 cl. 5.5.2.1: MSNP set, the 4 octets of the DL MBS QFI Sequence Number after the QFI;
+             * TS 29.281 cl. 5.2.1: the extension header length is in units of 4 octets, so 2 here */
+            ext_hdesc.array[i].len = 2;
+            ext_hdesc.array[i].msnp = 1;
+            ext_hdesc.array[i].mbs_sequence_number =
+                htobe32(header_desc->mbs_sequence_number);
+        }
         i++;
     }
 

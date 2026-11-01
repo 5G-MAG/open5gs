@@ -312,6 +312,10 @@ typedef struct ogs_pfcp_qer_s {
 
     uint8_t                 qfi;
 
+    /* IQFISN of the QER Indications: the MB-UPF inserts the DL MBS QFI Sequence Number of the flow */
+    bool                    insert_mbs_qfi_sn;
+    uint32_t                mbs_qfi_sn;     /* the number of the next packet of the flow */
+
     ogs_pfcp_sess_t         *sess;
 } ogs_pfcp_qer_t;
 

@@ -382,6 +382,14 @@ void ogs_pfcp_send_g_pdu(
         header_desc.pdu_type =
             OGS_GTP2_EXTENSION_HEADER_PDU_TYPE_DL_PDU_SESSION_INFORMATION;
         header_desc.qos_flow_identifier = pdr->qer->qfi;
+
+        /* IQFISN: "the MB-UPF shall insert the DL MBS QFI Sequence Number in the PDU Session Container";
+         * a number per MBS QoS flow (TS 23.247 cl. 6.8: "the MB-UPF transmits the MBS data with the sequence
+         * number for each MBS QoS Flow"), counting the packets of the flow */
+        if (pdr->qer->insert_mbs_qfi_sn) {
+            header_desc.mbs_sequence_number_presence = true;
+            header_desc.mbs_sequence_number = pdr->qer->mbs_qfi_sn++;
+        }
     }
 
     if (sendhdr->udp.presence == true) {

@@ -30,7 +30,9 @@ extern "C" {
 
 #define OGS_GTP2_MAX_INDIRECT_TUNNEL 8
 
-#define OGS_GTPV1U_5GC_HEADER_LEN 16
+#define OGS_GTPV1U_5GC_HEADER_LEN 20
+/* 20: with the PDU Session Container of 8 octets that carries the DL MBS QFI Sequence Number (the other 5GC
+ * header being 16) */
 /*
  * 5GC GTP Header (16byte)
  *  o Flags(1byte) : 0x34
@@ -64,12 +66,18 @@ typedef struct ogs_gtp2_extension_header_s {
             struct {
 #define OGS_GTP2_EXTENSION_HEADER_PDU_TYPE_DL_PDU_SESSION_INFORMATION 0
 #define OGS_GTP2_EXTENSION_HEADER_PDU_TYPE_UL_PDU_SESSION_INFORMATION 1
-            ED2(uint8_t pdu_type:4;,
-                uint8_t spare1:4;);
+            /* TS 38.415 cl. 5.5.2.1, DL PDU SESSION INFORMATION: PDU Type, QMP, SNP, MSNP, spare */
+            ED5(uint8_t pdu_type:4;,
+                uint8_t qmp:1;,
+                uint8_t snp:1;,
+                uint8_t msnp:1;,
+                uint8_t spare1:1;);
             ED3(uint8_t paging_policy_presence:1;,
                 uint8_t reflective_qos_indicator:1;,
                 uint8_t qos_flow_identifier:6;);
-            };
+            /* DL MBS QFI Sequence Number, when msnp is 1 (extension header length 2) */
+            uint32_t mbs_sequence_number;
+            } __attribute__ ((packed));
             uint16_t udp_port;
             uint16_t pdcp_number;
         };
@@ -90,6 +98,8 @@ typedef struct ogs_gtp2_header_desc_s {
     /* GTP Extension Header */
     uint8_t qos_flow_identifier;
     uint8_t pdu_type;
+    bool mbs_sequence_number_presence;  /* DL MBS QFI Sequence Number in the PDU Session Container */
+    uint32_t mbs_sequence_number;
     ogs_port_t udp;
     bool pdcp_number_presence;
     uint16_t pdcp_number;

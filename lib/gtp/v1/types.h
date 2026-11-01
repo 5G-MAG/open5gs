@@ -31,7 +31,7 @@ extern "C" {
 
 #define OGS_GTP1_MAX_INDIRECT_TUNNEL 8
 
-#define OGS_GTPV1U_5GC_HEADER_LEN 16
+#define OGS_GTPV1U_5GC_HEADER_LEN 20
 /*
  * 5GC GTP Header (16byte)
  *  o Flags(1byte) : 0x34
