@@ -442,6 +442,42 @@ static void test_dnn_snssai(void)
     smf_mbs_sess_release(mbs_sess);
 }
 
+/* A TMGI refreshed while an MBS session uses it keeps its place in the index of sessions by TMGI: a second
+ * session on the same TMGI is still found to collide with it, and releasing the session removes it from the
+ * index. */
+static void test_tmgi_index_after_refresh(void)
+{
+    char *expiration = smf_tmgi_gen_expiration_time(60);
+    ogs_tmgi_t *tmgi = smf_tmgi_allocate(expiration);
+    smf_mbs_sess_t *first, *second, *third;
+
+    ogs_free(expiration);
+    CHECK(tmgi != NULL);
+    if (!tmgi) return;
+
+    first = smf_mbs_sess_create(tmgi, false, NULL, "BROADCAST", NULL, NULL);
+    CHECK(first != NULL);
+    if (!first) return;
+
+    /* the refresh of TMGI Allocate: the expiration time is replaced by a new string */
+    ogs_free(tmgi->expiration_time);
+    tmgi->expiration_time = ogs_strdup("2099-01-01T00:00:00Z");
+
+    second = smf_mbs_sess_create(tmgi, false, NULL, "BROADCAST", NULL, NULL);
+    CHECK(second == NULL);
+    if (second)
+        smf_mbs_sess_release(second);
+
+    smf_mbs_sess_release(first);
+
+    third = smf_mbs_sess_create(tmgi, false, NULL, "BROADCAST", NULL, NULL);
+    CHECK(third != NULL);
+    if (third)
+        smf_mbs_sess_release(third);
+
+    smf_tmgi_deallocate(tmgi);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -454,6 +490,7 @@ int main(void)
     test_tmgi_plmn();
     test_nid();
     test_dnn_snssai();
+    test_tmgi_index_after_refresh();
 
     printf("smf-mbs: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;

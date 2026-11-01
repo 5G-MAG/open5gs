@@ -57,7 +57,16 @@ static void smf_mbs_sess_list_hash_destroy(ogs_hash_t *mbs_sess_list_hash);
 
 static void smf_mbs_sessions_by_tmgi_add_mbs_sess(smf_mbs_sess_t *mbs_sess);
 static void smf_mbs_sessions_by_tmgi_remove_mbs_sess(smf_mbs_sess_t *mbs_sess);
-static void *smf_mbs_sessions_by_tmgi_key(ogs_tmgi_t *tmgi, int *klen);
+/* The key of the TMGI index is the identity of the TMGI (MBS Service ID and PLMN), not the bytes of the
+ * ogs_tmgi_t, which also hold the addresses of its strings: the expiration time is replaced when a TMGI is
+ * refreshed, which would move a session to another key while it is in use. The hash keeps the pointer of the
+ * key it is given, so the key lives in the list object it indexes. */
+#define SMF_MBS_TMGI_KEY_LEN (OGS_MAX_MBS_SERVICE_ID_LEN + sizeof(ogs_plmn_id_t))
+typedef struct smf_mbs_sess_by_tmgi_s {
+    ogs_list_t list;    /* must stay first: the hash value is used as an ogs_list_t */
+    uint8_t key[SMF_MBS_TMGI_KEY_LEN];
+} smf_mbs_sess_by_tmgi_t;
+static void smf_mbs_tmgi_key(const ogs_tmgi_t *tmgi, uint8_t key[SMF_MBS_TMGI_KEY_LEN]);
 
 static void smf_mbs_sessions_by_ssm_add_mbs_sess(smf_mbs_sess_t *mbs_sess);
 static void smf_mbs_sessions_by_ssm_remove_mbs_sess(smf_mbs_sess_t *mbs_sess);
@@ -218,8 +227,11 @@ bool smf_context_have_matching_mbs_session_id(smf_mbs_sess_t *mbs_session)
         int klen;
 
         ogs_debug("Checking MBS Session ID TMGI");
-        key = smf_mbs_sessions_by_tmgi_key(mbs_session->mbs_session_id.tmgi, &klen);
-        if (key) {
+        uint8_t tmgi_key[SMF_MBS_TMGI_KEY_LEN];
+        smf_mbs_tmgi_key(mbs_session->mbs_session_id.tmgi, tmgi_key);
+        key = tmgi_key;
+        klen = sizeof(tmgi_key);
+        {
             ogs_list_t *mbs_sess_list = (ogs_list_t*)ogs_hash_get(self.smf_mbs_sessions_by_tmgi, key, klen);
             ogs_debug("Found %i sessions matching TMGI", mbs_sess_list?ogs_list_count(mbs_sess_list):0);
             if (smf_mbs_sess_list_service_areas_overlap(mbs_sess_list, mbs_session)) return true;
@@ -4079,58 +4091,61 @@ static void smf_mbs_sess_list_hash_destroy(ogs_hash_t *mbs_sess_list_hash)
 
 static void smf_mbs_sessions_by_tmgi_add_mbs_sess(smf_mbs_sess_t *mbs_sess)
 {
-    int klen;
-    void *key;
+    uint8_t key[SMF_MBS_TMGI_KEY_LEN];
 
     if (mbs_sess && mbs_sess->mbs_session_id.is_tmgi) {
-        key = smf_mbs_sessions_by_tmgi_key(mbs_sess->mbs_session_id.tmgi, &klen);
-        ogs_list_t *mbs_sess_list = (ogs_list_t*)ogs_hash_get(self.smf_mbs_sessions_by_tmgi, key, klen);
-        if (!mbs_sess_list) {
-            mbs_sess_list = (ogs_list_t*)ogs_calloc(1, sizeof(ogs_list_t));
-            ogs_assert(mbs_sess_list);
-            ogs_hash_set(self.smf_mbs_sessions_by_tmgi, key, klen, mbs_sess_list);
+        smf_mbs_sess_by_tmgi_t *entry = NULL;
+
+        smf_mbs_tmgi_key(mbs_sess->mbs_session_id.tmgi, key);
+        entry = (smf_mbs_sess_by_tmgi_t*)ogs_hash_get(self.smf_mbs_sessions_by_tmgi, key, sizeof(key));
+        if (!entry) {
+            entry = (smf_mbs_sess_by_tmgi_t*)ogs_calloc(1, sizeof(*entry));
+            ogs_assert(entry);
+            memcpy(entry->key, key, sizeof(key));
+            ogs_hash_set(self.smf_mbs_sessions_by_tmgi, entry->key, sizeof(entry->key), entry);
         }
         smf_mbs_sess_lnode_t *lnode = (smf_mbs_sess_lnode_t*)ogs_calloc(1, sizeof(smf_mbs_sess_lnode_t));
         lnode->mbs_session = mbs_sess;
-        ogs_list_add(mbs_sess_list, lnode);
+        ogs_list_add(&entry->list, lnode);
     }
 }
 
 static void smf_mbs_sessions_by_tmgi_remove_mbs_sess(smf_mbs_sess_t *mbs_sess)
 {
-    int klen;
-    void *key;
+    uint8_t key[SMF_MBS_TMGI_KEY_LEN];
 
     if (mbs_sess && mbs_sess->mbs_session_id.is_tmgi) {
-        key = smf_mbs_sessions_by_tmgi_key(mbs_sess->mbs_session_id.tmgi, &klen);
-        ogs_list_t *mbs_sess_list = (ogs_list_t*)ogs_hash_get(self.smf_mbs_sessions_by_tmgi, key, klen);
-        if (mbs_sess_list) {
+        smf_mbs_sess_by_tmgi_t *entry = NULL;
+
+        smf_mbs_tmgi_key(mbs_sess->mbs_session_id.tmgi, key);
+        entry = (smf_mbs_sess_by_tmgi_t*)ogs_hash_get(self.smf_mbs_sessions_by_tmgi, key, sizeof(key));
+        if (entry) {
             smf_mbs_sess_lnode_t *next;
             smf_mbs_sess_lnode_t *lnode;
-            ogs_list_for_each_safe(mbs_sess_list, next, lnode) {
+            ogs_list_for_each_safe(&entry->list, next, lnode) {
                 if (lnode->mbs_session == mbs_sess) {
-                    ogs_list_remove(mbs_sess_list, lnode);
+                    ogs_list_remove(&entry->list, lnode);
                     ogs_free(lnode);
                     break;
                 }
             }
-            if (ogs_list_count(mbs_sess_list) == 0) {
-                ogs_hash_set(self.smf_mbs_sessions_by_tmgi, key, klen, NULL);
-                ogs_free(mbs_sess_list);
+            if (ogs_list_count(&entry->list) == 0) {
+                ogs_hash_set(self.smf_mbs_sessions_by_tmgi, key, sizeof(key), NULL);
+                ogs_free(entry);
             }
         }
     }
 }
 
-static void *smf_mbs_sessions_by_tmgi_key(ogs_tmgi_t *tmgi, int *klen)
+static void smf_mbs_tmgi_key(const ogs_tmgi_t *tmgi, uint8_t key[SMF_MBS_TMGI_KEY_LEN])
 {
-    if (!tmgi) {
-        *klen = 0;
-        return NULL;
-    }
+    ogs_assert(tmgi);
 
-    *klen = sizeof(ogs_tmgi_t) - sizeof(ogs_lnode_t);
-    return (void*)(((char*)tmgi) + sizeof(ogs_lnode_t));
+    memset(key, 0, SMF_MBS_TMGI_KEY_LEN);
+    if (tmgi->mbs_service_id)
+        memcpy(key, tmgi->mbs_service_id,
+                strnlen(tmgi->mbs_service_id, OGS_MAX_MBS_SERVICE_ID_LEN));
+    memcpy(key + OGS_MAX_MBS_SERVICE_ID_LEN, &tmgi->plmn_id, sizeof(tmgi->plmn_id));
 }
 
 static void smf_mbs_sessions_by_ssm_add_mbs_sess(smf_mbs_sess_t *mbs_sess)
