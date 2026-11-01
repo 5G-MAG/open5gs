@@ -160,6 +160,23 @@ bool upf_n4mb_check_session_establishment_request(
         }
     }
 
+    if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED) {
+        int i;
+
+        /* Here, not in ogs_pfcp_handle_create_far(): the Offending IE type of that function is one octet, and
+         * the type of MBS Multicast Parameters is 301. */
+        for (i = 0; i < OGS_MAX_NUM_OF_FAR && req->create_far[i].presence; i++) {
+            if (req->create_far[i].apply_action.presence &&
+                    (req->create_far[i].apply_action.u16 & OGS_PFCP_APPLY_ACTION_FSSM) &&
+                    req->create_far[i].mbs_multicast_parameters.presence == 0) {
+                ogs_error("Apply Action FSSM without MBS Multicast Parameters");
+                cause_value = OGS_PFCP_CAUSE_CONDITIONAL_IE_MISSING;
+                offending_ie_value = OGS_PFCP_MBS_MULTICAST_PARAMETERS_TYPE;
+                break;
+            }
+        }
+    }
+
     if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED &&
             req->create_traffic_endpoint.local_ingress_tunnel.presence) {
         ogs_pfcp_local_ingress_tunnel_t *lit = req->create_traffic_endpoint.local_ingress_tunnel.data;

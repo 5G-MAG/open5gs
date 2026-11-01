@@ -492,6 +492,16 @@ def t_U10_6_pool_port_is_returned_once():
         U.restart()
 
 
+@test
+def t_U06_3_fssm_without_mbs_multicast_parameters():
+    r = U.establish(replace_ie(good(cp_seid=0x6001), T_CREATE_FAR, far(apply=0x0008, params=False)))
+    assert r and cause(r) == CAUSE_CONDITIONAL_MISSING, 'cause %s' % (cause(r) if r else None)
+    assert offending(r) == T_MBS_MC_PARAMS, 'offending IE %s' % offending(r)
+    # without FSSM the parameters are not required (DROP, FAR for unicast transport only)
+    accepted_and_deleted(U.establish(replace_ie(good(cp_seid=0x6002, flags=0x00), T_CREATE_FAR, far(apply=0x0002, params=False))), 'DROP')
+    accepted_and_deleted(U.establish(good(cp_seid=0x6003)), 'FSSM with its parameters')
+
+
 # E-TESTS-BELOW
 
 
