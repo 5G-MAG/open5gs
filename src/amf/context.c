@@ -3175,6 +3175,8 @@ void amf_mbs_context_remove(amf_mbs_context_t *amf_mbs_context)
     amf_mbs_n2_info_remove_all(&amf_mbs_context->pending_n2_info_list);
     if (amf_mbs_context->notify_uri)
         ogs_free(amf_mbs_context->notify_uri);
+    if (amf_mbs_context->t_response)
+        ogs_timer_delete(amf_mbs_context->t_response);
 
     ogs_pool_free(&amf_mbs_context_pool, amf_mbs_context);
 
@@ -3216,6 +3218,14 @@ amf_mbs_context_t *amf_mbs_context_create(ogs_tmgi_t *tmgi)
 
     amf_mbs_context->stream_id = OGS_INVALID_POOL_ID;
 
+    amf_mbs_context->t_response = ogs_timer_add(ogs_app()->timer_mgr,
+            amf_timer_mbs_response_expire, OGS_UINT_TO_POINTER(amf_mbs_context->index));
+    if (!amf_mbs_context->t_response) {
+        ogs_error("ogs_timer_add() failed");
+        amf_mbs_context_remove(amf_mbs_context);
+        return NULL;
+    }
+
     return amf_mbs_context;
 }
 
@@ -3230,6 +3240,18 @@ amf_mbs_context_t *amf_mbs_context_find_by_ref(const char *mbs_context_ref)
     ogs_list_for_each(&self.amf_mbs_context_list, amf_mbs_context) {
         if (amf_mbs_context->mbs_context_ref &&
                 strcmp(amf_mbs_context->mbs_context_ref, mbs_context_ref) == 0)
+            return amf_mbs_context;
+    }
+
+    return NULL;
+}
+
+amf_mbs_context_t *amf_mbs_context_find_by_index(uint32_t index)
+{
+    amf_mbs_context_t *amf_mbs_context = NULL;
+
+    ogs_list_for_each(&self.amf_mbs_context_list, amf_mbs_context) {
+        if (amf_mbs_context->index == index)
             return amf_mbs_context;
     }
 

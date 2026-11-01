@@ -50,6 +50,8 @@ typedef enum {
     AMF_EVENT_5GSM_MESSAGE,
     AMF_EVENT_5GSM_TIMER,
 
+    AMF_EVENT_MBS_TIMER,
+
     MAX_NUM_OF_AMF_EVENT,
 
 } amf_event_e;
@@ -78,6 +80,7 @@ typedef struct amf_event_s {
     ogs_pool_id_t ran_ue_id;
     ogs_pool_id_t amf_ue_id;
     ogs_pool_id_t sess_id;
+    uint32_t mbs_context_index;
 
     ogs_timer_t *timer;
 } amf_event_t;

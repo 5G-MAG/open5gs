@@ -938,6 +938,16 @@ typedef struct amf_mbs_context_s {
      */
     ogs_list_t pending_n2_info_list;
 
+    /*
+     * The maximum response time of the ContextCreate or ContextUpdate in progress (TS 29.518 V18.14.0 cl. 5.6.2.2:
+     * "since the reception of the Namf_MBSBroadcast_ContextCreate Request"): armed only when the request carried
+     * maxResponseTime. response_deadline guards against an event of a timer that was stopped or of a context
+     * that has been replaced since.
+     */
+    ogs_timer_t *t_response;
+    ogs_time_t response_deadline;
+    bool response_window_is_update;
+
 } amf_mbs_context_t;
 
 void amf_context_init(void);
@@ -1117,6 +1127,7 @@ void amf_ue_save_to_release_session_list(amf_ue_t *amf_ue);
 amf_mbs_context_t *amf_mbs_context_create(ogs_tmgi_t *tmgi);
 amf_mbs_context_t *amf_mbs_context_find_by_ref(const char *mbs_context_ref);
 amf_mbs_context_t *amf_mbs_context_find_by_tmgi(const ogs_tmgi_t *tmgi);
+amf_mbs_context_t *amf_mbs_context_find_by_index(uint32_t index);
 void amf_mbs_context_remove(amf_mbs_context_t *amf_mbs_context);
 
 amf_mbs_n2_info_t *amf_mbs_n2_info_create(amf_gnb_t *gnb,

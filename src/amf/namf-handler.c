@@ -2130,6 +2130,66 @@ static bool amf_gnb_takes_mbs_session(amf_gnb_t *gnb, amf_mbs_context_t *mbs_con
     return false;
 }
 
+/*
+ * Arms the response window of \p mbs_context: TS 29.518 V18.14.0 cl. 5.6.2.2: "If the AMF does not receive responses
+ * from all NG-RAN nodes before the maximum response time elapses since the reception of the
+ * Namf_MBSBroadcast_ContextCreate Request, then the AMF should send one Namf_MBSBroadcast_ContextStatusNotify
+ * request indicating the incompletion of the Broadcast MBS session establishment." The time is the request's
+ * maxResponseTime, in seconds (TS 29.571 DurationSec). A request without it has no window: the specification
+ * names no default (Table 6.5.6.2.3-1, NOTE, case (b): "the AMF has not received the maximum response timer in the
+ * request from the MB-SMF").
+ */
+static void amf_mbs_context_start_response_window(
+        amf_mbs_context_t *mbs_context, int max_response_time, bool update)
+{
+    ogs_time_t duration = ogs_time_from_sec(max_response_time);
+
+    ogs_assert(mbs_context);
+    ogs_assert(mbs_context->t_response);
+
+    // DurationSec allows 0, a response time that has elapsed already; a timer cannot be armed with no duration.
+    if (duration < 1)
+        duration = 1;
+
+    mbs_context->response_window_is_update = update;
+    mbs_context->response_deadline = ogs_get_monotonic_time() + duration;
+    ogs_timer_start(mbs_context->t_response, duration);
+}
+
+/*
+ * The maximum response time has elapsed (event AMF_EVENT_MBS_TIMER): if not every NG-RAN has answered, one
+ * ContextStatusNotify request says that the establishment or the update is incomplete. The context may have been
+ * released or replaced since the timer was armed.
+ */
+void amf_namf_handle_mbs_broadcast_response_timeout(uint32_t mbs_context_index)
+{
+    amf_mbs_context_t *mbs_context = amf_mbs_context_find_by_index(mbs_context_index);
+    ogs_list_t n2_info_list;
+
+    if (!mbs_context) {
+        ogs_debug("MBS Broadcast response window: the context has been removed");
+        return;
+    }
+
+    if (ogs_get_monotonic_time() < mbs_context->response_deadline) {
+        ogs_debug("MBS Broadcast response window: stale timer event");
+        return;
+    }
+
+    if (mbs_context->gnb_response_count >= mbs_context->gnb_request_count)
+        return;
+
+    ogs_warn("MBS Broadcast [%s]: %d of %d NG-RANs have answered when the maximum response time elapsed",
+            mbs_context->mbs_context_ref, (int)mbs_context->gnb_response_count,
+            (int)mbs_context->gnb_request_count);
+
+    ogs_list_init(&n2_info_list);
+    amf_sbi_send_mbs_broadcast_context_status_notify(mbs_context, &n2_info_list,
+            mbs_context->response_window_is_update ?
+                OpenAPI_operation_status_MBS_SESSION_UPDATE_INCOMPLETE :
+                OpenAPI_operation_status_MBS_SESSION_START_INCOMPLETE);
+}
+
 int amf_namf_handle_mbs_broadcast_context_create(
         ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg)
 {
@@ -2357,9 +2417,8 @@ int amf_namf_handle_mbs_broadcast_context_create(
         goto cleanup;
     }
 
-    // TODO (borieher): Start timer to wait for reception?
-    //ogs_timer_start(mbs_context->gnb_timer,
-    //    amf_timer_cfg(AMF_TIMER_X)->duration);
+    if (ContextCreateReqData->is_max_response_time)
+        amf_mbs_context_start_response_window(mbs_context, ContextCreateReqData->max_response_time, false);
 
         // The response is deferred onto mbs_context->stream_id rather than sent as soon as the NGAP request is
         // broadcast. TS 29.518 V18.14.0 clause 5.6.2.2 step 2a: "The AMF should respond success when it
@@ -2639,6 +2698,7 @@ int amf_namf_handle_mbs_broadcast_context_update(
     mbs_context->gnb_request_count = 0;
     mbs_context->gnb_response_count = 0;
     amf_mbs_n2_info_remove_all(&mbs_context->pending_n2_info_list);
+    ogs_timer_stop(mbs_context->t_response);
 
     n2msgreq = ngap_build_broadcast_session_modification_request(mbs_context, has_service_area, n2mbssmbuf);
 
@@ -2683,6 +2743,9 @@ int amf_namf_handle_mbs_broadcast_context_update(
         rv = OGS_ERROR;
         goto cleanup;
     }
+
+    if (ContextUpdateReqData->is_max_response_time)
+        amf_mbs_context_start_response_window(mbs_context, ContextUpdateReqData->max_response_time, true);
 
     // Defer the SBI response the same way ContextCreate does -- cl.5.6.2.3 step 2a/2b: "On success, '200
     // OK' shall be returned if additional information needs to be returned ... '204 No Content' shall be
@@ -2777,6 +2840,8 @@ void amf_namf_handle_mbs_broadcast_ran_response(amf_mbs_context_t *mbs_context, 
 
     mbs_context->gnb_response_count++;
     completed = mbs_context->gnb_response_count >= mbs_context->gnb_request_count;
+    if (completed)
+        ogs_timer_stop(mbs_context->t_response);
     if (completed)
         operation_status = update ?
             OpenAPI_operation_status_MBS_SESSION_UPDATE_COMPLETE : OpenAPI_operation_status_MBS_SESSION_START_COMPLETE;
@@ -2996,6 +3061,7 @@ int amf_namf_handle_mbs_broadcast_context_delete(
         return OGS_ERROR;
     }
 
+    ogs_timer_stop(mbs_context->t_response);
     mbs_context->gnb_request_count = 0;
     mbs_context->gnb_response_count = 0;
     mbs_context->gnb_request_count = amf_mbs_context_send_release(mbs_context);

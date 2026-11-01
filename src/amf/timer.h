@@ -42,6 +42,8 @@ typedef enum {
     AMF_TIMER_MOBILE_REACHABLE,
     AMF_TIMER_IMPLICIT_DEREGISTRATION,
 
+    AMF_TIMER_MBS_RESPONSE,
+
     MAX_NUM_OF_AMF_TIMER,
 
 } amf_timer_e;
@@ -69,6 +71,8 @@ void amf_timer_ng_holding_timer_expire(void *data);
 
 void amf_timer_mobile_reachable_expire(void *data);
 void amf_timer_implicit_deregistration_expire(void *data);
+
+void amf_timer_mbs_response_expire(void *data);
 
 #ifdef __cplusplus
 }

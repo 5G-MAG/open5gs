@@ -1152,6 +1152,10 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
         ogs_fsm_dispatch(&amf_ue->sm, e);
         break;
 
+    case AMF_EVENT_MBS_TIMER:
+        amf_namf_handle_mbs_broadcast_response_timeout(e->mbs_context_index);
+        break;
+
     default:
         ogs_error("No handler for event %s", amf_event_get_name(e));
         break;
