@@ -23,6 +23,7 @@
 #include "sbi-path.h"
 #include "pfcp-path.h"
 #include "nmbsmf-handler.h"
+#include "mbs-update.h"
 
 static bool smf_nmbsmf_parse_tai(ogs_sbi_stream_t *stream, ogs_sbi_message_t *message, ogs_tai_t *tai, OpenAPI_tai_t *api_tai);
 static bool smf_nmbsmf_parse_ncgi(ogs_sbi_stream_t *stream, ogs_sbi_message_t *message, ogs_ncgi_t *ncgi, OpenAPI_ncgi_t *api_ncgi);
@@ -838,38 +839,22 @@ bool smf_nmbsmf_handle_mbs_session_create(
         // QFI is not part of the schema, so one is assigned sequentially per media component present, matching
         // this SMF's existing convention for regular-PDU-session QFIs.
     ogs_list_init(&mbs_sess->mbs_qos_flow_list);
-    if (CreateReqData->mbs_session->mbs_serv_info &&
-            CreateReqData->mbs_session->mbs_serv_info->mbs_media_comps) {
-        // mbsMediaComps is a map (TS 29.571: "the key ... is the mbsMedCompNum attribute"); the
-        // generator represents a map as a list of OpenAPI_map_t key/value pairs, not a list of the
-        // value type directly -- confirmed against OpenAPI_mbs_service_info_parseFromJSON()'s own
-        // parsing code before writing this, not assumed from the header alone.
-        OpenAPI_lnode_t *node;
+    {
+        smf_mbs_qos_flow_t *qos_flow = NULL;
         uint8_t next_qfi = 1;
-        OpenAPI_list_for_each(CreateReqData->mbs_session->mbs_serv_info->mbs_media_comps, node) {
-            OpenAPI_map_t *pair = (OpenAPI_map_t *)node->data;
-            OpenAPI_mbs_media_comp_rm_t *media_comp = pair ? (OpenAPI_mbs_media_comp_rm_t *)pair->value : NULL;
-            if (media_comp && media_comp->mbs_qo_s_req) {
-                smf_mbs_qos_flow_t *qos_flow = (smf_mbs_qos_flow_t *)ogs_calloc(1, sizeof(*qos_flow));
-                ogs_assert(qos_flow);
-                qos_flow->qfi = next_qfi++;
-                qos_flow->five_qi = (uint8_t)media_comp->mbs_qo_s_req->_5qi;
-                ogs_list_add(&mbs_sess->mbs_qos_flow_list, qos_flow);
-            }
-        }
-    }
-    if (ogs_list_count(&mbs_sess->mbs_qos_flow_list) == 0) {
-        // No clause, configuration option or documented default names what a single QoS flow should
-        // be when the AF supplies none at all (rule 12) -- 5QI 9 is TS 23.501 table 5.7.4-1's own
-        // standardised non-GBR default, used here as a stated, labelled engineering choice rather than
-        // silently repeating the old fabricated three-flow behaviour. Not claimed as spec-derived.
-        smf_mbs_qos_flow_t *qos_flow = (smf_mbs_qos_flow_t *)ogs_calloc(1, sizeof(*qos_flow));
-        ogs_assert(qos_flow);
-        qos_flow->qfi = 1;
-        qos_flow->five_qi = 9;
-        ogs_list_add(&mbs_sess->mbs_qos_flow_list, qos_flow);
-        ogs_warn("MBS Session Create: no mbsServInfo/mbsMediaComps QoS supplied, "
-                 "using a single default QoS flow (5QI 9)");
+
+        smf_mbs_qos_flows_from_service_info(CreateReqData->mbs_session->mbs_serv_info, &mbs_sess->mbs_qos_flow_list);
+        ogs_list_for_each(&mbs_sess->mbs_qos_flow_list, qos_flow)
+            qos_flow->qfi = next_qfi++;
+        if (!CreateReqData->mbs_session->mbs_serv_info ||
+                !CreateReqData->mbs_session->mbs_serv_info->mbs_media_comps ||
+                !((smf_mbs_qos_flow_t *)ogs_list_first(&mbs_sess->mbs_qos_flow_list))->med_comp_num)
+            ogs_warn("MBS Session Create: no mbsServInfo/mbsMediaComps QoS supplied, "
+                     "using a single default QoS flow (5QI 9)");
+
+        /* The documents an Update modifies: the service information and the service area as sent */
+        mbs_sess->mbs_serv_info_json = smf_mbs_service_info_to_json(CreateReqData->mbs_session->mbs_serv_info);
+        mbs_sess->mbs_service_area_json = smf_mbs_service_area_to_json(CreateReqData->mbs_session->mbs_service_area);
     }
 
         // MBS FSA ID (MBS Frequency Selection Area Identity) is read from TS 29.532
@@ -1076,6 +1061,15 @@ bool smf_nmbsmf_handle_mbs_session_patch(smf_mbs_sess_t *mbs_sess,
      * different response type. */
     memset(&sendmsg, 0, sizeof(sendmsg));
 
+    /* A session whose release has begun is no longer there to be updated: TS 29.532 V18.6.0 table 6.2.3.3.3.1-3,
+     * 404: "UNKNOWN_MBS_SESSION, if the indicated MBS session is not found in the MB-SMF." */
+    if (mbs_sess->release_triggered) {
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_NOT_FOUND, message, "Not Found",
+                "Requested MBS Session Update failed, the MBS session is being released",
+                NMBSMF_MBSESSION_UNKNOWN_MBS_SESSION);
+        return false;
+    }
+
     if (!message->PatchItemList) {
         ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
                     message, "Missing patch list", "Requested MBS Session Update failed, no patch list provided",
@@ -1084,6 +1078,10 @@ bool smf_nmbsmf_handle_mbs_session_patch(smf_mbs_sess_t *mbs_sess,
     }
 
     OpenAPI_lnode_t *node;
+    smf_mbs_update_t update;
+    smf_mbs_update_result_e update_result = SMF_MBS_UPDATE_OK;
+    bool has_modifications = false;
+    const char *update_detail = NULL;
     OpenAPI_list_for_each(message->PatchItemList, node) {
         OpenAPI_patch_item_t *patch_item = (OpenAPI_patch_item_t*)node->data;
         if (!patch_item->path || !patch_item->op) {
@@ -1091,6 +1089,13 @@ bool smf_nmbsmf_handle_mbs_session_patch(smf_mbs_sess_t *mbs_sess,
                     message, "Malformed patch list", "Requested MBS Session Update failed, patch list malformed",
                     "INVALID_MSG_FORMAT");
             return false;
+        }
+        /* The attributes TS 29.532 V18.6.0 cl. 5.3.2.3.1 lets a consumer modify for a broadcast session (the
+         * MBS service area, the MBS service information, the list of MBS FSA IDs) and contactPcfInd are applied
+         * together, below. */
+        if (smf_mbs_update_path_is_modifiable(patch_item->path)) {
+            has_modifications = true;
+            continue;
         }
         SWITCH(patch_item->path)
         CASE("/activityStatus")
@@ -1164,17 +1169,9 @@ bool smf_nmbsmf_handle_mbs_session_patch(smf_mbs_sess_t *mbs_sess,
                     "Requested MBS Session Update failed, update not allowed for one or more field paths",
                     "MODIFICATION_NOT_ALLOWED");
             return false;
-        CASE("/mbsServiceArea")
-        CASE("/mbsServiceArea/ncgiTaiList")
-        CASE("/mbsServiceArea/taiList")
         CASE("/extMbsServiceArea")
         CASE("/extMbsServiceArea/geographicAreaList")
         CASE("/extMbsServiceArea/civicAddressList")
-        CASE("/mbsServInfo")
-        CASE("/mbsServInfo/mbsMediaComps")
-        CASE("/mbsServInfo/mbsSdfResPrio")
-        CASE("/mbsServInfo/afAppId")
-        CASE("/mbsServInfo/mbsSessionAmbr")
         /* TS 29.532 clause 5.3.2.3.1 lists mbsSecurityContext (MSK/MTK key rotation) as modifiable for a
          * multicast session, unlike the fields above this block, which the same clause never lists as
          * updatable at all. This SMF has no multicast security-context state to update (mbsSecurityContext
@@ -1187,11 +1184,8 @@ bool smf_nmbsmf_handle_mbs_session_patch(smf_mbs_sess_t *mbs_sess,
             return false;
         DEFAULT
             /* handle array paths */
-            if (!strncmp(patch_item->path, "/mbsServiceArea/ncgiTaiList/", 28) ||
-                !strncmp(patch_item->path, "/mbsServiceArea/taiList/", 24) ||
-                !strncmp(patch_item->path, "/extMbsServiceArea/geographicAreaList/", 38) ||
-                !strncmp(patch_item->path, "/extMbsServiceArea/civicAddressList", 35) ||
-                !strncmp(patch_item->path, "/mbsServInfo/mbsMediaComps/", 27)) {
+            if (!strncmp(patch_item->path, "/extMbsServiceArea/geographicAreaList/", 38) ||
+                !strncmp(patch_item->path, "/extMbsServiceArea/civicAddressList", 35)) {
                 ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_NOT_IMPLEMENTED, message, "Update not implemented",
                         "Requested MBS Session Update failed, update for requested field path is not implemented", NULL);
                 return false;
@@ -1202,28 +1196,41 @@ bool smf_nmbsmf_handle_mbs_session_patch(smf_mbs_sess_t *mbs_sess,
             }
         END
     }
-    /* TS 29.532 V18.6.0 clause 5.3.2.3.1 step 2b: "If the MBS service area received in the
-     * request cannot be entirely covered by the MB-SMF service area, the MB-SMF shall reduce the
-     * MBS service area to be within the MB-SMF service area and continue the Update service
-     * operation using the reduced MBS service area."  The step then returns 200 OK and requires
-     * the MB-SMF to "provide in the response the representation of the updated MBS session
-     * including the reduced MBS service area in the redMbsServArea attribute set to the part of
-     * the requested MBS service area that is within the MB-SMF service area in which the MBS
-     * session has been updated".  Step 2a, unchanged and still the default, returns 204 No
-     * Content.  (Status codes are named without quotation marks here: the specification writes
-     * them inside its own quotation marks, which cannot be nested inside a quoted sentence.)
-     *
-     * Mirrors smf_n4mb_handle_session_establishment_response()'s own Create-side check
-     * (n4mb-handler.c) against the same smf_mbs_service_area_reduce() -- see that function's own
-     * scope note (TAI-list coverage only, S12). `mbs_sess->mbs_service_area` is this session's own
-     * requested area. PATCH `/mbsServiceArea` is answered 501 above and so never mutates it yet
-     * (a separate, unimplemented item -- not this one); this branch is therefore unreachable live
-     * until that is done, but is wired unconditionally on smf_mbs_service_area_reduce()'s own
-     * result so the reporting is already correct once it is. */
+    /* The attributes of the Update are applied together: all or none (TS 29.500 V18.10.0 cl. 5.2.7.2: a request
+     * that cannot be fulfilled is rejected with the most similar status code, "400 Bad Request" for what the
+     * client caused and "500 Server Internal Error" for the server). The causes are those of TS 29.532 V18.6.0
+     * table 6.2.3.3.3.1-3 (INVALID_MBS_SERVICE_INFO, ERROR_INPUT_PARAMETERS) and of TS 29.500 table 5.2.7.2-1
+     * (INVALID_MSG_FORMAT, INSUFFICIENT_RESOURCES). */
+    memset(&update, 0, sizeof(update));
+    if (has_modifications)
+        update_result = smf_mbs_sess_update(mbs_sess, message->PatchItemList, &update, &update_detail);
+    switch (update_result) {
+    case SMF_MBS_UPDATE_OK:
+        break;
+    case SMF_MBS_UPDATE_PATCH_FAILED:
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST, message, "Update failed",
+                update_detail, "INVALID_MSG_FORMAT");
+        return false;
+    case SMF_MBS_UPDATE_ERROR_INPUT_PARAMETERS:
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST, message, "Error input parameters",
+                update_detail, NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
+        return false;
+    case SMF_MBS_UPDATE_INVALID_MBS_SERVICE_INFO:
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST, message,
+                "Invalid MBS service information", update_detail, NMBSMF_MBSSESSION_INVALID_MBS_SERVICE_INFO);
+        return false;
+    default:
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR, message,
+                "Insufficient resources", update_detail, NMBSMF_MBSSESSION_INSUFFICIENT_RESOURCES);
+        return false;
+    }
+
+    /* TS 29.532 V18.6.0 cl. 5.3.2.3.1 step 2b: the "200 OK" response carries "the representation of the updated
+     * MBS session including the reduced MBS service area in the redMbsServArea attribute", step 2a, otherwise, "204
+     * No Content". (Status codes are named without quotation marks here: the specification writes them inside
+     * its own quotation marks, which cannot nest inside a quoted sentence.) */
     OpenAPI_mbs_service_area_t *Red_mbs_service_area = NULL;
-    ogs_mbs_service_area_t *reduced_mbs_service_area = NULL;
-    bool area_reduced = mbs_sess->mbs_service_area &&
-            smf_mbs_service_area_reduce(mbs_sess->mbs_service_area, &reduced_mbs_service_area);
+    bool area_reduced = update.area_reduced && mbs_sess->mbs_service_area;
 
     if (!area_reduced) {
         response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
@@ -1239,8 +1246,7 @@ bool smf_nmbsmf_handle_mbs_session_patch(smf_mbs_sess_t *mbs_sess,
         OpenAPI_ext_mbs_session_t *Ext_mbs_session = NULL;
         OpenAPI_update_rsp_data_t *UpdateRspData = NULL;
 
-        Red_mbs_service_area = ogs_sbi_build_mbs_service_area(reduced_mbs_service_area);
-        ogs_mbs_service_area_free(reduced_mbs_service_area);
+        Red_mbs_service_area = ogs_sbi_build_mbs_service_area(mbs_sess->mbs_service_area);
 
         /* Same field population as smf_n4mb_handle_session_establishment_response()'s own Create
          * response (n4mb-handler.c) -- kept identical rather than inventing new field coverage

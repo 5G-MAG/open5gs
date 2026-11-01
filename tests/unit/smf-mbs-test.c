@@ -14,6 +14,7 @@
 #include "n4mb-build.h"
 #include "namf-build.h"
 #include "nmbsmf-handler.h"
+#include "mbs-update.h"
 
 static int checks, failures;
 
@@ -878,6 +879,381 @@ static void test_per_flow_user_plane(void)
     smf_mbs_sess_release(mbs_sess);
 }
 
+
+static OpenAPI_patch_item_t *patch_item(OpenAPI_patch_operation_e op, const char *path, const char *from,
+        const char *value_json)
+{
+    cJSON *value = value_json ? cJSON_Parse(value_json) : NULL;
+    OpenAPI_any_type_t *any = value ? OpenAPI_any_type_create(value) : NULL;
+
+    if (value) cJSON_Delete(value);
+    return OpenAPI_patch_item_create(op, ogs_strdup(path), from ? ogs_strdup(from) : NULL, false, any);
+}
+
+static void free_patch_items(OpenAPI_list_t *items)
+{
+    OpenAPI_lnode_t *node;
+
+    OpenAPI_list_for_each(items, node)
+        OpenAPI_patch_item_free(node->data);
+    OpenAPI_list_free(items);
+}
+
+/* Applies one operation to a copy of the document text; returns the error or NULL, and the result in *out
+ * (allocated). */
+static const char *patch_one(const char *doc_text, OpenAPI_patch_operation_e op, const char *path,
+        const char *from, const char *value_json, char **out)
+{
+    cJSON *doc = cJSON_Parse(doc_text);
+    OpenAPI_list_t *items = OpenAPI_list_create();
+    const char *err;
+
+    OpenAPI_list_add(items, patch_item(op, path, from, value_json));
+    err = smf_json_patch_apply(doc, items);
+    *out = cJSON_PrintUnformatted(doc);
+    cJSON_Delete(doc);
+    free_patch_items(items);
+    return err;
+}
+
+/* RFC 6902: 4.1 add ("If the target location specifies an array index, a new value is inserted into the array at
+ * the specified index", "The specified index MUST NOT be greater than the number of elements in the array", "-"
+ * appends), 4.2 remove ("The target location MUST exist"), 4.3 replace ("The target location MUST exist"),
+ * 4.4 move, 4.5 copy, 4.6 test; RFC 6901: "~1" is "/" and "~0" is "~", an index has no leading zeros. */
+static void test_json_patch(void)
+{
+    const char *doc = "{\"a\":{\"b\":[1,2,3],\"c/d\":1,\"e~f\":2}}";
+    char *out;
+
+    CHECK(patch_one(doc, OpenAPI_patch_operation_add, "/a/x", NULL, "{\"k\":1}", &out) == NULL);
+    CHECK_STR("{\"a\":{\"b\":[1,2,3],\"c/d\":1,\"e~f\":2,\"x\":{\"k\":1}}}", out); ogs_free(out);
+    CHECK(patch_one(doc, OpenAPI_patch_operation_add, "/a/b/1", NULL, "9", &out) == NULL);
+    CHECK_STR("{\"a\":{\"b\":[1,9,2,3],\"c/d\":1,\"e~f\":2}}", out); ogs_free(out);
+    CHECK(patch_one(doc, OpenAPI_patch_operation_add, "/a/b/-", NULL, "4", &out) == NULL);
+    CHECK_STR("{\"a\":{\"b\":[1,2,3,4],\"c/d\":1,\"e~f\":2}}", out); ogs_free(out);
+    CHECK(patch_one(doc, OpenAPI_patch_operation_add, "/a/b/3", NULL, "4", &out) == NULL);   /* index == size */
+    ogs_free(out);
+    CHECK(patch_one(doc, OpenAPI_patch_operation_add, "/a/b/4", NULL, "4", &out) != NULL);   /* index > size */
+    ogs_free(out);
+    CHECK(patch_one(doc, OpenAPI_patch_operation_add, "/a/b/01", NULL, "4", &out) != NULL);  /* leading zero */
+    ogs_free(out);
+    CHECK(patch_one(doc, OpenAPI_patch_operation_add, "/z/y", NULL, "4", &out) != NULL);     /* no parent */
+    ogs_free(out);
+    CHECK(patch_one(doc, OpenAPI_patch_operation_add, "/a/b", NULL, "[]", &out) == NULL);    /* replaces a member */
+    CHECK_STR("{\"a\":{\"b\":[],\"c/d\":1,\"e~f\":2}}", out); ogs_free(out);
+
+    CHECK(patch_one(doc, OpenAPI_patch_operation_replace, "/a/b/1", NULL, "9", &out) == NULL);
+    CHECK_STR("{\"a\":{\"b\":[1,9,3],\"c/d\":1,\"e~f\":2}}", out); ogs_free(out);
+    CHECK(patch_one(doc, OpenAPI_patch_operation_replace, "/a/c~1d", NULL, "7", &out) == NULL);
+    CHECK_STR("{\"a\":{\"b\":[1,2,3],\"c/d\":7,\"e~f\":2}}", out); ogs_free(out);
+    CHECK(patch_one(doc, OpenAPI_patch_operation_replace, "/a/e~0f", NULL, "7", &out) == NULL);
+    CHECK_STR("{\"a\":{\"b\":[1,2,3],\"c/d\":1,\"e~f\":7}}", out); ogs_free(out);
+    CHECK(patch_one(doc, OpenAPI_patch_operation_replace, "/a/nothing", NULL, "7", &out) != NULL);
+    ogs_free(out);
+    CHECK(patch_one(doc, OpenAPI_patch_operation_replace, "/a/b/3", NULL, "7", &out) != NULL);
+    ogs_free(out);
+
+    CHECK(patch_one(doc, OpenAPI_patch_operation__remove, "/a/b/0", NULL, NULL, &out) == NULL);
+    CHECK_STR("{\"a\":{\"b\":[2,3],\"c/d\":1,\"e~f\":2}}", out); ogs_free(out);
+    CHECK(patch_one(doc, OpenAPI_patch_operation__remove, "/a/c~1d", NULL, NULL, &out) == NULL);
+    ogs_free(out);
+    CHECK(patch_one(doc, OpenAPI_patch_operation__remove, "/a/nothing", NULL, NULL, &out) != NULL);
+    ogs_free(out);
+    CHECK(patch_one(doc, OpenAPI_patch_operation__remove, "/a/b/3", NULL, NULL, &out) != NULL);
+    ogs_free(out);
+
+    CHECK(patch_one(doc, OpenAPI_patch_operation_move, "/a/m", "/a/b", NULL, &out) == NULL);
+    CHECK_STR("{\"a\":{\"c/d\":1,\"e~f\":2,\"m\":[1,2,3]}}", out); ogs_free(out);
+    CHECK(patch_one(doc, OpenAPI_patch_operation_move, "/a/b/0", "/a/b", NULL, &out) != NULL);  /* into itself */
+    ogs_free(out);
+    CHECK(patch_one(doc, OpenAPI_patch_operation_copy, "/a/m", "/a/b", NULL, &out) == NULL);
+    CHECK_STR("{\"a\":{\"b\":[1,2,3],\"c/d\":1,\"e~f\":2,\"m\":[1,2,3]}}", out); ogs_free(out);
+    CHECK(patch_one(doc, OpenAPI_patch_operation_copy, "/a/m", "/a/none", NULL, &out) != NULL);
+    ogs_free(out);
+
+    CHECK(patch_one(doc, OpenAPI_patch_operation_test, "/a/b/1", NULL, "2", &out) == NULL);
+    ogs_free(out);
+    CHECK(patch_one(doc, OpenAPI_patch_operation_test, "/a/b/1", NULL, "3", &out) != NULL);
+    ogs_free(out);
+    CHECK(patch_one(doc, OpenAPI_patch_operation_test, "/a/b", NULL, "[1,2,3]", &out) == NULL);
+    ogs_free(out);
+
+    /* an operation without its value, a path that is no pointer */
+    CHECK(patch_one(doc, OpenAPI_patch_operation_add, "/a/q", NULL, NULL, &out) != NULL);
+    ogs_free(out);
+    CHECK(patch_one(doc, OpenAPI_patch_operation_add, "a/q", NULL, "1", &out) != NULL);
+    ogs_free(out);
+}
+
+static const char *const area_1_text =
+    "{\"taiList\":[{\"plmnId\":{\"mcc\":\"001\",\"mnc\":\"01\"},\"tac\":\"1\"}]}";
+static const char *const serv_info_2_text =
+    "{\"mbsMediaComps\":{\"1\":{\"mbsMedCompNum\":1,\"mbsQoSReq\":{\"5qi\":9}},"
+    "\"2\":{\"mbsMedCompNum\":2,\"mbsQoSReq\":{\"5qi\":5}}}}";
+
+/* A session as the Create handler leaves it: flows from the service information, QFIs in order, user plane
+ * rules, the documents as sent. */
+static smf_mbs_sess_t *make_session(const char *serv_info, const char *area)
+{
+    ogs_tmgi_t *tmgi = smf_tmgi_allocate(smf_tmgi_gen_expiration_time(60));
+    smf_mbs_sess_t *mbs_sess;
+    OpenAPI_mbs_service_info_t *info = NULL;
+    smf_mbs_qos_flow_t *flow;
+    uint8_t qfi = 1;
+
+    if (!tmgi) return NULL;
+    mbs_sess = smf_mbs_sess_create(tmgi, true, NULL, "BROADCAST", NULL, NULL, false, NULL);
+    if (!mbs_sess) return NULL;
+    ogs_list_init(&mbs_sess->mbs_qos_flow_list);
+    ogs_list_init(&mbs_sess->mbs_fsa_id_list);
+    {
+        ogs_pfcp_node_t *node = NULL;
+        ogs_list_for_each(&ogs_pfcp_self()->pfcp_peer_list, node)
+            memcpy(&node->addr, node->sa_list, sizeof(node->addr));
+    }
+    if (serv_info) {
+        cJSON *json = cJSON_Parse(serv_info);
+        info = OpenAPI_mbs_service_info_parseFromJSON(json);
+        cJSON_Delete(json);
+    }
+    smf_mbs_qos_flows_from_service_info(info, &mbs_sess->mbs_qos_flow_list);
+    ogs_list_for_each(&mbs_sess->mbs_qos_flow_list, flow)
+        flow->qfi = qfi++;
+    mbs_sess->mbs_serv_info_json = smf_mbs_service_info_to_json(info);
+    if (info) OpenAPI_mbs_service_info_free(info);
+    if (area) {
+        cJSON *json = cJSON_Parse(area);
+        OpenAPI_mbs_service_area_t *api_area = OpenAPI_mbs_service_area_parseFromJSON(json);
+        cJSON_Delete(json);
+        smf_mbs_service_area_from_openapi(api_area, &mbs_sess->mbs_service_area);
+        mbs_sess->mbs_service_area_json = smf_mbs_service_area_to_json(api_area);
+        OpenAPI_mbs_service_area_free(api_area);
+    }
+    smf_mbs_sess_create_mbs_data_forwarding(mbs_sess);
+    return mbs_sess;
+}
+
+static int count_flows(smf_mbs_sess_t *mbs_sess)
+{
+    return ogs_list_count(&mbs_sess->mbs_qos_flow_list);
+}
+
+static smf_mbs_qos_flow_t *flow_of(smf_mbs_sess_t *mbs_sess, const char *key)
+{
+    smf_mbs_qos_flow_t *flow;
+
+    ogs_list_for_each(&mbs_sess->mbs_qos_flow_list, flow)
+        if (flow->med_comp_num && strcmp(flow->med_comp_num, key) == 0)
+            return flow;
+    return NULL;
+}
+
+static smf_mbs_update_result_e update_with(smf_mbs_sess_t *mbs_sess, smf_mbs_update_t *update, const char **detail,
+        OpenAPI_patch_operation_e op, const char *path, const char *value_json)
+{
+    OpenAPI_list_t *items = OpenAPI_list_create();
+    smf_mbs_update_result_e result;
+
+    OpenAPI_list_add(items, patch_item(op, path, NULL, value_json));
+    result = smf_mbs_sess_update(mbs_sess, items, update, detail);
+    free_patch_items(items);
+    return result;
+}
+
+static int count_tais(smf_mbs_sess_t *mbs_sess)
+{
+    ogs_tai_t *tai;
+    int n = 0;
+
+    if (!mbs_sess->mbs_service_area || !mbs_sess->mbs_service_area->tai_list)
+        return 0;
+    ogs_list_for_each(mbs_sess->mbs_service_area->tai_list, tai)
+        n++;
+    return n;
+}
+
+/* TS 29.532 V18.6.0 cl. 5.3.2.3.1: "The following parameters may be modified: ... MBS Service Area and/or; MBS
+ * service information." and for a broadcast MBS session "list of MBS FSA IDs", and "the NF service consumer shall
+ * include the corresponding "contactPcfInd" attribute within the set of requested modifications."; TS 23.247
+ * V18.8.0 cl. 7.1.1.6 step 4: "This may lead to addition of new MBS QoS Flow(s), removal of existing MBS QoS
+ * Flow(s) or update of existing MBS QoS Flow(s)." */
+static void test_update(void)
+{
+    smf_mbs_sess_t *mbs_sess = make_session(serv_info_2_text, area_1_text);
+    smf_mbs_update_t update;
+    const char *detail = NULL;
+    smf_mbs_qos_flow_t *flow;
+    int pdrs, qfi2;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+    CHECK(count_flows(mbs_sess) == 2);
+    CHECK(flow_of(mbs_sess, "1") && flow_of(mbs_sess, "1")->qfi == 1 && flow_of(mbs_sess, "1")->pdr);
+    CHECK(flow_of(mbs_sess, "2") && flow_of(mbs_sess, "2")->qfi == 2 && flow_of(mbs_sess, "2")->five_qi == 5);
+
+    /* the service area grows by one TAI: the area changes, the flows do not */
+    CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_add, "/mbsServiceArea/taiList/-",
+            "{\"plmnId\":{\"mcc\":\"001\",\"mnc\":\"01\"},\"tac\":\"2\"}") == SMF_MBS_UPDATE_OK);
+    CHECK(update.area_in_request && update.area_changed && !update.area_reduced);
+    CHECK(!update.flow_change.num_added && !update.flow_change.num_removed && !update.n2_info_changed);
+    CHECK(count_tais(mbs_sess) == 2);
+
+    /* the same request again leaves an area that is the same */
+    CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_replace, "/mbsServiceArea/taiList/1/tac",
+            "\"2\"") == SMF_MBS_UPDATE_OK);
+    CHECK(update.area_in_request && !update.area_changed);
+
+    /* the 5QI of a flow changes: same flow, same rules, other N2 information */
+    CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_replace,
+            "/mbsServInfo/mbsMediaComps/2/mbsQoSReq/5qi", "7") == SMF_MBS_UPDATE_OK);
+    CHECK(update.service_info_changed && update.flow_change.qos_changed && update.n2_info_changed);
+    CHECK(!update.flow_change.num_added && !update.flow_change.num_removed);
+    CHECK(flow_of(mbs_sess, "2") && flow_of(mbs_sess, "2")->five_qi == 7 && flow_of(mbs_sess, "2")->qfi == 2);
+
+    /* a media component comes: the lowest free QFI, a PDR, a FAR and a QER */
+    pdrs = ogs_list_count(&mbs_sess->pfcp.pdr_list);
+    CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_add, "/mbsServInfo/mbsMediaComps/3",
+            "{\"mbsMedCompNum\":3,\"mbsQoSReq\":{\"5qi\":9}}") == SMF_MBS_UPDATE_OK);
+    CHECK(update.flow_change.num_added == 1 && update.flow_change.num_removed == 0 && update.n2_info_changed);
+    CHECK(flow_of(mbs_sess, "3") && flow_of(mbs_sess, "3")->qfi == 3);
+    CHECK(ogs_list_count(&mbs_sess->pfcp.pdr_list) == pdrs + 1);
+    if (update.flow_change.num_added == 1) {
+        ogs_pfcp_pdr_t *pdr = update.flow_change.added[0];
+        CHECK(pdr == flow_of(mbs_sess, "3")->pdr && pdr->far && pdr->qer && pdr->qer->qfi == 3);
+        CHECK(pdr->precedence > flow_of(mbs_sess, "1")->pdr->precedence);
+    }
+
+    /* a media component goes: its rules go with it, the others keep theirs and their QFI */
+    qfi2 = flow_of(mbs_sess, "2")->qfi;
+    {
+        uint16_t pdr_id = flow_of(mbs_sess, "1")->pdr->id;
+        uint32_t qer_id = flow_of(mbs_sess, "1")->pdr->qer->id;
+        uint32_t far_id = flow_of(mbs_sess, "1")->pdr->far->id;
+
+        CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation__remove,
+                "/mbsServInfo/mbsMediaComps/1", NULL) == SMF_MBS_UPDATE_OK);
+        CHECK(update.flow_change.num_removed == 1 && update.flow_change.num_added == 0);
+        CHECK(update.flow_change.removed[0].pdr_id == pdr_id && update.flow_change.removed[0].qer_id == qer_id &&
+                update.flow_change.removed[0].far_id == far_id);
+    }
+    CHECK(count_flows(mbs_sess) == 2);
+    CHECK(flow_of(mbs_sess, "1") == NULL && flow_of(mbs_sess, "2")->qfi == qfi2 && flow_of(mbs_sess, "3")->qfi == 3);
+    CHECK(ogs_list_count(&mbs_sess->pfcp.pdr_list) == pdrs);
+    /* a media component takes the QFI that is free again */
+    CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_add, "/mbsServInfo/mbsMediaComps/4",
+            "{\"mbsMedCompNum\":4,\"mbsQoSReq\":{\"5qi\":9}}") == SMF_MBS_UPDATE_OK);
+    CHECK(flow_of(mbs_sess, "4") && flow_of(mbs_sess, "4")->qfi == 1);
+    /* every PDR has its own FAR and QER, none is shared */
+    ogs_list_for_each(&mbs_sess->mbs_qos_flow_list, flow) {
+        CHECK(flow->pdr && flow->pdr->far && flow->pdr->qer && flow->pdr->qer->qfi == flow->qfi);
+    }
+
+    /* an update that does not fit leaves everything as it was: five flows are more than the QERs of a session */
+    {
+        int before = count_flows(mbs_sess);
+        int rules = ogs_list_count(&mbs_sess->pfcp.qer_list);
+        char *info_before = ogs_strdup(mbs_sess->mbs_serv_info_json);
+
+        CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_add, "/mbsServInfo/mbsMediaComps/5",
+                "{\"mbsMedCompNum\":5,\"mbsQoSReq\":{\"5qi\":9}}") == SMF_MBS_UPDATE_OK);
+        CHECK(count_flows(mbs_sess) == before + 1);
+        CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_add, "/mbsServInfo/mbsMediaComps/6",
+                "{\"mbsMedCompNum\":6,\"mbsQoSReq\":{\"5qi\":9}}") == SMF_MBS_UPDATE_INSUFFICIENT_RESOURCES);
+        CHECK(count_flows(mbs_sess) == before + 1);
+        CHECK(ogs_list_count(&mbs_sess->pfcp.qer_list) == rules + 1);
+        CHECK(mbs_sess->mbs_serv_info_json && strstr(mbs_sess->mbs_serv_info_json, "\"6\"") == NULL);
+        ogs_free(info_before);
+    }
+
+    /* what cannot be applied or is erroneous changes nothing */
+    {
+        int flows = count_flows(mbs_sess), tais = count_tais(mbs_sess);
+
+        CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_replace,
+                "/mbsServInfo/mbsMediaComps/99/mbsQoSReq/5qi", "7") == SMF_MBS_UPDATE_PATCH_FAILED);
+        CHECK(detail != NULL);
+        CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_replace,
+                "/mbsServInfo/mbsMediaComps/2/mbsQoSReq/5qi", "300") == SMF_MBS_UPDATE_INVALID_MBS_SERVICE_INFO);
+        CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_replace, "/mbsServiceArea",
+                "{\"taiList\":[{\"tac\":\"1\"}]}") == SMF_MBS_UPDATE_ERROR_INPUT_PARAMETERS);
+        CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_add, "/mbsFsaIdList",
+                "[\"xyz\"]") == SMF_MBS_UPDATE_ERROR_INPUT_PARAMETERS);
+        CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_add, "/contactPcfInd",
+                "\"yes\"") == SMF_MBS_UPDATE_ERROR_INPUT_PARAMETERS);
+        CHECK(count_flows(mbs_sess) == flows && count_tais(mbs_sess) == tais);
+        CHECK(flow_of(mbs_sess, "2")->five_qi == 7);
+        CHECK(ogs_list_empty(&mbs_sess->mbs_fsa_id_list) && !mbs_sess->has_contact_pcf_ind);
+    }
+
+    /* the FSA IDs and contactPcfInd */
+    CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_add, "/mbsFsaIdList",
+            "[\"00abcd\",\"000007\"]") == SMF_MBS_UPDATE_OK);
+    CHECK(update.fsa_changed && update.n2_info_changed && ogs_list_count(&mbs_sess->mbs_fsa_id_list) == 2);
+    CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_replace, "/mbsFsaIdList",
+            "[\"00ABCD\",\"000007\"]") == SMF_MBS_UPDATE_OK);
+    CHECK(!update.fsa_changed);
+    CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_add, "/mbsFsaIdList/-",
+            "\"000008\"") == SMF_MBS_UPDATE_OK);
+    CHECK(update.fsa_changed && ogs_list_count(&mbs_sess->mbs_fsa_id_list) == 3);
+    CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation__remove, "/mbsFsaIdList",
+            NULL) == SMF_MBS_UPDATE_OK);
+    CHECK(update.fsa_changed && ogs_list_empty(&mbs_sess->mbs_fsa_id_list));
+    CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_add, "/contactPcfInd",
+            "true") == SMF_MBS_UPDATE_OK);
+    CHECK(update.contact_pcf_ind_changed && !update.n2_info_changed && mbs_sess->has_contact_pcf_ind &&
+            mbs_sess->contact_pcf_ind);
+    CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_replace, "/contactPcfInd",
+            "true") == SMF_MBS_UPDATE_OK);
+    CHECK(!update.contact_pcf_ind_changed);
+
+    smf_mbs_sess_release(mbs_sess);
+}
+
+/* TS 29.532 V18.6.0 cl. 5.3.2.3.1 step 2b: "If the MBS service area received in the request cannot be entirely
+ * covered by the MB-SMF service area, the MB-SMF shall reduce the MBS service area to be within the MB-SMF service
+ * area and continue the Update service operation using the reduced MBS service area." */
+static void test_update_reduced_area(void)
+{
+    ogs_mbs_service_area_t *saved = smf_self()->mbs_service_area;
+    ogs_mbs_service_area_t *coverage = area_of_tacs("1", "2");
+    smf_mbs_sess_t *mbs_sess;
+    smf_mbs_update_t update;
+    const char *detail = NULL;
+
+    smf_self()->mbs_service_area = coverage;
+    mbs_sess = make_session(NULL, area_1_text);
+    CHECK(mbs_sess != NULL);
+    if (mbs_sess) {
+        /* 1 and 9 requested, 1 and 2 covered: the session runs with 1 and the response reports it */
+        CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_replace, "/mbsServiceArea",
+                "{\"taiList\":[{\"plmnId\":{\"mcc\":\"001\",\"mnc\":\"01\"},\"tac\":\"1\"},"
+                "{\"plmnId\":{\"mcc\":\"001\",\"mnc\":\"01\"},\"tac\":\"9\"}]}") == SMF_MBS_UPDATE_OK);
+        CHECK(update.area_in_request && update.area_changed && update.area_reduced);
+        CHECK(mbs_sess->service_area_reduced && count_tais(mbs_sess) == 1);
+        CHECK(mbs_sess->mbs_service_area_json && strstr(mbs_sess->mbs_service_area_json, "\"9\"") != NULL);
+
+        /* a request that does not touch the area does not report one, and keeps the reduced area */
+        CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_add, "/contactPcfInd",
+                "false") == SMF_MBS_UPDATE_OK);
+        CHECK(!update.area_in_request && !update.area_reduced && !update.area_changed);
+        CHECK(count_tais(mbs_sess) == 1);
+
+        /* a covered area is not reduced */
+        CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_replace, "/mbsServiceArea",
+                "{\"taiList\":[{\"plmnId\":{\"mcc\":\"001\",\"mnc\":\"01\"},\"tac\":\"2\"}]}") == SMF_MBS_UPDATE_OK);
+        CHECK(update.area_changed && !update.area_reduced && !mbs_sess->service_area_reduced);
+        CHECK(count_tais(mbs_sess) == 1);
+
+        /* no area any more */
+        CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation__remove, "/mbsServiceArea",
+                NULL) == SMF_MBS_UPDATE_OK);
+        CHECK(update.area_changed && mbs_sess->mbs_service_area == NULL && mbs_sess->mbs_service_area_json == NULL);
+        smf_mbs_sess_release(mbs_sess);
+    }
+    smf_self()->mbs_service_area = saved;
+    ogs_mbs_service_area_free(coverage);
+}
+
 /* TS 24.008 V18.8.0 figure 10.5.154 (octets 3 to 8 of the TMGI, as TS 29.244 V18.10.0 cl. 8.2.206 requires):
  * octet 6 "MCC digit 2 | MCC digit 1", octet 7 "MNC digit 3 | MCC digit 3", octet 8 "MNC digit 2 | MNC digit 1"
  * (a two-digit MNC leaves digit 3 as F, as the identity form of the IE says: "If a network operator decides to use
@@ -974,6 +1350,9 @@ int main(void)
     test_date_time();
     test_service_info_validity();
     test_per_flow_user_plane();
+    test_json_patch();
+    test_update();
+    test_update_reduced_area();
     test_tmgi_octets();
     test_notification_routing();
 

@@ -547,6 +547,12 @@ typedef struct smf_mbs_qos_flow_s {
     ogs_lnode_t lnode;
     uint8_t qfi;
     uint8_t five_qi;
+    /* The key of the media component in mbsMediaComps (the mbsMedCompNum attribute) that gave the flow, NULL
+     * for the default flow of a session without MBS service information. An update keeps the QFI and the user
+     * plane rules of the flow with the same key. */
+    char *med_comp_num;
+    /* The downlink PDR of the flow in the PFCP session (its FAR and QER are the PDR's own) */
+    ogs_pfcp_pdr_t *pdr;
 } smf_mbs_qos_flow_t;
 
 /* TS 29.571 MbsFsaId (a 24-bit value, hex-encoded on the wire), as carried in TS 29.532's
@@ -621,6 +627,16 @@ typedef struct smf_mbs_sess_s {
     /* TS 29.532 MbsSession.mbsServInfo.mbsMediaComps[*].mbsQoSReq, parsed from the Create/Update
      * request -- see smf_nmbsmf_handle_mbs_session_create()'s own comment for what this closes. */
     ogs_list_t mbs_qos_flow_list;
+
+    /* The MBS service information and the MBS service area as the consumer sent them (JSON), the documents a
+     * later Update modifies (RFC 6902 addresses members of the representation the consumer holds, not of the
+     * reduced area this MB-SMF runs with). NULL when the request carried none. */
+    char *mbs_serv_info_json;
+    char *mbs_service_area_json;
+
+    /* contactPcfInd of the last Update (TS 29.532 V18.6.0 cl. 5.3.2.3.1) */
+    bool has_contact_pcf_ind;
+    bool contact_pcf_ind;
 
     /* TS 29.532 MbsSession.mbsFsaIdList, parsed from the Create/Update request -- see
      * smf_nmbsmf_handle_mbs_session_create()'s own comment for what this closes. */
@@ -796,6 +812,22 @@ void smf_mbs_sess_select_upf(smf_mbs_sess_t *mbs_sess);
 /* Provisions the user plane of the session: a PDR, a FAR and a QER for each MBS QoS flow. Returns false, with
  * nothing provisioned, when there are more flows than the QERs of a PFCP session (OGS_MAX_NUM_OF_QER). */
 bool smf_mbs_sess_create_mbs_data_forwarding(smf_mbs_sess_t *mbs_sess);
+
+/* What the replacement of the QoS flows of an MBS session did to its user plane rules: the PDRs created (their
+ * FAR and QER are the PDR's own) and the identifiers of the rules removed. */
+typedef struct smf_mbs_flow_change_s {
+    int num_added;
+    ogs_pfcp_pdr_t *added[OGS_MAX_NUM_OF_PDR];
+    int num_removed;
+    struct {
+        uint16_t pdr_id;
+        uint32_t far_id;
+        uint32_t qer_id;
+    } removed[OGS_MAX_NUM_OF_PDR];
+    bool qos_changed;       /* a flow that stays has another 5QI */
+} smf_mbs_flow_change_t;
+
+bool smf_mbs_sess_replace_flows(smf_mbs_sess_t *mbs_sess, ogs_list_t *new_flows, smf_mbs_flow_change_t *change);
 
 bool smf_context_have_matching_mbs_session_id(smf_mbs_sess_t *mbs_session);
 

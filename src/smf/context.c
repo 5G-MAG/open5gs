@@ -3841,6 +3841,12 @@ static void smf_mbs_sess_free(smf_mbs_sess_t *smf_mbs_sess)
     if (smf_mbs_sess->termination_time)
         ogs_free(smf_mbs_sess->termination_time);
 
+    if (smf_mbs_sess->mbs_serv_info_json)
+        ogs_free(smf_mbs_sess->mbs_serv_info_json);
+
+    if (smf_mbs_sess->mbs_service_area_json)
+        ogs_free(smf_mbs_sess->mbs_service_area_json);
+
     // If not allocated with MBS session, TMGI is allocated/freed separately. Location dependent sessions of
     // one TMGI share it: it goes with the last of them.
     if (smf_mbs_sess->tmgi_allocated && smf_mbs_sess->tmgi) {
@@ -3880,8 +3886,11 @@ static void smf_mbs_sess_free(smf_mbs_sess_t *smf_mbs_sess)
 
     {
         smf_mbs_qos_flow_t *qos_flow = NULL, *next_qos_flow = NULL;
-        ogs_list_for_each_safe(&smf_mbs_sess->mbs_qos_flow_list, next_qos_flow, qos_flow)
+        ogs_list_for_each_safe(&smf_mbs_sess->mbs_qos_flow_list, next_qos_flow, qos_flow) {
+            if (qos_flow->med_comp_num)
+                ogs_free(qos_flow->med_comp_num);
             ogs_free(qos_flow);
+        }
     }
 
     {
@@ -4226,7 +4235,7 @@ void smf_mbs_sess_select_upf(smf_mbs_sess_t *mbs_sess)
 
 /* The downlink PDR, FAR and QER of one MBS QoS flow (see below). precedence is the ordinal of the flow, from 1: a
  * Precedence of 0 is not sent (ogs_pfcp_build_create_pdr() leaves it out) and the MB-UPF requires the IE. */
-static void smf_mbs_sess_add_flow_forwarding(smf_mbs_sess_t *mbs_sess, uint8_t qfi, uint32_t precedence)
+static ogs_pfcp_pdr_t *smf_mbs_sess_add_flow_forwarding(smf_mbs_sess_t *mbs_sess, uint8_t qfi, uint32_t precedence)
 {
     ogs_pfcp_pdr_t *dl_pdr = NULL;
     ogs_pfcp_far_t *dl_far = NULL;
@@ -4314,6 +4323,8 @@ static void smf_mbs_sess_add_flow_forwarding(smf_mbs_sess_t *mbs_sess, uint8_t q
     ogs_assert(dl_qer);
     dl_qer->qfi = qfi;
     ogs_pfcp_pdr_associate_qer(dl_pdr, dl_qer);
+
+    return dl_pdr;
 }
 
 
@@ -4353,12 +4364,143 @@ bool smf_mbs_sess_create_mbs_data_forwarding(smf_mbs_sess_t *mbs_sess)
     // TS 29.244 V18.10.0 cl. 5.34.2.2: "for each MBS QoS flow: a Create PDR ... a Create QER ... a Create FAR".
     // A session whose request carried no QoS requirement (the handler always adds one) has the one flow QFI 1.
     if (ogs_list_empty(&mbs_sess->mbs_qos_flow_list)) {
-        smf_mbs_sess_add_flow_forwarding(mbs_sess, 1, 1);
-        return true;
+        flow = ogs_calloc(1, sizeof(*flow));
+        ogs_assert(flow);
+        flow->qfi = 1;
+        flow->five_qi = 9;
+        ogs_list_add(&mbs_sess->mbs_qos_flow_list, flow);
     }
 
     ogs_list_for_each(&mbs_sess->mbs_qos_flow_list, flow)
-        smf_mbs_sess_add_flow_forwarding(mbs_sess, flow->qfi, ordinal++);
+        flow->pdr = smf_mbs_sess_add_flow_forwarding(mbs_sess, flow->qfi, ordinal++);
+
+    return true;
+}
+
+static bool smf_mbs_qos_flow_same_media_component(
+        const smf_mbs_qos_flow_t *a, const smf_mbs_qos_flow_t *b)
+{
+    if (!a->med_comp_num || !b->med_comp_num)
+        return !a->med_comp_num && !b->med_comp_num;
+    return strcmp(a->med_comp_num, b->med_comp_num) == 0;
+}
+
+/* Replaces the QoS flows of an MBS session by new_flows (their key and 5QI set, QFI and PDR not), and the
+ * user plane rules with them: a flow with the key of a flow of the session keeps its QFI and its rules, another
+ * flow gets the lowest free QFI and a PDR, a FAR and a QER, a flow of the session that is not in new_flows is
+ * taken out with its rules. The rules of the new flows are added before those of the removed flows are taken
+ * out, so that no identifier is used by both in one PFCP message. TS 29.244 V18.10.0 cl. 5.34.2.2: "for each
+ * MBS QoS flow: a Create PDR ... a Create QER ... a Create FAR". On success new_flows is consumed (its flows
+ * are the session's) and *change tells what the user plane has to be told. On failure nothing is changed and
+ * new_flows is not touched. */
+bool smf_mbs_sess_replace_flows(smf_mbs_sess_t *mbs_sess, ogs_list_t *new_flows, smf_mbs_flow_change_t *change)
+{
+    smf_mbs_qos_flow_t *flow = NULL, *next = NULL, *old = NULL;
+    uint64_t used_qfi = 0;      /* bit q: QFI q is the QFI of a flow that stays or was added */
+    uint32_t precedence = 0;
+    int num_kept = 0, num_new = 0, num_old = 0;
+    ogs_pfcp_pdr_t *pdr = NULL;
+
+    ogs_assert(mbs_sess);
+    ogs_assert(new_flows);
+    ogs_assert(change);
+
+    memset(change, 0, sizeof(*change));
+
+    /* which flows stay: they decide how many rules the session has to hold at once */
+    ogs_list_for_each(new_flows, flow) {
+        num_new++;
+        ogs_list_for_each(&mbs_sess->mbs_qos_flow_list, old) {
+            if (smf_mbs_qos_flow_same_media_component(flow, old)) {
+                num_kept++;
+                break;
+            }
+        }
+    }
+    ogs_list_for_each(&mbs_sess->mbs_qos_flow_list, old)
+        num_old++;
+
+    /* the rules of the flows that go and those that come are in the session together for one message */
+    if (num_new > OGS_MAX_NUM_OF_QER ||
+            num_old + (num_new - num_kept) > OGS_MAX_NUM_OF_QER) {
+        ogs_error("MBS QoS flows %d -> %d with %d kept need more than the %d QERs of a PFCP session",
+                num_old, num_new, num_kept, OGS_MAX_NUM_OF_QER);
+        return false;
+    }
+
+    ogs_list_for_each(&mbs_sess->mbs_qos_flow_list, old)
+        if (old->pdr && old->pdr->precedence > precedence)
+            precedence = old->pdr->precedence;
+
+    /* flows that stay */
+    ogs_list_for_each(new_flows, flow) {
+        ogs_list_for_each(&mbs_sess->mbs_qos_flow_list, old) {
+            if (!smf_mbs_qos_flow_same_media_component(flow, old))
+                continue;
+            flow->qfi = old->qfi;
+            flow->pdr = old->pdr;
+            if (flow->five_qi != old->five_qi)
+                change->qos_changed = true;
+            used_qfi |= (uint64_t)1 << flow->qfi;
+            break;
+        }
+    }
+
+    /* flows that come: the lowest free QFI, 1 to SMF_MBS_MAX_QOS_FLOWS */
+    ogs_list_for_each(new_flows, flow) {
+        uint8_t qfi;
+
+        if (flow->qfi)
+            continue;
+        for (qfi = 1; qfi <= 63 && (used_qfi & ((uint64_t)1 << qfi)); qfi++)
+            ;
+        if (qfi > 63) {
+            ogs_error("No free QFI for an MBS QoS flow");
+            return false;
+        }
+        flow->qfi = qfi;
+        used_qfi |= (uint64_t)1 << qfi;
+    }
+
+    /* From here nothing can fail but the allocation of the rules: those of the flows that come are added
+     * first. */
+    ogs_list_for_each(new_flows, flow) {
+        if (flow->pdr)
+            continue;
+        pdr = smf_mbs_sess_add_flow_forwarding(mbs_sess, flow->qfi, ++precedence);
+        flow->pdr = pdr;
+        change->added[change->num_added++] = pdr;
+    }
+
+    /* flows that go */
+    ogs_list_for_each_safe(&mbs_sess->mbs_qos_flow_list, next, old) {
+        bool stays = false;
+
+        ogs_list_for_each(new_flows, flow) {
+            if (flow->pdr == old->pdr) {
+                stays = true;
+                break;
+            }
+        }
+        ogs_list_remove(&mbs_sess->mbs_qos_flow_list, old);
+        if (!stays && old->pdr) {
+            change->removed[change->num_removed].pdr_id = old->pdr->id;
+            change->removed[change->num_removed].far_id = old->pdr->far->id;
+            change->removed[change->num_removed].qer_id = old->pdr->qer->id;
+            change->num_removed++;
+            ogs_pfcp_far_remove(old->pdr->far);
+            ogs_pfcp_qer_remove(old->pdr->qer);
+            ogs_pfcp_pdr_remove(old->pdr);
+        }
+        if (old->med_comp_num)
+            ogs_free(old->med_comp_num);
+        ogs_free(old);
+    }
+
+    ogs_list_for_each_safe(new_flows, next, flow) {
+        ogs_list_remove(new_flows, flow);
+        ogs_list_add(&mbs_sess->mbs_qos_flow_list, flow);
+    }
 
     return true;
 }
