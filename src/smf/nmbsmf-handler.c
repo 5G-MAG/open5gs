@@ -194,6 +194,21 @@ bool smf_nmbsmf_handle_tmgi_allocate(
         int i;
         for (i = 0; i < TmgiAllocate->tmgi_number; i++) {
             tmgi_allocated = smf_tmgi_allocate(expiration_time);
+            if (!tmgi_allocated) {
+                ogs_error("TMGI Allocate: smf_tmgi_allocate() failed");
+                /* TS 29.500 V18.10.0 table 5.2.7.2-1, row SYSTEM_FAILURE, "500 Internal Server Error":
+                 * "The request is rejected due to generic error condition in the NF." */
+                ogs_sbi_server_send_error(stream,
+                    OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+                    message, "System failure", "Cannot allocate a TMGI",
+                    NMBSMF_TMGI_SYSTEM_FAILURE);
+                OpenAPI_list_for_each(tmgi_list, node)
+                    OpenAPI_tmgi_free(node->data);
+                OpenAPI_list_free(tmgi_list);
+                tmgi_list = NULL;
+                rv = OGS_ERROR;
+                goto cleanup;
+            }
             Tmgi_copy = ogs_sbi_build_tmgi(tmgi_allocated);
             OpenAPI_list_add(tmgi_list, Tmgi_copy);
         }
@@ -487,6 +502,16 @@ bool smf_nmbsmf_handle_mbs_session_create(
         // TMGI allocate
         expiration_time = smf_tmgi_gen_expiration_time(OGS_DEFAULT_EXPIRATION_TIME_VALIDITY);
         tmgi = smf_tmgi_allocate(expiration_time);
+        if (!tmgi) {
+            ogs_error("MBS Session Create: smf_tmgi_allocate() failed");
+            /* TS 29.500 V18.10.0 table 5.2.7.2-1, row SYSTEM_FAILURE, "500 Internal Server Error":
+             * "The request is rejected due to generic error condition in the NF." */
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+                message, "System failure", "Cannot allocate a TMGI",
+                NMBSMF_MBSSESSION_SYSTEM_FAILURE);
+            rv = OGS_ERROR;
+            goto cleanup;
+        }
         tmgi_allocated = true;
     }
 

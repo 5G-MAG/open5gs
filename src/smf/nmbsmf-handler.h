@@ -34,6 +34,7 @@ extern "C" {
 #define NMBSMF_TMGI_MANDATORY_IE_INCORRECT  "MANDATORY_IE_INCORRECT"
 #define NMBSMF_TMGI_INSUFFICIENT_RESOURCES  "INSUFFICIENT_RESOURCES"
 #define NMBSMF_TMGI_UNKNOWN_TMGI            "UNKNOWN_TMGI"
+#define NMBSMF_TMGI_SYSTEM_FAILURE          "SYSTEM_FAILURE"
 /* The generic cause for a missing mandatory query parameter, which is this operation's tmgi-list on
  * DELETE (see smf_nmbsmf_handle_tmgi_deallocate()).
  *
@@ -71,6 +72,7 @@ bool smf_nmbsmf_handle_tmgi_deallocate(
 #define NMBSMF_MBSSESSION_MBS_SESSION_ALREADY_CREATED "MBS_SESSION_ALREADY_CREATED"
 #define NMBSMF_MBSSESSION_UNKNOWN_TMGI                "UNKNOWN_TMGI"
 #define NMBSMF_MBSESSION_UNKNOWN_MBS_SESSION          "UNKNOWN_MBS_SESSION"
+#define NMBSMF_MBSSESSION_SYSTEM_FAILURE              "SYSTEM_FAILURE"
 
 /* Nmbsmf_MBSSession Service - MBS Session Create service operation */
 bool smf_nmbsmf_handle_mbs_session_create(

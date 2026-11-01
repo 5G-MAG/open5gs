@@ -3452,6 +3452,37 @@ char *smf_tmgi_gen_expiration_time(int validity_seconds)
     return expiration_time;
 }
 
+/* TS 23.003 V18.8.0 clause 30.2, item 3: "The MNC identifies the PLMN which the MB-SMF belongs to". That
+ * PLMN is the first of the serving PLMNs of the configuration and, when none is configured, the PLMN of
+ * the first tracking area of the SMF information (smf.info.tai). Returns false when the configuration
+ * names no PLMN, so that a TMGI is never given an all-zero PLMN. */
+bool smf_tmgi_own_plmn(ogs_plmn_id_t *plmn_id)
+{
+    ogs_sbi_nf_instance_t *nf_instance = NULL;
+    ogs_sbi_nf_info_t *nf_info = NULL;
+
+    ogs_assert(plmn_id);
+
+    if (ogs_local_conf()->num_of_serving_plmn_id > 0) {
+        memcpy(plmn_id, &ogs_local_conf()->serving_plmn_id[0], sizeof(*plmn_id));
+        return true;
+    }
+
+    nf_instance = ogs_sbi_self()->nf_instance;
+    ogs_assert(nf_instance);
+
+    ogs_list_for_each(&nf_instance->nf_info_list, nf_info) {
+        if (nf_info->nf_type != OpenAPI_nf_type_SMF)
+            continue;
+        if (nf_info->smf.num_of_nr_tai > 0) {
+            memcpy(plmn_id, &nf_info->smf.nr_tai[0].plmn_id, sizeof(*plmn_id));
+            return true;
+        }
+    }
+
+    return false;
+}
+
 ogs_tmgi_t *smf_tmgi_allocate(char *expiration_time)
 {
     ogs_tmgi_t *tmgi = NULL;
@@ -3466,16 +3497,11 @@ ogs_tmgi_t *smf_tmgi_allocate(char *expiration_time)
     // Option 1: TMGI range
     // TODO (borieher): Grab TMGI from the TMGI range
 
-    // Option 2: PLMN from SMF info, then a random MBS Service ID that is free within that PLMN
-    // NOTE (borieher): What happens when there is more than one PLMN?
-    ogs_sbi_nf_info_t *nf_info = NULL;
-    ogs_list_for_each(&ogs_sbi_self()->nf_instance->nf_info_list, nf_info) {
-        ogs_sbi_smf_info_t *smf_info = &nf_info->smf;
-
-        // NOTE (borieher): Ignoring num_of_nr_tai_range for now, using num_of_nr_tai
-        for (int l = 0; l < smf_info->num_of_nr_tai; l++) {
-            memcpy(&tmgi->plmn_id, &smf_info->nr_tai[l].plmn_id, sizeof(ogs_plmn_id_t));
-        }
+    // Option 2: the MB-SMF's own PLMN, then a random MBS Service ID that is free within that PLMN
+    if (!smf_tmgi_own_plmn(&tmgi->plmn_id)) {
+        ogs_error("smf_tmgi_allocate(): no PLMN is configured for this MB-SMF (global serving PLMN or smf.info.tai)");
+        smf_tmgi_remove(tmgi);
+        return NULL;
     }
 
     tmgi->mbs_service_id = smf_tmgi_pick_mbs_service_id(&self.tmgi_list,
