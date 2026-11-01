@@ -2016,6 +2016,50 @@ def t_flow_with_unicast_peers_added_and_removed():
         U.delete(s)
 
 
+@test
+def t_empty_grouped_ie_is_a_message_with_its_members_missing():
+    """TS 29.244 cl. 8.1.1: Length "n" is the length of the content, so a grouped IE of length 0 is a well formed IE
+    with no member; cl. 7.6.6 then has the request answered with the missing member, not dropped."""
+    def empty(t):
+        return ie(t, b'')
+
+    def est(what, t, want_cause, want_off):
+        r = U.establish(replace_ie(good(0xf001), t, empty(t)))
+        assert r is not None, what + ': no response (the request was dropped)'
+        # the clause names "the type of the missing mandatory IE": any of the members that are missing
+        assert cause(r) == want_cause and offending(r) in want_off, '%s: cause %s offending %s' % (what, cause(r), offending(r))
+        assert U.alive()
+
+    est('empty Create PDR', T_CREATE_PDR, CAUSE_MANDATORY_MISSING, (T_PDR_ID, T_PRECEDENCE, T_PDI))
+    est('empty Create FAR', T_CREATE_FAR, CAUSE_MANDATORY_MISSING, (T_FAR_ID, T_APPLY))
+    est('empty Create QER', T_CREATE_QER, CAUSE_MANDATORY_MISSING, (T_QER_ID, T_GATE))
+    # a grouped IE nested in another
+    ies = replace_ie(good(0xf002), T_CREATE_PDR, ie(T_CREATE_PDR, [ie(T_PDR_ID, struct.pack('>H', 1)), ie(T_PRECEDENCE, struct.pack('>I', 1)),
+                                                                   ie(T_PDI, b''), ie(T_FAR_ID, struct.pack('>I', 1))]))
+    r = U.establish(ies)
+    assert r is not None, 'empty PDI: no response'
+    assert cause(r) == CAUSE_MANDATORY_MISSING and offending(r) == T_SRC_IF, 'empty PDI: %s/%s' % (cause(r), offending(r))
+    # a session that exists: modification and removal requests with empty grouped IEs
+    r = U.establish(smf_session(0xf003))
+    s = accepted(r, 'session')
+    try:
+        for what, t, c, o in (('Update FAR', T_UPDATE_FAR, CAUSE_MANDATORY_MISSING, T_FAR_ID),
+                              ('Remove PDR', T_REMOVE_PDR, CAUSE_MANDATORY_MISSING, T_PDR_ID),
+                              ('Remove FAR', T_REMOVE_FAR, CAUSE_MANDATORY_MISSING, T_FAR_ID),
+                              ('Remove QER', T_REMOVE_QER, CAUSE_MANDATORY_MISSING, T_QER_ID)):
+            m = modify(s, empty(t))
+            assert m is not None, 'empty %s: no response' % what
+            assert cause(m) == c and offending(m) == o, 'empty %s: cause %s offending %s' % (what, cause(m), offending(m))
+        m = modify(s, ie(T_CREATE_PDR, b''))
+        assert m is not None and cause(m) == CAUSE_MANDATORY_MISSING and offending(m) == T_PDR_ID, 'empty Create PDR in a modification'
+        assert U.alive()
+    finally:
+        U.delete(s)
+    # a node related message: an empty optional grouped IE (UE IP Address Pool Information, 233) does not stop the association
+    r = U.request(5, [ie(T_NODE_ID, b'\x00' + socket.inet_aton('127.0.0.77')), ie(96, struct.pack('>I', 3900000000)), empty(233)])
+    assert r is not None and r['type'] == 6, 'Association Setup Request with an empty grouped IE: no response'
+
+
 # E-TESTS-BELOW
 
 

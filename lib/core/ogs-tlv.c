@@ -442,6 +442,10 @@ ogs_tlv_t *ogs_tlv_parse_block(uint32_t length, void *data, uint8_t mode)
     ogs_tlv_t *prev = NULL;
     ogs_tlv_t *curr = NULL;
 
+    /* No element to read: nothing may be read from data */
+    if (length == 0)
+        return NULL;
+
     root = curr = ogs_tlv_get();
 
     ogs_assert(curr);

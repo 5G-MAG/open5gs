@@ -697,6 +697,14 @@ static int tlv_parse_compound(void *msg, ogs_tlv_desc_t *parent_desc,
         }
 
         if (desc->ctype == OGS_TLV_COMPOUND) {
+            /* A compound TLV whose length is 0 has no member: it is
+             * present, and each of its members is absent */
+            if (tlv->length == 0) {
+                *presence_p = 1;
+                tlv = tlv->next;
+                continue;
+            }
+
             emb_tlv = ogs_tlv_parse_embedded_block(tlv, mode);
             if (emb_tlv == NULL) {
                 ogs_error("Error while parse TLV");
