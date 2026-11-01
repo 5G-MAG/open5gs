@@ -611,7 +611,8 @@ bool amf_sbi_send_n1_n2_failure_notify(
  * already expects for N1N2MessageTransferFailureNotify.
  */
 bool amf_sbi_send_mbs_broadcast_context_status_notify(
-        amf_mbs_context_t *mbs_context, ogs_list_t *n2_info_list, OpenAPI_operation_status_e operation_status)
+        amf_mbs_context_t *mbs_context, ogs_list_t *n2_info_list, OpenAPI_operation_status_e operation_status,
+        bool released_ind)
 {
     bool rc;
     ogs_sbi_request_t *request = NULL;
@@ -624,7 +625,7 @@ bool amf_sbi_send_mbs_broadcast_context_status_notify(
     }
 
     request = amf_namf_build_mbs_broadcast_context_status_notify(
-            mbs_context, n2_info_list, operation_status);
+            mbs_context, n2_info_list, operation_status, released_ind);
     if (!request) {
         ogs_error("amf_namf_build_mbs_broadcast_context_status_notify() failed");
         return false;

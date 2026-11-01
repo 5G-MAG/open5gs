@@ -266,10 +266,13 @@ void amf_namf_free_n2_mbs_sm_info_list(OpenAPI_list_t *list)
  * Builds the POST request; the caller (amf_sbi_send_mbs_broadcast_context_status_notify(), sbi-path.c)
  * sends it to mbs_context->notify_client. \p n2_info_list holds the containers to carry (may be empty);
  * \p operation_status is OpenAPI_operation_status_NULL when the notification does not report the completion
- * or incompletion of an operation.
+ * or incompletion of an operation. \p released_ind true sets releasedInd (TS 29.518 V18.14.0 Table 6.5.6.2.4-1:
+ * "This shall be present and set to "true" if all NG-RANs serving the Broadcast MBS session requested the AMF to
+ * release the Broadcast MBS session and the Broadcast MBS session (context) has been released in the AMF.").
  */
 ogs_sbi_request_t *amf_namf_build_mbs_broadcast_context_status_notify(
-        amf_mbs_context_t *mbs_context, ogs_list_t *n2_info_list, OpenAPI_operation_status_e operation_status)
+        amf_mbs_context_t *mbs_context, ogs_list_t *n2_info_list, OpenAPI_operation_status_e operation_status,
+        bool released_ind)
 {
     ogs_sbi_message_t message;
     ogs_sbi_request_t *request = NULL;
@@ -302,6 +305,9 @@ ogs_sbi_request_t *amf_namf_build_mbs_broadcast_context_status_notify(
         amf_namf_build_n2_mbs_sm_info_list(&message, n2_info_list);
 
     ContextStatusNotification.operation_status = operation_status;
+
+    if (released_ind)
+        ContextStatusNotification.released_ind = OpenAPI_context_status_notification_RELEASEDIND__true;
 
     message.ContextStatusNotification = &ContextStatusNotification;
 

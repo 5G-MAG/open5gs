@@ -2187,7 +2187,7 @@ void amf_namf_handle_mbs_broadcast_response_timeout(uint32_t mbs_context_index)
     amf_sbi_send_mbs_broadcast_context_status_notify(mbs_context, &n2_info_list,
             mbs_context->response_window_is_update ?
                 OpenAPI_operation_status_MBS_SESSION_UPDATE_INCOMPLETE :
-                OpenAPI_operation_status_MBS_SESSION_START_INCOMPLETE);
+                OpenAPI_operation_status_MBS_SESSION_START_INCOMPLETE, false);
 }
 
 int amf_namf_handle_mbs_broadcast_context_create(
@@ -2864,7 +2864,7 @@ void amf_namf_handle_mbs_broadcast_ran_response(amf_mbs_context_t *mbs_context, 
         ogs_list_init(&n2_info_list);
         if (n2_info)
             ogs_list_add(&n2_info_list, n2_info);
-        amf_sbi_send_mbs_broadcast_context_status_notify(mbs_context, &n2_info_list, operation_status);
+        amf_sbi_send_mbs_broadcast_context_status_notify(mbs_context, &n2_info_list, operation_status, false);
         amf_mbs_n2_info_remove_all(&n2_info_list);
         return;
     }
@@ -3004,7 +3004,7 @@ void amf_namf_send_mbs_broadcast_context_release_response(amf_mbs_context_t *mbs
         ogs_list_init(&n2_info_list);
         ogs_list_add(&n2_info_list, n2_info);
         amf_sbi_send_mbs_broadcast_context_status_notify(
-                mbs_context, &n2_info_list, OpenAPI_operation_status_NULL);
+                mbs_context, &n2_info_list, OpenAPI_operation_status_NULL, false);
         amf_mbs_n2_info_remove_all(&n2_info_list);
     }
 

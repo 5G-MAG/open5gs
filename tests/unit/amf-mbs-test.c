@@ -162,7 +162,7 @@ static void test_status_notify(void)
     ogs_list_init(&infos);
 
     /* location independent, nothing to carry, no status: only the session ID */
-    request = amf_namf_build_mbs_broadcast_context_status_notify(&ctx, &infos, OpenAPI_operation_status_NULL);
+    request = amf_namf_build_mbs_broadcast_context_status_notify(&ctx, &infos, OpenAPI_operation_status_NULL, false);
     CHECK(request != NULL);
     if (request) {
         CHECK_STR("http://127.0.0.30:9999/notify", request->h.uri);
@@ -170,6 +170,17 @@ static void test_status_notify(void)
         CHECK(strstr(body_of(request), "areaSessionId") == NULL);
         CHECK(strstr(body_of(request), "operationStatus") == NULL);
         CHECK(strstr(body_of(request), "n2MbsSmInfoList") == NULL);
+        CHECK(strstr(body_of(request), "releasedInd") == NULL);
+        ogs_sbi_request_free(request);
+    }
+
+    /* TS 29.518 V18.14.0 Table 6.5.6.2.4-1 releasedInd: present and "true" only when asked */
+    request = amf_namf_build_mbs_broadcast_context_status_notify(
+            &ctx, &infos, OpenAPI_operation_status_NULL, true);
+    CHECK(request != NULL);
+    if (request) {
+        CHECK(strstr(body_of(request), "\"releasedInd\":true") != NULL);
+        CHECK(strstr(body_of(request), "\"mbsServiceId\":\"000001\"") != NULL);
         ogs_sbi_request_free(request);
     }
 
@@ -178,7 +189,7 @@ static void test_status_notify(void)
     ctx.area_session_id = 13;
     ogs_list_add(&infos, amf_mbs_n2_info_create(gnb, OpenAPI_ngap_ie_type_MBS_SES_FAIL, t, sizeof(t)));
     request = amf_namf_build_mbs_broadcast_context_status_notify(
-            &ctx, &infos, OpenAPI_operation_status_MBS_SESSION_UPDATE_COMPLETE);
+            &ctx, &infos, OpenAPI_operation_status_MBS_SESSION_UPDATE_COMPLETE, false);
     CHECK(request != NULL);
     if (request) {
         CHECK(strstr(body_of(request), "\"areaSessionId\":13") != NULL);
@@ -193,7 +204,7 @@ static void test_status_notify(void)
     /* the request has no target without the consumer's notifyUri */
     ctx.notify_uri = NULL;
     CHECK(amf_namf_build_mbs_broadcast_context_status_notify(
-                &ctx, &infos, OpenAPI_operation_status_NULL) == NULL);
+                &ctx, &infos, OpenAPI_operation_status_NULL, false) == NULL);
     ogs_free(gnb);
 }
 
