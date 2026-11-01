@@ -45,6 +45,63 @@ static void stats_add_amf_session(void);
 static void stats_remove_amf_session(void);
 static bool amf_namf_comm_parse_guti(ogs_nas_5gs_guti_t *guti, char *ue_context_id);
 
+/*
+ * Keeps a copy of \p transfer (an MBS Session Setup, Modification or Release response or failure transfer IE) with the
+ * identity of \p gnb, the NG-RAN node that sent it. The caller owns the item: it adds it to a list, which is emptied
+ * with amf_mbs_n2_info_remove_all().
+ */
+amf_mbs_n2_info_t *amf_mbs_n2_info_create(amf_gnb_t *gnb,
+        OpenAPI_ngap_ie_type_e ngap_ie_type, const uint8_t *transfer, size_t transfer_len)
+{
+    amf_mbs_n2_info_t *n2_info = NULL;
+
+    ogs_assert(gnb);
+    ogs_assert(transfer);
+
+    n2_info = ogs_calloc(1, sizeof(*n2_info));
+    if (!n2_info) {
+        ogs_error("ogs_calloc() failed");
+        return NULL;
+    }
+
+    n2_info->pkbuf = ogs_pkbuf_alloc(NULL, transfer_len);
+    if (!n2_info->pkbuf) {
+        ogs_error("ogs_pkbuf_alloc() failed");
+        ogs_free(n2_info);
+        return NULL;
+    }
+    ogs_pkbuf_put_data(n2_info->pkbuf, transfer, transfer_len);
+
+    n2_info->ngap_ie_type = ngap_ie_type;
+    n2_info->ran_plmn_id = gnb->plmn_id;
+    memcpy(n2_info->ran_gnb_id_buf, gnb->gnb_id_buf, sizeof(n2_info->ran_gnb_id_buf));
+    n2_info->ran_gnb_id_bit_length = gnb->gnb_id_bit_length;
+
+    return n2_info;
+}
+
+/* \p n2_info must not be on a list */
+void amf_mbs_n2_info_free(amf_mbs_n2_info_t *n2_info)
+{
+    ogs_assert(n2_info);
+
+    if (n2_info->pkbuf)
+        ogs_pkbuf_free(n2_info->pkbuf);
+    ogs_free(n2_info);
+}
+
+void amf_mbs_n2_info_remove_all(ogs_list_t *n2_info_list)
+{
+    amf_mbs_n2_info_t *n2_info = NULL, *next = NULL;
+
+    ogs_assert(n2_info_list);
+
+    ogs_list_for_each_safe(n2_info_list, next, n2_info) {
+        ogs_list_remove(n2_info_list, n2_info);
+        amf_mbs_n2_info_free(n2_info);
+    }
+}
+
 static void amf_mbs_context_remove_all(void);
 
 void amf_context_init(void)
@@ -3115,6 +3172,9 @@ void amf_mbs_context_remove(amf_mbs_context_t *amf_mbs_context)
         ogs_free(amf_mbs_context->mbs_context_ref);
     if (amf_mbs_context->mbs_service_area)
         ogs_mbs_service_area_free(amf_mbs_context->mbs_service_area);
+    amf_mbs_n2_info_remove_all(&amf_mbs_context->pending_n2_info_list);
+    if (amf_mbs_context->notify_uri)
+        ogs_free(amf_mbs_context->notify_uri);
 
     ogs_pool_free(&amf_mbs_context_pool, amf_mbs_context);
 

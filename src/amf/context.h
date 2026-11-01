@@ -142,6 +142,8 @@ typedef struct amf_gnb_s {
     ogs_fsm_t       sm;         /* A state machine */
 
     uint32_t        gnb_id;     /* gNB_ID received from gNB */
+    uint8_t         gnb_id_buf[4];      /* gNB ID bit string of the NG Setup Request, as received */
+    uint8_t         gnb_id_bit_length;  /* its length in bits (22 to 32) */
     ogs_plmn_id_t   plmn_id;    /* gNB PLMN-ID received from gNB */
     ogs_sctp_sock_t sctp;       /* SCTP socket */
 
@@ -839,6 +841,23 @@ typedef struct amf_sess_s {
 
 } amf_sess_t;
 
+/*
+ * One N2 MBS Session Management container received from an NG-RAN node (the transfer IE of a Broadcast Session
+ * Setup, Modification or Release response or failure), held until it is sent to the MB-SMF together with the
+ * identity of the NG-RAN node that generated it (TS 29.518 cl. 5.6.2.2: "the AMF shall insert the identifier of
+ * the NG-RAN node that generated it in the corresponding entry of the n2MbsSmInfoList attribute").
+ */
+typedef struct amf_mbs_n2_info_s {
+    ogs_lnode_t lnode;
+
+    OpenAPI_ngap_ie_type_e ngap_ie_type;
+    ogs_pkbuf_t *pkbuf;                 /* the transfer IE, as received */
+
+    ogs_plmn_id_t ran_plmn_id;          /* Global RAN Node ID of the NG-RAN node (a gNB) */
+    uint8_t ran_gnb_id_buf[4];
+    uint8_t ran_gnb_id_bit_length;
+} amf_mbs_n2_info_t;
+
 typedef struct amf_mbs_context_s {
     ogs_lnode_t lnode;      /* A node of list_t */
 
@@ -900,6 +919,7 @@ typedef struct amf_mbs_context_s {
      * COMPLETED.
      */
     ogs_sbi_client_t *notify_client;
+    char *notify_uri;       /* the consumer's notifyUri: the target of every ContextStatusNotify request */
     uint32_t gnb_request_count;
     uint32_t gnb_response_count;
 
@@ -909,6 +929,14 @@ typedef struct amf_mbs_context_s {
      * Namf_MBSBroadcast_ContextRelease response" (step 8). stream_id then holds the consumer's DELETE.
      */
     bool release_pending;
+
+    /*
+     * Containers received before the deferred ContextCreate or ContextUpdate response could be sent (a Setup or
+     * Modification Failure Transfer that preceded the first success): sent with that response (TS 29.518
+     * cl. 5.6.2.2: the 201 Created "may contain one or more N2 MBS Session Management containers"). Items are
+     * amf_mbs_n2_info_t.
+     */
+    ogs_list_t pending_n2_info_list;
 
 } amf_mbs_context_t;
 
@@ -1090,6 +1118,11 @@ amf_mbs_context_t *amf_mbs_context_create(ogs_tmgi_t *tmgi);
 amf_mbs_context_t *amf_mbs_context_find_by_ref(const char *mbs_context_ref);
 amf_mbs_context_t *amf_mbs_context_find_by_tmgi(const ogs_tmgi_t *tmgi);
 void amf_mbs_context_remove(amf_mbs_context_t *amf_mbs_context);
+
+amf_mbs_n2_info_t *amf_mbs_n2_info_create(amf_gnb_t *gnb,
+        OpenAPI_ngap_ie_type_e ngap_ie_type, const uint8_t *transfer, size_t transfer_len);
+void amf_mbs_n2_info_free(amf_mbs_n2_info_t *n2_info);
+void amf_mbs_n2_info_remove_all(ogs_list_t *n2_info_list);
 
 #ifdef __cplusplus
 }

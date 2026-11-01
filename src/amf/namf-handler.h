@@ -59,24 +59,17 @@ int amf_namf_handle_mbs_broadcast_context_create(
 int amf_namf_handle_mbs_broadcast_context_delete(
         ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg);
 
-/*
- * Completes the deferred Namf_MBSBroadcast_ContextCreate response once the first NG-RAN response has been
- * correlated to \p mbs_context. Called from ngap_handle_broadcast_session_setup_response(); see
- * amf_mbs_context_t.stream_id (context.h) for why the response cannot be sent synchronously from
- * amf_namf_handle_mbs_broadcast_context_create() itself.
- */
-void amf_namf_send_mbs_broadcast_context_create_response(amf_mbs_context_t *mbs_context);
-
 /* Item B-3: Namf_MBSBroadcast Service - MBS Broadcast ContextUpdate service operation (TS 29.518 cl.5.6.2.3) */
 int amf_namf_handle_mbs_broadcast_context_update(
         ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg);
 
 /*
- * Completes the deferred Namf_MBSBroadcast_ContextUpdate response once the first NG-RAN response has been
- * correlated to \p mbs_context. Called from ngap_handle_broadcast_session_modification_response(); mirrors
- * amf_namf_send_mbs_broadcast_context_create_response()'s own reasoning exactly.
+ * Handles an NG-RAN node's response to a Broadcast Session Setup or Modification Request (success or failure, with
+ * the Response or Failure Transfer IE if it carried one): completes the deferred ContextCreate or ContextUpdate
+ * response or sends a ContextStatusNotify request. See the function's own comment (namf-handler.c).
  */
-void amf_namf_send_mbs_broadcast_context_update_response(amf_mbs_context_t *mbs_context);
+void amf_namf_handle_mbs_broadcast_ran_response(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb,
+        bool update, bool success, OpenAPI_ngap_ie_type_e ngap_ie_type, const OCTET_STRING_t *transfer);
 void amf_namf_send_mbs_broadcast_context_release_response(amf_mbs_context_t *mbs_context);
 
 /* Namf_MBSCommunication Service - N2MessageTransfer service operation (TS 29.518 cl.5.7.2.2) */

@@ -98,7 +98,7 @@ bool amf_sbi_send_n1_n2_failure_notify(
         amf_sess_t *sess, OpenAPI_n1_n2_message_transfer_cause_e cause);
 
 bool amf_sbi_send_mbs_broadcast_context_status_notify(
-        amf_mbs_context_t *mbs_context, ogs_pkbuf_t *n2mbssmbuf, bool completed);
+        amf_mbs_context_t *mbs_context, ogs_list_t *n2_info_list, OpenAPI_operation_status_e operation_status);
 
 bool amf_ue_have_session_release_pending(amf_ue_t *amf_ue);
 bool amf_sess_have_session_release_pending(amf_sess_t *sess);

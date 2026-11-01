@@ -37,3 +37,11 @@ testunit_unit_exe = executable('unit',
                     libsbi_dep])
 
 test('unit', testunit_unit_exe, is_parallel : false, suite: 'unit')
+
+amf_mbs_unit_exe = executable('amf-mbs',
+    sources : files('amf-mbs-test.c'),
+    include_directories : include_directories('../../src/amf'),
+    c_args : [testunit_core_cc_flags, sbi_cc_flags],
+    dependencies : libamf_dep)
+
+test('amf-mbs', amf_mbs_unit_exe, is_parallel : false, suite: 'unit')

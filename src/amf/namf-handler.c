@@ -23,6 +23,7 @@
 #include "nas-path.h"
 #include "ngap-path.h"
 #include "sbi-path.h"
+#include "namf-build.h"
 
 static bool amf_namf_parse_tai(ogs_tai_t *tai, OpenAPI_tai_t *api_tai);
 static bool amf_namf_parse_ncgi(ogs_ncgi_t *ncgi, OpenAPI_ncgi_t *api_ncgi);
@@ -1985,6 +1986,12 @@ static void amf_namf_set_mbs_context_notify_client(
                 ogs_sbi_client_add(scheme, fqdn, fqdn_port, addr, addr6);
         if (!mbs_context->notify_client)
             ogs_error("MBS Broadcast %s: ogs_sbi_client_add() failed for notifyUri", op_name);
+        else {
+            // The client holds the address only; the request's target is the whole URI.
+            if (mbs_context->notify_uri)
+                ogs_free(mbs_context->notify_uri);
+            mbs_context->notify_uri = ogs_strdup(notify_uri);
+        }
     }
     ogs_free(fqdn);
     ogs_freeaddrinfo(addr);
@@ -2372,16 +2379,23 @@ static void amf_mbs_context_release(amf_mbs_context_t *mbs_context);
 
 /*
  * Builds and sends the deferred Namf_MBSBroadcast_ContextCreate response (OGS_SBI_HTTP_STATUS_CREATED),
- * once ngap_handle_broadcast_session_setup_response() has correlated the first NG-RAN response to \p
+ * once amf_namf_handle_mbs_broadcast_ran_response() has correlated the first successful NG-RAN response to \p
  * mbs_context. Split out of amf_namf_handle_mbs_broadcast_context_create() itself since that function
  * returns to its SBI caller long before this can run -- see mbs_context->stream_id's own comment
  * (context.h) for why the stream must be re-looked-up rather than captured by raw pointer.
+ *
+ * \p n2_info_list holds the containers of the NG-RAN responses received so far and \p operation_status is
+ * START_COMPLETE when every NG-RAN the request was sent to has responded (TS 29.518 cl. 5.6.2.2: "If the AMF
+ * received the NG-RAN responses from all involved NG-RAN(s) ... the AMF shall include an indication of completion
+ * of the operation in all NG-RANs in the 201 Created response."), OpenAPI_operation_status_NULL otherwise.
  */
-void amf_namf_send_mbs_broadcast_context_create_response(amf_mbs_context_t *mbs_context)
+static void amf_namf_send_mbs_broadcast_context_create_response(amf_mbs_context_t *mbs_context,
+        ogs_list_t *n2_info_list, OpenAPI_operation_status_e operation_status)
 {
     OpenAPI_context_create_rsp_data_t *ContextCreateRspData = NULL;
     OpenAPI_tmgi_t *tmgi_copy = NULL;
     OpenAPI_mbs_session_id_t *mbs_session_id_copy = NULL;
+    OpenAPI_list_t *n2_mbs_sm_info_list = NULL;
 
     ogs_sbi_message_t sendmsg;
     ogs_sbi_stream_t *stream = NULL;
@@ -2390,6 +2404,7 @@ void amf_namf_send_mbs_broadcast_context_create_response(amf_mbs_context_t *mbs_
     ogs_sbi_response_t *response = NULL;
 
     ogs_assert(mbs_context);
+    ogs_assert(n2_info_list);
 
     stream = ogs_sbi_stream_find_by_id(mbs_context->stream_id);
     if (!stream) {
@@ -2415,7 +2430,10 @@ void amf_namf_send_mbs_broadcast_context_create_response(amf_mbs_context_t *mbs_
     mbs_session_id_copy = OpenAPI_mbs_session_id_create(tmgi_copy, NULL, NULL);
     ogs_assert(mbs_session_id_copy);
 
-    ContextCreateRspData = OpenAPI_context_create_rsp_data_create(mbs_session_id_copy, NULL, OpenAPI_operation_status_NULL);
+    n2_mbs_sm_info_list = amf_namf_build_n2_mbs_sm_info_list(&sendmsg, n2_info_list);
+
+    ContextCreateRspData = OpenAPI_context_create_rsp_data_create(
+            mbs_session_id_copy, n2_mbs_sm_info_list, operation_status);
 
     server = ogs_sbi_server_from_stream(stream);
     ogs_assert(server);
@@ -2438,15 +2456,21 @@ void amf_namf_send_mbs_broadcast_context_create_response(amf_mbs_context_t *mbs_
 
     ogs_assert(true == ogs_sbi_server_send_response(stream, response));
 
-    if (ContextCreateRspData)
+    if (ContextCreateRspData) {
+        // ContextCreateRspData owns n2_mbs_sm_info_list, which is freed with it
         OpenAPI_context_create_rsp_data_free(ContextCreateRspData);
+        n2_mbs_sm_info_list = NULL;
+    }
 
     if (sendmsg.http.location)
         ogs_free(sendmsg.http.location);
 
-    // Mark as answered so a second/subsequent gNB response (item B-2, deferred separately) does not
-    // re-trigger this same 201 Created a second time.
+    // Mark as answered so a second/subsequent gNB response does not re-trigger this same 201 Created a second
+    // time.
     mbs_context->stream_id = OGS_INVALID_POOL_ID;
+
+    amf_namf_free_n2_mbs_sm_info_list(n2_mbs_sm_info_list);
+    amf_mbs_n2_info_remove_all(n2_info_list);
 }
 
 /*
@@ -2614,6 +2638,7 @@ int amf_namf_handle_mbs_broadcast_context_update(
     // context), so reusing them here for this Update's own completion tracking is safe.
     mbs_context->gnb_request_count = 0;
     mbs_context->gnb_response_count = 0;
+    amf_mbs_n2_info_remove_all(&mbs_context->pending_n2_info_list);
 
     n2msgreq = ngap_build_broadcast_session_modification_request(mbs_context, has_service_area, n2mbssmbuf);
 
@@ -2673,43 +2698,161 @@ cleanup:
 }
 
 /*
- * Builds and sends the deferred Namf_MBSBroadcast_ContextUpdate response (200 OK if there is a transfer
- * IE to return, 204 No Content otherwise), once ngap_handle_broadcast_session_modification_response() has
- * correlated the first NG-RAN response to \p mbs_context. Mirrors
- * amf_namf_send_mbs_broadcast_context_create_response()'s own reasoning for why this cannot run
- * synchronously from amf_namf_handle_mbs_broadcast_context_update() itself.
+ * Builds and sends the deferred Namf_MBSBroadcast_ContextUpdate response, once
+ * amf_namf_handle_mbs_broadcast_ran_response() has correlated the first successful NG-RAN response to \p mbs_context.
+ * TS 29.518 cl. 5.6.2.3: "On success, "200 OK" shall be returned if additional information needs to be returned in
+ * the response." and "On success, "204 No Content" shall be returned if no additional information needs to be
+ * returned in the response." The additional information is the containers of the NG-RAN responses received so far
+ * (\p n2_info_list) and the indication of completion (\p operation_status, UPDATE_COMPLETE when every NG-RAN the
+ * request was sent to has responded).
  */
-void amf_namf_send_mbs_broadcast_context_update_response(amf_mbs_context_t *mbs_context)
+static void amf_namf_send_mbs_broadcast_context_update_response(amf_mbs_context_t *mbs_context,
+        ogs_list_t *n2_info_list, OpenAPI_operation_status_e operation_status)
 {
+    OpenAPI_context_update_rsp_data_t ContextUpdateRspData;
+    OpenAPI_list_t *n2_mbs_sm_info_list = NULL;
     ogs_sbi_message_t sendmsg;
     ogs_sbi_stream_t *stream = NULL;
     ogs_sbi_response_t *response = NULL;
 
     ogs_assert(mbs_context);
+    ogs_assert(n2_info_list);
 
     stream = ogs_sbi_stream_find_by_id(mbs_context->stream_id);
     if (!stream) {
         ogs_warn("MBS Broadcast ContextUpdate: stream [%d] no longer exists, response not sent",
                 (int)mbs_context->stream_id);
         mbs_context->stream_id = OGS_INVALID_POOL_ID;
+        amf_mbs_n2_info_remove_all(n2_info_list);
         return;
     }
 
     memset(&sendmsg, 0, sizeof(sendmsg));
 
-    // NOT IN THIS CHANGE: this AMF has no MBS Session Setup or Modification Response Transfer IE to
-    // report back yet (see ngap_handle_broadcast_session_modification_response()'s own comment on why the
-    // transfer IE, if any, is only forwarded via ContextStatusNotify for gNB responses after the first) --
-    // so the first response always completes with 204 No Content, never 200 OK. A genuine transfer-IE
-    // round-trip on the *first* response would need this function to build ContextUpdateRspData with a
-    // populated n2_mbs_sm_info_list, which nothing currently threads through from
-    // ngap_handle_broadcast_session_modification_response() to here.
-    response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
+    n2_mbs_sm_info_list = amf_namf_build_n2_mbs_sm_info_list(&sendmsg, n2_info_list);
+
+    if (n2_mbs_sm_info_list || operation_status != OpenAPI_operation_status_NULL) {
+        memset(&ContextUpdateRspData, 0, sizeof(ContextUpdateRspData));
+        ContextUpdateRspData.n2_mbs_sm_info_list = n2_mbs_sm_info_list;
+        ContextUpdateRspData.operation_status = operation_status;
+        sendmsg.ContextUpdateRspData = &ContextUpdateRspData;
+
+        response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_OK);
+    } else {
+        response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
+    }
     ogs_assert(response);
 
     ogs_assert(true == ogs_sbi_server_send_response(stream, response));
 
+    amf_namf_free_n2_mbs_sm_info_list(n2_mbs_sm_info_list);
+    amf_mbs_n2_info_remove_all(n2_info_list);
+
     mbs_context->stream_id = OGS_INVALID_POOL_ID;
+}
+
+/*
+ * Handles one NG-RAN node's response to a Broadcast Session Setup (\p update false) or Modification (\p update true)
+ * Request: a BROADCAST SESSION SETUP or MODIFICATION RESPONSE (\p success) or FAILURE, with the MBS Session Setup or
+ * Modification Response or Failure Transfer IE \p transfer if the node sent one (\p ngap_ie_type tells which). Decides
+ * what goes to the MB-SMF, TS 29.518 cl. 5.6.2.2 and 5.6.2.3:
+ *
+ *   - the deferred ContextCreate or ContextUpdate response, on the first successful response; it carries the
+ *     containers received so far and, when every NG-RAN has responded, the indication of completion;
+ *   - a ContextStatusNotify request for each later response that has a container, and for the one that completes the
+ *     set of responses, which carries the indication of completion;
+ *   - a failure status when every NG-RAN a ContextCreate was sent to failed, or when the first response to a
+ *     ContextUpdate is a failure.
+ */
+void amf_namf_handle_mbs_broadcast_ran_response(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb,
+        bool update, bool success, OpenAPI_ngap_ie_type_e ngap_ie_type, const OCTET_STRING_t *transfer)
+{
+    const char *operation = update ? "ContextUpdate" : "ContextCreate";
+    OpenAPI_operation_status_e operation_status = OpenAPI_operation_status_NULL;
+    amf_mbs_n2_info_t *n2_info = NULL;
+    bool completed;
+
+    ogs_assert(mbs_context);
+    ogs_assert(gnb);
+
+    mbs_context->gnb_response_count++;
+    completed = mbs_context->gnb_response_count >= mbs_context->gnb_request_count;
+    if (completed)
+        operation_status = update ?
+            OpenAPI_operation_status_MBS_SESSION_UPDATE_COMPLETE : OpenAPI_operation_status_MBS_SESSION_START_COMPLETE;
+
+    if (transfer && transfer->size > 0)
+        n2_info = amf_mbs_n2_info_create(gnb, ngap_ie_type, transfer->buf, transfer->size);
+
+    if (mbs_context->stream_id == OGS_INVALID_POOL_ID) {
+        // The ContextCreate or ContextUpdate response has been sent: what this node reports goes in a
+        // ContextStatusNotify request, if it has a container or completes the set of responses.
+        ogs_list_t n2_info_list;
+
+        if (!n2_info && !completed) {
+            ogs_debug("%s: additional response carries nothing to notify, ignored", operation);
+            return;
+        }
+
+        ogs_list_init(&n2_info_list);
+        if (n2_info)
+            ogs_list_add(&n2_info_list, n2_info);
+        amf_sbi_send_mbs_broadcast_context_status_notify(mbs_context, &n2_info_list, operation_status);
+        amf_mbs_n2_info_remove_all(&n2_info_list);
+        return;
+    }
+
+    if (success) {
+        if (n2_info)
+            ogs_list_add(&mbs_context->pending_n2_info_list, n2_info);
+        if (update)
+            amf_namf_send_mbs_broadcast_context_update_response(
+                    mbs_context, &mbs_context->pending_n2_info_list, operation_status);
+        else
+            amf_namf_send_mbs_broadcast_context_create_response(
+                    mbs_context, &mbs_context->pending_n2_info_list, operation_status);
+        return;
+    }
+
+    if (!update && !completed) {
+        // No NG-RAN has succeeded yet and another may still: the ContextCreate is answered by that success (cl.
+        // 5.6.2.2: "The AMF should respond success when it receives the first successful response from the
+        // NG-RAN(s)."). This node's Failure Transfer goes in that response.
+        if (n2_info) {
+            if (ogs_list_count(&mbs_context->pending_n2_info_list) < OGS_SBI_MAX_NUM_OF_PART - 1)
+                ogs_list_add(&mbs_context->pending_n2_info_list, n2_info);
+            else {
+                ogs_warn("%s: too many containers waiting for the response, one is not sent", operation);
+                amf_mbs_n2_info_free(n2_info);
+            }
+        }
+        return;
+    }
+
+    // A ContextCreate that every NG-RAN it reached has failed, or a ContextUpdate whose first response is a failure.
+    // No clause names the failure status; a ProblemDetails cannot carry the container.
+    {
+        ogs_sbi_stream_t *stream = ogs_sbi_stream_find_by_id(mbs_context->stream_id);
+        mbs_context->stream_id = OGS_INVALID_POOL_ID;
+
+        if (stream) {
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR, NULL,
+                    update ? "Requested MBS Broadcast ContextUpdate failed" :
+                             "Requested MBS Broadcast ContextCreate failed",
+                    update ? "NG-RAN reported a Broadcast Session Modification Failure" :
+                             "NG-RAN reported a Broadcast Session Setup Failure", NULL);
+        } else {
+            ogs_warn("%s: stream no longer exists, response not sent", operation);
+        }
+    }
+
+    if (n2_info)
+        amf_mbs_n2_info_free(n2_info);
+
+    // A ContextCreate that failed leaves the consumer no mbsContextRef to delete: the context is not kept. A
+    // ContextUpdate that failed does not end the session.
+    if (!update)
+        amf_mbs_context_remove(mbs_context);
 }
 
 /*

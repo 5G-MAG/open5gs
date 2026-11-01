@@ -174,64 +174,134 @@ OpenAPI_mbs_session_id_t *amf_namf_build_mbs_session_id(const ogs_tmgi_t *tmgi)
 }
 
 /*
+ * Content-IDs of the binary parts that carry the transfer IEs of a message's n2MbsSmInfoList, one per entry. The
+ * Content-ID is only a reference from N2MbsSmInfo.ngapData.contentId to its part (TS 29.518 cl. 6.5.2.4).
+ */
+static const char *n2_mbs_sm_info_content_id[OGS_SBI_MAX_NUM_OF_PART] = {
+    OGS_SBI_CONTENT_NGAP_SM_ID "-0", OGS_SBI_CONTENT_NGAP_SM_ID "-1",
+    OGS_SBI_CONTENT_NGAP_SM_ID "-2", OGS_SBI_CONTENT_NGAP_SM_ID "-3",
+    OGS_SBI_CONTENT_NGAP_SM_ID "-4", OGS_SBI_CONTENT_NGAP_SM_ID "-5",
+    OGS_SBI_CONTENT_NGAP_SM_ID "-6", OGS_SBI_CONTENT_NGAP_SM_ID "-7",
+};
+
+static OpenAPI_global_ran_node_id_t *build_ran_id(amf_mbs_n2_info_t *n2_info)
+{
+    OpenAPI_gnb_id_t *gnb_id = NULL;
+    char *gnb_value = NULL;
+    int size = (n2_info->ran_gnb_id_bit_length + 7) / 8;
+
+    /* TS 29.571 GNbId.gNBValue: the gNB ID in hexadecimal digits; bitLength: its length in bits */
+    if (size == 0 || size > (int)sizeof(n2_info->ran_gnb_id_buf))
+        return NULL;
+
+    gnb_value = ogs_calloc(1, OGS_KEYSTRLEN(size));
+    ogs_assert(gnb_value);
+    ogs_hex_to_ascii(n2_info->ran_gnb_id_buf, size, gnb_value, OGS_KEYSTRLEN(size));
+
+    gnb_id = OpenAPI_gnb_id_create(n2_info->ran_gnb_id_bit_length, gnb_value);
+    ogs_assert(gnb_id);
+
+    return OpenAPI_global_ran_node_id_create(
+            ogs_sbi_build_plmn_id(&n2_info->ran_plmn_id), NULL, gnb_id, NULL, NULL, NULL, NULL, NULL);
+}
+
+/*
+ * Builds the n2MbsSmInfoList of a ContextCreate or ContextUpdate response or of a ContextStatusNotify request from
+ * \p n2_info_list (amf_mbs_n2_info_t items) and adds each transfer IE to \p message as a binary part. At most
+ * OGS_SBI_MAX_NUM_OF_PART entries are carried (the rest are dropped with a warning). Returns NULL when there is none.
+ * The parts reference the pkbufs of the items, so \p n2_info_list must outlive the message's use. Free the result with
+ * amf_namf_free_n2_mbs_sm_info_list().
+ */
+OpenAPI_list_t *amf_namf_build_n2_mbs_sm_info_list(ogs_sbi_message_t *message, ogs_list_t *n2_info_list)
+{
+    OpenAPI_list_t *list = NULL;
+    amf_mbs_n2_info_t *n2_info = NULL;
+
+    ogs_assert(message);
+    ogs_assert(n2_info_list);
+
+    ogs_list_for_each(n2_info_list, n2_info) {
+        OpenAPI_ref_to_binary_data_t *ngap_data = NULL;
+
+        if (message->num_of_part >= OGS_SBI_MAX_NUM_OF_PART) {
+            ogs_warn("n2MbsSmInfoList: more than %d containers, the rest are not sent", OGS_SBI_MAX_NUM_OF_PART);
+            break;
+        }
+
+        if (!list)
+            list = OpenAPI_list_create();
+        ogs_assert(list);
+
+        ngap_data = OpenAPI_ref_to_binary_data_create(
+                ogs_strdup(n2_mbs_sm_info_content_id[message->num_of_part]));
+        OpenAPI_list_add(list, OpenAPI_n2_mbs_sm_info_create(
+                    n2_info->ngap_ie_type, ngap_data, build_ran_id(n2_info)));
+
+        message->part[message->num_of_part].pkbuf = n2_info->pkbuf;
+        message->part[message->num_of_part].content_id =
+            (char *)n2_mbs_sm_info_content_id[message->num_of_part];
+        message->part[message->num_of_part].content_type = (char *)OGS_SBI_CONTENT_NGAP_TYPE;
+        message->num_of_part++;
+    }
+
+    return list;
+}
+
+void amf_namf_free_n2_mbs_sm_info_list(OpenAPI_list_t *list)
+{
+    OpenAPI_lnode_t *node = NULL;
+
+    if (!list)
+        return;
+
+    OpenAPI_list_for_each(list, node)
+        OpenAPI_n2_mbs_sm_info_free(node->data);
+    OpenAPI_list_free(list);
+}
+
+/*
  * 3GPP TS 29.518 - V18.14.0
  * Ch. 5.6.2.5 - Namf_MBSBroadcast Service API - ContextStatusNotify service operation
  *
- * BUG FIX: this operation did not exist at all -- see amf_mbs_context_t.notify_client's own comment
- * (context.h) and item B-2 (Standards2Deployments/projects/rt-mbs/open5gs.md) for the full account.
  * Builds the POST request; the caller (amf_sbi_send_mbs_broadcast_context_status_notify(), sbi-path.c)
- * sends it to mbs_context->notify_client.
- *
- * NOTE: cl.5.6.2.5 requires "the AMF shall insert the identifier of the NG-RAN node that generated
- * [each container] in the corresponding entry of the n2MbsSmInfoList attribute" (randId in the
- * TS29518_Namf_MBSBroadcast.yaml schema). OpenAPI_n2_mbs_sm_info_t now has a rand_id field (fixed by
- * regenerating the model, see the schema-collision fix this session -- TS29532_Nmbsmf_MBSSession.yaml's
- * own N2MbsSmInfo schema had the same name and no randId, and its generation pass was silently clobbering
- * this one's output). Passing NULL here for now regardless: populating a real GlobalRanNodeId needs the
- * responding gNB's own gnb_id/gnb_id_len, which nothing in this AMF currently tracks per-gNB -- a
- * follow-up item, not folded into the model fix itself.
+ * sends it to mbs_context->notify_client. \p n2_info_list holds the containers to carry (may be empty);
+ * \p operation_status is OpenAPI_operation_status_NULL when the notification does not report the completion
+ * or incompletion of an operation.
  */
 ogs_sbi_request_t *amf_namf_build_mbs_broadcast_context_status_notify(
-        amf_mbs_context_t *mbs_context, ogs_pkbuf_t *n2mbssmbuf, bool completed)
+        amf_mbs_context_t *mbs_context, ogs_list_t *n2_info_list, OpenAPI_operation_status_e operation_status)
 {
     ogs_sbi_message_t message;
     ogs_sbi_request_t *request = NULL;
 
     OpenAPI_context_status_notification_t ContextStatusNotification;
-    OpenAPI_list_t *n2_mbs_sm_info_list = NULL;
-    OpenAPI_n2_mbs_sm_info_t *n2_mbs_sm_info = NULL;
-    OpenAPI_ref_to_binary_data_t *ngap_data = NULL;
-    OpenAPI_lnode_t *node = NULL;
 
     ogs_assert(mbs_context);
+    ogs_assert(n2_info_list);
+
+    if (!mbs_context->notify_uri) {
+        ogs_error("MBS Broadcast ContextStatusNotify: no notifyUri");
+        return NULL;
+    }
 
     memset(&message, 0, sizeof(message));
     message.h.method = (char *) OGS_SBI_HTTP_METHOD_POST;
+    message.h.uri = mbs_context->notify_uri;
 
     memset(&ContextStatusNotification, 0, sizeof(ContextStatusNotification));
     ContextStatusNotification.mbs_session_id = amf_namf_build_mbs_session_id(&mbs_context->tmgi);
 
-    if (n2mbssmbuf) {
-        n2_mbs_sm_info_list = OpenAPI_list_create();
-
-        ngap_data = OpenAPI_ref_to_binary_data_create(ogs_strdup((char *) OGS_SBI_CONTENT_NGAP_SM_ID));
-        n2_mbs_sm_info = OpenAPI_n2_mbs_sm_info_create(OpenAPI_ngap_ie_type_MBS_SES_RSP, ngap_data, NULL);
-        OpenAPI_list_add(n2_mbs_sm_info_list, n2_mbs_sm_info);
-
-        ContextStatusNotification.n2_mbs_sm_info_list = n2_mbs_sm_info_list;
-
-        message.part[message.num_of_part].pkbuf = n2mbssmbuf;
-        message.part[message.num_of_part].content_id = (char *) OGS_SBI_CONTENT_NGAP_SM_ID;
-        message.part[message.num_of_part].content_type = (char *) OGS_SBI_CONTENT_NGAP_TYPE;
-        message.num_of_part++;
+    /* TS 29.518 Table 6.5.6.2.4-1, areaSessionId: "This IE shall be present if this is a Location dependent
+     * broadcast MBS service." */
+    if (mbs_context->location_dependent) {
+        ContextStatusNotification.is_area_session_id = true;
+        ContextStatusNotification.area_session_id = mbs_context->area_session_id;
     }
 
-    // cl.5.6.2.5: "the operationStatus IE indicating the completion of the Broadcast MBS session
-    // establishment or update, if ... a response has been received from all NG-RANs."
-    if (completed) {
-        ContextStatusNotification.operation_status =
-                OpenAPI_operation_status_MBS_SESSION_START_COMPLETE;
-    }
+    ContextStatusNotification.n2_mbs_sm_info_list =
+        amf_namf_build_n2_mbs_sm_info_list(&message, n2_info_list);
+
+    ContextStatusNotification.operation_status = operation_status;
 
     message.ContextStatusNotification = &ContextStatusNotification;
 
@@ -243,11 +313,7 @@ ogs_sbi_request_t *amf_namf_build_mbs_broadcast_context_status_notify(
 
     if (ContextStatusNotification.mbs_session_id)
         OpenAPI_mbs_session_id_free(ContextStatusNotification.mbs_session_id);
-    if (n2_mbs_sm_info_list) {
-        OpenAPI_list_for_each(n2_mbs_sm_info_list, node)
-            OpenAPI_n2_mbs_sm_info_free(node->data);
-        OpenAPI_list_free(n2_mbs_sm_info_list);
-    }
+    amf_namf_free_n2_mbs_sm_info_list(ContextStatusNotification.n2_mbs_sm_info_list);
 
     return request;
 }
