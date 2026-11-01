@@ -1254,8 +1254,8 @@ def t_U08_modification_that_is_not_valid_changes_nothing():
         assert m and cause(m) == CAUSE_MANDATORY_INCORRECT, 'cause %s' % (cause(m) if m else None)
         assert not forwards(r), 'a rejected request changed the FAR'
         # an IE of the N4mb request that the MB-UPF does not process is rejected, not skipped
-        m = modify(s, update_far(apply=APPLY_FSSM), ie(T_CREATE_QER, [ie(T_QER_ID, struct.pack('>I', 9))]))
-        assert m and cause(m) == CAUSE_SERVICE_NOT_SUPPORTED and offending(m) == T_CREATE_QER, 'Create QER: %s/%s' % (cause(m), offending(m))
+        m = modify(s, update_far(apply=APPLY_FSSM), ie(6, [ie(81, struct.pack('>I', 9))]))
+        assert m and cause(m) == CAUSE_SERVICE_NOT_SUPPORTED and offending(m) == 6, 'Create URR: %s/%s' % (cause(m), offending(m))
         assert not forwards(r), 'a rejected request changed the FAR'
     finally:
         U.delete(s)
@@ -1811,6 +1811,209 @@ def t_U02_9_restoration_that_cannot_be_served():
     s = accepted(r, 'MTI without RESTI')
     assert mc_group_of(r) != '239.77.0.2', 'the group of an IE sent without RESTI was used'
     U.delete(s)
+
+
+T_REMOVE_PDR, T_REMOVE_FAR, T_REMOVE_QER = 15, 16, 18
+
+
+def smf_session(cp_seid):
+    """The establishment the MB-SMF sends for a session with an ingress tunnel (smf_n4mb_build_session_establishment_request):
+    one flow, its PDR naming Traffic Endpoint 1, the Create Traffic Endpoint with the Local Ingress Tunnel, PLLSSM."""
+    pdr1 = pdr(pdi_extra=(ie(T_TE_ID, b'\x01'),))
+    return [node_id(), fseid(cp_seid), pdr1, far(), qer(), ie(T_CREATE_TE, [ie(T_TE_ID, b'\x01'), lit_choose()]),
+            n4mb_ctrl(flags=0x01)]
+
+
+def flow_pdr(n, precedence=10, qfi=None, te=b'\x01', drop=()):
+    """Create PDR of a flow added by an MBS session update (smf_n4mb_build_session_modification_request): the PDI names
+    the session's Traffic Endpoint."""
+    pdi = [ie(T_SRC_IF, b'\x01')] + ([ie(T_TE_ID, te)] if te else []) + ([ie(T_QFI, bytes([qfi]))] if qfi else [])
+    parts = [ie(T_PDR_ID, struct.pack('>H', n)), ie(T_PRECEDENCE, struct.pack('>I', precedence)), ie(T_PDI, pdi),
+             ie(T_FAR_ID, struct.pack('>I', n)), ie(T_QER_ID, struct.pack('>I', n))]
+    return ie(T_CREATE_PDR, [x for x in parts if struct.unpack('>H', x[:2])[0] not in drop])
+
+
+def flow_rules(n, qfi, precedence=10):
+    """The three Create IEs of the flow: PDR, FAR (FSSM with the MBS Multicast Parameters) and QER (IQFISN)."""
+    return [flow_pdr(n, precedence, qfi), far(far_id=n), qer(qer_id=n, qfi=qfi, indications=0x01)]
+
+
+def removal(n):
+    return [ie(T_REMOVE_PDR, [ie(T_PDR_ID, struct.pack('>H', n))]), ie(T_REMOVE_FAR, [ie(T_FAR_ID, struct.pack('>I', n))]),
+            ie(T_REMOVE_QER, [ie(T_QER_ID, struct.pack('>I', n))])]
+
+
+def ip_packet(dst='232.1.1.1', src='10.46.0.1', dport=5000, payload=b'mbs-data'):
+    udp = struct.pack('>HHHH', 4000, dport, 8 + len(payload), 0) + payload
+    hdr = struct.pack('>BBHHHBBH4s4s', 0x45, 0, 20 + len(udp), 0, 0, 8, 17, 0, socket.inet_aton(src), socket.inet_aton(dst))
+    csum = sum(struct.unpack('>10H', hdr))
+    csum = (csum & 0xffff) + (csum >> 16)
+    csum = (csum & 0xffff) + (csum >> 16)
+    return hdr[:10] + struct.pack('>H', ~csum & 0xffff) + hdr[12:] + udp
+
+
+def qfi_of_tunnel_packet(r):
+    """Sends a packet into the session's ingress tunnel and returns the QFI of the G-PDU on the N3mb group."""
+    lit = created_te(r)[T_LIT]
+    port, addr = struct.unpack('>H', lit[1:3])[0], socket.inet_ntoa(lit[3:7])
+    lst = N3mbListener(mc_group_of(r))
+    try:
+        sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sk.sendto(ip_packet(), (addr, port))
+        sk.close()
+        pk = lst.packets()
+    finally:
+        lst.close()
+    if not pk:
+        return None
+    g = gtpu_parse(pk[0])
+    return g['ext'][0][1][1] & 0x3f if g['ext'] else None
+
+
+@test
+def t_flow_added_and_removed_by_a_modification():
+    r = U.establish(smf_session(0xe701))
+    s = accepted(r, 'session of the MB-SMF')
+    try:
+        assert qfi_of_tunnel_packet(r) == 1, 'the first flow does not carry QFI 1'
+        # a flow came: Create PDR, FAR and QER as the MB-SMF builds them (Table 7.5.4.1-1: Create PDR/FAR/QER, N4mb "X")
+        m = modify(s, *flow_rules(2, 2))
+        assert m and cause(m) == CAUSE_ACCEPTED, 'flow added: cause %s offending %s' % (cause(m) if m else None, offending(m) if m else None)
+        assert qfi_of_tunnel_packet(r) == 2, 'the new flow (precedence 10) is not used by the data path'
+        # the flow went: Remove PDR, FAR and QER
+        m = modify(s, *removal(2))
+        assert m and cause(m) == CAUSE_ACCEPTED, 'flow removed: cause %s offending %s' % (cause(m) if m else None, offending(m) if m else None)
+        assert qfi_of_tunnel_packet(r) == 1, 'the removed flow is still used'
+        # its identifiers are free again
+        m = modify(s, *flow_rules(2, 3))
+        assert m and cause(m) == CAUSE_ACCEPTED
+        assert qfi_of_tunnel_packet(r) == 3
+        # a flow added and another removed in one request
+        m = modify(s, *(flow_rules(3, 4, precedence=5) + removal(2)))
+        assert m and cause(m) == CAUSE_ACCEPTED, '%s/%s' % (cause(m) if m else None, offending(m) if m else None)
+        assert qfi_of_tunnel_packet(r) == 4
+        m = modify(s, *(removal(3)))
+        assert m and cause(m) == CAUSE_ACCEPTED
+    finally:
+        U.delete(s)
+
+
+@test
+def t_flow_changes_that_are_not_valid_change_nothing():
+    r = U.establish(smf_session(0xe711))
+    s = accepted(r, 'session of the MB-SMF')
+    try:
+        def bad(what, cause_want, off_want, *ies):
+            m = modify(s, *ies)
+            assert m and cause(m) == cause_want and offending(m) == off_want, '%s: cause %s offending %s, wanted %s/%s' % (
+                what, cause(m) if m else None, offending(m) if m else None, cause_want, off_want)
+            assert qfi_of_tunnel_packet(r) == 1, what + ': the request changed the session'
+
+        bad('PDR ID in use', CAUSE_RULE_FAILURE, T_PDR_ID, *flow_rules(1, 2))
+        bad('FAR ID in use', CAUSE_RULE_FAILURE, T_FAR_ID, flow_pdr(2, qfi=2), far(far_id=2), far(far_id=1), qer(qer_id=2))
+        bad('QER ID in use', CAUSE_RULE_FAILURE, T_QER_ID, flow_pdr(2, qfi=2), far(far_id=2), qer(qer_id=2), qer(qer_id=1))
+        bad('no Precedence', CAUSE_MANDATORY_MISSING, T_PRECEDENCE,
+            flow_pdr(2, qfi=2, drop=(T_PRECEDENCE,)), far(far_id=2), qer(qer_id=2))
+        bad('PDR without FAR ID', CAUSE_CONDITIONAL_MISSING, T_FAR_ID,
+            flow_pdr(2, qfi=2, drop=(T_FAR_ID,)), qer(qer_id=2))
+        bad('FAR that nobody creates', CAUSE_MANDATORY_INCORRECT, T_FAR_ID, flow_pdr(2, qfi=2), qer(qer_id=2))
+        bad('QER that nobody creates', CAUSE_MANDATORY_INCORRECT, T_QER_ID, flow_pdr(2, qfi=2), far(far_id=2))
+        bad('Traffic Endpoint that the session has not', CAUSE_MANDATORY_INCORRECT, 131,
+            flow_pdr(2, qfi=2, te=b'\x07'), far(far_id=2), qer(qer_id=2))
+        bad('Local Ingress Tunnel in the PDI', CAUSE_SERVICE_NOT_SUPPORTED, T_LIT,
+            ie(T_CREATE_PDR, [ie(T_PDR_ID, struct.pack('>H', 2)), ie(T_PRECEDENCE, struct.pack('>I', 10)),
+                              ie(T_PDI, [ie(T_SRC_IF, b'\x01'), lit_choose()]), ie(T_FAR_ID, struct.pack('>I', 2)),
+                              ie(T_QER_ID, struct.pack('>I', 2))]), far(far_id=2), qer(qer_id=2))
+        bad('FSSM without MBS Multicast Parameters', CAUSE_CONDITIONAL_MISSING, T_MBS_MC_PARAMS,
+            flow_pdr(2, qfi=2), far(far_id=2, params=False), qer(qer_id=2))
+        bad('MBSU without Add MBS Unicast Parameters', CAUSE_CONDITIONAL_MISSING, T_ADD_UNICAST,
+            flow_pdr(2, qfi=2), far(far_id=2, apply=APPLY_MBSU, params=False), qer(qer_id=2))
+        bad('QER without Gate Status', CAUSE_MANDATORY_MISSING, T_GATE,
+            flow_pdr(2, qfi=2), far(far_id=2), qer(qer_id=2, drop=(T_GATE,)))
+        bad('FAR without Apply Action', CAUSE_MANDATORY_MISSING, T_APPLY,
+            flow_pdr(2, qfi=2), far(far_id=2, drop=(T_APPLY,)), qer(qer_id=2))
+        bad('same PDR twice', CAUSE_RULE_FAILURE, T_PDR_ID, flow_pdr(2, qfi=2), flow_pdr(2, qfi=2), far(far_id=2), qer(qer_id=2))
+        # a request with a good flow and a bad removal creates nothing
+        bad('unknown PDR to remove', CAUSE_MANDATORY_INCORRECT, T_PDR_ID,
+            *(flow_rules(2, 2) + [ie(T_REMOVE_PDR, [ie(T_PDR_ID, struct.pack('>H', 99))])]))
+        bad('removal without its ID', CAUSE_MANDATORY_MISSING, T_PDR_ID, *(flow_rules(2, 2) + [ie(T_REMOVE_PDR, [ie(T_FAR_ID, struct.pack('>I', 1))])]))
+        bad('unknown FAR to remove', CAUSE_MANDATORY_INCORRECT, T_FAR_ID, ie(T_REMOVE_FAR, [ie(T_FAR_ID, struct.pack('>I', 99))]))
+        bad('unknown QER to remove', CAUSE_MANDATORY_INCORRECT, T_QER_ID, ie(T_REMOVE_QER, [ie(T_QER_ID, struct.pack('>I', 99))]))
+        bad('PDR removed twice', CAUSE_MANDATORY_INCORRECT, T_PDR_ID, *(removal(1)[:1] * 2))
+        # the FAR and the QER of a PDR that stays cannot go
+        bad('FAR of a PDR that stays', CAUSE_RULE_FAILURE, T_FAR_ID, removal(1)[1])
+        bad('QER of a PDR that stays', CAUSE_RULE_FAILURE, T_QER_ID, removal(1)[2])
+        # the flow of a request whose Update FAR fails afterwards (the checks of the Apply Action come last) is taken out
+        bad('flow and a failing Update FAR', CAUSE_CONDITIONAL_MISSING, T_ADD_UNICAST,
+            *(flow_rules(2, 2) + [update_far(apply=APPLY_MBSU)]))
+        # none of the failed requests left a rule behind: the identifiers are free
+        m = modify(s, *flow_rules(2, 2))
+        assert m and cause(m) == CAUSE_ACCEPTED, 'a failed request left rules: %s/%s' % (cause(m) if m else None, offending(m) if m else None)
+        assert qfi_of_tunnel_packet(r) == 2
+        # a flow whose PDR, FAR and QER all go with the request, in any order, while another is created
+        m = modify(s, *(removal(2) + flow_rules(3, 3)))
+        assert m and cause(m) == CAUSE_ACCEPTED
+        assert qfi_of_tunnel_packet(r) == 3
+    finally:
+        U.delete(s)
+
+
+@test
+def t_flow_added_to_a_multicast_session_follows_the_session_group():
+    r = U.establish(mc_request(0xe721, b'\x02' + V4G, None))
+    s = accepted(r, 'session with an N6mb group')
+    lst = N3mbListener(mc_group_of(r))
+    info = mc_info(b'\x02' + V4G, None)
+    try:
+        def flow(n, group_info):
+            pdi = [ie(T_SRC_IF, b'\x01'), ie(T_QFI, bytes([n]))] + ([group_info] if group_info else [])
+            return ie(T_CREATE_PDR, [ie(T_PDR_ID, struct.pack('>H', n)), ie(T_PRECEDENCE, struct.pack('>I', 10)), ie(T_PDI, pdi),
+                                     ie(T_FAR_ID, struct.pack('>I', n)), ie(T_QER_ID, struct.pack('>I', n))])
+
+        # the group of the session in the PDI: accepted; another group: one session has one group
+        m = modify(s, flow(2, info), far(far_id=2), qer(qer_id=2, qfi=2, indications=1))
+        assert m and cause(m) == CAUSE_ACCEPTED, '%s/%s' % (cause(m) if m else None, offending(m) if m else None)
+        send_multicast('10.46.0.1', '232.1.1.1')
+        pk = lst.packets()
+        assert pk and gtpu_parse(pk[0])['ext'][0][1][1] & 0x3f == 2, 'the new flow is not used'
+        m = modify(s, flow(3, mc_info(b'\x02' + socket.inet_aton('232.9.9.9'), None)), far(far_id=3), qer(qer_id=3, qfi=3))
+        assert m and cause(m) == CAUSE_MANDATORY_INCORRECT and offending(m) == T_IPMC_ADDR, '%s/%s' % (cause(m) if m else None, offending(m) if m else None)
+        m = modify(s, *removal(2))
+        assert m and cause(m) == CAUSE_ACCEPTED
+        send_multicast('10.46.0.1', '232.1.1.1')
+        pk = lst.packets()
+        assert pk and gtpu_parse(pk[0])['ext'][0][1][1] & 0x3f == 1, 'the removed flow is still used'
+    finally:
+        lst.close()
+        U.delete(s)
+
+
+@test
+def t_flow_with_unicast_peers_added_and_removed():
+    r = U.establish(smf_session(0xe731))
+    s = accepted(r, 'session of the MB-SMF')
+    peer = GtpuPeer('127.0.0.41')
+    try:
+        # a flow that is forwarded by unicast transport only, its peers in the Create FAR
+        cfar = ie(T_CREATE_FAR, [ie(T_FAR_ID, struct.pack('>I', 2)), ie(T_APPLY, struct.pack('>H', APPLY_MBSU)),
+                                 add_unicast(1, 0x7171, '127.0.0.41')])
+        m = modify(s, flow_pdr(2, 10, 2), cfar, qer(qer_id=2, qfi=2, indications=0x01))
+        assert m and cause(m) == CAUSE_ACCEPTED, '%s/%s' % (cause(m) if m else None, offending(m) if m else None)
+        lit = created_te(r)[T_LIT]
+        sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sk.sendto(ip_packet(), (socket.inet_ntoa(lit[3:7]), struct.unpack('>H', lit[1:3])[0]))
+        sk.close()
+        pk = peer.packets()
+        assert len(pk) == 1 and gtpu_parse(pk[0])['teid'] == 0x7171, 'the flow with a peer: %d packets' % len(pk)
+        assert gtpu_parse(pk[0])['ext'][0][1][1] & 0x3f == 2, 'QFI of the new flow'
+        m = modify(s, *removal(2))
+        assert m and cause(m) == CAUSE_ACCEPTED
+        # the FAR went with its peers: the ID can be used again, with the same peer ID
+        m = modify(s, flow_pdr(2, 10, 2), cfar, qer(qer_id=2, qfi=2))
+        assert m and cause(m) == CAUSE_ACCEPTED, '%s/%s' % (cause(m) if m else None, offending(m) if m else None)
+    finally:
+        peer.close()
+        U.delete(s)
 
 
 # E-TESTS-BELOW

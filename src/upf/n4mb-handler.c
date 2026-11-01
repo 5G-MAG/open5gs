@@ -125,6 +125,34 @@ static int _open_udp_tunnel(upf_mbs_sess_t *mbs_sess, ogs_sockaddr_t *bind_addre
  * Table 7.5.2.7-1: "This IE shall be present over N4mb, if multicast transport is used over N6mb, if Traffic Endpoint ID is present in the DL PDR.").
  * Returns OGS_ERROR with the Offending IE set if an IE is not valid or the Traffic Endpoint ID is unknown.
  */
+static int _decode_addressing_info(
+        const ogs_pfcp_tlv_ip_multicast_addressing_info_within_pfcp_session_establishment_request_t *info,
+        bool *has_dest, ogs_pfcp_decoded_ip_multicast_address_t *dest,
+        bool *has_src, ogs_pfcp_decoded_source_ip_address_t *src, uint16_t *offending_ie_value)
+{
+    *has_dest = false;
+    *has_src = false;
+
+    if (!info->presence)
+        return OGS_OK;
+
+    if (info->ip_multicast_address.presence) {
+        if (ogs_pfcp_parse_ip_multicast_address(dest, &info->ip_multicast_address) < 0) {
+            *offending_ie_value = OGS_PFCP_IP_MULTICAST_ADDRESS_TYPE;
+            return OGS_ERROR;
+        }
+        *has_dest = true;
+    }
+    if (info->source_ip_address.presence) {
+        if (ogs_pfcp_parse_source_ip_address(src, &info->source_ip_address) < 0) {
+            *offending_ie_value = OGS_PFCP_SOURCE_IP_ADDRESS_TYPE;
+            return OGS_ERROR;
+        }
+        *has_src = true;
+    }
+    return OGS_OK;
+}
+
 static int _decode_pdr_addressing(const ogs_pfcp_session_establishment_request_t *req, int pdr_index,
         bool *has_dest, ogs_pfcp_decoded_ip_multicast_address_t *dest,
         bool *has_src, ogs_pfcp_decoded_source_ip_address_t *src, uint16_t *offending_ie_value)
@@ -148,24 +176,7 @@ static int _decode_pdr_addressing(const ogs_pfcp_session_establishment_request_t
         info = &te->ip_multicast_addressing_info;
     }
 
-    if (!info->presence)
-        return OGS_OK;
-
-    if (info->ip_multicast_address.presence) {
-        if (ogs_pfcp_parse_ip_multicast_address(dest, &info->ip_multicast_address) < 0) {
-            *offending_ie_value = OGS_PFCP_IP_MULTICAST_ADDRESS_TYPE;
-            return OGS_ERROR;
-        }
-        *has_dest = true;
-    }
-    if (info->source_ip_address.presence) {
-        if (ogs_pfcp_parse_source_ip_address(src, &info->source_ip_address) < 0) {
-            *offending_ie_value = OGS_PFCP_SOURCE_IP_ADDRESS_TYPE;
-            return OGS_ERROR;
-        }
-        *has_src = true;
-    }
-    return OGS_OK;
+    return _decode_addressing_info(info, has_dest, dest, has_src, src, offending_ie_value);
 }
 
 /*
@@ -418,6 +429,38 @@ static bool _requested_llssm_available(const ogs_ip_t *dest, const ogs_ip_t *src
         }
     }
     return false;
+}
+
+/*
+ * The destination of a FAR with the low layer SSM: the group, the C-TEID and the GTP node. The address is the one of
+ * the session's low layer SSM, the C-TEID is the TEID of the G-PDUs a FSSM FAR sends; a restoration gives it in the
+ * request, so it is set here and not when the response is built.
+ */
+static int _setup_far_node(upf_mbs_sess_t *mbs_sess, ogs_pfcp_far_t *far)
+{
+    ogs_assert(mbs_sess->ll_ssm);
+
+    if (mbs_sess->ll_ssm->dest_ip_addr.ipv4) {
+        far->outer_header_creation.addr = mbs_sess->ll_ssm->dest_ip_addr.addr;
+        far->outer_header_creation_len += OGS_IPV4_LEN;
+    } else if (mbs_sess->ll_ssm->dest_ip_addr.ipv6) {
+        memcpy(&far->outer_header_creation.addr6, mbs_sess->ll_ssm->dest_ip_addr.addr6, OGS_IPV6_LEN);
+        far->outer_header_creation_len += OGS_IPV6_LEN;
+    }
+
+    if (far->mbs_multicast_parameters)
+        far->outer_header_creation.teid = mbs_sess->c_teid;
+
+    if (OGS_ERROR == ogs_pfcp_setup_far_gtpu_node(far)) {
+        ogs_fatal("CHECK CONFIGURATION: upf.gtpu");
+        ogs_fatal("ogs_pfcp_setup_far_gtpu_node() failed");
+        return OGS_ERROR;
+    }
+
+    if (far->gnode)
+        ogs_pfcp_far_f_teid_hash_set(far);
+
+    return OGS_OK;
 }
 
 /*
@@ -901,28 +944,8 @@ void upf_n4mb_handle_session_establishment_request(
     ogs_list_for_each(&mbs_sess->pfcp.far_list, far) {
         if (!mbs_sess->ll_ssm)
             break;
-        if (mbs_sess->ll_ssm->dest_ip_addr.ipv4) {
-            far->outer_header_creation.addr = mbs_sess->ll_ssm->dest_ip_addr.addr;
-            far->outer_header_creation_len += OGS_IPV4_LEN;
-        } else if (mbs_sess->ll_ssm->dest_ip_addr.ipv6) {
-            memcpy(&far->outer_header_creation.addr6, mbs_sess->ll_ssm->dest_ip_addr.addr6, OGS_IPV6_LEN);
-            far->outer_header_creation_len += OGS_IPV6_LEN;
-        }
-
-        /* The C-TEID is the TEID of the G-PDUs a FSSM FAR sends; a restoration gives it in the request, so it is
-         * set here and not when the response is built */
-        if (far->mbs_multicast_parameters)
-            far->outer_header_creation.teid = mbs_sess->c_teid;
-
-        if (OGS_ERROR == ogs_pfcp_setup_far_gtpu_node(far)) {
-            ogs_fatal("CHECK CONFIGURATION: upf.gtpu");
-            ogs_fatal("ogs_pfcp_setup_far_gtpu_node() failed");
+        if (_setup_far_node(mbs_sess, far) != OGS_OK)
             goto cleanup;
-        }
-
-        if (far->gnode) {
-            ogs_pfcp_far_f_teid_hash_set(far);
-        }
     }
 
     /* JMBSSM: the MB-UPF "shall join the multicast tree towards the Source Specific Multicast (SSM) address
@@ -952,23 +975,18 @@ cleanup:
 
 /*
  * The IEs of a PFCP Session Modification Request that apply to N4mb (TS 29.244 Table 7.5.4.1-1, N4mb column) and that
- * the MB-UPF does not process. They are rejected, not skipped: ignoring a rule the CP function believes installed
+ * the MB-UPF does not process (it processes the flow rules, Create and Remove PDR, FAR and QER, and Update FAR). They
+ * are rejected, not skipped: ignoring a rule the CP function believes installed
  * would leave the two out of step. Returns true with the IE type of the first one found.
  */
 static bool _modification_ie_not_supported(const ogs_pfcp_session_modification_request_t *req, uint16_t *type)
 {
     static const struct { size_t offset; uint16_t type; } ies[] = {
         { offsetof(ogs_pfcp_session_modification_request_t, cp_f_seid), OGS_PFCP_F_SEID_TYPE },
-        { offsetof(ogs_pfcp_session_modification_request_t, remove_pdr), OGS_PFCP_REMOVE_PDR_TYPE },
-        { offsetof(ogs_pfcp_session_modification_request_t, remove_far), OGS_PFCP_REMOVE_FAR_TYPE },
         { offsetof(ogs_pfcp_session_modification_request_t, remove_urr), OGS_PFCP_REMOVE_URR_TYPE },
-        { offsetof(ogs_pfcp_session_modification_request_t, remove_qer), OGS_PFCP_REMOVE_QER_TYPE },
         { offsetof(ogs_pfcp_session_modification_request_t, remove_traffic_endpoint),
             OGS_PFCP_REMOVE_TRAFFIC_ENDPOINT_TYPE },
-        { offsetof(ogs_pfcp_session_modification_request_t, create_pdr), OGS_PFCP_CREATE_PDR_TYPE },
-        { offsetof(ogs_pfcp_session_modification_request_t, create_far), OGS_PFCP_CREATE_FAR_TYPE },
         { offsetof(ogs_pfcp_session_modification_request_t, create_urr), OGS_PFCP_CREATE_URR_TYPE },
-        { offsetof(ogs_pfcp_session_modification_request_t, create_qer), OGS_PFCP_CREATE_QER_TYPE },
         { offsetof(ogs_pfcp_session_modification_request_t, create_traffic_endpoint),
             OGS_PFCP_CREATE_TRAFFIC_ENDPOINT_TYPE },
         { offsetof(ogs_pfcp_session_modification_request_t, update_pdr), OGS_PFCP_UPDATE_PDR_TYPE },
@@ -990,6 +1008,271 @@ static bool _modification_ie_not_supported(const ogs_pfcp_session_modification_r
         }
     }
     return false;
+}
+
+static bool _ip_equal(const ogs_ip_t *a, const ogs_ip_t *b)
+{
+    if (a->ipv4 != b->ipv4 || a->ipv6 != b->ipv6)
+        return false;
+    if (a->ipv4 && a->addr != b->addr)
+        return false;
+    return !a->ipv6 || memcmp(a->addr6, b->addr6, OGS_IPV6_LEN) == 0;
+}
+
+/* The Remove PDR, FAR or QER IEs of a request name this identifier. */
+static bool _removes_pdr(const ogs_pfcp_session_modification_request_t *req, uint16_t id)
+{
+    size_t i;
+
+    for (i = 0; i < OGS_ARRAY_SIZE(req->remove_pdr) && req->remove_pdr[i].presence; i++)
+        if (req->remove_pdr[i].pdr_id.presence && req->remove_pdr[i].pdr_id.u16 == id)
+            return true;
+    return false;
+}
+
+static bool _removes_far(const ogs_pfcp_session_modification_request_t *req, uint32_t id)
+{
+    size_t i;
+
+    for (i = 0; i < OGS_ARRAY_SIZE(req->remove_far) && req->remove_far[i].presence; i++)
+        if (req->remove_far[i].far_id.presence && req->remove_far[i].far_id.u32 == id)
+            return true;
+    return false;
+}
+
+static bool _removes_qer(const ogs_pfcp_session_modification_request_t *req, uint32_t id)
+{
+    size_t i;
+
+    for (i = 0; i < OGS_ARRAY_SIZE(req->remove_qer) && req->remove_qer[i].presence; i++)
+        if (req->remove_qer[i].qer_id.presence && req->remove_qer[i].qer_id.u32 == id)
+            return true;
+    return false;
+}
+
+static bool _creates_far(const ogs_pfcp_session_modification_request_t *req, uint32_t id)
+{
+    size_t i;
+
+    for (i = 0; i < OGS_ARRAY_SIZE(req->create_far) && req->create_far[i].presence; i++)
+        if (req->create_far[i].far_id.presence && req->create_far[i].far_id.u32 == id)
+            return true;
+    return false;
+}
+
+static bool _creates_qer(const ogs_pfcp_session_modification_request_t *req, uint32_t id)
+{
+    size_t i;
+
+    for (i = 0; i < OGS_ARRAY_SIZE(req->create_qer) && req->create_qer[i].presence; i++)
+        if (req->create_qer[i].qer_id.presence && req->create_qer[i].qer_id.u32 == id)
+            return true;
+    return false;
+}
+
+/*
+ * Checks the Remove and Create PDR, FAR and QER of an N4mb Session Modification Request against the session, without
+ * changing it (the flows of an MBS session that came and went, TS 29.244 cl. 5.34.2.2: "for each MBS QoS flow: a
+ * Create PDR IE ..., a Create QER IE ..., a Create FAR IE ..."). The Create IEs are those of the establishment
+ * (cl. 7.5.4.17: "The encoding of these IEs are specified within PFCP Session Establishment Request message"), so the
+ * checks are those of the establishment, and a rule is new: one that exists is not replaced.
+ */
+static int _check_flow_changes(upf_mbs_sess_t *mbs_sess, const ogs_pfcp_session_modification_request_t *req,
+        uint8_t *cause_value, uint16_t *offending_ie_value)
+{
+    ogs_pfcp_pdr_t *pdr;
+    size_t i, j;
+
+#define FAIL(c, t) do { *cause_value = (c); *offending_ie_value = (t); return OGS_ERROR; } while (0)
+
+    for (i = 0; i < OGS_ARRAY_SIZE(req->remove_pdr) && req->remove_pdr[i].presence; i++) {
+        if (!req->remove_pdr[i].pdr_id.presence)
+            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_MISSING, OGS_PFCP_PDR_ID_TYPE);
+        if (!ogs_pfcp_pdr_find(&mbs_sess->pfcp, req->remove_pdr[i].pdr_id.u16))
+            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_PDR_ID_TYPE);
+        for (j = 0; j < i; j++)
+            if (req->remove_pdr[j].pdr_id.u16 == req->remove_pdr[i].pdr_id.u16)
+                FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_PDR_ID_TYPE);
+    }
+    for (i = 0; i < OGS_ARRAY_SIZE(req->remove_far) && req->remove_far[i].presence; i++) {
+        if (!req->remove_far[i].far_id.presence)
+            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_MISSING, OGS_PFCP_FAR_ID_TYPE);
+        if (!ogs_pfcp_far_find(&mbs_sess->pfcp, req->remove_far[i].far_id.u32))
+            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_FAR_ID_TYPE);
+        for (j = 0; j < i; j++)
+            if (req->remove_far[j].far_id.u32 == req->remove_far[i].far_id.u32)
+                FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_FAR_ID_TYPE);
+    }
+    for (i = 0; i < OGS_ARRAY_SIZE(req->remove_qer) && req->remove_qer[i].presence; i++) {
+        if (!req->remove_qer[i].qer_id.presence)
+            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_MISSING, OGS_PFCP_QER_ID_TYPE);
+        if (!ogs_pfcp_qer_find(&mbs_sess->pfcp, req->remove_qer[i].qer_id.u32))
+            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_QER_ID_TYPE);
+        for (j = 0; j < i; j++)
+            if (req->remove_qer[j].qer_id.u32 == req->remove_qer[i].qer_id.u32)
+                FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_QER_ID_TYPE);
+    }
+
+    /* A FAR or a QER that is removed is not used by a PDR that stays */
+    ogs_list_for_each(&mbs_sess->pfcp.pdr_list, pdr) {
+        if (_removes_pdr(req, pdr->id))
+            continue;
+        if (pdr->far && _removes_far(req, pdr->far->id))
+            FAIL(OGS_PFCP_CAUSE_RULE_CREATION_MODIFICATION_FAILURE, OGS_PFCP_FAR_ID_TYPE);
+        if (pdr->qer && _removes_qer(req, pdr->qer->id))
+            FAIL(OGS_PFCP_CAUSE_RULE_CREATION_MODIFICATION_FAILURE, OGS_PFCP_QER_ID_TYPE);
+    }
+
+    for (i = 0; i < OGS_ARRAY_SIZE(req->create_pdr) && req->create_pdr[i].presence; i++) {
+        const ogs_pfcp_tlv_create_pdr_t *c = &req->create_pdr[i];
+        bool has_dest, has_src;
+        ogs_pfcp_decoded_ip_multicast_address_t dest;
+        ogs_pfcp_decoded_source_ip_address_t src;
+
+        if (!c->pdr_id.presence)
+            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_MISSING, OGS_PFCP_PDR_ID_TYPE);
+        if (ogs_pfcp_pdr_find(&mbs_sess->pfcp, c->pdr_id.u16))
+            FAIL(OGS_PFCP_CAUSE_RULE_CREATION_MODIFICATION_FAILURE, OGS_PFCP_PDR_ID_TYPE);
+        for (j = 0; j < i; j++)
+            if (req->create_pdr[j].pdr_id.u16 == c->pdr_id.u16)
+                FAIL(OGS_PFCP_CAUSE_RULE_CREATION_MODIFICATION_FAILURE, OGS_PFCP_PDR_ID_TYPE);
+        /* Precedence is mandatory in a Create PDR on N4mb (as at the establishment) */
+        if (!c->precedence.presence)
+            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_MISSING, OGS_PFCP_PRECEDENCE_TYPE);
+        if (!c->pdi.presence)
+            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_MISSING, OGS_PFCP_PDI_TYPE);
+        if (!c->pdi.source_interface.presence)
+            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_MISSING, OGS_PFCP_SOURCE_INTERFACE_TYPE);
+        /* the data path needs the FAR; it is one that stays, or one this request creates */
+        if (!c->far_id.presence)
+            FAIL(OGS_PFCP_CAUSE_CONDITIONAL_IE_MISSING, OGS_PFCP_FAR_ID_TYPE);
+        if (!(ogs_pfcp_far_find(&mbs_sess->pfcp, c->far_id.u32) && !_removes_far(req, c->far_id.u32)) &&
+                !_creates_far(req, c->far_id.u32))
+            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_FAR_ID_TYPE);
+        if (c->qer_id.presence &&
+                !(ogs_pfcp_qer_find(&mbs_sess->pfcp, c->qer_id.u32) && !_removes_qer(req, c->qer_id.u32)) &&
+                !_creates_qer(req, c->qer_id.u32))
+            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_QER_ID_TYPE);
+        /* the session has one ingress tunnel (Table 7.5.2.7-1 and cl. 5.34.2.2: "a single ingress tunnel address,
+         * regardless of the number of MBS QoS flows"): a new flow refers to it by the Traffic Endpoint ID */
+        if (c->pdi.local_ingress_tunnel.presence)
+            FAIL(OGS_PFCP_CAUSE_SERVICE_NOT_SUPPORTED, OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE);
+        if (c->pdi.traffic_endpoint_id.presence &&
+                (c->pdi.traffic_endpoint_id.len < 1 || !mbs_sess->traffic_endpoint_id_presence ||
+                 *(const uint8_t *)c->pdi.traffic_endpoint_id.data != mbs_sess->traffic_endpoint_id))
+            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_TRAFFIC_ENDPOINT_ID_TYPE);
+        /* the group and the source of the session are those of its flows */
+        if (_decode_addressing_info(&c->pdi.ip_multicast_addressing_info, &has_dest, &dest, &has_src, &src,
+                    offending_ie_value) != OGS_OK)
+            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, *offending_ie_value);
+        if (has_dest && (dest.any || dest.range || !_ip_equal(&dest.start, &mbs_sess->ssm.dest_ip_addr)))
+            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_IP_MULTICAST_ADDRESS_TYPE);
+        if (has_src && !_ip_equal(&src.addr, &mbs_sess->ssm.src_ip_addr))
+            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_SOURCE_IP_ADDRESS_TYPE);
+    }
+
+    for (i = 0; i < OGS_ARRAY_SIZE(req->create_far) && req->create_far[i].presence; i++) {
+        const ogs_pfcp_tlv_create_far_t *c = &req->create_far[i];
+
+        if (!c->far_id.presence)
+            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_MISSING, OGS_PFCP_FAR_ID_TYPE);
+        if (ogs_pfcp_far_find(&mbs_sess->pfcp, c->far_id.u32))
+            FAIL(OGS_PFCP_CAUSE_RULE_CREATION_MODIFICATION_FAILURE, OGS_PFCP_FAR_ID_TYPE);
+        for (j = 0; j < i; j++)
+            if (req->create_far[j].far_id.u32 == c->far_id.u32)
+                FAIL(OGS_PFCP_CAUSE_RULE_CREATION_MODIFICATION_FAILURE, OGS_PFCP_FAR_ID_TYPE);
+        if (!c->apply_action.presence)
+            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_MISSING, OGS_PFCP_APPLY_ACTION_TYPE);
+        if ((c->apply_action.u16 & OGS_PFCP_APPLY_ACTION_FSSM) && !c->mbs_multicast_parameters.presence)
+            FAIL(OGS_PFCP_CAUSE_CONDITIONAL_IE_MISSING, OGS_PFCP_MBS_MULTICAST_PARAMETERS_TYPE);
+        if ((c->apply_action.u16 & OGS_PFCP_APPLY_ACTION_MBSU) && !c->add_mbs_unicast_parameters[0].presence)
+            FAIL(OGS_PFCP_CAUSE_CONDITIONAL_IE_MISSING, OGS_PFCP_ADD_MBS_UNICAST_PARAMETERS_TYPE);
+    }
+
+    for (i = 0; i < OGS_ARRAY_SIZE(req->create_qer) && req->create_qer[i].presence; i++) {
+        const ogs_pfcp_tlv_create_qer_t *c = &req->create_qer[i];
+
+        if (!c->qer_id.presence)
+            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_MISSING, OGS_PFCP_QER_ID_TYPE);
+        if (ogs_pfcp_qer_find(&mbs_sess->pfcp, c->qer_id.u32))
+            FAIL(OGS_PFCP_CAUSE_RULE_CREATION_MODIFICATION_FAILURE, OGS_PFCP_QER_ID_TYPE);
+        for (j = 0; j < i; j++)
+            if (req->create_qer[j].qer_id.u32 == c->qer_id.u32)
+                FAIL(OGS_PFCP_CAUSE_RULE_CREATION_MODIFICATION_FAILURE, OGS_PFCP_QER_ID_TYPE);
+        if (!c->gate_status.presence)
+            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_MISSING, OGS_PFCP_GATE_STATUS_TYPE);
+    }
+
+#undef FAIL
+    return OGS_OK;
+}
+
+/* Creates the rules of the Create PDR, FAR and QER IEs. On failure the cause is set and what was created so far is
+ * still in the session: _flows_rollback() takes it out. */
+static int _create_flows(upf_mbs_sess_t *mbs_sess, ogs_pfcp_session_modification_request_t *req,
+        uint8_t *cause_value, uint16_t *offending_ie_value)
+{
+    size_t i;
+
+    for (i = 0; i < OGS_ARRAY_SIZE(req->create_pdr) && req->create_pdr[i].presence; i++) {
+        if (!ogs_pfcp_handle_create_pdr(&mbs_sess->pfcp, &req->create_pdr[i], NULL, cause_value, offending_ie_value))
+            return OGS_ERROR;
+    }
+    for (i = 0; i < OGS_ARRAY_SIZE(req->create_far) && req->create_far[i].presence; i++) {
+        ogs_pfcp_far_t *far = ogs_pfcp_handle_create_far(&mbs_sess->pfcp, &req->create_far[i],
+                cause_value, offending_ie_value);
+
+        if (!far)
+            return OGS_ERROR;
+        if (mbs_sess->ll_ssm && _setup_far_node(mbs_sess, far) != OGS_OK) {
+            *cause_value = OGS_PFCP_CAUSE_SYSTEM_FAILURE;
+            *offending_ie_value = OGS_PFCP_CREATE_FAR_TYPE;
+            return OGS_ERROR;
+        }
+    }
+    for (i = 0; i < OGS_ARRAY_SIZE(req->create_qer) && req->create_qer[i].presence; i++) {
+        if (!ogs_pfcp_handle_create_qer(&mbs_sess->pfcp, &req->create_qer[i], cause_value, offending_ie_value))
+            return OGS_ERROR;
+    }
+    return OGS_OK;
+}
+
+/* Takes out the rules the request creates: _check_flow_changes() saw that none of them existed. */
+static void _flows_rollback(upf_mbs_sess_t *mbs_sess, const ogs_pfcp_session_modification_request_t *req)
+{
+    size_t i;
+
+    for (i = 0; i < OGS_ARRAY_SIZE(req->create_pdr) && req->create_pdr[i].presence; i++) {
+        ogs_pfcp_pdr_t *pdr = ogs_pfcp_pdr_find(&mbs_sess->pfcp, req->create_pdr[i].pdr_id.u16);
+
+        if (pdr)
+            ogs_pfcp_pdr_remove(pdr);
+    }
+    for (i = 0; i < OGS_ARRAY_SIZE(req->create_far) && req->create_far[i].presence; i++) {
+        ogs_pfcp_far_t *far = ogs_pfcp_far_find(&mbs_sess->pfcp, req->create_far[i].far_id.u32);
+
+        if (far)
+            ogs_pfcp_far_remove(far);
+    }
+    for (i = 0; i < OGS_ARRAY_SIZE(req->create_qer) && req->create_qer[i].presence; i++) {
+        ogs_pfcp_qer_t *qer = ogs_pfcp_qer_find(&mbs_sess->pfcp, req->create_qer[i].qer_id.u32);
+
+        if (qer)
+            ogs_pfcp_qer_remove(qer);
+    }
+}
+
+/* The Remove PDR, FAR and QER of a request that has been checked. */
+static void _remove_flows(upf_mbs_sess_t *mbs_sess, const ogs_pfcp_session_modification_request_t *req)
+{
+    size_t i;
+
+    for (i = 0; i < OGS_ARRAY_SIZE(req->remove_pdr) && req->remove_pdr[i].presence; i++)
+        ogs_pfcp_pdr_remove(ogs_pfcp_pdr_find(&mbs_sess->pfcp, req->remove_pdr[i].pdr_id.u16));
+    for (i = 0; i < OGS_ARRAY_SIZE(req->remove_far) && req->remove_far[i].presence; i++)
+        ogs_pfcp_far_remove(ogs_pfcp_far_find(&mbs_sess->pfcp, req->remove_far[i].far_id.u32));
+    for (i = 0; i < OGS_ARRAY_SIZE(req->remove_qer) && req->remove_qer[i].presence; i++)
+        ogs_pfcp_qer_remove(ogs_pfcp_qer_find(&mbs_sess->pfcp, req->remove_qer[i].qer_id.u32));
 }
 
 /*
@@ -1169,6 +1452,9 @@ void upf_n4mb_handle_session_modification_request(
         delete_all_f_teids = flags.delete_all_dl_n3mb_and_or_n19mb_f_teids;
     }
 
+    if (_check_flow_changes(mbs_sess, req, &cause_value, &offending_ie_value) != OGS_OK)
+        goto reject;
+
     for (i = 0; i < OGS_MAX_NUM_OF_FAR && req->update_far[i].presence; i++) {
         if (!_find_update_far(mbs_sess, &req->update_far[i], &cause_value, &offending_ie_value))
             goto reject;
@@ -1194,11 +1480,16 @@ void upf_n4mb_handle_session_modification_request(
             goto rollback;
     }
 
+    if (_create_flows(mbs_sess, req, &cause_value, &offending_ie_value) != OGS_OK) {
+        _flows_rollback(mbs_sess, req);
+        goto rollback;
+    }
+
     for (i = 0; i < OGS_MAX_NUM_OF_FAR && req->update_far[i].presence; i++) {
         far = ogs_pfcp_far_find(&mbs_sess->pfcp, req->update_far[i].far_id.u32);
         ogs_assert(far);
         if (_check_apply_action(mbs_sess, &req->update_far[i], far, &cause_value, &offending_ie_value) != OGS_OK)
-            goto rollback;
+            goto rollback_flows;
     }
 
     _journal_commit(&journal);
@@ -1210,9 +1501,13 @@ void upf_n4mb_handle_session_modification_request(
             far->apply_action = req->update_far[i].apply_action.u16;
     }
 
+    _remove_flows(mbs_sess, req);
+
     ogs_assert(OGS_OK == upf_pfcp_n4mb_send_session_modification_response(xact, mbs_sess));
     return;
 
+rollback_flows:
+    _flows_rollback(mbs_sess, req);
 rollback:
     _journal_rollback(&journal);
 reject:
