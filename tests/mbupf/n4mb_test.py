@@ -1666,6 +1666,62 @@ def t_two_sessions_on_one_group_with_different_sources():
         U.delete(s2)
 
 
+@test
+def t_U04_data_from_an_any_source_join_reaches_n3mb():
+    # JMBSSM with no source address: the join is (*,G) and the packets of any source are routed to the UPF
+    U.restart('0', ROUTER)
+    try:
+        subprocess.run(['ip', 'route', 'add', '232.0.0.0/8', 'dev', 'v1'], stderr=subprocess.DEVNULL)
+        r = U.establish(mc_request(0xb042, b'\x02' + V4G, None, flags=0x03))
+        s = accepted(r, 'any source session')
+        lst = N3mbListener(mc_group_of(r))
+        try:
+            routed_sender()
+            assert inner_payload_seen(lst.packets()), 'data of the (*,G) join did not reach N3mb'
+            # a source the join never named
+            subprocess.run(['ip', 'addr', 'add', '10.99.0.3/24', 'dev', 'v1'], stderr=subprocess.DEVNULL)
+            routed_sender(src='10.99.0.3')
+            assert inner_payload_seen(lst.packets()), 'data of a second source did not reach N3mb'
+        finally:
+            lst.close()
+        U.delete(s)
+    finally:
+        U.restart()
+
+
+def routed_sender6(src='fd99::2', dst='ff3e::1234', payload=b'mbs-data'):
+    sk = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+    sk.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, 8)
+    sk.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, socket.if_nametoindex('v1'))
+    sk.bind((src, 0))
+    sk.sendto(payload, (dst, 5000))
+    sk.close()
+
+
+@test
+def t_U04_4_data_from_ipv6_joins_reaches_n3mb():
+    U.restart('0', ROUTER)
+    try:
+        for cmd in (['ip', 'addr', 'add', 'fd99::1/64', 'dev', 'v0', 'nodad'], ['ip', 'addr', 'add', 'fd99::2/64', 'dev', 'v1', 'nodad'],
+                    ['ip', 'route', 'add', 'ff3e::/16', 'dev', 'v1'],
+                    ['sysctl', '-q', '-w', 'net.ipv6.conf.all.accept_local=1', 'net.ipv6.conf.v0.accept_local=1',
+                     'net.ipv6.conf.all.forwarding=1']):
+            subprocess.run(cmd, stderr=subprocess.DEVNULL)
+        src6 = socket.inet_pton(socket.AF_INET6, 'fd99::2')
+        for name, srcie, cp in (('source specific', b'\x01' + src6, 0xb051), ('any source', None, 0xb052)):
+            r = U.establish(mc_request(cp, b'\x01' + G6, srcie, flags=0x03))
+            s = accepted(r, 'IPv6 ' + name)
+            lst = N3mbListener(mc_group_of(r))
+            try:
+                routed_sender6()
+                assert inner_payload_seen(lst.packets()), 'data of the IPv6 %s join did not reach N3mb' % name
+            finally:
+                lst.close()
+            U.delete(s)
+    finally:
+        U.restart()
+
+
 # E-TESTS-BELOW
 
 

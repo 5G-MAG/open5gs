@@ -280,9 +280,13 @@ static int channel_route(int family, const void *source, const void *group, bool
         memcpy(&route.mfcc_mcastgrp.s_addr, group, 4);
         route.mfcc_parent = interface_input_vifi;       // inbound interface
         route.mfcc_ttls[interface_output_vifi] = 1;     // outbound interface
-        // A (*,G) entry, with no origin, is a proxy entry for the kernel
-        if (!source)
+        // A (*,G) entry, with no origin, is a proxy entry for the kernel. The kernel matches the interface a packet
+        // arrives on against the outgoing interfaces of a (*,G) entry (and never forwards to the arrival interface),
+        // so the input interface is listed as one; without it the packets of the group are not routed at all.
+        if (!source) {
+            route.mfcc_ttls[interface_input_vifi] = 1;
             return setsockopt(sockfd, IPPROTO_IP, add ? MRT_ADD_MFC_PROXY : MRT_DEL_MFC_PROXY, &route, sizeof route);
+        }
         return setsockopt(sockfd, IPPROTO_IP, add ? MRT_ADD_MFC : MRT_DEL_MFC, &route, sizeof route);
     } else {
         struct mf6cctl route;
@@ -294,6 +298,8 @@ static int channel_route(int family, const void *source, const void *group, bool
         memcpy(&route.mf6cc_mcastgrp.sin6_addr, group, 16);
         route.mf6cc_parent = interface_input_vifi;
         IF_SET(interface_output_vifi, &route.mf6cc_ifset);
+        if (!source)    // as for IPv4: a (*,G) entry lists the arrival interface among its outgoing ones
+            IF_SET(interface_input_vifi, &route.mf6cc_ifset);
         return setsockopt(sockfd6, IPPROTO_IPV6, add ? MRT6_ADD_MFC : MRT6_DEL_MFC, &route, sizeof route);
     }
 }
