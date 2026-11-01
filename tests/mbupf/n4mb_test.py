@@ -28,7 +28,7 @@ T_N4MB_CTRL, T_MBS_MC_PARAMS, T_N4MB_INFO, T_MBS_ID, T_MC_TRANSPORT, T_N4MB_FLAG
 
 CAUSE_ACCEPTED, CAUSE_PARTIAL, CAUSE_REJECTED, CAUSE_CONTEXT_NOT_FOUND = 1, 3, 64, 65
 CAUSE_MANDATORY_MISSING, CAUSE_CONDITIONAL_MISSING, CAUSE_INVALID_LENGTH, CAUSE_MANDATORY_INCORRECT = 66, 67, 68, 69
-CAUSE_RULE_FAILURE, CAUSE_NO_RESOURCES, CAUSE_SYSTEM_FAILURE = 73, 75, 77
+CAUSE_RULE_FAILURE, CAUSE_NO_RESOURCES, CAUSE_SERVICE_NOT_SUPPORTED, CAUSE_SYSTEM_FAILURE = 73, 75, 76, 77
 
 
 
@@ -64,6 +64,7 @@ class Upf:
         self.proc = None
         self.sock = None
         self.seq = 100
+        self.pre_net()
         self.start()
 
     def write_config(self, port_yaml, extra_upf=''):
@@ -105,6 +106,20 @@ upf:
         self.sock.settimeout(2.0)
         self.associate()
         self.setup_net()
+
+    def pre_net(self):
+        """Interfaces the UPF needs when it starts: the TUN device it attaches to, and a veth pair whose one end
+        is the multicast router's input interface (the test sends from the other end)."""
+        for cmd in (['ip', 'tuntap', 'add', 'dev', 'ogstunt', 'mode', 'tun'],
+                    ['ip', 'link', 'add', 'v0', 'type', 'veth', 'peer', 'name', 'v1'],
+                    ['ip', 'addr', 'add', '10.99.0.1/24', 'dev', 'v0'],
+                    ['ip', 'addr', 'add', '10.99.0.2/24', 'dev', 'v1'],
+                    ['ip', 'link', 'set', 'v0', 'up'],
+                    ['ip', 'link', 'set', 'v1', 'up'],
+                    # v1's address is a local one: let v0 accept it as the source of what arrives from v1
+                    ['sysctl', '-q', '-w', 'net.ipv4.conf.all.rp_filter=0', 'net.ipv4.conf.v0.rp_filter=0',
+                     'net.ipv4.conf.v0.accept_local=1']):
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def setup_net(self):
         """Routes for the data path: multicast sent to the UPF's TUN device, N3mb multicast looped on lo."""
@@ -772,6 +787,174 @@ def t_U02_7_area_session_id():
     accepted_and_deleted(U.establish(good(cp_seid=0xa003)), 'after the rejections')
 
 
+ROUTER = """    multicast_router:
+      input_interface: v0
+      output_interface: ogstunt
+      activate: true
+"""
+
+
+def proc_lines(path):
+    return open(path).read().splitlines()
+
+
+def settled(cond, timeout=2.0):
+    """The deletion response is sent before the session is released: wait for the effect."""
+    end = time.time() + timeout
+    while time.time() < end:
+        if cond():
+            return True
+        time.sleep(0.05)
+    return cond()
+
+
+def igmp_groups():
+    """The IPv4 groups joined on v0, as dotted strings, from /proc/net/igmp."""
+    out, dev = set(), None
+    for line in proc_lines('/proc/net/igmp')[1:]:
+        if not line.startswith('\t'):
+            dev = line.split()[1].rstrip(':')
+        elif dev == 'v0':
+            out.add(socket.inet_ntoa(bytes.fromhex(line.split()[0])[::-1]))
+    return out
+
+
+def igmp_sources():
+    """(group, source) pairs of the source filters on v0, from /proc/net/mcfilter."""
+    out = set()
+    for line in proc_lines('/proc/net/mcfilter')[1:]:
+        f = line.split()
+        if len(f) > 3 and f[1] == 'v0':
+            out.add((socket.inet_ntoa(struct.pack('>I', int(f[2], 16))), socket.inet_ntoa(struct.pack('>I', int(f[3], 16)))))
+    return out
+
+
+def mld_groups():
+    out = set()
+    for line in proc_lines('/proc/net/igmp6'):
+        f = line.split()
+        if len(f) > 2 and f[1] == 'v0':
+            out.add(socket.inet_ntop(socket.AF_INET6, bytes.fromhex(f[2])))
+    return out
+
+
+def mld_sources():
+    out = set()
+    for line in proc_lines('/proc/net/mcfilter6'):
+        f = line.split()
+        if len(f) > 3 and f[1] == 'v0':
+            out.add((socket.inet_ntop(socket.AF_INET6, bytes.fromhex(f[2])), socket.inet_ntop(socket.AF_INET6, bytes.fromhex(f[3]))))
+    return out
+
+
+@test
+def t_U04_2_U04_3_U04_6_join_leave_ipv4():
+    U.restart('0', ROUTER)
+    try:
+        # JMBSSM clear: the router is active, nothing is joined
+        s = accepted(U.establish(mc_request(0xb001, b'\x02' + V4G, b'\x02' + V4S, flags=0x01)), 'JMBSSM clear')
+        assert '232.1.1.1' not in igmp_groups(), 'joined without JMBSSM'
+        U.delete(s)
+        # JMBSSM set: the channel is joined, source specific
+        s = accepted(U.establish(mc_request(0xb002, b'\x02' + V4G, b'\x02' + V4S, flags=0x03)), 'JMBSSM set')
+        assert '232.1.1.1' in igmp_groups(), 'group not joined: %s' % igmp_groups()
+        assert ('232.1.1.1', '10.1.1.1') in igmp_sources(), 'join is not source specific: %s' % igmp_sources()
+        # a second session on the same channel shares the join
+        s2 = accepted(U.establish(mc_request(0xb003, b'\x02' + V4G, b'\x02' + V4S, flags=0x03)), 'second session')
+        U.delete(s)
+        time.sleep(0.3)
+        assert ('232.1.1.1', '10.1.1.1') in igmp_sources(), 'left while a session still uses the channel'
+        U.delete(s2)
+        assert settled(lambda: '232.1.1.1' not in igmp_groups() and not igmp_sources()), 'channel kept after the sessions ended: %s %s' % (igmp_groups(), igmp_sources())
+        # no source address: any source
+        s = accepted(U.establish(mc_request(0xb004, b'\x02' + V4G, None, flags=0x03)), 'any source')
+        assert '232.1.1.1' in igmp_groups(), 'group not joined for any source'
+        assert not igmp_sources(), 'a source filter for an any-source join: %s' % igmp_sources()
+        U.delete(s)
+        assert settled(lambda: '232.1.1.1' not in igmp_groups()), 'any-source group kept'
+        # a rejected establishment leaves nothing joined
+        r = U.establish(replace_ie(mc_request(0xb005, b'\x02' + V4G, b'\x02' + V4S, flags=0x03), T_CREATE_FAR, far(apply=0x0008, params=False)))
+        assert r and cause(r) != CAUSE_ACCEPTED
+        assert '232.1.1.1' not in igmp_groups(), 'joined by a rejected request'
+    finally:
+        U.restart()
+
+
+@test
+def t_U04_5_join_failures_are_reported():
+    # router not active (the default configuration)
+    r = U.establish(mc_request(0xb011, b'\x02' + V4G, b'\x02' + V4S, flags=0x03))
+    assert r and cause(r) == CAUSE_SERVICE_NOT_SUPPORTED, 'router inactive: cause %s' % (cause(r) if r else None)
+    U.restart('0', ROUTER)
+    try:
+        r = U.establish(good(0xb012, flags=0x03))
+        assert r and cause(r) == CAUSE_CONDITIONAL_MISSING and offending(r) == T_IPMC_INFO, 'no address: cause %s' % (cause(r) if r else None)
+        r = U.establish(mc_request(0xb013, b'\x02' + socket.inet_aton('10.1.1.9'), b'\x02' + V4S, flags=0x03))
+        assert r and cause(r) == CAUSE_MANDATORY_INCORRECT and offending(r) == T_IPMC_ADDR, 'unicast group: cause %s' % (cause(r) if r else None)
+        r = U.establish(mc_request(0xb014, b'\x06' + socket.inet_aton('232.1.1.1') + socket.inet_aton('232.1.1.9'), None, flags=0x03))
+        assert r and cause(r) == CAUSE_SERVICE_NOT_SUPPORTED, 'range: cause %s' % (cause(r) if r else None)
+        r = U.establish(mc_request(0xb015, b'\x02' + V4G, b'\x01' + S6, flags=0x03))
+        assert r and cause(r) == CAUSE_MANDATORY_INCORRECT and offending(r) == T_SRC_IP, 'family mismatch: cause %s' % (cause(r) if r else None)
+        # a failing system call: the kernel limit of group memberships on the router's socket
+        subprocess.run(['sysctl', '-q', '-w', 'net.ipv4.igmp_max_memberships=1'], check=True)
+        a = accepted(U.establish(mc_request(0xb016, b'\x02' + socket.inet_aton('232.2.2.1'), None, flags=0x03)), 'first channel')
+        r = U.establish(mc_request(0xb017, b'\x02' + socket.inet_aton('232.2.2.2'), None, flags=0x03))
+        assert r and cause(r) == CAUSE_SYSTEM_FAILURE, 'membership limit: cause %s' % (cause(r) if r else None)
+        assert '232.2.2.2' not in igmp_groups(), 'a failed join left the group'
+        U.delete(a)
+        assert settled(lambda: not igmp_groups() - {'224.0.0.1'}), 'groups left: %s' % igmp_groups()
+        accepted_and_deleted(U.establish(mc_request(0xb018, b'\x02' + socket.inet_aton('232.2.2.2'), None, flags=0x03)), 'after the limit')
+    finally:
+        subprocess.run(['sysctl', '-q', '-w', 'net.ipv4.igmp_max_memberships=20'])
+        U.restart()
+
+
+@test
+def t_U04_4_join_leave_ipv6():
+    U.restart('0', ROUTER)
+    try:
+        s = accepted(U.establish(mc_request(0xb021, b'\x01' + G6, b'\x01' + S6, flags=0x03)), 'IPv6 JMBSSM')
+        assert 'ff3e::1234' in mld_groups(), 'group not joined: %s' % mld_groups()
+        assert ('ff3e::1234', '2001:db8::1') in mld_sources(), 'IPv6 join not source specific: %s' % mld_sources()
+        U.delete(s)
+        assert settled(lambda: 'ff3e::1234' not in mld_groups() and not mld_sources()), 'IPv6 channel kept'
+        s = accepted(U.establish(mc_request(0xb022, b'\x01' + G6, None, flags=0x03)), 'IPv6 any source')
+        assert 'ff3e::1234' in mld_groups(), 'IPv6 group not joined for any source'
+        U.delete(s)
+        assert settled(lambda: 'ff3e::1234' not in mld_groups()), 'IPv6 group kept'
+    finally:
+        U.restart()
+
+
+def routed_sender(src='10.99.0.2', dst='232.1.1.1', payload=b'mbs-data'):
+    """Sends from the far end of the veth pair, so the packet is received on the router's input interface."""
+    sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sk.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 8)
+    sk.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(src))
+    sk.bind((src, 0))
+    sk.sendto(payload, (dst, 5000))
+    sk.close()
+
+
+@test
+def t_U04_data_from_the_joined_channel_reaches_n3mb():
+    U.restart('0', ROUTER)
+    try:
+        subprocess.run(['ip', 'route', 'add', '232.0.0.0/8', 'dev', 'v1'], stderr=subprocess.DEVNULL)
+        src = socket.inet_aton('10.99.0.2')
+        r = U.establish(mc_request(0xb032, b'\x02' + V4G, b'\x02' + src, flags=0x03))
+        s = accepted(r, 'source specific session')
+        lst = N3mbListener(mc_group_of(r))
+        try:
+            routed_sender()
+            assert inner_payload_seen(lst.packets()), 'data of the joined channel did not reach N3mb'
+        finally:
+            lst.close()
+        U.delete(s)
+    finally:
+        U.restart()
+
+
 # E-TESTS-BELOW
 
 
@@ -790,9 +973,9 @@ def main():
                 if not U.alive():
                     raise AssertionError('upfd died')
                 print('PASS', f.__name__)
-            except AssertionError as e:
+            except Exception as e:
                 failed += 1
-                print('FAIL', f.__name__, '-', e)
+                print('FAIL', f.__name__, '-', repr(e))
                 if not U.alive():
                     print('upfd exited with status %s; end of its log:' % U.proc.returncode)
                     print('\n'.join(U.log_text().splitlines()[-12:]))

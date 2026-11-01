@@ -17,6 +17,9 @@
 #include <netinet/ip.h>
 #include <sys/socket.h>
 #include <linux/mroute.h>
+#include <linux/mroute6.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <net/if.h>
 
 #include "core/ogs-core.h"
@@ -36,6 +39,20 @@ static const int interface_output_vifi = 1;
 // indexes of output interface and input interface
 static int interface_input_index;
 static int interface_output_index;
+
+// the same for IPv6: a second routing socket, with its own multicast interfaces (MIFs)
+static int sockfd6 = -1;
+
+// The channels joined, with the number of users of each
+typedef struct channel_s {
+    ogs_lnode_t lnode;
+    int family;
+    bool has_source;
+    uint8_t source[16];
+    uint8_t group[16];
+    int users;
+} channel_t;
+static OGS_LIST(channel_list);
 
 int multicastrouter_init(const char *interface_input, const char *interface_output){
     if(initialized == 0){
@@ -112,6 +129,33 @@ int multicastrouter_init(const char *interface_input, const char *interface_outp
             ogs_error("error code %d, errno %d", error, errno);
         }
 
+        // IPv6: the same, on a second socket. Without it the IPv4 router still works and an IPv6 channel is refused.
+        sockfd6 = socket(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6);
+        if (sockfd6 == -1) {
+            ogs_warn("No IPv6 raw socket (errno %d): IPv6 multicast is not routed", errno);
+        } else if (setsockopt(sockfd6, IPPROTO_IPV6, MRT6_INIT, &val, sizeof(val)) != 0) {
+            ogs_warn("Could not initialize IPv6 multicast routing (errno %d): IPv6 multicast is not routed", errno);
+            close(sockfd6);
+            sockfd6 = -1;
+        } else {
+            struct mif6ctl mif;
+            memset(&mif, 0, sizeof mif);
+            mif.mif6c_mifi = interface_input_vifi;
+            mif.mif6c_pifi = interface_input_index;
+            error = setsockopt(sockfd6, IPPROTO_IPV6, MRT6_ADD_MIF, &mif, sizeof mif);
+            memset(&mif, 0, sizeof mif);
+            mif.mif6c_mifi = interface_output_vifi;
+            mif.mif6c_pifi = interface_output_index;
+            error |= setsockopt(sockfd6, IPPROTO_IPV6, MRT6_ADD_MIF, &mif, sizeof mif);
+            if (error != 0) {
+                ogs_warn("Could not add the IPv6 multicast interfaces (errno %d): IPv6 multicast is not routed", errno);
+                close(sockfd6);
+                sockfd6 = -1;
+            } else {
+                ogs_debug("IPv6 multicast routing initialized");
+            }
+        }
+
         // MULTICAST ROUTER INITIALIZED
         initialized = 1;
     }
@@ -119,6 +163,16 @@ int multicastrouter_init(const char *interface_input, const char *interface_outp
 }
 
 void multicastrouter_final(void){
+    channel_t *channel = NULL, *next = NULL;
+
+    ogs_list_for_each_safe(&channel_list, next, channel) {
+        ogs_list_remove(&channel_list, channel);
+        ogs_free(channel);
+    }
+    if (sockfd6 != -1) {
+        close(sockfd6);
+        sockfd6 = -1;
+    }
     ogs_debug("Closing the multicast router socket");
     int error = close(sockfd);
     if(error != 0){
@@ -126,58 +180,185 @@ void multicastrouter_final(void){
     }
 }
 
-int multicastrouter_add_route_and_join(const char *ip_source_string, const char *ip_multicast_string){
-    int error;
+static channel_t *channel_find(int family, const void *source, const void *group)
+{
+    channel_t *channel = NULL;
+    size_t len = family == AF_INET ? 4 : 16;
 
-    // ADD MULTICAST ROUTE
-    // we need source ip address, multicast ip address, input interface(IIF), output interface (OIF)
-    in_addr_t source = inet_addr(ip_source_string);
-    in_addr_t group = inet_addr(ip_multicast_string);
-    if(source == INADDR_NONE){
-        ogs_error("ERROR: source is INADDR_NONE");
-        return OGS_ERROR;
+    ogs_list_for_each(&channel_list, channel) {
+        if (channel->family == family && memcmp(channel->group, group, len) == 0 &&
+                channel->has_source == (source != NULL) &&
+                (source == NULL || memcmp(channel->source, source, len) == 0))
+            return channel;
     }
-    if(group == INADDR_NONE){
-        ogs_error("ERROR: group is INADDR_NONE");
-        return OGS_ERROR;
+    return NULL;
+}
+
+// Joins (source, group) or (*, group) on the input interface, with the protocol independent options
+// (MCAST_JOIN_SOURCE_GROUP, MCAST_JOIN_GROUP) of RFC 3678, which take an interface index.
+static int channel_join(int fd, int level, int family, const void *source, const void *group)
+{
+    struct sockaddr_storage grp, src;
+    memset(&grp, 0, sizeof grp);
+    memset(&src, 0, sizeof src);
+
+    if (family == AF_INET) {
+        struct sockaddr_in *g = (struct sockaddr_in *)&grp, *sr = (struct sockaddr_in *)&src;
+        g->sin_family = sr->sin_family = AF_INET;
+        memcpy(&g->sin_addr, group, 4);
+        if (source)
+            memcpy(&sr->sin_addr, source, 4);
+    } else {
+        struct sockaddr_in6 *g = (struct sockaddr_in6 *)&grp, *sr = (struct sockaddr_in6 *)&src;
+        g->sin6_family = sr->sin6_family = AF_INET6;
+        memcpy(&g->sin6_addr, group, 16);
+        if (source)
+            memcpy(&sr->sin6_addr, source, 16);
     }
 
-    struct mfcctl route;
-    memset(&route, 0, sizeof route);
-    route.mfcc_origin.s_addr = source;
-    route.mfcc_mcastgrp.s_addr = group;
-    route.mfcc_parent = interface_input_vifi; //inbound interface
-    route.mfcc_ttls[interface_output_vifi] = 1; // outbound interface
+    if (source) {
+        struct group_source_req req;
+        memset(&req, 0, sizeof req);
+        req.gsr_interface = interface_input_index;
+        memcpy(&req.gsr_group, &grp, sizeof grp);
+        memcpy(&req.gsr_source, &src, sizeof src);
+        return setsockopt(fd, level, MCAST_JOIN_SOURCE_GROUP, &req, sizeof req);
+    } else {
+        struct group_req req;
+        memset(&req, 0, sizeof req);
+        req.gr_interface = interface_input_index;
+        memcpy(&req.gr_group, &grp, sizeof grp);
+        return setsockopt(fd, level, MCAST_JOIN_GROUP, &req, sizeof req);
+    }
+}
 
-    error = setsockopt(sockfd, IPPROTO_IP, MRT_ADD_MFC, &route, sizeof route);
-    if(error == 0){
-        ogs_debug("route created");
-    }else{
-        ogs_error("ERROR: route not created");
-        ogs_error("error code %d, errno %d", error, errno);
+static int channel_leave(int fd, int level, int family, const void *source, const void *group)
+{
+    struct sockaddr_storage grp, src;
+    memset(&grp, 0, sizeof grp);
+    memset(&src, 0, sizeof src);
+
+    if (family == AF_INET) {
+        struct sockaddr_in *g = (struct sockaddr_in *)&grp, *sr = (struct sockaddr_in *)&src;
+        g->sin_family = sr->sin_family = AF_INET;
+        memcpy(&g->sin_addr, group, 4);
+        if (source)
+            memcpy(&sr->sin_addr, source, 4);
+    } else {
+        struct sockaddr_in6 *g = (struct sockaddr_in6 *)&grp, *sr = (struct sockaddr_in6 *)&src;
+        g->sin6_family = sr->sin6_family = AF_INET6;
+        memcpy(&g->sin6_addr, group, 16);
+        if (source)
+            memcpy(&sr->sin6_addr, source, 16);
+    }
+
+    if (source) {
+        struct group_source_req req;
+        memset(&req, 0, sizeof req);
+        req.gsr_interface = interface_input_index;
+        memcpy(&req.gsr_group, &grp, sizeof grp);
+        memcpy(&req.gsr_source, &src, sizeof src);
+        return setsockopt(fd, level, MCAST_LEAVE_SOURCE_GROUP, &req, sizeof req);
+    } else {
+        struct group_req req;
+        memset(&req, 0, sizeof req);
+        req.gr_interface = interface_input_index;
+        memcpy(&req.gr_group, &grp, sizeof grp);
+        return setsockopt(fd, level, MCAST_LEAVE_GROUP, &req, sizeof req);
+    }
+}
+
+// Adds (add) or deletes the multicast route of the channel, from the input to the output interface.
+// A channel for any source has the unspecified address as the origin.
+static int channel_route(int family, const void *source, const void *group, bool add)
+{
+    if (family == AF_INET) {
+        struct mfcctl route;
+        memset(&route, 0, sizeof route);
+        if (source)
+            memcpy(&route.mfcc_origin.s_addr, source, 4);
+        memcpy(&route.mfcc_mcastgrp.s_addr, group, 4);
+        route.mfcc_parent = interface_input_vifi;       // inbound interface
+        route.mfcc_ttls[interface_output_vifi] = 1;     // outbound interface
+        // A (*,G) entry, with no origin, is a proxy entry for the kernel
+        if (!source)
+            return setsockopt(sockfd, IPPROTO_IP, add ? MRT_ADD_MFC_PROXY : MRT_DEL_MFC_PROXY, &route, sizeof route);
+        return setsockopt(sockfd, IPPROTO_IP, add ? MRT_ADD_MFC : MRT_DEL_MFC, &route, sizeof route);
+    } else {
+        struct mf6cctl route;
+        memset(&route, 0, sizeof route);
+        route.mf6cc_origin.sin6_family = AF_INET6;
+        if (source)
+            memcpy(&route.mf6cc_origin.sin6_addr, source, 16);
+        route.mf6cc_mcastgrp.sin6_family = AF_INET6;
+        memcpy(&route.mf6cc_mcastgrp.sin6_addr, group, 16);
+        route.mf6cc_parent = interface_input_vifi;
+        IF_SET(interface_output_vifi, &route.mf6cc_ifset);
+        return setsockopt(sockfd6, IPPROTO_IPV6, add ? MRT6_ADD_MFC : MRT6_DEL_MFC, &route, sizeof route);
+    }
+}
+
+int multicastrouter_join(int family, const void *source, const void *group)
+{
+    channel_t *channel = NULL;
+    int fd = family == AF_INET ? sockfd : sockfd6;
+    int level = family == AF_INET ? IPPROTO_IP : IPPROTO_IPV6;
+
+    ogs_assert(family == AF_INET || family == AF_INET6);
+    ogs_assert(group);
+
+    if (!initialized || fd == -1) {
+        ogs_error("No multicast routing for address family %d", family);
+        return MULTICASTROUTER_UNSUPPORTED;
+    }
+
+    channel = channel_find(family, source, group);
+    if (channel) {
+        channel->users++;
+        return OGS_OK;
+    }
+
+    // ADD MULTICAST ROUTE: the origin (source or any), the group, the input interface(IIF), the output interface (OIF)
+    if (channel_route(family, source, group, true) != 0) {
+        ogs_error("Multicast route not created, errno %d", errno);
         return OGS_ERROR;
     }
 
     // JOIN MULTICAST GROUP
-    // only works in machines with struct ip_mreqn (since Linux 2.2)
-    struct ip_mreqn imr;
-    memset(&imr, 0, sizeof imr);
-    imr.imr_multiaddr.s_addr = inet_addr(ip_multicast_string);
-    imr.imr_ifindex   = interface_input_index;
-    error = setsockopt(sockfd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &imr, sizeof imr);
-    if(error == 0){
-        ogs_debug("Successfully join multicast group %s", ip_multicast_string);
-    }else{
-        // errno 98: Address already in use.
-        // In this case it means we have already joined the group
-        if (errno == 98){
-            // we dont fail if we already joined the group
-        }else{
-            ogs_error("Error joining multicast group %s", ip_multicast_string);
-            ogs_error("error code %d, errno %d", error, errno);
-            return OGS_ERROR;
-        }
+    if (channel_join(fd, level, family, source, group) != 0) {
+        ogs_error("Error joining the multicast channel, errno %d", errno);
+        channel_route(family, source, group, false);
+        return OGS_ERROR;
     }
 
+    channel = ogs_calloc(1, sizeof *channel);
+    ogs_assert(channel);
+    channel->family = family;
+    channel->has_source = source != NULL;
+    if (source)
+        memcpy(channel->source, source, family == AF_INET ? 4 : 16);
+    memcpy(channel->group, group, family == AF_INET ? 4 : 16);
+    channel->users = 1;
+    ogs_list_add(&channel_list, channel);
+
     return OGS_OK;
+}
+
+void multicastrouter_leave(int family, const void *source, const void *group)
+{
+    channel_t *channel = channel_find(family, source, group);
+    int fd = family == AF_INET ? sockfd : sockfd6;
+    int level = family == AF_INET ? IPPROTO_IP : IPPROTO_IPV6;
+
+    if (!channel)
+        return;
+    if (--channel->users > 0)
+        return;
+
+    if (channel_leave(fd, level, family, source, group) != 0)
+        ogs_error("Error leaving the multicast channel, errno %d", errno);
+    if (channel_route(family, source, group, false) != 0)
+        ogs_error("Multicast route not deleted, errno %d", errno);
+    ogs_list_remove(&channel_list, channel);
+    ogs_free(channel);
 }

@@ -20,6 +20,7 @@
 
 #include "context.h"
 #include "pfcp-path.h"
+#include "multicastrouter/multicastrouter.h"
 
 static upf_context_t self;
 
@@ -1203,6 +1204,13 @@ void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess)
                 OGS_IPV6_DEFAULT_PREFIX_LEN >> 3) == upf_mbs_sess)
         ogs_hash_set(self.mbs_ipv6_hash, upf_mbs_sess->ssm.dest_ip_addr.addr6,
                 OGS_IPV6_DEFAULT_PREFIX_LEN >> 3, NULL);
+
+    // The multicast channel joined for JMBSSM
+    if (upf_mbs_sess->mc_joined) {
+        multicastrouter_leave(upf_mbs_sess->mc_family,
+                upf_mbs_sess->mc_has_source ? upf_mbs_sess->mc_source : NULL, upf_mbs_sess->mc_group);
+        upf_mbs_sess->mc_joined = false;
+    }
 
     // A session has a low-layer SSM only if the MB-SMF asked for one (PLLSSM).
     if (upf_mbs_sess->ll_ssm) {

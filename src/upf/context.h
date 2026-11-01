@@ -172,6 +172,12 @@ typedef struct upf_mbs_sess_s {
     uint8_t ssm_src_prefix_len;
     ogs_ssm_t *ll_ssm;     /* lower layer SSM N3mb IPv4/IPv6 */
 
+    bool mc_joined;        /* the session joined the multicast channel of its AF multicast (JMBSSM) */
+    int mc_family;
+    bool mc_has_source;
+    uint8_t mc_source[16];
+    uint8_t mc_group[16];
+
     ogs_pfcp_node_t *pfcp_node;
 
     ogs_pfcp_mbsn4mbreq_flags_t mbs_flags;

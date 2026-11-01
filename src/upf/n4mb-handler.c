@@ -40,6 +40,7 @@ static uint16_t _get_next_udp_tunnel_port(upf_context_t *ctx);
 static int _allocate_ingress_tunnel(upf_mbs_sess_t *mbs_sess, const ogs_pfcp_local_ingress_tunnel_t *lit,
         uint8_t *cause_value, uint16_t *offending_ie_value);
 static uint8_t _check_local_ingress_tunnel(const ogs_pfcp_tlv_local_ingress_tunnel_t *ie_);
+static int _join_session_ssm(upf_mbs_sess_t *mbs_sess, uint8_t *cause_value, uint16_t *offending_ie_value);
 static int _open_udp_tunnel(upf_mbs_sess_t *mbs_sess, ogs_sockaddr_t *bind_address,
         uint8_t *cause_value, uint16_t *offending_ie_value);
 static ogs_pkbuf_config_t *_udp_tunnel_make_pool_config(size_t max_buf_size, size_t max_buffers);
@@ -247,6 +248,89 @@ static uint8_t _check_local_ingress_tunnel(const ogs_pfcp_tlv_local_ingress_tunn
         return OGS_PFCP_CAUSE_INVALID_LENGTH;
     }
     return OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
+}
+
+/*
+ * Joins the multicast tree of the session's AF multicast (TS 29.244 cl. 5.34.2.1A, JMBSSM): the channel (source,
+ * group), or the group for any source when the session has no source address. The multicast router has to be
+ * active (upf.mbs.multicast_router.activate), as it is what routes the group to the UPF's TUN device.
+ */
+static int _join_session_ssm(upf_mbs_sess_t *mbs_sess, uint8_t *cause_value, uint16_t *offending_ie_value)
+{
+    const ogs_ssm_t *ssm = &mbs_sess->ssm;
+    int family, rv;
+    const void *group, *source = NULL;
+    size_t len;
+
+    if (!upf_self()->mbs_multicastrouter_activate) {
+        ogs_error("JMBSSM requested but the multicast router is not active (upf.mbs.multicast_router.activate)");
+        *cause_value = OGS_PFCP_CAUSE_SERVICE_NOT_SUPPORTED;
+        *offending_ie_value = OGS_PFCP_MBSN4MBREQ_FLAGS_TYPE;
+        return OGS_ERROR;
+    }
+    if (mbs_sess->ssm_dest_any || mbs_sess->ssm_dest_range) {
+        ogs_error("JMBSSM requested for a range of groups or any group, not one SSM address");
+        *cause_value = OGS_PFCP_CAUSE_SERVICE_NOT_SUPPORTED;
+        *offending_ie_value = OGS_PFCP_IP_MULTICAST_ADDRESS_TYPE;
+        return OGS_ERROR;
+    }
+    if (!ssm->dest_ip_addr.ipv4 && !ssm->dest_ip_addr.ipv6) {
+        ogs_error("JMBSSM requested without SSM address information");
+        *cause_value = OGS_PFCP_CAUSE_CONDITIONAL_IE_MISSING;
+        *offending_ie_value = OGS_PFCP_IP_MULTICAST_ADDRESSING_INFO_WITHIN_PFCP_SESSION_ESTABLISHMENT_REQUEST_TYPE;
+        return OGS_ERROR;
+    }
+
+    if ((ssm->dest_ip_addr.ipv4 && !IN_MULTICAST(be32toh(ssm->dest_ip_addr.addr))) ||
+            (!ssm->dest_ip_addr.ipv4 && ssm->dest_ip_addr.addr6[0] != 0xff)) {
+        ogs_error("JMBSSM requested for an address that is not an IP multicast address");
+        *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+        *offending_ie_value = OGS_PFCP_IP_MULTICAST_ADDRESS_TYPE;
+        return OGS_ERROR;
+    }
+
+    if (ssm->dest_ip_addr.ipv4) {
+        family = AF_INET;
+        group = &ssm->dest_ip_addr.addr;
+        len = OGS_IPV4_LEN;
+        if (ssm->src_ip_addr.ipv4)
+            source = &ssm->src_ip_addr.addr;
+    } else {
+        family = AF_INET6;
+        group = ssm->dest_ip_addr.addr6;
+        len = OGS_IPV6_LEN;
+        if (ssm->src_ip_addr.ipv6)
+            source = ssm->src_ip_addr.addr6;
+    }
+    if (!source && (ssm->src_ip_addr.ipv4 || ssm->src_ip_addr.ipv6)) {
+        ogs_error("The source and the group of the SSM address are of different address families");
+        *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+        *offending_ie_value = OGS_PFCP_SOURCE_IP_ADDRESS_TYPE;
+        return OGS_ERROR;
+    }
+    if (source && mbs_sess->ssm_src_has_prefix && mbs_sess->ssm_src_prefix_len != 8 * len) {
+        ogs_error("JMBSSM requested for a source subnet, not one source");
+        *cause_value = OGS_PFCP_CAUSE_SERVICE_NOT_SUPPORTED;
+        *offending_ie_value = OGS_PFCP_SOURCE_IP_ADDRESS_TYPE;
+        return OGS_ERROR;
+    }
+
+    rv = multicastrouter_join(family, source, group);
+    if (rv != OGS_OK) {
+        *cause_value = rv == MULTICASTROUTER_UNSUPPORTED ?
+            OGS_PFCP_CAUSE_SERVICE_NOT_SUPPORTED : OGS_PFCP_CAUSE_SYSTEM_FAILURE;
+        *offending_ie_value = OGS_PFCP_MBSN4MBREQ_FLAGS_TYPE;
+        return OGS_ERROR;
+    }
+
+    mbs_sess->mc_joined = true;
+    mbs_sess->mc_family = family;
+    mbs_sess->mc_has_source = source != NULL;
+    if (source)
+        memcpy(mbs_sess->mc_source, source, len);
+    memcpy(mbs_sess->mc_group, group, len);
+    ogs_info("Joined the multicast channel of the MBS session (%s)", source ? "source specific" : "any source");
+    return OGS_OK;
 }
 
 /*
@@ -503,12 +587,14 @@ void upf_n4mb_handle_session_establishment_request(
 
     /* Setup AF SSM IP address */
     for (i = 0; i < num_of_created_pdr; i++) {
+        int rv;
         bool has_dest, has_src;
         ogs_pfcp_decoded_ip_multicast_address_t dest;
         ogs_pfcp_decoded_source_ip_address_t src;
 
         /* Already validated by the request check */
-        ogs_assert(OGS_OK == _decode_pdr_addressing(req, i, &has_dest, &dest, &has_src, &src, &offending_ie_value));
+        rv = _decode_pdr_addressing(req, i, &has_dest, &dest, &has_src, &src, &offending_ie_value);
+        ogs_assert(rv == OGS_OK);
         if (!has_dest && !has_src)
             continue;
 
@@ -630,6 +716,7 @@ void upf_n4mb_handle_session_establishment_request(
                 if (!mbs_sess->ssm.dest_ip_addr.ipv4 && !mbs_sess->ssm.dest_ip_addr.ipv6 && mbs_session_identifier.ssmif) {
                     /* Duplicate to ID SSM to SSM settings if we don't already have an SSM destination */
                     memcpy(&mbs_sess->ssm, mbs_sess->mbs_session_id.ssm, sizeof(mbs_sess->ssm));
+                    upf_mbs_sess_set_ssm(mbs_sess);
                 }
                 if (mbs_session_identifier.nidif) {
                     /* TS 29.244 cl. 8.2.206: eleven hexadecimal digits, the first in bits 8 to 5 of the first octet
@@ -698,38 +785,16 @@ void upf_n4mb_handle_session_establishment_request(
         }
     }
 
+    /* JMBSSM: the MB-UPF "shall join the multicast tree towards the Source Specific Multicast (SSM) address
+     * information", so the join is done, and its failure answered, before the success response. */
+    if (mbs_sess->mbs_flags.join_mbs_session_ssm &&
+            _join_session_ssm(mbs_sess, &cause_value, &offending_ie_value) != OGS_OK)
+        goto cleanup;
+
     ogs_assert(OGS_OK ==
             upf_pfcp_n4mb_send_session_establishment_response(
                 xact, mbs_sess, created_pdr, num_of_created_pdr));
 
-
-    if(upf_self()->mbs_multicastrouter_activate && !req->create_traffic_endpoint.presence){
-        for (i = 0; i < num_of_created_pdr; i++) {
-            pdr = created_pdr[i];
-            ogs_assert(pdr);
-
-            if (pdr->ip_multicast_addressing_info.source_ip_address.v4 || pdr->ip_multicast_addressing_info.ip_multicast_address.v4) {
-                // get the ips from the PDR
-                uint32_t ip_multicast = pdr->ip_multicast_addressing_info.ip_multicast_address.s_ipv4_addr;
-                uint32_t ip_source    = pdr->ip_multicast_addressing_info.source_ip_address.ipv4_addr;
-
-                char ip_multicast_string[INET_ADDRSTRLEN];
-                char ip_source_string[INET_ADDRSTRLEN];
-                inet_ntop(AF_INET, &ip_multicast, ip_multicast_string, sizeof ip_multicast_string);
-                inet_ntop(AF_INET, &ip_source, ip_source_string, sizeof ip_source_string);
-
-                if(OGS_ERROR == multicastrouter_add_route_and_join(ip_source_string, ip_multicast_string)){
-                    ogs_error("Could not create multicast route: %s to %s", ip_source_string, ip_multicast_string);
-                }else{
-                    ogs_info("Multicast route created: %s to %s", ip_source_string, ip_multicast_string);
-                    ogs_info("Join multicast group: %s", ip_multicast_string);
-                }
-            }else if (pdr->ip_multicast_addressing_info.source_ip_address.v6 || pdr->ip_multicast_addressing_info.ip_multicast_address.v6) {
-                ogs_warn("Multicast router for ipv6 not implemented yet");
-                continue;
-            }
-        }
-    }
 
     return;
 
