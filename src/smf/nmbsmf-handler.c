@@ -391,6 +391,7 @@ bool smf_nmbsmf_handle_mbs_session_create(
 
     bool is_multicast_service = false;
     bool tmgi_allocated = false;
+    smf_mbs_sess_create_result_e create_result = SMF_MBS_SESS_CREATE_OK;
 
     int rv = OGS_OK;
 
@@ -668,8 +669,13 @@ bool smf_nmbsmf_handle_mbs_session_create(
         // smf_mbs_sess_create()'s smf_context_have_matching_mbs_session_id() check catches this only when the
         // TMGI is itself the MBS Session ID (is_tmgi), so a MULTICAST session using SSM as its MBS Session ID
         // alongside a separate explicit TMGI would go unchecked.
+    /* A location dependent session is judged by smf_mbs_sess_create(), per MBS session ID and service area
+     * (TS 29.532 V18.6.0 table 6.2.7.3-1, MBS_SESSION_ALREADY_CREATED): another part of the same MBS session
+     * with another area is not "already created". */
     if (tmgi && (!CreateReqData->mbs_session->is_tmgi_alloc_req ||
-                CreateReqData->mbs_session->tmgi_alloc_req == 0)) {
+                CreateReqData->mbs_session->tmgi_alloc_req == 0) &&
+            !(CreateReqData->mbs_session->is_location_dependent &&
+              CreateReqData->mbs_session->location_dependent)) {
         if (smf_mbs_sess_find_by_tmgi(tmgi)) {
             ogs_error("MBS Session Create: provided TMGI is already in use by an existing MBS Session");
             ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
@@ -682,17 +688,38 @@ bool smf_nmbsmf_handle_mbs_session_create(
     }
 
     // MBS Session create
-    mbs_sess = smf_mbs_sess_create(tmgi, tmgi_allocated, ssm, service_type, mbs_service_area, ext_mbs_service_area);
+    mbs_sess = smf_mbs_sess_create(tmgi, tmgi_allocated, ssm, service_type, mbs_service_area, ext_mbs_service_area,
+            CreateReqData->mbs_session->is_location_dependent && CreateReqData->mbs_session->location_dependent,
+            &create_result);
     tmgi = NULL; // tmgi passed to mbs_sess
     ssm = NULL; // ssm passed to mbs_sess
     mbs_service_area = NULL; // mbs_service_area passed to mbs_sess
     ext_mbs_service_area = NULL; // ext_mbs_service_area passed to mbs_sess
 
     if (!mbs_sess) {
-        ogs_error("MBS Session Create: MBS Session Id collides with existing MBS Session");
-        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
-                        message, "Forbidden", "MBS Session Create failed, [mbsSessionId] has already been used in the same area",
-                        NMBSMF_MBSSESSION_MBS_SESSION_ALREADY_CREATED);
+        switch (create_result) {
+        case SMF_MBS_SESS_CREATE_POOL_FULL:
+            ogs_error("MBS Session Create: no free MBS Session");
+            /* TS 29.500 V18.10.0 table 5.2.7.2-1, row INSUFFICIENT_RESOURCES, "500 Internal Server Error": "The
+             * request is rejected due to insufficient resources." The MBS session was not created because the
+             * MB-SMF is full, not because it already exists. */
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+                            message, "Insufficient resources", "MBS Session Create failed, no free MBS session",
+                            NMBSMF_MBSSESSION_INSUFFICIENT_RESOURCES);
+            break;
+        case SMF_MBS_SESS_CREATE_OVERLAPPING_MBS_SERVICE_AREA:
+            ogs_error("MBS Session Create: the MBS Service Area overlaps that of a session with the same MBS Session Id");
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
+                            message, "Forbidden", "MBS Session Create failed, [mbsServiceArea] overlaps the service area of an MBS session with the same [mbsSessionId]",
+                            NMBSMF_MBSSESSION_OVERLAPPING_MBS_SERVICE_AREA);
+            break;
+        default:
+            ogs_error("MBS Session Create: MBS Session Id collides with existing MBS Session");
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
+                            message, "Forbidden", "MBS Session Create failed, [mbsSessionId] has already been used in the same area",
+                            NMBSMF_MBSSESSION_MBS_SESSION_ALREADY_CREATED);
+            break;
+        }
         rv = OGS_ERROR;
         goto cleanup;
     }
@@ -729,16 +756,9 @@ bool smf_nmbsmf_handle_mbs_session_create(
     mbs_sess->ingress_tun_addr_req = (CreateReqData->mbs_session->is_ingress_tun_addr_req &&
                                       CreateReqData->mbs_session->ingress_tun_addr_req != 0);
 
-        // locationDependent and areaSessionId in the response reflect what was requested rather than a fixed
-        // false/0; see smf_n4mb_handle_session_establishment_response(). TS 29.532 V17.5.0 cl.5.3.2.2.1: "For a
-        // location dependent MBS service, the MB-SMF shall allocate a unique Area Session ID within the MBS
-        // session for the MBS Service Area." areaSessionId is readOnly in this schema, so server-allocated and
-        // never client-supplied, and this northbound schema carries at most one per session, so any fixed value
-        // satisfies "unique within the MBS session" when only one such ID exists in that scope.
-    if (CreateReqData->mbs_session->is_location_dependent && CreateReqData->mbs_session->location_dependent) {
-        mbs_sess->location_dependent = true;
-        mbs_sess->area_session_id = 1;
-    }
+        // locationDependent and areaSessionId in the response reflect what was requested: smf_mbs_sess_create()
+        // sets the first and allocates the Area Session ID (TS 29.532 V18.6.0 cl. 5.3.2.2.1: "the MB-SMF shall
+        // allocate a unique Area Session ID within the MBS session for the MBS Service Area").
 
     if (is_multicast_service) {
         mbs_sess->activity_status = CreateReqData->mbs_session->activity_status;

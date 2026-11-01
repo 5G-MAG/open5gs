@@ -614,11 +614,9 @@ typedef struct smf_mbs_sess_s {
      * smf_nmbsmf_handle_mbs_session_create()'s own comment for what this closes. */
     ogs_list_t mbs_fsa_id_list;
 
-    /* TS 29.532 V17.5.0 cl.5.3.2.2.1: "For a location dependent MBS service, the MB-SMF shall allocate
-     * a unique Area Session ID within the MBS session for the MBS Service Area." This SMF's own
-     * northbound schema (ExtMbsSession) carries at most one Area Session ID per session -- see
-     * smf_nmbsmf_handle_mbs_session_create()'s own comment on why a fixed value satisfies that
-     * uniqueness requirement here. */
+    /* TS 29.532 V18.6.0 cl.5.3.2.2.1: "For a location dependent MBS service, the MB-SMF shall allocate
+     * a unique Area Session ID within the MBS session for the MBS Service Area." smf_mbs_sess_create()
+     * allocates it: the lowest value from 1 that no other location dependent session of the TMGI holds. */
     bool location_dependent;
     uint16_t area_session_id;
 
@@ -760,8 +758,17 @@ void smf_tmgi_deallocate_all(void);
 ogs_tmgi_t *smf_tmgi_find_by_tmgi(ogs_tmgi_t *tmgi_to_find);
 bool smf_tmgi_is_expired(ogs_tmgi_t *tmgi);
 
+/* Why smf_mbs_sess_create() returned NULL. */
+typedef enum smf_mbs_sess_create_result_e {
+    SMF_MBS_SESS_CREATE_OK = 0,
+    SMF_MBS_SESS_CREATE_POOL_FULL,                      /* no free MBS session: not a collision */
+    SMF_MBS_SESS_CREATE_ALREADY_CREATED,                /* the MBS session already exists */
+    SMF_MBS_SESS_CREATE_OVERLAPPING_MBS_SERVICE_AREA,   /* its area overlaps that of a session with the same ID */
+} smf_mbs_sess_create_result_e;
+
 smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, bool tmgi_allocated_for_mbs_session, ogs_ssm_t *ssm, const char *service_type,
-                                    ogs_mbs_service_area_t *mbs_service_area, ogs_ext_mbs_service_area_t *ext_mbs_service_area);
+                                    ogs_mbs_service_area_t *mbs_service_area, ogs_ext_mbs_service_area_t *ext_mbs_service_area,
+                                    bool location_dependent, smf_mbs_sess_create_result_e *result);
 void smf_mbs_sess_release(smf_mbs_sess_t *smf_mbs_sess);
 
 smf_mbs_sess_t *smf_mbs_sess_find_by_id(ogs_pool_id_t id);

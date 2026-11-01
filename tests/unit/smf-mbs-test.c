@@ -252,7 +252,7 @@ static smf_mbs_sess_t *new_broadcast_session(void)
 
     ogs_free(expiration);
     if (!tmgi) return NULL;
-    mbs_sess = smf_mbs_sess_create(tmgi, true, NULL, "BROADCAST", NULL, NULL);
+    mbs_sess = smf_mbs_sess_create(tmgi, true, NULL, "BROADCAST", NULL, NULL, false, NULL);
     if (!mbs_sess) return NULL;
     ogs_list_init(&mbs_sess->mbs_qos_flow_list);
     ogs_list_init(&mbs_sess->mbs_fsa_id_list);
@@ -455,7 +455,7 @@ static void test_tmgi_index_after_refresh(void)
     CHECK(tmgi != NULL);
     if (!tmgi) return;
 
-    first = smf_mbs_sess_create(tmgi, false, NULL, "BROADCAST", NULL, NULL);
+    first = smf_mbs_sess_create(tmgi, false, NULL, "BROADCAST", NULL, NULL, false, NULL);
     CHECK(first != NULL);
     if (!first) return;
 
@@ -463,19 +463,131 @@ static void test_tmgi_index_after_refresh(void)
     ogs_free(tmgi->expiration_time);
     tmgi->expiration_time = ogs_strdup("2099-01-01T00:00:00Z");
 
-    second = smf_mbs_sess_create(tmgi, false, NULL, "BROADCAST", NULL, NULL);
+    second = smf_mbs_sess_create(tmgi, false, NULL, "BROADCAST", NULL, NULL, false, NULL);
     CHECK(second == NULL);
     if (second)
         smf_mbs_sess_release(second);
 
     smf_mbs_sess_release(first);
 
-    third = smf_mbs_sess_create(tmgi, false, NULL, "BROADCAST", NULL, NULL);
+    third = smf_mbs_sess_create(tmgi, false, NULL, "BROADCAST", NULL, NULL, false, NULL);
     CHECK(third != NULL);
     if (third)
         smf_mbs_sess_release(third);
 
     smf_tmgi_deallocate(tmgi);
+}
+
+static ogs_mbs_service_area_t *area_of_tacs(const char *tac1, const char *tac2)
+{
+    ogs_mbs_service_area_t *area = ogs_calloc(1, sizeof(*area));
+    const char *tacs[2] = { tac1, tac2 };
+    int i;
+
+    area->tai_list = ogs_calloc(1, sizeof(*area->tai_list));
+    for (i = 0; i < 2; i++) {
+        ogs_tai_t *tai;
+        if (!tacs[i]) continue;
+        tai = ogs_calloc(1, sizeof(*tai));
+        ogs_plmn_id_build(&tai->plmn_id, 1, 1, 2);
+        tai->tac = ogs_strdup(tacs[i]);
+        ogs_list_add(area->tai_list, tai);
+    }
+    return area;
+}
+
+static smf_mbs_sess_t *create_session(ogs_tmgi_t *tmgi, bool allocated, bool location_dependent,
+        const char *tac1, const char *tac2, smf_mbs_sess_create_result_e *result)
+{
+    return smf_mbs_sess_create(tmgi, allocated, NULL, "BROADCAST",
+            tac1 ? area_of_tacs(tac1, tac2) : NULL, NULL, location_dependent, result);
+}
+
+/* TS 29.532 V18.6.0 table 6.2.7.3-1: MBS_SESSION_ALREADY_CREATED ("For a location dependent MBS session, this
+ * error shall be used if the MBS session associated to the indicated MBS session identifier and MBS service area
+ * has already been created in the MB-SMF. For non location dependent MBS session, this error shall be used if
+ * the MBS session indicated by the MBS session identifier has been created in the MB-SMF.") and
+ * OVERLAPPING_MBS_SERVICE_AREA ("if the new MBS service area overlaps with the service area of any MBS session
+ * with the same MBS session identifier."); a full MB-SMF is neither. */
+static void test_create_outcomes(void)
+{
+    char *expiration = smf_tmgi_gen_expiration_time(60);
+    ogs_tmgi_t *tmgi = smf_tmgi_allocate(expiration);
+    smf_mbs_sess_create_result_e result;
+    smf_mbs_sess_t *a, *b, *c, *many[64];
+    int before, tmgis_before, n, max;
+
+    ogs_free(expiration);
+    CHECK(tmgi != NULL);
+    if (!tmgi) return;
+    before = ogs_list_count(&smf_self()->smf_mbs_sess_list);
+    tmgis_before = smf_tmgi_count() - 1;    /* the TMGI above is the first of the test */
+
+    /* a second session of a location independent MBS session */
+    a = create_session(tmgi, true, false, NULL, NULL, &result);
+    CHECK(a != NULL && result == SMF_MBS_SESS_CREATE_OK);
+    b = create_session(tmgi, false, false, NULL, NULL, &result);
+    CHECK(b == NULL && result == SMF_MBS_SESS_CREATE_ALREADY_CREATED);
+    /* the refused session is not left in the list of sessions */
+    CHECK(ogs_list_count(&smf_self()->smf_mbs_sess_list) == before + 1);
+    /* a location dependent part next to a location independent session */
+    b = create_session(tmgi, false, true, "1", NULL, &result);
+    CHECK(b == NULL && result == SMF_MBS_SESS_CREATE_ALREADY_CREATED);
+    smf_mbs_sess_release(a);
+    /* the TMGI allocated with the only session goes with it */
+    CHECK(smf_tmgi_count() == tmgis_before);
+
+    /* location dependent: the parts of one TMGI in different areas coexist, with their own Area Session ID */
+    tmgi = smf_tmgi_allocate(smf_tmgi_gen_expiration_time(60));
+    CHECK(tmgi != NULL);
+    if (!tmgi) return;
+    a = create_session(tmgi, true, true, "1", "2", &result);
+    CHECK(a != NULL && result == SMF_MBS_SESS_CREATE_OK);
+    b = create_session(tmgi, false, true, "3", NULL, &result);
+    CHECK(b != NULL && result == SMF_MBS_SESS_CREATE_OK);
+    if (a && b) {
+        CHECK(a->location_dependent && b->location_dependent);
+        CHECK(a->area_session_id == 1);
+        CHECK(b->area_session_id == 2);
+    }
+    /* the same area again: already created; an area that shares a TAI: overlapping */
+    c = create_session(tmgi, false, true, "3", NULL, &result);
+    CHECK(c == NULL && result == SMF_MBS_SESS_CREATE_ALREADY_CREATED);
+    c = create_session(tmgi, false, true, "2", "9", &result);
+    CHECK(c == NULL && result == SMF_MBS_SESS_CREATE_OVERLAPPING_MBS_SERVICE_AREA);
+    /* a release frees its Area Session ID for the next part */
+    if (a) smf_mbs_sess_release(a);
+    c = create_session(tmgi, false, true, "7", NULL, &result);
+    CHECK(c != NULL && result == SMF_MBS_SESS_CREATE_OK);
+    if (c) CHECK(c->area_session_id == 1);
+
+    /* the TMGI allocated with the first part (released above) goes with the last part */
+    CHECK(smf_tmgi_count() == tmgis_before + 1);
+    if (b) smf_mbs_sess_release(b);
+    CHECK(smf_tmgi_count() == tmgis_before + 1);
+    if (c) smf_mbs_sess_release(c);
+    CHECK(smf_tmgi_count() == tmgis_before);
+
+    /* a full MB-SMF is not "already created" */
+    tmgi = smf_tmgi_allocate(smf_tmgi_gen_expiration_time(60));
+    CHECK(tmgi != NULL);
+    if (!tmgi) return;
+    max = (int)ogs_global_conf()->max.mbs.mbs_sessions;
+    CHECK(max > 0 && max < 64);
+    for (n = 0; n < max; n++) {
+        char tac[16];
+        snprintf(tac, sizeof(tac), "%d", 100 + n);
+        many[n] = create_session(tmgi, n == 0, true, tac, NULL, &result);
+        CHECK(many[n] != NULL);
+    }
+    {
+        smf_mbs_sess_t *extra = create_session(tmgi, false, true, "999", NULL, &result);
+        CHECK(extra == NULL && result == SMF_MBS_SESS_CREATE_POOL_FULL);
+    }
+    for (n = 0; n < max; n++)
+        if (many[n]) smf_mbs_sess_release(many[n]);
+    CHECK(smf_tmgi_count() == tmgis_before);
+    CHECK(ogs_list_count(&smf_self()->smf_mbs_sess_list) == before);
 }
 
 int main(void)
@@ -491,6 +603,7 @@ int main(void)
     test_nid();
     test_dnn_snssai();
     test_tmgi_index_after_refresh();
+    test_create_outcomes();
 
     printf("smf-mbs: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;

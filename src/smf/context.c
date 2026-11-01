@@ -3760,9 +3760,15 @@ static void smf_mbs_sess_free(smf_mbs_sess_t *smf_mbs_sess)
     if (smf_mbs_sess->dnn)
         ogs_free(smf_mbs_sess->dnn);
 
-    // If not allocated with MBS session, TMGI is allocated/freed separately
-    if (smf_mbs_sess->tmgi_allocated && smf_mbs_sess->tmgi)
-        smf_tmgi_deallocate(smf_mbs_sess->tmgi);
+    // If not allocated with MBS session, TMGI is allocated/freed separately. Location dependent sessions of
+    // one TMGI share it: it goes with the last of them.
+    if (smf_mbs_sess->tmgi_allocated && smf_mbs_sess->tmgi) {
+        smf_mbs_sess_t *sharing = smf_mbs_sess_find_by_tmgi(smf_mbs_sess->tmgi);
+        if (sharing)
+            sharing->tmgi_allocated = true;     /* the TMGI now goes with that session */
+        else
+            smf_tmgi_deallocate(smf_mbs_sess->tmgi);
+    }
 
     if (smf_mbs_sess->mbs_session_id.is_ssm) {
         ogs_free(smf_mbs_sess->mbs_session_id.ssm);
@@ -3835,17 +3841,162 @@ static void smf_mbs_sess_remove_all(void)
         smf_mbs_sess_remove(smf_mbs_sess);
 }
 
-smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, bool tmgi_allocated, ogs_ssm_t *ssm, const char *service_type, ogs_mbs_service_area_t *mbs_service_area, ogs_ext_mbs_service_area_t *ext_mbs_service_area)
+/* Whether two MBS service areas are the same set of TAIs and of NCGIs. Two sessions without any area (the
+ * global area) are the same; external areas are not compared (see smf_mbs_sess_service_areas_overlap()). */
+static bool smf_mbs_service_areas_equal(const smf_mbs_sess_t *a, const smf_mbs_sess_t *b)
+{
+    ogs_tai_t *a_tai, *b_tai;
+    ogs_ncgi_tai_t *a_nt, *b_nt;
+    ogs_ncgi_t *a_ncgi, *b_ncgi;
+    int a_count, b_count;
+
+    if (a->ext_mbs_service_area || b->ext_mbs_service_area)
+        return false;
+    if (!a->mbs_service_area && !b->mbs_service_area)
+        return true;
+    if (!a->mbs_service_area || !b->mbs_service_area)
+        return false;
+
+    a_count = a->mbs_service_area->tai_list ? ogs_list_count(a->mbs_service_area->tai_list) : 0;
+    b_count = b->mbs_service_area->tai_list ? ogs_list_count(b->mbs_service_area->tai_list) : 0;
+    if (a_count != b_count)
+        return false;
+    if (a_count) {
+        ogs_list_for_each(a->mbs_service_area->tai_list, a_tai) {
+            bool found = false;
+            ogs_list_for_each(b->mbs_service_area->tai_list, b_tai)
+                if (smf_tai_equal(a_tai, b_tai)) { found = true; break; }
+            if (!found)
+                return false;
+        }
+    }
+
+    a_count = a->mbs_service_area->ncgi_tai_list ? ogs_list_count(a->mbs_service_area->ncgi_tai_list) : 0;
+    b_count = b->mbs_service_area->ncgi_tai_list ? ogs_list_count(b->mbs_service_area->ncgi_tai_list) : 0;
+    if (a_count != b_count)
+        return false;
+    if (a_count) {
+        ogs_list_for_each(a->mbs_service_area->ncgi_tai_list, a_nt) {
+            bool found = false;
+            ogs_list_for_each(b->mbs_service_area->ncgi_tai_list, b_nt) {
+                if (!smf_tai_equal(&a_nt->tai, &b_nt->tai) ||
+                        ogs_list_count(&a_nt->cell_list) != ogs_list_count(&b_nt->cell_list))
+                    continue;
+                found = true;
+                ogs_list_for_each(&a_nt->cell_list, a_ncgi) {
+                    bool cell_found = false;
+                    ogs_list_for_each(&b_nt->cell_list, b_ncgi)
+                        if (smf_ncgi_equal(a_ncgi, b_ncgi)) { cell_found = true; break; }
+                    if (!cell_found) { found = false; break; }
+                }
+                if (found)
+                    break;
+            }
+            if (!found)
+                return false;
+        }
+    }
+
+    return true;
+}
+
+/* TS 29.532 V18.6.0 table 6.2.7.3-1, MBS_SESSION_ALREADY_CREATED: "For a location dependent MBS session, this
+ * error shall be used if the MBS session associated to the indicated MBS session identifier and MBS service area
+ * has already been created in the MB-SMF. For non location dependent MBS session, this error shall be used if the
+ * MBS session indicated by the MBS session identifier has been created in the MB-SMF.", and
+ * OVERLAPPING_MBS_SERVICE_AREA: "if the new MBS service area overlaps with the service area of any MBS session
+ * with the same MBS session identifier." Looks at the sessions already indexed under the MBS session ID of
+ * mbs_session (which is not indexed yet). */
+static smf_mbs_sess_create_result_e smf_mbs_sess_create_collision(smf_mbs_sess_t *mbs_session)
+{
+    smf_mbs_sess_create_result_e result = SMF_MBS_SESS_CREATE_OK;
+    ogs_list_t *lists[2] = { NULL, NULL };
+    uint8_t tmgi_key[SMF_MBS_TMGI_KEY_LEN];
+    int i;
+
+    if (mbs_session->mbs_session_id.is_tmgi) {
+        smf_mbs_tmgi_key(mbs_session->mbs_session_id.tmgi, tmgi_key);
+        lists[0] = (ogs_list_t*)ogs_hash_get(self.smf_mbs_sessions_by_tmgi, tmgi_key, sizeof(tmgi_key));
+    }
+    if (mbs_session->mbs_session_id.is_ssm) {
+        void *key;
+        int klen;
+        key = smf_mbs_sessions_by_ssm_key(mbs_session->mbs_session_id.ssm, &klen);
+        if (key)
+            lists[1] = (ogs_list_t*)ogs_hash_get(self.smf_mbs_sessions_by_ssm, key, klen);
+    }
+
+    for (i = 0; i < 2; i++) {
+        smf_mbs_sess_lnode_t *node;
+
+        if (!lists[i])
+            continue;
+        ogs_list_for_each(lists[i], node) {
+            smf_mbs_sess_t *existing = node->mbs_session;
+
+            if (existing == mbs_session)
+                continue;
+            if (!mbs_session->location_dependent || !existing->location_dependent)
+                return SMF_MBS_SESS_CREATE_ALREADY_CREATED;
+            if (smf_mbs_service_areas_equal(existing, mbs_session))
+                return SMF_MBS_SESS_CREATE_ALREADY_CREATED;
+            if ((!mbs_session->mbs_service_area && !mbs_session->ext_mbs_service_area) ||
+                    smf_mbs_sess_service_areas_overlap(existing, mbs_session))
+                result = SMF_MBS_SESS_CREATE_OVERLAPPING_MBS_SERVICE_AREA;
+        }
+    }
+
+    return result;
+}
+
+/* TS 29.532 V18.6.0 cl. 5.3.2.2.1: "For a location dependent MBS service, the MB-SMF shall allocate a unique Area
+ * Session ID within the MBS session for the MBS Service Area."; TS 23.003 V18.8.0 cl. 30.3: "An Area Session
+ * Identity shall be a decimal number between 0 and 65535 (inclusive)." The lowest value from 1 that no other
+ * location dependent session of the same TMGI holds. */
+static uint16_t smf_mbs_sess_alloc_area_session_id(const smf_mbs_sess_t *mbs_session)
+{
+    uint32_t candidate;
+
+    for (candidate = 1; candidate <= 0xFFFF; candidate++) {
+        smf_mbs_sess_t *other = NULL;
+        bool in_use = false;
+
+        ogs_list_for_each(&self.smf_mbs_sess_list, other) {
+            if (other != mbs_session && other->location_dependent &&
+                    other->tmgi == mbs_session->tmgi &&
+                    other->area_session_id == candidate) {
+                in_use = true;
+                break;
+            }
+        }
+        if (!in_use)
+            return (uint16_t)candidate;
+    }
+    ogs_assert_if_reached();
+    return 0;
+}
+
+smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, bool tmgi_allocated, ogs_ssm_t *ssm, const char *service_type,
+        ogs_mbs_service_area_t *mbs_service_area, ogs_ext_mbs_service_area_t *ext_mbs_service_area,
+        bool location_dependent, smf_mbs_sess_create_result_e *result)
 {
     smf_mbs_sess_t *smf_mbs_sess = NULL;
+    smf_mbs_sess_create_result_e collision;
 
     ogs_assert(tmgi);
     ogs_assert(service_type);
 
+    if (result)
+        *result = SMF_MBS_SESS_CREATE_OK;
+
     if ((smf_mbs_sess = smf_mbs_sess_add()) == NULL) {
         ogs_error("smf_mbs_sess_add() failed");
+        if (result)
+            *result = SMF_MBS_SESS_CREATE_POOL_FULL;
         return NULL;
     }
+
+    smf_mbs_sess->location_dependent = location_dependent;
 
     smf_mbs_sess->tmgi = tmgi;
     smf_mbs_sess->tmgi_allocated = tmgi_allocated;
@@ -3880,15 +4031,22 @@ smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, bool tmgi_allocated, ogs_s
         smf_mbs_sess->state = smf_mbs_sess_multicast_state_configured;
     }
 
-    if (smf_context_have_matching_mbs_session_id(smf_mbs_sess)) {
+    collision = smf_mbs_sess_create_collision(smf_mbs_sess);
+    if (collision != SMF_MBS_SESS_CREATE_OK) {
         ogs_debug("New MBS Session collides with an existing MBS Session, aborting create");
+        /* smf_mbs_sess_add() listed the session: take it out before freeing it */
+        ogs_list_remove(&self.smf_mbs_sess_list, smf_mbs_sess);
         smf_mbs_sess_free(smf_mbs_sess);
         smf_mbs_sess = NULL;
+        if (result)
+            *result = collision;
     } else {
         if (smf_mbs_sess->mbs_session_id.is_tmgi)
             smf_mbs_sessions_by_tmgi_add_mbs_sess(smf_mbs_sess);
         if (smf_mbs_sess->mbs_session_id.is_ssm)
             smf_mbs_sessions_by_ssm_add_mbs_sess(smf_mbs_sess);
+        if (location_dependent)
+            smf_mbs_sess->area_session_id = smf_mbs_sess_alloc_area_session_id(smf_mbs_sess);
     }
 
     return smf_mbs_sess;

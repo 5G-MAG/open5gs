@@ -73,6 +73,8 @@ bool smf_nmbsmf_handle_tmgi_deallocate(
 #define NMBSMF_MBSSESSION_UNKNOWN_TMGI                "UNKNOWN_TMGI"
 #define NMBSMF_MBSESSION_UNKNOWN_MBS_SESSION          "UNKNOWN_MBS_SESSION"
 #define NMBSMF_MBSSESSION_SYSTEM_FAILURE              "SYSTEM_FAILURE"
+#define NMBSMF_MBSSESSION_INSUFFICIENT_RESOURCES      "INSUFFICIENT_RESOURCES"
+#define NMBSMF_MBSSESSION_OVERLAPPING_MBS_SERVICE_AREA "OVERLAPPING_MBS_SERVICE_AREA"
 
 /* Nmbsmf_MBSSession Service - MBS Session Create service operation */
 bool smf_nmbsmf_handle_mbs_session_create(
