@@ -74,8 +74,25 @@ ogs_pkbuf_t *upf_n4mb_build_session_establishment_response(uint8_t type,
         if (pdr_presence == true) j++;
     }
 
+    /* The Created PDR of a PDR whose PDI asked for the ingress tunnel carries the Local Ingress Tunnel
+     * (TS 29.244 Table 7.5.3.2-1: "If the UP function allocates the Local Ingress Tunnel, this IE shall be present"). */
+    if (mbs_sess->udp_tunnel &&
+            ogs_pfcp_sockaddr_to_local_ingress_tunnel(&mbs_sess->udp_tunnel->local_addr, &local_ingress_tunnel, &len) == OGS_OK) {
+        for (i = 0; i < num_of_created_pdr && j < (int)OGS_ARRAY_SIZE(rsp->created_pdr); i++) {
+            if (!mbs_sess->pdr_has_ingress_tunnel[i])
+                continue;
+            rsp->created_pdr[j].presence = 1;
+            rsp->created_pdr[j].pdr_id.presence = 1;
+            rsp->created_pdr[j].pdr_id.u16 = created_pdr[i]->id;
+            rsp->created_pdr[j].local_ingress_tunnel.presence = 1;
+            rsp->created_pdr[j].local_ingress_tunnel.data = &local_ingress_tunnel;
+            rsp->created_pdr[j].local_ingress_tunnel.len = len;
+            j++;
+        }
+    }
+
     /* Created Traffic Endpoint */
-    if (mbs_sess->udp_tunnel) {
+    if (mbs_sess->udp_tunnel && mbs_sess->ingress_in_traffic_endpoint) {
 	if (ogs_pfcp_sockaddr_to_local_ingress_tunnel(&mbs_sess->udp_tunnel->local_addr, &local_ingress_tunnel, &len) == OGS_OK) {
             rsp->created_traffic_endpoint.presence = 1;
             if (mbs_sess->traffic_endpoint_id_presence) {

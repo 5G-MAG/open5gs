@@ -37,6 +37,9 @@
 
 static void _mbs_tunnel_poll_handler(short when, ogs_socket_t fd, void *data);
 static uint16_t _get_next_udp_tunnel_port(upf_context_t *ctx);
+static int _allocate_ingress_tunnel(upf_mbs_sess_t *mbs_sess, const ogs_pfcp_local_ingress_tunnel_t *lit,
+        uint8_t *cause_value, uint16_t *offending_ie_value);
+static uint8_t _check_local_ingress_tunnel(const ogs_pfcp_tlv_local_ingress_tunnel_t *ie_);
 static int _open_udp_tunnel(upf_mbs_sess_t *mbs_sess, ogs_sockaddr_t *bind_address,
         uint8_t *cause_value, uint16_t *offending_ie_value);
 static ogs_pkbuf_config_t *_udp_tunnel_make_pool_config(size_t max_buf_size, size_t max_buffers);
@@ -165,6 +168,88 @@ static int _decode_pdr_addressing(const ogs_pfcp_session_establishment_request_t
 }
 
 /*
+ * Allocates the ingress tunnel of the session as the Local Ingress Tunnel IE asks (TS 29.244 cl. 8.2.209).
+ * On failure the cause and the Offending IE are set and nothing stays open.
+ */
+static int _allocate_ingress_tunnel(upf_mbs_sess_t *mbs_sess, const ogs_pfcp_local_ingress_tunnel_t *lit,
+        uint8_t *cause_value, uint16_t *offending_ie_value)
+{
+    ogs_sockaddr_t *bind_address = NULL;
+    upf_context_t *ctx = upf_self();
+
+    if (lit->choose) {
+        /* The UP function assigns the address and the UDP port: the configured base address, and the
+         * next port of the configured pool (or an ephemeral one). */
+        ogs_copyaddrinfo(&bind_address, ctx->mbs_udp_tun_base_addr);
+        if (!bind_address ||
+                bind_address->ogs_sa_family != (lit->ipv4 ? AF_INET : AF_INET6)) {
+            ogs_error("The MBS UDP tunnel base address is not of the requested address family");
+            *cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+            *offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
+            if (bind_address)
+                ogs_freeaddrinfo(bind_address);
+            return OGS_ERROR;
+        }
+        // _get_next_udp_tunnel_port() returns a host-byte-order port, straight from the parsed
+        // YAML config, while ogs_sin_port is read by the kernel in network byte order; assigning
+        // it unconverted binds the byte-swapped port on a little-endian host.
+        if (lit->ipv4)
+            bind_address->sin.sin_port = htons(_get_next_udp_tunnel_port(ctx));
+        else
+            bind_address->sin6.sin6_port = htons(_get_next_udp_tunnel_port(ctx));
+        if (bind_address->ogs_sin_port == 0xffff) {
+            // Error already reported, abort MBS Session
+            *cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+            *offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
+            ogs_freeaddrinfo(bind_address);
+            return OGS_ERROR;
+        }
+        mbs_sess->udp_tunnel_port_pooled = !ctx->mbs_udp_tun_ephemeral_port;
+    } else {
+        /* The CP function gave the address and the UDP port of the tunnel (TS 29.244 cl. 8.2.209: with the
+         * CH bit clear the address field of the V4 or V6 flag is present): the tunnel is opened there. */
+        bind_address = ogs_calloc(1, sizeof(*bind_address));
+        ogs_assert(bind_address);
+        if (lit->ipv4) {
+            bind_address->sin.sin_family = AF_INET;
+            bind_address->sin.sin_port = lit->port;     /* already network order */
+            bind_address->sin.sin_addr.s_addr = lit->addr;
+        } else {
+            bind_address->sin6.sin6_family = AF_INET6;
+            bind_address->sin6.sin6_port = lit->port;
+            memcpy(&bind_address->sin6.sin6_addr, lit->addr6, OGS_IPV6_LEN);
+        }
+    }
+
+    return _open_udp_tunnel(mbs_sess, bind_address, cause_value, offending_ie_value);
+}
+
+/* Returns the cause for a Local Ingress Tunnel IE that is not valid, or OGS_PFCP_CAUSE_REQUEST_ACCEPTED. */
+static uint8_t _check_local_ingress_tunnel(const ogs_pfcp_tlv_local_ingress_tunnel_t *ie_)
+{
+    const ogs_pfcp_local_ingress_tunnel_t *lit = ie_->data;
+    uint16_t len = ie_->len;
+    uint16_t want;
+
+    if (lit == NULL || len < 1)
+        return OGS_PFCP_CAUSE_INVALID_LENGTH;
+    if (lit->ipv4 == lit->ipv6) {
+        /* TS 29.244 cl. 8.2.209: "Only one of the V4 and V6 flags shall be set to "1"." */
+        ogs_error("Local Ingress Tunnel with V4=%d and V6=%d", lit->ipv4, lit->ipv6);
+        return OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+    }
+    /* With CH set the port and address fields are not present, else the field of the set flag is. */
+    want = 1;
+    if (!lit->choose)
+        want += 2 + (lit->ipv4 ? OGS_IPV4_LEN : OGS_IPV6_LEN);
+    if (len != want) {
+        ogs_error("Local Ingress Tunnel length %u, expected %u", len, want);
+        return OGS_PFCP_CAUSE_INVALID_LENGTH;
+    }
+    return OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
+}
+
+/*
  * Checks that the mandatory IEs of an N4mb Session Establishment Request are present. On a failure the
  * response has been sent and false is returned, and no session has been allocated.
  */
@@ -241,30 +326,24 @@ bool upf_n4mb_check_session_establishment_request(
         }
     }
 
-    if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED &&
-            req->create_traffic_endpoint.local_ingress_tunnel.presence) {
-        ogs_pfcp_local_ingress_tunnel_t *lit = req->create_traffic_endpoint.local_ingress_tunnel.data;
-        uint16_t len = req->create_traffic_endpoint.local_ingress_tunnel.len;
-        uint16_t want = 0;
-
-        if (lit == NULL || len < 1) {
-            cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
-        } else if (lit->ipv4 == lit->ipv6) {
-            /* TS 29.244 cl. 8.2.209: "Only one of the V4 and V6 flags shall be set to "1"." */
-            ogs_error("Local Ingress Tunnel with V4=%d and V6=%d", lit->ipv4, lit->ipv6);
-            cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
-        } else {
-            /* With CH set the port and address fields are not present, else the field of the set flag is. */
-            want = 1;
-            if (!lit->choose)
-                want += 2 + (lit->ipv4 ? OGS_IPV4_LEN : OGS_IPV6_LEN);
-            if (len != want) {
-                ogs_error("Local Ingress Tunnel length %u, expected %u", len, want);
-                cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
-            }
-        }
+    if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED && req->create_traffic_endpoint.local_ingress_tunnel.presence) {
+        cause_value = _check_local_ingress_tunnel(&req->create_traffic_endpoint.local_ingress_tunnel);
         if (cause_value != OGS_PFCP_CAUSE_REQUEST_ACCEPTED)
             offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
+    }
+
+    if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED) {
+        int i;
+
+        for (i = 0; i < OGS_MAX_NUM_OF_PDR && req->create_pdr[i].presence; i++) {
+            if (!req->create_pdr[i].pdi.local_ingress_tunnel.presence)
+                continue;
+            cause_value = _check_local_ingress_tunnel(&req->create_pdr[i].pdi.local_ingress_tunnel);
+            if (cause_value != OGS_PFCP_CAUSE_REQUEST_ACCEPTED) {
+                offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
+                break;
+            }
+        }
     }
 
     if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED &&
@@ -381,65 +460,36 @@ void upf_n4mb_handle_session_establishment_request(
     if (cause_value != OGS_PFCP_CAUSE_REQUEST_ACCEPTED)
         goto cleanup;
 
-    if (req->create_traffic_endpoint.presence) {
-        if (req->create_traffic_endpoint.traffic_endpoint_id.presence &&
-                req->create_traffic_endpoint.traffic_endpoint_id.len >= 1) {
-            mbs_sess->traffic_endpoint_id_presence = true;
-            mbs_sess->traffic_endpoint_id = *(uint8_t *)req->create_traffic_endpoint.traffic_endpoint_id.data;
+    if (req->create_traffic_endpoint.presence &&
+            req->create_traffic_endpoint.traffic_endpoint_id.presence &&
+            req->create_traffic_endpoint.traffic_endpoint_id.len >= 1) {
+        mbs_sess->traffic_endpoint_id_presence = true;
+        mbs_sess->traffic_endpoint_id = *(uint8_t *)req->create_traffic_endpoint.traffic_endpoint_id.data;
+    }
+
+    /* The single ingress tunnel of the session: asked for in the Create Traffic Endpoint, or in the PDI of the
+     * PDRs that name no Traffic Endpoint (the MB-UPF "shall assign a single ingress tunnel address, regardless of
+     * the number of MBS QoS flows", TS 29.244 cl. 5.34.2.2). */
+    {
+        const ogs_pfcp_tlv_local_ingress_tunnel_t *lit_ie = NULL;
+
+        if (req->create_traffic_endpoint.presence && req->create_traffic_endpoint.local_ingress_tunnel.presence) {
+            lit_ie = &req->create_traffic_endpoint.local_ingress_tunnel;
+            mbs_sess->ingress_in_traffic_endpoint = true;
         }
-
-        if (req->create_traffic_endpoint.local_ingress_tunnel.presence) {
-            ogs_pfcp_local_ingress_tunnel_t *lit = (ogs_pfcp_local_ingress_tunnel_t*)req->create_traffic_endpoint.local_ingress_tunnel.data;
-            ogs_sockaddr_t *bind_address = NULL;
-            upf_context_t *ctx = upf_self();
-
-            if (lit->choose) {
-                /* The UP function assigns the address and the UDP port: the configured base address, and the
-                 * next port of the configured pool (or an ephemeral one). */
-                ogs_copyaddrinfo(&bind_address, ctx->mbs_udp_tun_base_addr);
-                if (!bind_address ||
-                        bind_address->ogs_sa_family != (lit->ipv4 ? AF_INET : AF_INET6)) {
-                    ogs_error("The MBS UDP tunnel base address is not of the requested address family");
-                    cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
-                    offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
-                    if (bind_address)
-                        ogs_freeaddrinfo(bind_address);
-                    goto cleanup;
-                }
-                // _get_next_udp_tunnel_port() returns a host-byte-order port, straight from the parsed
-                // YAML config, while ogs_sin_port is read by the kernel in network byte order; assigning
-                // it unconverted binds the byte-swapped port on a little-endian host.
-                if (lit->ipv4)
-                    bind_address->sin.sin_port = htons(_get_next_udp_tunnel_port(ctx));
-                else
-                    bind_address->sin6.sin6_port = htons(_get_next_udp_tunnel_port(ctx));
-                if (bind_address->ogs_sin_port == 0xffff) {
-                    // Error already reported, abort MBS Session
-                    cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
-                    offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
-                    ogs_freeaddrinfo(bind_address);
-                    goto cleanup;
-                }
-                mbs_sess->udp_tunnel_port_pooled = !ctx->mbs_udp_tun_ephemeral_port;
-            } else {
-                /* The CP function gave the address and the UDP port of the tunnel (TS 29.244 cl. 8.2.209: with the
-                 * CH bit clear the address field of the V4 or V6 flag is present): the tunnel is opened there. */
-                bind_address = ogs_calloc(1, sizeof(*bind_address));
-                ogs_assert(bind_address);
-                if (lit->ipv4) {
-                    bind_address->sin.sin_family = AF_INET;
-                    bind_address->sin.sin_port = lit->port;     /* already network order */
-                    bind_address->sin.sin_addr.s_addr = lit->addr;
-                } else {
-                    bind_address->sin6.sin6_family = AF_INET6;
-                    bind_address->sin6.sin6_port = lit->port;
-                    memcpy(&bind_address->sin6.sin6_addr, lit->addr6, OGS_IPV6_LEN);
-                }
-            }
-
-            if (_open_udp_tunnel(mbs_sess, bind_address, &cause_value, &offending_ie_value) != OGS_OK)
-                goto cleanup;
+        for (i = 0; !lit_ie && i < num_of_created_pdr; i++) {
+            if (req->create_pdr[i].pdi.local_ingress_tunnel.presence &&
+                    !req->create_pdr[i].pdi.traffic_endpoint_id.presence)
+                lit_ie = &req->create_pdr[i].pdi.local_ingress_tunnel;
         }
+        if (lit_ie &&
+                _allocate_ingress_tunnel(mbs_sess, lit_ie->data, &cause_value, &offending_ie_value) != OGS_OK)
+            goto cleanup;
+
+        for (i = 0; i < num_of_created_pdr; i++)
+            mbs_sess->pdr_has_ingress_tunnel[i] = mbs_sess->udp_tunnel &&
+                req->create_pdr[i].pdi.local_ingress_tunnel.presence &&
+                !req->create_pdr[i].pdi.traffic_endpoint_id.presence;
     }
 
     /* Setup AF SSM IP address */

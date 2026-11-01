@@ -591,6 +591,47 @@ def t_U03_16_U03_17_traffic_endpoint_addressing():
     accepted_and_deleted(U.establish(good(cp_seid=0x7035)), 'after the rejections')
 
 
+T_CREATED_PDR = 8
+
+
+def all_ies(r, t):
+    return [v for tt, v in r['ies'] if tt == t]
+
+
+def pdr_request(cp_seid, *pdrs, flags=0x01):
+    return [node_id(), fseid(cp_seid), *pdrs, far(), qer(), n4mb_ctrl(flags=flags)]
+
+
+@test
+def t_U10_8_ingress_tunnel_in_the_pdr():
+    r = U.establish(pdr_request(0x8001, pdr(pdr_id=1, pdi_extra=(lit_choose(),))))
+    s = accepted(r, 'Local Ingress Tunnel in the PDI')
+    created = all_ies(r, T_CREATED_PDR)
+    assert len(created) == 1, '%d Created PDR' % len(created)
+    c = dict(parse_ies(created[0]))
+    assert struct.unpack('>H', c[56])[0] == 1, 'PDR ID'
+    lit = c.get(T_LIT)
+    assert lit and lit[0] == 0x01 and len(lit) == 7 and lit[3:7] == socket.inet_aton('127.0.0.31'), 'LIT %s' % (lit.hex() if lit else None)
+    assert find(r, T_CREATED_TE) is None, 'a Created Traffic Endpoint without a Create Traffic Endpoint'
+    U.delete(s)
+    # two PDRs asking: one tunnel, reported in both Created PDRs
+    r = U.establish(pdr_request(0x8002, pdr(pdr_id=1, pdi_extra=(lit_choose(),)), pdr(pdr_id=2, pdi_extra=(lit_choose(),))))
+    s = accepted(r, 'two PDRs')
+    created = [dict(parse_ies(v)) for v in all_ies(r, T_CREATED_PDR)]
+    assert len(created) == 2 and created[0][T_LIT] == created[1][T_LIT], 'one tunnel for both PDRs'
+    U.delete(s)
+    # the address the CP gave
+    want = b'\x01' + struct.pack('>H', 39301) + socket.inet_aton('127.0.0.31')
+    r = U.establish(pdr_request(0x8003, pdr(pdr_id=1, pdi_extra=(ie(T_LIT, want),))))
+    s = accepted(r, 'CH=0 in the PDI')
+    assert dict(parse_ies(all_ies(r, T_CREATED_PDR)[0]))[T_LIT] == want
+    U.delete(s)
+    # invalid IE in the PDI
+    r = U.establish(pdr_request(0x8004, pdr(pdr_id=1, pdi_extra=(ie(T_LIT, b'\x07'),))))
+    assert r and cause(r) == CAUSE_MANDATORY_INCORRECT and offending(r) == T_LIT, 'invalid PDI IE: cause %s' % (cause(r) if r else None)
+    accepted_and_deleted(U.establish(good(cp_seid=0x8005)), 'after the rejection')
+
+
 # E-TESTS-BELOW
 
 

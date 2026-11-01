@@ -172,6 +172,8 @@ typedef struct upf_mbs_sess_s {
     bool udp_tunnel_port_pooled;  /* the tunnel port came from the configured pool and goes back to it */
     bool traffic_endpoint_id_presence;  /* the request's Create Traffic Endpoint carried an ID */
     uint8_t traffic_endpoint_id;
+    bool ingress_in_traffic_endpoint;  /* the Create Traffic Endpoint asked for the ingress tunnel */
+    bool pdr_has_ingress_tunnel[OGS_MAX_NUM_OF_PDR];  /* by Create PDR index: the PDI asked for the ingress tunnel */
     unsigned int udp_tunnel_mtu;
     ogs_pkbuf_pool_t *udp_tunnel_pkbuf_pool;
 } upf_mbs_sess_t;
