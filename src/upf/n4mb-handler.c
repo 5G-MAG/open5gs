@@ -40,6 +40,45 @@ static uint16_t _get_next_udp_tunnel_port(upf_context_t *ctx);
 static ogs_pkbuf_config_t *_udp_tunnel_make_pool_config(size_t max_buf_size, size_t max_buffers);
 static int get_mtu_for_address(const struct sockaddr *addr, socklen_t addr_len);
 
+/*
+ * Checks that the mandatory IEs of an N4mb Session Establishment Request are present. On a failure the
+ * response has been sent and false is returned, and no session has been allocated.
+ */
+bool upf_n4mb_check_session_establishment_request(
+        ogs_pfcp_xact_t *xact, ogs_pfcp_session_establishment_request_t *req)
+{
+    uint8_t cause_value = OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
+    uint16_t offending_ie_value = 0;
+    uint64_t cp_seid = 0;
+
+    ogs_assert(xact);
+    ogs_assert(req);
+
+    if (req->cp_f_seid.presence == 0 || req->cp_f_seid.data == NULL) {
+        ogs_error("No CP F-SEID in N4mb Session Establishment Request");
+        cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+        offending_ie_value = OGS_PFCP_F_SEID_TYPE;
+    } else if (req->node_id.presence == 0) {
+        ogs_error("No Node ID in N4mb Session Establishment Request");
+        cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+        offending_ie_value = OGS_PFCP_NODE_ID_TYPE;
+    }
+
+    if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED)
+        return true;
+
+    /* The response header carries the SEID the CP function allocated, when it gave one. */
+    if (req->cp_f_seid.presence && req->cp_f_seid.data &&
+            req->cp_f_seid.len >= 1 + sizeof(uint64_t)) {  /* flags, SEID */
+        ogs_pfcp_f_seid_t *f_seid = req->cp_f_seid.data;
+        cp_seid = be64toh(f_seid->seid);
+    }
+    ogs_pfcp_send_error_message(xact, cp_seid,
+            OGS_PFCP_SESSION_ESTABLISHMENT_RESPONSE_TYPE,
+            cause_value, offending_ie_value);
+    return false;
+}
+
 void upf_n4mb_handle_session_establishment_request(
         upf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
         ogs_pfcp_session_establishment_request_t *req)
@@ -63,10 +102,12 @@ void upf_n4mb_handle_session_establishment_request(
     cause_value = OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
 
     if (!mbs_sess) {
-        ogs_error("No Context");
+        /* The mandatory IEs are checked by upf_n4mb_check_session_establishment_request() before the
+         * session is allocated, so a missing session here is an allocation failure. */
+        ogs_error("No MBS Session Context");
         ogs_pfcp_send_error_message(xact, 0,
                 OGS_PFCP_SESSION_ESTABLISHMENT_RESPONSE_TYPE,
-                OGS_PFCP_CAUSE_MANDATORY_IE_MISSING, 0);
+                OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE, 0);
         return;
     }
 

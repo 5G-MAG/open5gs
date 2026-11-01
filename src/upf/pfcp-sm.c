@@ -295,6 +295,9 @@ void upf_pfcp_state_associated(ogs_fsm_t *s, upf_event_t *e)
         case OGS_PFCP_SESSION_ESTABLISHMENT_REQUEST_TYPE:
             // TODO (borieher): Find a better way to differentiate the messages
             if (message->pfcp_session_establishment_request.mbs_session_n4mb_control_information.presence) {
+                if (!upf_n4mb_check_session_establishment_request(
+                            xact, &message->pfcp_session_establishment_request))
+                    break;
                 mbs_sess = upf_mbs_sess_add_by_message(message);
                 if (mbs_sess)
                     OGS_SETUP_PFCP_NODE(mbs_sess, node);
