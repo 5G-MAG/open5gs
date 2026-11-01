@@ -2718,7 +2718,13 @@ int amf_namf_handle_mbs_broadcast_context_update(
 
         // Each gNB gets its own copy, for the ownership reason given in ContextCreate's send loop.
     ogs_list_for_each(&amf_self()->gnb_list, gnb) {
+        amf_mbs_gnb_t *involved = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
+
         if (!amf_gnb_takes_mbs_session(gnb, mbs_context))
+            continue;
+        // The session has been released in this gNB at its own request (BROADCAST SESSION RELEASE REQUIRED): it
+        // holds no session to modify.
+        if (involved && involved->release_required)
             continue;
         ogs_pkbuf_t *n2msgreq_copy = ogs_pkbuf_copy(n2msgreq);
         if (!n2msgreq_copy) {
