@@ -3891,7 +3891,9 @@ void smf_mbs_sess_create_mbs_data_forwarding(smf_mbs_sess_t *mbs_sess)
     memset(&dl_far->outer_header_creation, 0, sizeof(ogs_pfcp_outer_header_creation_t));
     //dl_far->outer_header_creation.gtpu4 = 1;
     dl_far->outer_header_creation.ssm_c_teid = 1;
-    dl_far->outer_header_creation_len = 6;
+    // The Outer Header Creation Description alone (2 octets): with the "Low Layer SSM and C-TEID" bit set the TEID,
+    // address and port fields are not present.
+    dl_far->outer_header_creation_len = 2;
 
         // The MBS DL PDR is given a QER, because pdr->qer is what decides whether the GTP-U PDU Session
         // Container extension header (TS 29.281/38.415) carrying the QFI is added: ogs_pfcp_send_g_pdu()
