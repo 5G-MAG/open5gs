@@ -681,6 +681,87 @@ static void test_context_update_req_data_no_ngap_signalling_ind(void)
     if (parsed) OpenAPI_context_update_req_data_free(parsed);
 }
 
+/* A service area of TAIs of PLMN 999/70 with the given TACs (up to 4) */
+static ogs_mbs_service_area_t *area_of(int n, const uint32_t *tacs)
+{
+    ogs_mbs_service_area_t *area = ogs_calloc(1, sizeof(*area));
+    int i;
+
+    area->tai_list = ogs_calloc(1, sizeof(*area->tai_list));
+    ogs_list_init(area->tai_list);
+    for (i = 0; i < n; i++) {
+        ogs_tai_t *tai = ogs_calloc(1, sizeof(*tai));
+
+        ogs_plmn_id_build(&tai->plmn_id, 999, 70, 2);
+        tai->tac = ogs_msprintf("%06x", tacs[i]);
+        ogs_list_add(area->tai_list, tai);
+    }
+    return area;
+}
+
+/* a gNB that completed NG Setup and serves the given TACs of PLMN 999/70 */
+static void gnb_serves(amf_gnb_t *gnb, int n, const uint32_t *tacs)
+{
+    int i;
+
+    gnb->state.ng_setup_success = true;
+    gnb->num_of_supported_ta_list = n;
+    for (i = 0; i < n; i++) {
+        gnb->supported_ta_list[i].tac.v = tacs[i];
+        gnb->supported_ta_list[i].num_of_bplmn_list = 1;
+        ogs_plmn_id_build(&gnb->supported_ta_list[i].bplmn_list[0].plmn_id, 999, 70, 2);
+    }
+}
+
+/* TS 29.518 V18.14.0 cl. 5.6.2.3: "If the n2MbsInfoChangeInd IE is present in the request and set to "false", the AMF
+ * does not need to contact NG-RAN nodes unaffected by the MBS service area change." */
+static void test_update_action_info_unchanged(void)
+{
+    static const uint32_t t1[] = { 1 }, t2[] = { 2 }, t12[] = { 1, 2 };
+    amf_gnb_t *a = make_gnb(0x100, 22), *b = make_gnb(0x200, 22), *c = make_gnb(0x300, 22);
+    amf_mbs_context_t ctx = make_context();
+    amf_mbs_update_plan_t plan;
+    ogs_mbs_service_area_t *old_area = area_of(1, t1), *new_area = area_of(2, t12);
+
+    ogs_list_init(&ctx.involved_gnb_list);
+    a->id = 1; b->id = 2; c->id = 3;
+    gnb_serves(a, 1, t1);
+    gnb_serves(b, 1, t2);
+    gnb_serves(c, 2, t12);
+
+    /* the service area grows from {1} to {1,2}; the container is unchanged */
+    ctx.mbs_service_area = new_area;
+    memset(&plan, 0, sizeof(plan));
+    plan.old_area = old_area;
+    plan.n2_info_unchanged = true;
+    CHECK(amf_namf_mbs_update_action(&ctx, a, &plan) == AMF_MBS_UPDATE_UNAFFECTED);  /* serves 1 only: not in the difference */
+    CHECK(amf_namf_mbs_update_action(&ctx, b, &plan) == AMF_MBS_UPDATE_MODIFY);      /* serves 2: enters the area */
+    CHECK(amf_namf_mbs_update_action(&ctx, c, &plan) == AMF_MBS_UPDATE_MODIFY);      /* serves 2 as well */
+
+    /* the indication true, or absent: every node that takes the session is contacted */
+    plan.n2_info_unchanged = false;
+    CHECK(amf_namf_mbs_update_action(&ctx, a, &plan) == AMF_MBS_UPDATE_MODIFY);
+
+    /* no change of the area at all: nobody is affected */
+    plan.n2_info_unchanged = true;
+    plan.old_area = new_area;
+    CHECK(amf_namf_mbs_update_action(&ctx, a, &plan) == AMF_MBS_UPDATE_UNAFFECTED);
+    CHECK(amf_namf_mbs_update_action(&ctx, c, &plan) == AMF_MBS_UPDATE_UNAFFECTED);
+
+    /* an area that cannot be told by TAI (no TAI list): every node that takes the session is affected */
+    ctx.mbs_service_area = ogs_calloc(1, sizeof(*ctx.mbs_service_area));
+    plan.old_area = old_area;
+    CHECK(amf_namf_mbs_update_action(&ctx, a, &plan) == AMF_MBS_UPDATE_MODIFY);
+    ogs_free(ctx.mbs_service_area);
+
+    ctx.mbs_service_area = NULL;
+    ogs_mbs_service_area_free(new_area);
+    ogs_mbs_service_area_free(old_area);
+    ogs_free(a);
+    ogs_free(b);
+    ogs_free(c);
+}
+
 int main(int argc, const char *argv[])
 {
     ogs_pkbuf_config_t config;
@@ -703,6 +784,7 @@ int main(int argc, const char *argv[])
     test_transport_relay();
     test_store_n2_container();
     test_update_action_ran_id_list();
+    test_update_action_info_unchanged();
     test_context_update_req_data_no_ngap_signalling_ind();
 
     ogs_sbi_message_final();

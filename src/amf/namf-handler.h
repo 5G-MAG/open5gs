@@ -68,6 +68,7 @@ int amf_namf_handle_mbs_broadcast_context_update(
  */
 typedef enum {
     AMF_MBS_UPDATE_SKIP,    /* nothing is sent to the node */
+    AMF_MBS_UPDATE_UNAFFECTED, /* nothing is sent: the node is not affected by the change the update carries */
     AMF_MBS_UPDATE_MODIFY,  /* a Broadcast Session Modification Request */
     AMF_MBS_UPDATE_SETUP,   /* a Broadcast Session Setup Request */
 } amf_mbs_update_action_e;
@@ -78,6 +79,12 @@ typedef struct amf_mbs_update_plan_s {
     OpenAPI_list_t *ran_id_list;
     /* noNgapSignallingInd is true: no NGAP message goes to any NG-RAN */
     bool no_ngap_signalling;
+    /* n2MbsInfoChangeInd is present and false: the container has not changed, so only the NG-RAN nodes affected by
+     * the change of the service area are contacted */
+    bool n2_info_unchanged;
+    /* the service area of the context before this update (the same object as the context's when the update carries
+     * none) */
+    const ogs_mbs_service_area_t *old_area;
 } amf_mbs_update_plan_t;
 
 /* The action of a ContextUpdate of \p mbs_context (whose service area is already the updated one) at \p gnb */

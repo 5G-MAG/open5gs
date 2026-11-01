@@ -2091,30 +2091,79 @@ static void amf_namf_parse_mbs_service_area(ogs_mbs_service_area_t **out, OpenAP
     }
 }
 
+/* Whether \p gnb serves the TAI \p tai: its NG Setup Request listed the TAC with the PLMN */
+static bool amf_namf_gnb_serves_tai(const amf_gnb_t *gnb, const ogs_tai_t *tai)
+{
+    ogs_uint24_t tac = ogs_uint24_from_string(tai->tac ? tai->tac : (char *)"0");
+    int i, j;
+
+    for (i = 0; i < gnb->num_of_supported_ta_list; i++) {
+        if (gnb->supported_ta_list[i].tac.v != tac.v)
+            continue;
+        for (j = 0; j < gnb->supported_ta_list[i].num_of_bplmn_list; j++) {
+            if (memcmp(&gnb->supported_ta_list[i].bplmn_list[j].plmn_id, &tai->plmn_id,
+                        sizeof(ogs_plmn_id_t)) == 0)
+                return true;
+        }
+    }
+
+    return false;
+}
+
 /*
  * Whether \p gnb serves one of the TAIs of \p area, or \p area does not narrow the choice (none given, or without a TAI
  * list: NCGI matching is not implemented).
  */
-static bool amf_namf_gnb_serves_tai_list(amf_gnb_t *gnb, const ogs_mbs_service_area_t *area)
+static bool amf_namf_gnb_serves_tai_list(const amf_gnb_t *gnb, const ogs_mbs_service_area_t *area)
 {
     ogs_tai_t *tai = NULL;
-    int i, j;
 
     if (!area || !area->tai_list || ogs_list_count(area->tai_list) == 0)
         return true;
 
     ogs_list_for_each(area->tai_list, tai) {
-        ogs_uint24_t tac = ogs_uint24_from_string(tai->tac ? tai->tac : (char *)"0");
+        if (amf_namf_gnb_serves_tai(gnb, tai))
+            return true;
+    }
 
-        for (i = 0; i < gnb->num_of_supported_ta_list; i++) {
-            if (gnb->supported_ta_list[i].tac.v != tac.v)
-                continue;
-            for (j = 0; j < gnb->supported_ta_list[i].num_of_bplmn_list; j++) {
-                if (memcmp(&gnb->supported_ta_list[i].bplmn_list[j].plmn_id, &tai->plmn_id,
-                            sizeof(ogs_plmn_id_t)) == 0)
-                    return true;
-            }
-        }
+    return false;
+}
+
+static bool amf_namf_area_has_tai(const ogs_mbs_service_area_t *area, const ogs_tai_t *tai)
+{
+    ogs_tai_t *other = NULL;
+
+    ogs_list_for_each(area->tai_list, other) {
+        if (ogs_uint24_from_string(other->tac ? other->tac : (char *)"0").v ==
+                ogs_uint24_from_string(tai->tac ? tai->tac : (char *)"0").v &&
+                memcmp(&other->plmn_id, &tai->plmn_id, sizeof(ogs_plmn_id_t)) == 0)
+            return true;
+    }
+
+    return false;
+}
+
+/*
+ * Whether the change of the MBS service area from \p old_area to \p new_area affects \p gnb: it serves a TAI that is in
+ * one of them and not in the other. When either area has no TAI list (none given, or NCGIs only) the change cannot be
+ * told by TAI and every node is taken to be affected: NCGI matching is not implemented.
+ */
+static bool amf_namf_gnb_affected_by_area_change(const amf_gnb_t *gnb,
+        const ogs_mbs_service_area_t *old_area, const ogs_mbs_service_area_t *new_area)
+{
+    ogs_tai_t *tai = NULL;
+
+    if (!old_area || !old_area->tai_list || ogs_list_count(old_area->tai_list) == 0 ||
+        !new_area || !new_area->tai_list || ogs_list_count(new_area->tai_list) == 0)
+        return true;
+
+    ogs_list_for_each(new_area->tai_list, tai) {
+        if (!amf_namf_area_has_tai(old_area, tai) && amf_namf_gnb_serves_tai(gnb, tai))
+            return true;
+    }
+    ogs_list_for_each(old_area->tai_list, tai) {
+        if (!amf_namf_area_has_tai(new_area, tai) && amf_namf_gnb_serves_tai(gnb, tai))
+            return true;
     }
 
     return false;
@@ -2145,7 +2194,8 @@ static bool amf_gnb_takes_mbs_session(amf_gnb_t *gnb, amf_mbs_context_t *mbs_con
  * session in a list of NG-RANs as identified by the NG-RAN ID(s), as specified in clause 8.3.2.3 of TS 23.527"): the listed
  * NG-RAN nodes get a Broadcast Session Setup Request and no other node gets anything (TS 23.527 V18.6.0 cl. 8.3.2.3 step 7:
  * "The AMF sends the N2 MBS Session Setup Request message to the NG-RAN node(s) including the MBS Session Setup or
- * Modification Request Transfer IE."). With noNgapSignallingInd true (TS 29.518 V18.14.0 Table 6.5.6.2.5-1: "true: the AMF
+ * Modification Request Transfer IE."). With n2MbsInfoChangeInd false (plan->n2_info_unchanged) the nodes that the change
+ * of the service area does not affect get nothing. With noNgapSignallingInd true (TS 29.518 V18.14.0 Table 6.5.6.2.5-1: "true: the AMF
  * may consider to not trigger a NGAP signaling message to any NG-RAN."; TS 23.527 V18.6.0 cl. 8.3.2.4 step 8: "The AMF
  * may consider to not trigger any NGAP signalling towards NG-RANs covering the MBS service area.") no node gets anything.
  */
@@ -2173,6 +2223,12 @@ amf_mbs_update_action_e amf_namf_mbs_update_action(
     involved = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
     if (involved && involved->release_required)
         return AMF_MBS_UPDATE_SKIP;
+
+    // TS 29.518 V18.14.0 cl. 5.6.2.3: "If the n2MbsInfoChangeInd IE is present in the request and set to "false", the AMF
+    // does not need to contact NG-RAN nodes unaffected by the MBS service area change."
+    if (plan->n2_info_unchanged &&
+            !amf_namf_gnb_affected_by_area_change(gnb, plan->old_area, mbs_context->mbs_service_area))
+        return AMF_MBS_UPDATE_UNAFFECTED;
 
     return AMF_MBS_UPDATE_MODIFY;
 }
@@ -2614,7 +2670,10 @@ int amf_namf_handle_mbs_broadcast_context_update(
     ogs_pkbuf_t *n2setupreq = NULL;     /* the Setup Request, sent to the nodes that are to get the session */
     amf_gnb_t *gnb = NULL;
     amf_mbs_update_plan_t plan;
+    ogs_mbs_service_area_t *old_area = NULL;    /* the service area this update replaced, held until the nodes are chosen */
     bool has_service_area = false;
+    int unaffected = 0;
+    bool send_failed = false;
 
     int rv = OGS_OK;
     int gnb_rv = OGS_OK;
@@ -2686,8 +2745,7 @@ int amf_namf_handle_mbs_broadcast_context_update(
         ogs_mbs_service_area_t *new_service_area = NULL;
         amf_namf_parse_mbs_service_area(&new_service_area, ContextUpdateReqData->mbs_service_area);
         if (new_service_area) {
-            if (mbs_context->mbs_service_area)
-                ogs_mbs_service_area_free(mbs_context->mbs_service_area);
+            old_area = mbs_context->mbs_service_area;
             mbs_context->mbs_service_area = new_service_area;
         } else {
             ogs_warn("MBS Broadcast ContextUpdate: mbsServiceArea carried neither a TAI nor an NCGI; "
@@ -2710,8 +2768,7 @@ int amf_namf_handle_mbs_broadcast_context_update(
             ogs_mbs_service_area_t *new_service_area = NULL;
             amf_namf_parse_mbs_service_area(&new_service_area, api_info->mbs_service_area);
             if (new_service_area) {
-                if (mbs_context->mbs_service_area)
-                    ogs_mbs_service_area_free(mbs_context->mbs_service_area);
+                old_area = mbs_context->mbs_service_area;
                 mbs_context->mbs_service_area = new_service_area;
             } else {
                 ogs_warn("MBS Broadcast ContextUpdate: mbsServiceAreaInfoList's own mbsServiceArea "
@@ -2761,6 +2818,8 @@ int amf_namf_handle_mbs_broadcast_context_update(
     // including the MBS Session Setup or Modification Request Transfer IE and the NG-RAN ID").
     plan.no_ngap_signalling =
         ContextUpdateReqData->no_ngap_signalling_ind == OpenAPI_context_update_req_data_NONGAPSIGNALLINGIND__true;
+    plan.n2_info_unchanged = ContextUpdateReqData->is_n2_mbs_info_change_ind && !ContextUpdateReqData->n2_mbs_info_change_ind;
+    plan.old_area = old_area ? old_area : mbs_context->mbs_service_area;
 
     if (!plan.no_ngap_signalling && ContextUpdateReqData->ran_id_list && ContextUpdateReqData->ran_id_list->count > 0) {
         if (!n2mbssmbuf) {
@@ -2834,17 +2893,21 @@ int amf_namf_handle_mbs_broadcast_context_update(
         amf_mbs_update_action_e action = amf_namf_mbs_update_action(mbs_context, gnb, &plan);
         ogs_pkbuf_t *n2msgreq_copy = NULL;
 
-        if (action == AMF_MBS_UPDATE_SKIP)
+        if (action == AMF_MBS_UPDATE_UNAFFECTED)
+            unaffected++;
+        if (action == AMF_MBS_UPDATE_SKIP || action == AMF_MBS_UPDATE_UNAFFECTED)
             continue;
         n2msgreq_copy = ogs_pkbuf_copy(action == AMF_MBS_UPDATE_SETUP ? n2setupreq : n2msgreq);
         if (!n2msgreq_copy) {
             ogs_error("ogs_pkbuf_copy() failed");
+            send_failed = true;
             break;
         }
         ogs_debug("Sending N2 MBS SM info (ContextUpdate) to gNB %i", gnb->gnb_id);
         gnb_rv = ngap_send_to_gnb(gnb, n2msgreq_copy, NGAP_NON_UE_SIGNALLING);
         if (gnb_rv != OGS_OK) {
             ogs_error("ngap_send_to_gnb() failed");
+            send_failed = true;
             break;
         } else {
             amf_mbs_gnb_t *involved = NULL;
@@ -2866,6 +2929,20 @@ int amf_namf_handle_mbs_broadcast_context_update(
     if (n2setupreq)
         ogs_pkbuf_free(n2setupreq);
 
+    // Every node that takes the session was left out as not affected by the change (n2MbsInfoChangeInd false): there is
+    // nothing to wait for, and "the AMF does not need to contact NG-RAN nodes unaffected by the MBS service area change"
+    // (TS 29.518 V18.14.0 cl. 5.6.2.3). 204 No Content: no additional information is to be returned (step 2b).
+    if (mbs_context->gnb_request_count == 0 && unaffected > 0 && !send_failed) {
+        ogs_sbi_message_t sendmsg;
+        ogs_sbi_response_t *response = NULL;
+
+        memset(&sendmsg, 0, sizeof(sendmsg));
+        response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
+        ogs_assert(response);
+        ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+        goto cleanup;
+    }
+
     if (mbs_context->gnb_request_count == 0) {
         ogs_error("MBS Broadcast ContextUpdate: the Broadcast Session Modification Request reached no NG-RAN");
         ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
@@ -2885,6 +2962,8 @@ int amf_namf_handle_mbs_broadcast_context_update(
     mbs_context->stream_id = ogs_sbi_id_from_stream(stream);
 
 cleanup:
+    if (old_area)
+        ogs_mbs_service_area_free(old_area);
     if (rv == OGS_OK)
         return true;
     else
