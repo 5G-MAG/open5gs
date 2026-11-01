@@ -356,6 +356,38 @@ bool smf_nmbsmf_handle_tmgi_deallocate(
     return true;
 }
 
+bool smf_nmbsmf_mbs_service_info_is_valid(
+    OpenAPI_mbs_service_info_t *mbs_serv_info, const char **detail)
+{
+    OpenAPI_lnode_t *node;
+    int flows = 0;
+
+    if (!mbs_serv_info || !mbs_serv_info->mbs_media_comps)
+        return true;
+
+    OpenAPI_list_for_each(mbs_serv_info->mbs_media_comps, node) {
+        OpenAPI_map_t *pair = (OpenAPI_map_t *)node->data;
+        OpenAPI_mbs_media_comp_rm_t *media_comp = pair ? (OpenAPI_mbs_media_comp_rm_t *)pair->value : NULL;
+
+        if (!media_comp || !media_comp->mbs_qo_s_req)
+            continue;
+        if (media_comp->mbs_qo_s_req->_5qi < 0 || media_comp->mbs_qo_s_req->_5qi > 255) {
+            if (detail)
+                *detail = "[5qi] of an [mbsQoSReq] is outside 0 to 255";
+            return false;
+        }
+        flows++;
+    }
+
+    if (flows > SMF_MBS_MAX_QOS_FLOWS) {
+        if (detail)
+            *detail = "more MBS QoS flows than an MBS session can carry";
+        return false;
+    }
+
+    return true;
+}
+
 /* Nmbsmf_MBSSession Service API */
 
 /*
@@ -469,6 +501,22 @@ bool smf_nmbsmf_handle_mbs_session_create(
             NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
         rv = OGS_ERROR;
         goto cleanup;
+    }
+
+    /* TS 29.532 V18.6.0 table 6.2.7.3-1, INVALID_MBS_SERVICE_INFO: "The HTTP request is rejected because the provided
+     * MBS Service Information is invalid (e.g. invalid QoS reference), incorrect or insufficient to perform MBS
+     * policy authorization." */
+    {
+        const char *service_info_fault = NULL;
+
+        if (!smf_nmbsmf_mbs_service_info_is_valid(CreateReqData->mbs_session->mbs_serv_info, &service_info_fault)) {
+            ogs_error("MBS Session Create: invalid MBS service information: %s", service_info_fault);
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                message, "Invalid MBS service information", service_info_fault,
+                NMBSMF_MBSSESSION_INVALID_MBS_SERVICE_INFO);
+            rv = OGS_ERROR;
+            goto cleanup;
+        }
     }
 
     // Extract the SSM

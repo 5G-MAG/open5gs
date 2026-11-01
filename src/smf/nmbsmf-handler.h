@@ -73,8 +73,21 @@ bool smf_nmbsmf_handle_tmgi_deallocate(
 #define NMBSMF_MBSSESSION_UNKNOWN_TMGI                "UNKNOWN_TMGI"
 #define NMBSMF_MBSESSION_UNKNOWN_MBS_SESSION          "UNKNOWN_MBS_SESSION"
 #define NMBSMF_MBSSESSION_SYSTEM_FAILURE              "SYSTEM_FAILURE"
+#define NMBSMF_MBSSESSION_INVALID_MBS_SERVICE_INFO    "INVALID_MBS_SERVICE_INFO"
 #define NMBSMF_MBSSESSION_INSUFFICIENT_RESOURCES      "INSUFFICIENT_RESOURCES"
 #define NMBSMF_MBSSESSION_OVERLAPPING_MBS_SERVICE_AREA "OVERLAPPING_MBS_SERVICE_AREA"
+
+/* The MBS QoS flows an MBS session can carry: the QFIs 1 to 63 (QFI 0 is not assigned: the user plane adds
+ * the PDU session container only for a QER whose QFI is not 0), within the 64 of TS 38.413 V18.8.0
+ * maxnoofMBSQoSFlows, "Maximum no. of QoS Flows allowed within one MBS session. Value is 64.", and the
+ * QFI range 0..63 of cl. 9.3.1.51 */
+#define SMF_MBS_MAX_QOS_FLOWS 63
+
+/* Whether the MBS service information of a request can be served: every QoS requirement has a 5QI in the 0 to
+ * 255 of TS 29.571 V18.12.0 (5Qi, "within the range 0 to 255"), and there are no more QoS flows than
+ * SMF_MBS_MAX_QOS_FLOWS. Returns false with a description of the first fault in *detail. */
+bool smf_nmbsmf_mbs_service_info_is_valid(
+    OpenAPI_mbs_service_info_t *mbs_serv_info, const char **detail);
 
 /* Nmbsmf_MBSSession Service - MBS Session Create service operation */
 bool smf_nmbsmf_handle_mbs_session_create(

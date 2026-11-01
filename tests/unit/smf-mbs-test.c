@@ -13,6 +13,7 @@
 #include "context.h"
 #include "n4mb-build.h"
 #include "namf-build.h"
+#include "nmbsmf-handler.h"
 
 static int checks, failures;
 
@@ -743,6 +744,52 @@ static void test_date_time(void)
     CHECK(!smf_is_date_time("2026-11-01"));
 }
 
+static OpenAPI_mbs_service_info_t *service_info_with_5qis(const int *five_qis, int n)
+{
+    OpenAPI_list_t *comps = OpenAPI_list_create();
+    int i;
+
+    for (i = 0; i < n; i++) {
+        OpenAPI_mbs_qo_s_req_t *qos = ogs_calloc(1, sizeof(*qos));
+        OpenAPI_mbs_media_comp_rm_t *comp = ogs_calloc(1, sizeof(*comp));
+        qos->_5qi = five_qis[i];
+        comp->mbs_qo_s_req = qos;
+        OpenAPI_list_add(comps, OpenAPI_map_create(ogs_msprintf("%d", i + 1), comp));
+    }
+    return OpenAPI_mbs_service_info_create(comps, 0, NULL, NULL);
+}
+
+/* TS 29.532 V18.6.0 table 6.2.7.3-1: INVALID_MBS_SERVICE_INFO; TS 29.571 V18.12.0 5Qi: "within the range 0 to
+ * 255"; TS 38.413 V18.8.0 maxnoofMBSQoSFlows: "Value is 64." */
+static void test_service_info_validity(void)
+{
+    const char *detail = NULL;
+    int ok[3] = { 9, 0, 255 };
+    int bad_high[2] = { 9, 256 };
+    int bad_low[1] = { -1 };
+    int many[SMF_MBS_MAX_QOS_FLOWS + 1];
+    OpenAPI_mbs_service_info_t *info;
+    int i;
+
+    CHECK(smf_nmbsmf_mbs_service_info_is_valid(NULL, &detail));
+
+    info = service_info_with_5qis(ok, 3);
+    CHECK(smf_nmbsmf_mbs_service_info_is_valid(info, &detail));
+    info = service_info_with_5qis(bad_high, 2);
+    CHECK(!smf_nmbsmf_mbs_service_info_is_valid(info, &detail));
+    CHECK(detail && strstr(detail, "5qi") != NULL);
+    info = service_info_with_5qis(bad_low, 1);
+    CHECK(!smf_nmbsmf_mbs_service_info_is_valid(info, &detail));
+
+    for (i = 0; i <= SMF_MBS_MAX_QOS_FLOWS; i++)
+        many[i] = 9;
+    info = service_info_with_5qis(many, SMF_MBS_MAX_QOS_FLOWS);
+    CHECK(smf_nmbsmf_mbs_service_info_is_valid(info, &detail));
+    info = service_info_with_5qis(many, SMF_MBS_MAX_QOS_FLOWS + 1);
+    CHECK(!smf_nmbsmf_mbs_service_info_is_valid(info, &detail));
+    CHECK(detail && strstr(detail, "flows") != NULL);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -761,6 +808,7 @@ int main(void)
     test_fsa_id_list();
     test_context_create_optional_ids();
     test_date_time();
+    test_service_info_validity();
 
     printf("smf-mbs: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
