@@ -21,6 +21,7 @@
 #include "mbs-n3mb.h"
 #include "mbs-subsc.h"
 #include "n4mb-build.h"
+#include "ngap-build.h"
 #include "pfcp-path.h"
 
 char *smf_mbs_ran_id_text(OpenAPI_global_ran_node_id_t *ran_id)
@@ -62,28 +63,14 @@ static bool tunnel_of(NGAP_UPTransportLayerInformation_t *info, bool *has_tunnel
     return true;
 }
 
-bool smf_mbs_n3mb_parse_response_transfer(ogs_pkbuf_t *pkbuf, bool has_area_session_id, uint16_t area_session_id,
-        bool *has_tunnel, ogs_ip_t *addr, uint32_t *teid)
+/* The shared NG-U unicast tunnel of an MBS Session TNL Information NG-RAN (TS 38.413 clause 9.3.2.17); for a location
+ * dependent session the item of the Area Session ID. *has_tunnel stays false when it carries none. */
+static bool tunnel_of_tnl_info(NGAP_MBS_SessionTNLInfoNGRAN_t *tnl, bool has_area_session_id,
+        uint16_t area_session_id, bool *has_tunnel, ogs_ip_t *addr, uint32_t *teid)
 {
-    NGAP_MBSSessionSetupOrModResponseTransfer_t transfer;
-    NGAP_MBS_SessionTNLInfoNGRAN_t *tnl;
     bool ok = true;
     int i;
 
-    ogs_assert(pkbuf);
-    ogs_assert(has_tunnel);
-    ogs_assert(addr);
-    ogs_assert(teid);
-
-    *has_tunnel = false;
-    memset(&transfer, 0, sizeof(transfer));
-    if (ogs_asn_decode(&asn_DEF_NGAP_MBSSessionSetupOrModResponseTransfer, &transfer, sizeof(transfer), pkbuf) !=
-            OGS_OK) {
-        ogs_error("MBS Session Setup or Modification Response Transfer: cannot decode");
-        return false;
-    }
-
-    tnl = transfer.mBS_SessionTNLInfoNGRAN;
     if (tnl && tnl->present == NGAP_MBS_SessionTNLInfoNGRAN_PR_locationindependent) {
         ok = tunnel_of(tnl->choice.locationindependent, has_tunnel, addr, teid);
     } else if (tnl && tnl->present == NGAP_MBS_SessionTNLInfoNGRAN_PR_locationdependent &&
@@ -98,6 +85,30 @@ bool smf_mbs_n3mb_parse_response_transfer(ogs_pkbuf_t *pkbuf, bool has_area_sess
             }
         }
     }
+    return ok;
+}
+
+bool smf_mbs_n3mb_parse_response_transfer(ogs_pkbuf_t *pkbuf, bool has_area_session_id, uint16_t area_session_id,
+        bool *has_tunnel, ogs_ip_t *addr, uint32_t *teid)
+{
+    NGAP_MBSSessionSetupOrModResponseTransfer_t transfer;
+    bool ok = true;
+
+    ogs_assert(pkbuf);
+    ogs_assert(has_tunnel);
+    ogs_assert(addr);
+    ogs_assert(teid);
+
+    *has_tunnel = false;
+    memset(&transfer, 0, sizeof(transfer));
+    if (ogs_asn_decode(&asn_DEF_NGAP_MBSSessionSetupOrModResponseTransfer, &transfer, sizeof(transfer), pkbuf) !=
+            OGS_OK) {
+        ogs_error("MBS Session Setup or Modification Response Transfer: cannot decode");
+        return false;
+    }
+
+    ok = tunnel_of_tnl_info(transfer.mBS_SessionTNLInfoNGRAN, has_area_session_id, area_session_id, has_tunnel, addr,
+            teid);
 
     ogs_asn_free(&asn_DEF_NGAP_MBSSessionSetupOrModResponseTransfer, &transfer);
     return ok;
@@ -130,6 +141,40 @@ bool smf_mbs_n3mb_parse_failure_transfer(ogs_pkbuf_t *pkbuf, int *group, long *v
 
     ogs_asn_free(&asn_DEF_NGAP_MBSSessionSetupOrModFailureTransfer, &transfer);
     return true;
+}
+
+/* The N3mb DL tunnel of the NG-RAN node \p ran_id, taken in; the change for the MB-UPF is recorded in
+ * \p tunnel_changes when there is room. Returns 1 when the tunnel is new or another one, else 0. */
+static int set_dl_tunnel(smf_mbs_sess_t *mbs_sess, const char *ran_id, const ogs_ip_t *addr, uint32_t teid,
+        smf_mbs_tunnel_changes_t *tunnel_changes)
+{
+    smf_mbs_dl_tunnel_t *old = smf_mbs_sess_dl_tunnel_find(mbs_sess, ran_id);
+    smf_mbs_dl_tunnel_t *tunnel = NULL;
+    smf_mbs_tunnel_change_t *tc = NULL;
+    uint16_t old_id = old ? old->unicast_params_id : 0;
+    bool changed = false;
+
+    tunnel = smf_mbs_sess_dl_tunnel_set(mbs_sess, ran_id, addr, teid, &changed);
+    ogs_info("NG-RAN [%s] N3mb DL tunnel TEID[0x%x]%s", ran_id, teid, changed ? "" : " (unchanged)");
+    if (!changed)
+        return 0;
+
+    /* another tunnel of a node that had one is a new one for the MB-UPF: it gets a new ID, and the old one is
+     * removed with it */
+    if (old)
+        tunnel->unicast_params_id = ++mbs_sess->next_dl_tunnel_id;
+    if (tunnel_changes && tunnel_changes->count < SMF_MBS_MAX_TUNNEL_CHANGES) {
+        tc = &tunnel_changes->change[tunnel_changes->count++];
+        tc->has_add = true;
+        tc->add_addr = tunnel->addr;
+        tc->add_teid = tunnel->teid;
+        tc->add_id = tunnel->unicast_params_id;
+        if (old_id) {
+            tc->has_remove = true;
+            tc->remove_id = old_id;
+        }
+    }
+    return 1;
 }
 
 int smf_mbs_sess_take_amf_answer(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf,
@@ -185,7 +230,7 @@ int smf_mbs_sess_take_amf_answer(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf,
 
         switch (info->ngap_ie_type) {
         case OpenAPI_ngap_ie_type_MBS_SES_RSP: {
-            bool has_tunnel = false, changed = false;
+            bool has_tunnel = false;
             ogs_ip_t addr;
             uint32_t teid = 0;
 
@@ -201,31 +246,7 @@ int smf_mbs_sess_take_amf_answer(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf,
                 ogs_debug("NG-RAN [%s] offers no N3mb unicast tunnel", ran_id);
                 break;
             }
-            {
-                smf_mbs_dl_tunnel_t *old = smf_mbs_sess_dl_tunnel_find(mbs_sess, ran_id);
-                uint16_t old_id = old ? old->unicast_params_id : 0;
-
-                tunnel = smf_mbs_sess_dl_tunnel_set(mbs_sess, ran_id, &addr, teid, &changed);
-                ogs_info("NG-RAN [%s] N3mb DL tunnel TEID[0x%x]%s", ran_id, teid, changed ? "" : " (unchanged)");
-                if (changed) {
-                    /* another tunnel of a node that had one is a new one for the MB-UPF: it gets a new ID, and the
-                     * old one is removed with it */
-                    if (old)
-                        tunnel->unicast_params_id = ++mbs_sess->next_dl_tunnel_id;
-                    changes++;
-                    if (tunnel_changes && tunnel_changes->count < SMF_MBS_MAX_TUNNEL_CHANGES) {
-                        tc = &tunnel_changes->change[tunnel_changes->count++];
-                        tc->has_add = true;
-                        tc->add_addr = tunnel->addr;
-                        tc->add_teid = tunnel->teid;
-                        tc->add_id = tunnel->unicast_params_id;
-                        if (old_id) {
-                            tc->has_remove = true;
-                            tc->remove_id = old_id;
-                        }
-                    }
-                }
-            }
+            changes += set_dl_tunnel(mbs_sess, ran_id, &addr, teid, tunnel_changes);
             break;
         }
         case OpenAPI_ngap_ie_type_MBS_SES_FAIL: {
@@ -271,6 +292,115 @@ int smf_mbs_sess_take_amf_answer(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf,
     }
 
     return changes;
+}
+
+/* The answer to one Broadcast Session Transport Request Transfer container (TS 38.413 clauses 8.17.5, 9.3.5.15 to
+ * 9.3.5.17): the Response Transfer when the shared NG-U transport is taken in, the Failure Transfer with a Cause when
+ * it cannot be. */
+static bool transport_answer_add(smf_mbs_transport_answer_t *answers, int *count, int max,
+        OpenAPI_global_ran_node_id_t *ran_id, ogs_pkbuf_t *transfer, bool failure)
+{
+    if (!transfer || *count >= max) {
+        if (transfer)
+            ogs_pkbuf_free(transfer);
+        return false;
+    }
+    answers[*count].ran_id = ran_id;
+    answers[*count].transfer = transfer;
+    answers[*count].failure = failure;
+    (*count)++;
+    return true;
+}
+
+int smf_mbs_sess_answer_transport_requests(smf_mbs_sess_t *mbs_sess, OpenAPI_list_t *n2_mbs_sm_info_list,
+        ogs_sbi_message_t *recvmsg, smf_mbs_tunnel_changes_t *tunnel_changes, smf_mbs_transport_answer_t *answers,
+        int max_answers)
+{
+    OpenAPI_lnode_t *node;
+    int count = 0;
+
+    ogs_assert(mbs_sess);
+    ogs_assert(recvmsg);
+    ogs_assert(answers);
+
+    if (tunnel_changes)
+        memset(tunnel_changes, 0, sizeof(*tunnel_changes));
+    if (!n2_mbs_sm_info_list)
+        return 0;
+
+    OpenAPI_list_for_each(n2_mbs_sm_info_list, node) {
+        OpenAPI_n2_mbs_sm_info_t *info = node->data;
+        NGAP_BroadcastTransportRequestTransfer_t transfer;
+        ogs_pkbuf_t *pkbuf = NULL;
+        char *ran_id = NULL;
+        bool has_tunnel = false, decoded = false;
+        ogs_ip_t addr;
+        uint32_t teid = 0;
+        NGAP_Cause_PR group = NGAP_Cause_PR_protocol;
+        long cause = NGAP_CauseProtocol_transfer_syntax_error;
+        ogs_tmgi_t transfer_tmgi;
+
+        if (!info || info->ngap_ie_type != OpenAPI_ngap_ie_type_BC_TRA_REQ)
+            continue;
+
+        ran_id = smf_mbs_ran_id_text(info->rand_id);
+        memset(&transfer, 0, sizeof(transfer));
+        memset(&transfer_tmgi, 0, sizeof(transfer_tmgi));
+        if (info->ngap_data && info->ngap_data->content_id)
+            pkbuf = ogs_sbi_find_part_by_content_id(recvmsg, info->ngap_data->content_id);
+
+        if (!pkbuf) {
+            ogs_warn("Broadcast Session Transport Request Transfer of NG-RAN [%s] is not in the message", ran_id);
+        } else if (ogs_asn_decode(&asn_DEF_NGAP_BroadcastTransportRequestTransfer, &transfer, sizeof(transfer),
+                    pkbuf) != OGS_OK) {
+            ogs_error("Broadcast Session Transport Request Transfer of NG-RAN [%s]: cannot decode", ran_id);
+        } else {
+            decoded = transfer.mBS_SessionID.tMGI.size == 6;   /* TMGI ::= OCTET STRING (SIZE(6)) */
+            if (decoded)
+                ogs_ngap_ASN_to_5gs_tmgi(&transfer.mBS_SessionID.tMGI, &transfer_tmgi);
+            if (!decoded) {
+                ogs_error("Broadcast Session Transport Request Transfer of NG-RAN [%s]: the TMGI is not 6 octets",
+                        ran_id);
+            } else if (!transfer_tmgi.mbs_service_id || !mbs_sess->tmgi ||
+                    ogs_strcasecmp(transfer_tmgi.mbs_service_id, mbs_sess->tmgi->mbs_service_id) != 0 ||
+                    memcmp(&transfer_tmgi.plmn_id, &mbs_sess->tmgi->plmn_id, sizeof(transfer_tmgi.plmn_id)) != 0) {
+                /* TS 38.413 clause 9.3.1.2: "Unknown MBS Session ID | The action failed because the MBS Session ID
+                 * is unknown." */
+                ogs_warn("Broadcast Session Transport Request Transfer of NG-RAN [%s]: another MBS Session ID", ran_id);
+                group = NGAP_Cause_PR_radioNetwork;
+                cause = NGAP_CauseRadioNetwork_unknown_MBS_Session_ID;
+                decoded = false;
+            } else if (!tunnel_of_tnl_info(&transfer.mBS_SessionTNLInfoNGRAN, mbs_sess->location_dependent,
+                        mbs_sess->area_session_id, &has_tunnel, &addr, &teid)) {
+                decoded = false;    /* a transport layer address or TEID that cannot be read: a syntax error */
+            }
+        }
+
+        if (decoded) {
+            /* TS 38.413 clause 8.17.5.2: "If the Shared NG-U Unicast TNL Information IE is included in the MBS
+             * Session TNL Information NG-RAN IE within the MBS Session Transport Request Transfer IE in the
+             * BROADCAST SESSION TRANSPORT REQUEST message, the MB-SMF shall use the included information as the
+             * downlink termination point for the shared NG-U transport." */
+            if (has_tunnel)
+                set_dl_tunnel(mbs_sess, ran_id, &addr, teid, tunnel_changes);
+            else
+                ogs_debug("NG-RAN [%s] offers no N3mb unicast tunnel in its Broadcast Session Transport Request",
+                        ran_id);
+            transport_answer_add(answers, &count, max_answers, info->rand_id,
+                    ngap_build_broadcast_transport_response_transfer(mbs_sess->tmgi), false);
+        } else {
+            transport_answer_add(answers, &count, max_answers, info->rand_id,
+                    ngap_build_broadcast_transport_failure_transfer(mbs_sess->tmgi, group, cause), true);
+        }
+
+        if (pkbuf)
+            ogs_asn_free(&asn_DEF_NGAP_BroadcastTransportRequestTransfer, &transfer);
+        if (transfer_tmgi.mbs_service_id)
+            ogs_free(transfer_tmgi.mbs_service_id);
+        ogs_free(ran_id);
+    }
+
+    return count;
 }
 
 int smf_mbs_sess_send_tunnel_changes(smf_mbs_sess_t *mbs_sess, const smf_mbs_tunnel_changes_t *changes)

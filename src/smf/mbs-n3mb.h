@@ -41,6 +41,23 @@ bool smf_mbs_n3mb_parse_response_transfer(ogs_pkbuf_t *pkbuf, bool has_area_sess
  * ("Cause | M"). Returns false when the container cannot be decoded. */
 bool smf_mbs_n3mb_parse_failure_transfer(ogs_pkbuf_t *pkbuf, int *group, long *value);
 
+/* One answer of the MB-SMF to a Broadcast Session Transport Request Transfer container of an NG-RAN node: the
+ * Broadcast Session Transport Response Transfer, or the Failure Transfer (failure true); ran_id is the one of the
+ * request's entry (owned by the message), transfer is owned by the answer. */
+#define SMF_MBS_MAX_TRANSPORT_ANSWERS 8
+typedef struct smf_mbs_transport_answer_s {
+    OpenAPI_global_ran_node_id_t *ran_id;
+    ogs_pkbuf_t *transfer;
+    bool failure;
+} smf_mbs_transport_answer_t;
+
+/* TS 29.518 V18.14.0 clause 5.6.2.5 step 2a: for each Broadcast Session Transport Request Transfer container of the
+ * notification the answer, and the DL tunnel the request offers is taken in (recorded in tunnel_changes, for
+ * smf_mbs_sess_send_tunnel_changes()). Returns the number of answers. */
+int smf_mbs_sess_answer_transport_requests(smf_mbs_sess_t *mbs_sess, OpenAPI_list_t *n2_mbs_sm_info_list,
+        ogs_sbi_message_t *recvmsg, smf_mbs_tunnel_changes_t *tunnel_changes, smf_mbs_transport_answer_t *answers,
+        int max_answers);
+
 /* The text that names an NG-RAN node in the answer of an AMF: its GlobalRanNodeId as JSON, or "(none)" */
 char *smf_mbs_ran_id_text(OpenAPI_global_ran_node_id_t *ran_id);
 

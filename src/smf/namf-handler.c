@@ -388,6 +388,74 @@ bool smf_namf_handle_mbs_broadcast_context_delete_response(
     return true;
 }
 
+/* The "200 OK" with the ContextStatusNotificationResponse for the Broadcast Session Transport Request Transfer
+ * containers of \p notification (see smf_namf_handle_mbs_broadcast_context_status_notify()). Returns false, with nothing
+ * sent, when the notification has no such container. */
+static bool smf_namf_send_transport_answers(ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg,
+        smf_mbs_sess_t *mbs_sess, OpenAPI_context_status_notification_t *notification)
+{
+    static const char *const content_id[SMF_MBS_MAX_TRANSPORT_ANSWERS] = {
+        OGS_SBI_CONTENT_NGAP_SM_ID "-0", OGS_SBI_CONTENT_NGAP_SM_ID "-1",
+        OGS_SBI_CONTENT_NGAP_SM_ID "-2", OGS_SBI_CONTENT_NGAP_SM_ID "-3",
+        OGS_SBI_CONTENT_NGAP_SM_ID "-4", OGS_SBI_CONTENT_NGAP_SM_ID "-5",
+        OGS_SBI_CONTENT_NGAP_SM_ID "-6", OGS_SBI_CONTENT_NGAP_SM_ID "-7",
+    };
+    smf_mbs_transport_answer_t answers[SMF_MBS_MAX_TRANSPORT_ANSWERS];
+    smf_mbs_tunnel_changes_t changes;
+    ogs_sbi_message_t sendmsg;
+    ogs_sbi_response_t *response = NULL;
+    OpenAPI_context_status_notification_response_t body;
+    OpenAPI_list_t *list = NULL;
+    int count, i;
+
+    memset(answers, 0, sizeof(answers));
+    count = smf_mbs_sess_answer_transport_requests(mbs_sess, notification->n2_mbs_sm_info_list, recvmsg, &changes,
+            answers, SMF_MBS_MAX_TRANSPORT_ANSWERS);
+    if (changes.count > 0)
+        smf_mbs_sess_send_tunnel_changes(mbs_sess, &changes);
+    if (count <= 0)
+        return false;
+
+    memset(&sendmsg, 0, sizeof(sendmsg));
+    memset(&body, 0, sizeof(body));
+    body.mbs_session_id = OpenAPI_mbs_session_id_copy(NULL, notification->mbs_session_id);
+    if (notification->is_area_session_id) {
+        body.is_area_session_id = true;
+        body.area_session_id = notification->area_session_id;
+    }
+
+    list = OpenAPI_list_create();
+    for (i = 0; i < count; i++) {
+        OpenAPI_list_add(list, OpenAPI_n2_mbs_sm_info_create(
+                    answers[i].failure ? OpenAPI_ngap_ie_type_BC_TRA_FAIL : OpenAPI_ngap_ie_type_BC_TRA_RSP,
+                    OpenAPI_ref_to_binary_data_create(ogs_strdup(content_id[i])),
+                    answers[i].ran_id ? OpenAPI_global_ran_node_id_copy(NULL, answers[i].ran_id) : NULL));
+        sendmsg.part[sendmsg.num_of_part].pkbuf = answers[i].transfer;
+        sendmsg.part[sendmsg.num_of_part].content_id = (char *)content_id[i];
+        sendmsg.part[sendmsg.num_of_part].content_type = (char *)OGS_SBI_CONTENT_NGAP_TYPE;
+        sendmsg.num_of_part++;
+    }
+    body.n2_mbs_sm_info_list = list;
+    sendmsg.ContextStatusNotificationResponse = &body;
+
+    response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_OK);
+    ogs_assert(response);
+    ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+
+    for (i = 0; i < count; i++)
+        ogs_pkbuf_free(answers[i].transfer);
+    if (body.mbs_session_id)
+        OpenAPI_mbs_session_id_free(body.mbs_session_id);
+    {
+        OpenAPI_lnode_t *node = NULL;
+
+        OpenAPI_list_for_each(list, node)
+            OpenAPI_n2_mbs_sm_info_free(node->data);
+        OpenAPI_list_free(list);
+    }
+    return true;
+}
+
 /*
  * BUG FIX: this receiving-side handler and its own callback resource
  * (OGS_SBI_RESOURCE_NAME_MBS_CONTEXT_STATUS_NOTIFY, smf-sm.c's own dispatch case) did not previously exist
@@ -499,6 +567,19 @@ bool smf_namf_handle_mbs_broadcast_context_status_notify(
                         OpenAPI_op_event_type_ToString(event->op_event_type));
         }
     }
+
+    /* TS 29.518 V18.14.0 clause 5.6.2.5 step 2a: "On success, if the ContextStatusNotification does not contain a N2
+     * MBS Session Management container with a Broadcast Session Transport Request Transfer IE, the NF Service
+     * Consumer shall return a "204 No Content" response. If the ContextStatusNotification contains one or more N2
+     * MBS Session Management containers encapsulating a Broadcast Session Transport Request Transfer IE, the MB-SMF
+     * shall return a "200 OK" with the ContextStatusNotificationResponse containing one or more N2 MBS Session
+     * Management containers encapsulating a Broadcast Session Transport Response Transfer IE or a Broadcast Session
+     * Transport Failure Transfer IE. For each N2 MBS Session Management container sent towards the AMF, the MB-SMF
+     * shall insert the identifier of the NG-RAN node to which the information in the container relates in the
+     * corresponding entry of the n2MbsSmInfoList attribute." */
+    if (ContextStatusNotification->released_ind != OpenAPI_context_status_notification_RELEASEDIND__true &&
+            smf_namf_send_transport_answers(stream, recvmsg, mbs_sess, ContextStatusNotification))
+        return true;
 
     response = ogs_sbi_build_response(recvmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
     ogs_assert(response);

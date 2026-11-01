@@ -44,6 +44,12 @@ ogs_pkbuf_t *ngap_build_handover_command_transfer(smf_sess_t *sess);
 ogs_pkbuf_t *ngap_build_mbs_session_setup_or_modification_request_transfer(
         smf_mbs_sess_t *mbs_sess);
 
+/* The Broadcast Transport Response Transfer (TS 38.413 clause 9.3.5.16) and Failure Transfer (clause 9.3.5.17) for
+ * the MBS session of \p tmgi; the Failure Transfer carries \p cause_value of the Cause group \p cause_group. */
+ogs_pkbuf_t *ngap_build_broadcast_transport_response_transfer(const ogs_tmgi_t *tmgi);
+ogs_pkbuf_t *ngap_build_broadcast_transport_failure_transfer(const ogs_tmgi_t *tmgi, NGAP_Cause_PR cause_group,
+        long cause_value);
+
 #ifdef __cplusplus
 }
 #endif

@@ -2201,6 +2201,171 @@ static void test_amf_answer(void)
  * Unicast Parameters, Remove MBS Unicast Parameters), table 7.5.2.3-6 (Add MBS Unicast Parameters: Destination
  * Interface "M", MBS Unicast Parameters ID "M", Outer Header Creation "M ... It shall contain the F-TEID of the remote
  * GTP-U peer when adding a GTP-U/UDP/IP header.") and table 7.5.4.3-4 (Remove MBS Unicast Parameters: the ID). */
+/* A Broadcast Transport Request Transfer (TS 38.413 V18.8.0 clause 9.3.5.15: "MBS Session ID | M |  | 9.3.1.206",
+ * "MBS Session TNL Information NG-RAN | M |  | 9.3.2.17") for \p tmgi, offering a shared unicast tunnel. */
+static ogs_pkbuf_t *encode_transport_request_transfer(ogs_tmgi_t *tmgi, const char *addr, uint32_t teid)
+{
+    NGAP_BroadcastTransportRequestTransfer_t transfer;
+    NGAP_UPTransportLayerInformation_t *up = CALLOC(1, sizeof(*up));
+    NGAP_GTPTunnel_t *gtp = CALLOC(1, sizeof(*gtp));
+    ogs_ip_t ip;
+    struct in_addr a4;
+
+    memset(&transfer, 0, sizeof(transfer));
+    ogs_ngap_5gs_tmgi_to_ASN(tmgi, &transfer.mBS_SessionID.tMGI);
+    memset(&ip, 0, sizeof(ip));
+    inet_pton(AF_INET, addr, &a4);
+    ip.ipv4 = 1;
+    ip.addr = a4.s_addr;
+    ip.len = OGS_IPV4_LEN;
+    ogs_asn_ip_to_BIT_STRING(&ip, &gtp->transportLayerAddress);
+    ogs_asn_uint32_to_OCTET_STRING(teid, &gtp->gTP_TEID);
+    up->present = NGAP_UPTransportLayerInformation_PR_gTPTunnel;
+    up->choice.gTPTunnel = gtp;
+    transfer.mBS_SessionTNLInfoNGRAN.present = NGAP_MBS_SessionTNLInfoNGRAN_PR_locationindependent;
+    transfer.mBS_SessionTNLInfoNGRAN.choice.locationindependent = up;
+    return ogs_asn_encode(&asn_DEF_NGAP_BroadcastTransportRequestTransfer, &transfer);
+}
+
+/* The answer's transfer: 1 when it is a Response Transfer for \p tmgi, 2 when it is a Failure Transfer for it, 0
+ * else; *cause_group and *cause_value of a Failure Transfer. */
+static int decode_transport_answer(smf_mbs_transport_answer_t *answer, ogs_tmgi_t *tmgi, int *cause_group,
+        long *cause_value)
+{
+    int kind = 0;
+    ogs_tmgi_t got;
+    ogs_pkbuf_t *copy = ogs_pkbuf_alloc(NULL, answer->transfer->len);
+
+    memset(&got, 0, sizeof(got));
+    ogs_pkbuf_put_data(copy, answer->transfer->data, answer->transfer->len);
+    if (!answer->failure) {
+        NGAP_BroadcastTransportResponseTransfer_t rsp;
+
+        memset(&rsp, 0, sizeof(rsp));
+        if (ogs_asn_decode(&asn_DEF_NGAP_BroadcastTransportResponseTransfer, &rsp, sizeof(rsp), copy) == OGS_OK &&
+                rsp.mBS_SessionID.tMGI.size == 6) {
+            ogs_ngap_ASN_to_5gs_tmgi(&rsp.mBS_SessionID.tMGI, &got);
+            kind = ogs_strcasecmp(got.mbs_service_id, tmgi->mbs_service_id) == 0 ? 1 : 0;
+        }
+        ogs_asn_free(&asn_DEF_NGAP_BroadcastTransportResponseTransfer, &rsp);
+    } else {
+        NGAP_BroadcastTransportFailureTransfer_t fail;
+
+        memset(&fail, 0, sizeof(fail));
+        if (ogs_asn_decode(&asn_DEF_NGAP_BroadcastTransportFailureTransfer, &fail, sizeof(fail), copy) == OGS_OK &&
+                fail.mBS_SessionID.tMGI.size == 6) {
+            ogs_ngap_ASN_to_5gs_tmgi(&fail.mBS_SessionID.tMGI, &got);
+            *cause_group = fail.cause.present;
+            *cause_value = fail.cause.present == NGAP_Cause_PR_radioNetwork ? fail.cause.choice.radioNetwork :
+                fail.cause.present == NGAP_Cause_PR_protocol ? fail.cause.choice.protocol : -1;
+            kind = ogs_strcasecmp(got.mbs_service_id, tmgi->mbs_service_id) == 0 ? 2 : 0;
+        }
+        ogs_asn_free(&asn_DEF_NGAP_BroadcastTransportFailureTransfer, &fail);
+    }
+    if (got.mbs_service_id)
+        ogs_free(got.mbs_service_id);
+    ogs_pkbuf_free(copy);
+    return kind;
+}
+
+/* TS 29.518 V18.14.0 clause 5.6.2.5 step 2a: the MB-SMF "shall return a "200 OK" with the ContextStatusNotification
+ * Response containing one or more N2 MBS Session Management containers encapsulating a Broadcast Session Transport
+ * Response Transfer IE or a Broadcast Session Transport Failure Transfer IE."; TS 38.413 V18.8.0 clause 8.17.5.2: "the
+ * MB-SMF shall use the included information as the downlink termination point for the shared NG-U transport." */
+static void test_transport_requests(void)
+{
+    smf_mbs_sess_t *mbs_sess = make_session(NULL, area_1_text);
+    smf_mbs_transport_answer_t answers[SMF_MBS_MAX_TRANSPORT_ANSWERS];
+    smf_mbs_tunnel_changes_t changes;
+    ogs_sbi_message_t message;
+    OpenAPI_list_t *list;
+    ogs_pkbuf_t *good, *other, *garbage;
+    ogs_tmgi_t foreign;
+    int group = 0, n, i;
+    long value = 0;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+    memset(&foreign, 0, sizeof(foreign));
+    foreign.mbs_service_id = ogs_strdup("FFFFFE");
+    foreign.plmn_id = mbs_sess->tmgi->plmn_id;
+
+    good = encode_transport_request_transfer(mbs_sess->tmgi, "10.20.30.41", 0xabcd0002);
+    other = encode_transport_request_transfer(&foreign, "10.20.30.42", 0xabcd0003);
+    garbage = ogs_pkbuf_alloc(NULL, 4);
+    ogs_pkbuf_put_data(garbage, "\xff\xff\xff\xff", 4);
+    CHECK(good && other && garbage);
+    if (!good || !other || !garbage) return;
+
+    memset(&message, 0, sizeof(message));
+    message.part[0].pkbuf = good;
+    message.part[0].content_id = (char *)"n2-good";
+    message.part[1].pkbuf = other;
+    message.part[1].content_id = (char *)"n2-other";
+    message.part[2].pkbuf = garbage;
+    message.part[2].content_id = (char *)"n2-garbage";
+    message.num_of_part = 3;
+
+    list = OpenAPI_list_create();
+    OpenAPI_list_add(list, n2_info(OpenAPI_ngap_ie_type_BC_TRA_REQ, "n2-good", ran_a_text));
+    OpenAPI_list_add(list, n2_info(OpenAPI_ngap_ie_type_BC_TRA_REQ, "n2-other", ran_a_text));
+    OpenAPI_list_add(list, n2_info(OpenAPI_ngap_ie_type_BC_TRA_REQ, "n2-garbage", ran_a_text));
+    OpenAPI_list_add(list, n2_info(OpenAPI_ngap_ie_type_BC_TRA_REQ, "n2-absent", ran_a_text));
+    OpenAPI_list_add(list, n2_info(OpenAPI_ngap_ie_type_MBS_SES_RSP, "n2-good", ran_a_text)); /* not a request */
+
+    memset(answers, 0, sizeof(answers));
+    n = smf_mbs_sess_answer_transport_requests(mbs_sess, list, &message, &changes, answers,
+            SMF_MBS_MAX_TRANSPORT_ANSWERS);
+
+    /* one answer for each request container, none for the other container */
+    CHECK(n == 4);
+    if (n == 4) {
+        CHECK(!answers[0].failure && decode_transport_answer(&answers[0], mbs_sess->tmgi, &group, &value) == 1);
+        /* the tunnel the request offers is the DL tunnel of the NG-RAN, and is told to the MB-UPF */
+        CHECK(changes.count == 1 && changes.change[0].has_add && changes.change[0].add_teid == 0xabcd0002);
+        CHECK(answers[1].failure && decode_transport_answer(&answers[1], mbs_sess->tmgi, &group, &value) == 2 &&
+                group == NGAP_Cause_PR_radioNetwork && value == NGAP_CauseRadioNetwork_unknown_MBS_Session_ID);
+        CHECK(answers[2].failure && decode_transport_answer(&answers[2], mbs_sess->tmgi, &group, &value) == 2 &&
+                group == NGAP_Cause_PR_protocol && value == NGAP_CauseProtocol_transfer_syntax_error);
+        CHECK(answers[3].failure && decode_transport_answer(&answers[3], mbs_sess->tmgi, &group, &value) == 2 &&
+                group == NGAP_Cause_PR_protocol && value == NGAP_CauseProtocol_transfer_syntax_error);
+    }
+    CHECK(ogs_list_count(&mbs_sess->dl_tunnel_list) == 1);
+    for (i = 0; i < n; i++)
+        ogs_pkbuf_free(answers[i].transfer);
+
+    /* the same request again changes nothing */
+    memset(answers, 0, sizeof(answers));
+    n = smf_mbs_sess_answer_transport_requests(mbs_sess, list, &message, &changes, answers,
+            SMF_MBS_MAX_TRANSPORT_ANSWERS);
+    CHECK(n == 4 && changes.count == 0);
+    for (i = 0; i < n; i++)
+        ogs_pkbuf_free(answers[i].transfer);
+
+    /* more containers than answers fit: the rest get none, nothing overruns */
+    memset(answers, 0, sizeof(answers));
+    n = smf_mbs_sess_answer_transport_requests(mbs_sess, list, &message, &changes, answers, 2);
+    CHECK(n == 2);
+    for (i = 0; i < n; i++)
+        ogs_pkbuf_free(answers[i].transfer);
+
+    /* no containers at all */
+    CHECK(smf_mbs_sess_answer_transport_requests(mbs_sess, NULL, &message, &changes, answers, 8) == 0);
+
+    {
+        OpenAPI_lnode_t *node;
+
+        OpenAPI_list_for_each(list, node)
+            OpenAPI_n2_mbs_sm_info_free(node->data);
+        OpenAPI_list_free(list);
+    }
+    ogs_free(foreign.mbs_service_id);
+    ogs_pkbuf_free(good);
+    ogs_pkbuf_free(other);
+    ogs_pkbuf_free(garbage);
+    smf_mbs_sess_release(mbs_sess);
+}
+
 static void test_unicast_tunnel_modification(void)
 {
     smf_mbs_sess_t *mbs_sess = make_session(serv_info_2_text, area_1_text);
@@ -2409,6 +2574,7 @@ int main(void)
     test_amf_entries();
     test_status_subscription();
     test_amf_answer();
+    test_transport_requests();
     test_unicast_tunnel_modification();
     test_context_update_request();
     test_local_ingress_tunnel_choose();

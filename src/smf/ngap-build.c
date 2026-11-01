@@ -772,3 +772,48 @@ ogs_pkbuf_t *ngap_build_mbs_session_setup_or_modification_request_transfer(smf_m
     return ogs_asn_encode(
             &asn_DEF_NGAP_MBSSessionSetupOrModRequestTransfer, &message);
 }
+
+/*
+ * Broadcast Transport Response Transfer, TS 38.413 V18.8.0 clause 9.3.5.16: "MBS Session ID | M |  | 9.3.1.206"; the
+ * MB-SMF sends it in a ContextStatusNotificationResponse (TS 29.518 V18.14.0 clause 5.6.2.5 step 2a). The NID of the
+ * MBS Session ID is not set: this MB-SMF holds none.
+ */
+ogs_pkbuf_t *ngap_build_broadcast_transport_response_transfer(const ogs_tmgi_t *tmgi)
+{
+    NGAP_BroadcastTransportResponseTransfer_t message;
+
+    ogs_assert(tmgi);
+
+    memset(&message, 0, sizeof(message));
+    ogs_ngap_5gs_tmgi_to_ASN((ogs_tmgi_t *)tmgi, &message.mBS_SessionID.tMGI);
+
+    return ogs_asn_encode(&asn_DEF_NGAP_BroadcastTransportResponseTransfer, &message);
+}
+
+/*
+ * Broadcast Transport Failure Transfer, TS 38.413 V18.8.0 clause 9.3.5.17: "MBS Session ID | M |  | 9.3.1.206",
+ * "Cause | M |  | 9.3.1.2" and "Criticality Diagnostics | O |  | 9.3.1.3" (not sent).
+ */
+ogs_pkbuf_t *ngap_build_broadcast_transport_failure_transfer(const ogs_tmgi_t *tmgi, NGAP_Cause_PR cause_group,
+        long cause_value)
+{
+    NGAP_BroadcastTransportFailureTransfer_t message;
+
+    ogs_assert(tmgi);
+
+    memset(&message, 0, sizeof(message));
+    ogs_ngap_5gs_tmgi_to_ASN((ogs_tmgi_t *)tmgi, &message.mBS_SessionID.tMGI);
+    message.cause.present = cause_group;
+    switch (cause_group) {
+    case NGAP_Cause_PR_radioNetwork: message.cause.choice.radioNetwork = cause_value; break;
+    case NGAP_Cause_PR_transport: message.cause.choice.transport = cause_value; break;
+    case NGAP_Cause_PR_nas: message.cause.choice.nas = cause_value; break;
+    case NGAP_Cause_PR_protocol: message.cause.choice.protocol = cause_value; break;
+    default:
+        message.cause.present = NGAP_Cause_PR_misc;
+        message.cause.choice.misc = cause_value;
+        break;
+    }
+
+    return ogs_asn_encode(&asn_DEF_NGAP_BroadcastTransportFailureTransfer, &message);
+}
