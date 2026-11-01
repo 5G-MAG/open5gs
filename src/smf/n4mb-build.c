@@ -333,7 +333,7 @@ ogs_pkbuf_t *smf_n4mb_build_session_modification_request(
     const smf_mbs_flow_change_t *flows = mod->flows;
     ogs_pfcp_far_t *far = NULL;
     ogs_pfcp_outer_header_creation_t outer_header_creation;
-    uint8_t unicast_params_id[2], remove_params[sizeof(uint16_t) * 2 + 2];
+    uint8_t unicast_params_id[2], remove_params[2];
     uint8_t destination_interface;
 
     ogs_pfcp_message_t *pfcp_message = NULL;
@@ -383,32 +383,28 @@ ogs_pkbuf_t *smf_n4mb_build_session_modification_request(
                 if (mod->tunnel->add_addr.ipv4) {
                     outer_header_creation.gtpu4 = 1;
                     outer_header_creation.addr = mod->tunnel->add_addr.addr;
-                    req->update_far[i].add_mbs_unicast_parameters.outer_header_creation.len = 2 + 4 + OGS_IPV4_LEN;
+                    req->update_far[i].add_mbs_unicast_parameters[0].outer_header_creation.len = 2 + 4 + OGS_IPV4_LEN;
                 } else {
                     outer_header_creation.gtpu6 = 1;
                     memcpy(outer_header_creation.addr6, mod->tunnel->add_addr.addr6, OGS_IPV6_LEN);
-                    req->update_far[i].add_mbs_unicast_parameters.outer_header_creation.len = 2 + 4 + OGS_IPV6_LEN;
+                    req->update_far[i].add_mbs_unicast_parameters[0].outer_header_creation.len = 2 + 4 + OGS_IPV6_LEN;
                 }
-                req->update_far[i].add_mbs_unicast_parameters.presence = 1;
-                req->update_far[i].add_mbs_unicast_parameters.destination_interface.presence = 1;
-                req->update_far[i].add_mbs_unicast_parameters.destination_interface.u8 = destination_interface;
-                req->update_far[i].add_mbs_unicast_parameters.mbs_unicast_parameters_id.presence = 1;
-                req->update_far[i].add_mbs_unicast_parameters.mbs_unicast_parameters_id.data = unicast_params_id;
-                req->update_far[i].add_mbs_unicast_parameters.mbs_unicast_parameters_id.len = sizeof(unicast_params_id);
-                req->update_far[i].add_mbs_unicast_parameters.outer_header_creation.presence = 1;
-                req->update_far[i].add_mbs_unicast_parameters.outer_header_creation.data = &outer_header_creation;
+                req->update_far[i].add_mbs_unicast_parameters[0].presence = 1;
+                req->update_far[i].add_mbs_unicast_parameters[0].destination_interface.presence = 1;
+                req->update_far[i].add_mbs_unicast_parameters[0].destination_interface.u8 = destination_interface;
+                req->update_far[i].add_mbs_unicast_parameters[0].mbs_unicast_parameters_id.presence = 1;
+                req->update_far[i].add_mbs_unicast_parameters[0].mbs_unicast_parameters_id.data = unicast_params_id;
+                req->update_far[i].add_mbs_unicast_parameters[0].mbs_unicast_parameters_id.len = sizeof(unicast_params_id);
+                req->update_far[i].add_mbs_unicast_parameters[0].outer_header_creation.presence = 1;
+                req->update_far[i].add_mbs_unicast_parameters[0].outer_header_creation.data = &outer_header_creation;
             }
             if (mod->tunnel->has_remove) {
-                /* the IE is the MBS Unicast Parameters ID IE (type 309, length 2) */
-                remove_params[0] = (OGS_PFCP_MBS_UNICAST_PARAMETERS_ID_TYPE >> 8) & 0xff;
-                remove_params[1] = OGS_PFCP_MBS_UNICAST_PARAMETERS_ID_TYPE & 0xff;
-                remove_params[2] = 0;
-                remove_params[3] = 2;
-                remove_params[4] = (mod->tunnel->remove_id >> 8) & 0xff;
-                remove_params[5] = mod->tunnel->remove_id & 0xff;
-                req->update_far[i].remove_mbs_unicast_parameters.presence = 1;
-                req->update_far[i].remove_mbs_unicast_parameters.data = remove_params;
-                req->update_far[i].remove_mbs_unicast_parameters.len = sizeof(remove_params);
+                remove_params[0] = (mod->tunnel->remove_id >> 8) & 0xff;
+                remove_params[1] = mod->tunnel->remove_id & 0xff;
+                req->update_far[i].remove_mbs_unicast_parameters[0].presence = 1;
+                req->update_far[i].remove_mbs_unicast_parameters[0].mbs_unicast_parameters_id.presence = 1;
+                req->update_far[i].remove_mbs_unicast_parameters[0].mbs_unicast_parameters_id.data = remove_params;
+                req->update_far[i].remove_mbs_unicast_parameters[0].mbs_unicast_parameters_id.len = sizeof(remove_params);
             }
             i++;
         }

@@ -1994,16 +1994,16 @@ static void test_unicast_tunnel_modification(void)
             CHECK(u->presence && u->far_id.presence);
             CHECK(u->apply_action.presence && (u->apply_action.u16 & OGS_PFCP_APPLY_ACTION_MBSU) &&
                     (u->apply_action.u16 & OGS_PFCP_APPLY_ACTION_FSSM));
-            CHECK(u->add_mbs_unicast_parameters.presence &&
-                    u->add_mbs_unicast_parameters.destination_interface.presence &&
-                    u->add_mbs_unicast_parameters.destination_interface.u8 == OGS_PFCP_INTERFACE_ACCESS);
-            CHECK(u->add_mbs_unicast_parameters.mbs_unicast_parameters_id.presence &&
-                    u->add_mbs_unicast_parameters.mbs_unicast_parameters_id.len == 2 &&
-                    memcmp(u->add_mbs_unicast_parameters.mbs_unicast_parameters_id.data, expected_id, 2) == 0);
-            CHECK(u->add_mbs_unicast_parameters.outer_header_creation.presence &&
-                    u->add_mbs_unicast_parameters.outer_header_creation.len == 10 &&
-                    memcmp(u->add_mbs_unicast_parameters.outer_header_creation.data, expected_ohc, 10) == 0);
-            CHECK(!u->remove_mbs_unicast_parameters.presence);
+            CHECK(u->add_mbs_unicast_parameters[0].presence &&
+                    u->add_mbs_unicast_parameters[0].destination_interface.presence &&
+                    u->add_mbs_unicast_parameters[0].destination_interface.u8 == OGS_PFCP_INTERFACE_ACCESS);
+            CHECK(u->add_mbs_unicast_parameters[0].mbs_unicast_parameters_id.presence &&
+                    u->add_mbs_unicast_parameters[0].mbs_unicast_parameters_id.len == 2 &&
+                    memcmp(u->add_mbs_unicast_parameters[0].mbs_unicast_parameters_id.data, expected_id, 2) == 0);
+            CHECK(u->add_mbs_unicast_parameters[0].outer_header_creation.presence &&
+                    u->add_mbs_unicast_parameters[0].outer_header_creation.len == 10 &&
+                    memcmp(u->add_mbs_unicast_parameters[0].outer_header_creation.data, expected_ohc, 10) == 0);
+            CHECK(!u->remove_mbs_unicast_parameters[0].presence);
         }
         CHECK(!req->update_far[2].presence);
         CHECK(req->update_far[0].far_id.u32 != req->update_far[1].far_id.u32);
@@ -2019,11 +2019,13 @@ static void test_unicast_tunnel_modification(void)
     CHECK(msg != NULL);
     if (msg) {
         ogs_pfcp_tlv_update_far_t *u = &msg->pfcp_session_modification_request.update_far[0];
-        static const uint8_t expected_remove[6] = { 0x01, 0x35, 0x00, 0x02, 0x03, 0x04 };
+        static const uint8_t expected_remove[2] = { 0x03, 0x04 };
 
-        CHECK(u->presence && !u->apply_action.presence && !u->add_mbs_unicast_parameters.presence);
-        CHECK(u->remove_mbs_unicast_parameters.presence && u->remove_mbs_unicast_parameters.len == 6 &&
-                memcmp(u->remove_mbs_unicast_parameters.data, expected_remove, 6) == 0);
+        CHECK(u->presence && !u->apply_action.presence && !u->add_mbs_unicast_parameters[0].presence);
+        CHECK(u->remove_mbs_unicast_parameters[0].presence &&
+                u->remove_mbs_unicast_parameters[0].mbs_unicast_parameters_id.presence &&
+                u->remove_mbs_unicast_parameters[0].mbs_unicast_parameters_id.len == 2 &&
+                memcmp(u->remove_mbs_unicast_parameters[0].mbs_unicast_parameters_id.data, expected_remove, 2) == 0);
     }
 
     /* an IPv6 tunnel: GTP-U/UDP/IPv6, 22 octets */
@@ -2038,9 +2040,9 @@ static void test_unicast_tunnel_modification(void)
     CHECK(msg != NULL);
     if (msg) {
         ogs_pfcp_tlv_update_far_t *u = &msg->pfcp_session_modification_request.update_far[0];
-        const uint8_t *d = u->add_mbs_unicast_parameters.outer_header_creation.data;
+        const uint8_t *d = u->add_mbs_unicast_parameters[0].outer_header_creation.data;
 
-        CHECK(u->add_mbs_unicast_parameters.outer_header_creation.len == 22 && d[0] == 0x02 && d[1] == 0 &&
+        CHECK(u->add_mbs_unicast_parameters[0].outer_header_creation.len == 22 && d[0] == 0x02 && d[1] == 0 &&
                 d[5] == 7 && d[6] == 0x20 && d[7] == 0x01 && d[21] == 0x07);
     }
 
