@@ -20,11 +20,34 @@
 
 #include "context.h"
 #include "n4mb-handler.h"
+#include "pfcp-path.h"
 
 // NOTE (borieher): Needed for the SBI request
 #include "sbi-path.h"
 
 static const char *_pfcp_cause_to_problem_cause(uint8_t pfcp_cause);
+
+// The northbound request of a session that cannot be established has been answered with an error: the session must
+// not stay in the tables. A MB-UPF that accepted the request holds a session the MB-SMF will not use, so it is deleted
+// (the deletion response releases the local session); otherwise the session is released now.
+static void _abandon_failed_establishment(smf_mbs_sess_t *mbs_sess,
+        ogs_pfcp_session_establishment_response_t *rsp)
+{
+    ogs_assert(mbs_sess);
+    ogs_assert(rsp);
+
+    if (rsp->cause.presence && rsp->cause.u8 == OGS_PFCP_CAUSE_REQUEST_ACCEPTED &&
+            rsp->up_f_seid.presence) {
+        ogs_pfcp_f_seid_t *up_f_seid = rsp->up_f_seid.data;
+        ogs_assert(up_f_seid);
+        mbs_sess->upf_n4mb_seid = be64toh(up_f_seid->seid);
+        if (smf_5gc_pfcp_n4mb_send_session_deletion_request(mbs_sess) == OGS_OK)
+            return;
+        ogs_error("Cannot delete the unused MB-UPF session");
+    }
+
+    smf_mbs_sess_release(mbs_sess);
+}
 
 uint8_t smf_n4mb_handle_session_establishment_response(
         smf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
@@ -88,6 +111,7 @@ uint8_t smf_n4mb_handle_session_establishment_response(
         // INSUFFICIENT_RESOURCES/SYSTEM_FAILURE) -- more precise than a blanket SYSTEM_FAILURE for
         // every rejection, so kept in preference to that when the two approaches collided here.
         ogs_assert(true == ogs_sbi_server_send_error(sbi_stream, 500, NULL, "Unable to establish MBS session", "MBS Session establishment with UPF rejected", _pfcp_cause_to_problem_cause(cause_value)));
+        _abandon_failed_establishment(mbs_sess, rsp);
         return cause_value;
     }
 
@@ -150,12 +174,15 @@ uint8_t smf_n4mb_handle_session_establishment_response(
 
     if (cause_value != OGS_PFCP_CAUSE_REQUEST_ACCEPTED) {
         ogs_error("PFCP Cause [%d] : Not Accepted", cause_value);
+        ogs_assert(true == ogs_sbi_server_send_error(sbi_stream, 500, NULL, "Unable to establish MBS session", "MBS Session establishment with UPF failed", _pfcp_cause_to_problem_cause(cause_value)));
+        _abandon_failed_establishment(mbs_sess, rsp);
         return cause_value;
     }
 
     if (mbs_sess->upf_n3mb_addr == NULL && mbs_sess->upf_n3mb_addr6 == NULL) {
         ogs_error("No UP F-TEID");
         ogs_assert(true == ogs_sbi_server_send_error(sbi_stream, 500, NULL, "No UP F-TEID", "Session Context not found", N4MB_CAUSE_CONTEXT_NOT_FOUND));
+        _abandon_failed_establishment(mbs_sess, rsp);
         return OGS_PFCP_CAUSE_SESSION_CONTEXT_NOT_FOUND;
     }
 
