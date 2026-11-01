@@ -590,6 +590,65 @@ static void test_create_outcomes(void)
     CHECK(ogs_list_count(&smf_self()->smf_mbs_sess_list) == before);
 }
 
+/* TS 29.532 V18.6.0 cl. 5.3.2.2.1: "If the MBS service area received in the request cannot be entirely covered by
+ * the MB-SMF service area, the MB-SMF shall reduce the MBS service area to be within the MB-SMF service area and
+ * continue the Create service operation using the reduced MBS service area." */
+static void test_reduced_area_is_used(void)
+{
+    ogs_mbs_service_area_t *saved = smf_self()->mbs_service_area;
+    ogs_mbs_service_area_t *coverage = area_of_tacs("1", "2");
+    ogs_tmgi_t *tmgi = smf_tmgi_allocate(smf_tmgi_gen_expiration_time(60));
+    smf_mbs_sess_t *mbs_sess;
+    ogs_sbi_request_t *request;
+    ogs_tai_t *tai;
+    int count = 0;
+
+    CHECK(tmgi != NULL);
+    if (!tmgi) return;
+    smf_self()->mbs_service_area = coverage;
+
+    /* requested 1 and 9, covered 1 and 2: the session runs with 1 */
+    mbs_sess = create_session(tmgi, true, false, "1", "9", NULL);
+    CHECK(mbs_sess != NULL);
+    if (mbs_sess) {
+        CHECK(mbs_sess->service_area_reduced);
+        CHECK(mbs_sess->mbs_service_area && mbs_sess->mbs_service_area->tai_list);
+        if (mbs_sess->mbs_service_area && mbs_sess->mbs_service_area->tai_list) {
+            ogs_list_for_each(mbs_sess->mbs_service_area->tai_list, tai) {
+                CHECK_STR("1", tai->tac);
+                count++;
+            }
+            CHECK(count == 1);
+        }
+        /* and that is what the AMF is asked to serve */
+        ogs_list_init(&mbs_sess->mbs_qos_flow_list);
+        ogs_list_init(&mbs_sess->mbs_fsa_id_list);
+        request = smf_namf_build_mbs_broadcast_context_create_request(mbs_sess, NULL);
+        CHECK(request != NULL);
+        if (request) {
+            CHECK(request->http.content && strstr(request->http.content, "\"tac\":\"1\"") != NULL);
+            CHECK(request->http.content && strstr(request->http.content, "\"tac\":\"9\"") == NULL);
+            ogs_sbi_request_free(request);
+        }
+        smf_mbs_sess_release(mbs_sess);
+    }
+
+    /* an area that is covered is not reduced */
+    tmgi = smf_tmgi_allocate(smf_tmgi_gen_expiration_time(60));
+    CHECK(tmgi != NULL);
+    if (tmgi) {
+        mbs_sess = create_session(tmgi, true, false, "1", "2", NULL);
+        CHECK(mbs_sess != NULL);
+        if (mbs_sess) {
+            CHECK(!mbs_sess->service_area_reduced);
+            smf_mbs_sess_release(mbs_sess);
+        }
+    }
+
+    smf_self()->mbs_service_area = saved;
+    ogs_mbs_service_area_free(coverage);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -604,6 +663,7 @@ int main(void)
     test_dnn_snssai();
     test_tmgi_index_after_refresh();
     test_create_outcomes();
+    test_reduced_area_is_used();
 
     printf("smf-mbs: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;

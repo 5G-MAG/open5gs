@@ -281,12 +281,8 @@ uint8_t smf_n4mb_handle_session_establishment_response(
     // unconfigured means no restriction -- rule 12), report the reduced area back in
     // redMbsServArea. See smf_mbs_service_area_reduce()'s own scope note (TAI-list coverage only).
     OpenAPI_mbs_service_area_t *Red_mbs_service_area = NULL;
-    ogs_mbs_service_area_t *reduced_mbs_service_area = NULL;
-    if (mbs_sess->mbs_service_area &&
-            smf_mbs_service_area_reduce(mbs_sess->mbs_service_area, &reduced_mbs_service_area)) {
-        Red_mbs_service_area = ogs_sbi_build_mbs_service_area(reduced_mbs_service_area);
-        ogs_mbs_service_area_free(reduced_mbs_service_area);
-    }
+    if (mbs_sess->service_area_reduced && mbs_sess->mbs_service_area)
+        Red_mbs_service_area = ogs_sbi_build_mbs_service_area(mbs_sess->mbs_service_area);
 
     Ext_mbs_session = OpenAPI_ext_mbs_session_create(Mbs_session_id   /* mbs_session_id */,
                                                      false            /* is_tmgi_alloc_req */, 0 /* tmgi_alloc_req */,

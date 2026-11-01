@@ -602,8 +602,11 @@ typedef struct smf_mbs_sess_s {
     bool ingress_tun_addr_req;
     ogs_sockaddr_t *ingress_tun_addr;
 
-    /* Service Areas */
+    /* Service Areas. mbs_service_area is the area the session runs with: the requested one reduced to the
+     * coverage of this MB-SMF when it was not entirely covered (service_area_reduced), see
+     * smf_mbs_service_area_reduce(). */
     ogs_mbs_service_area_t *mbs_service_area;
+    bool service_area_reduced;
     ogs_ext_mbs_service_area_t *ext_mbs_service_area;
 
     /* TS 29.532 MbsSession.mbsServInfo.mbsMediaComps[*].mbsQoSReq, parsed from the Create/Update

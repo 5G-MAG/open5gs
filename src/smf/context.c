@@ -4003,6 +4003,19 @@ smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, bool tmgi_allocated, ogs_s
 
     smf_mbs_sess->service_type = ogs_strdup(service_type);
 
+    /* TS 29.532 V18.6.0 cl. 5.3.2.2.1: "If the MBS service area received in the request cannot be entirely
+     * covered by the MB-SMF service area, the MB-SMF shall reduce the MBS service area to be within the MB-SMF
+     * service area and continue the Create service operation using the reduced MBS service area." */
+    {
+        ogs_mbs_service_area_t *reduced = NULL;
+
+        if (mbs_service_area && smf_mbs_service_area_reduce(mbs_service_area, &reduced)) {
+            ogs_mbs_service_area_free(mbs_service_area);
+            mbs_service_area = reduced;
+            smf_mbs_sess->service_area_reduced = true;
+        }
+    }
+
     smf_mbs_sess->mbs_service_area = mbs_service_area;
     smf_mbs_sess->ext_mbs_service_area = ext_mbs_service_area;
 
