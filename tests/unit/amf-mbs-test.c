@@ -612,6 +612,14 @@ static void test_update_action_ran_id_list(void)
     CHECK(amf_namf_mbs_update_action(&ctx, gnb1, &plan) == AMF_MBS_UPDATE_SKIP);
     CHECK(amf_namf_mbs_update_action(&ctx, down, &plan) == AMF_MBS_UPDATE_SKIP);
 
+    /* noNgapSignallingInd true: no NGAP message to any node, with or without a ranIdList */
+    plan.no_ngap_signalling = true;
+    CHECK(amf_namf_mbs_update_action(&ctx, gnb2, &plan) == AMF_MBS_UPDATE_SKIP);
+    plan.ran_id_list = NULL;
+    CHECK(amf_namf_mbs_update_action(&ctx, gnb1, &plan) == AMF_MBS_UPDATE_SKIP);
+    plan.no_ngap_signalling = false;
+    plan.ran_id_list = list;
+
     /* a listed node that is not connected is not reached */
     gnb2->state.ng_setup_success = false;
     CHECK(amf_namf_mbs_update_action(&ctx, gnb2, &plan) == AMF_MBS_UPDATE_SKIP);

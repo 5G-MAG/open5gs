@@ -76,6 +76,8 @@ typedef enum {
 typedef struct amf_mbs_update_plan_s {
     /* ranIdList: the GlobalRanNodeId items of the request, NULL when it carries none */
     OpenAPI_list_t *ran_id_list;
+    /* noNgapSignallingInd is true: no NGAP message goes to any NG-RAN */
+    bool no_ngap_signalling;
 } amf_mbs_update_plan_t;
 
 /* The action of a ContextUpdate of \p mbs_context (whose service area is already the updated one) at \p gnb */

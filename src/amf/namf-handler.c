@@ -2145,7 +2145,9 @@ static bool amf_gnb_takes_mbs_session(amf_gnb_t *gnb, amf_mbs_context_t *mbs_con
  * session in a list of NG-RANs as identified by the NG-RAN ID(s), as specified in clause 8.3.2.3 of TS 23.527"): the listed
  * NG-RAN nodes get a Broadcast Session Setup Request and no other node gets anything (TS 23.527 V18.6.0 cl. 8.3.2.3 step 7:
  * "The AMF sends the N2 MBS Session Setup Request message to the NG-RAN node(s) including the MBS Session Setup or
- * Modification Request Transfer IE.").
+ * Modification Request Transfer IE."). With noNgapSignallingInd true (TS 29.518 V18.14.0 Table 6.5.6.2.5-1: "true: the AMF
+ * may consider to not trigger a NGAP signaling message to any NG-RAN."; TS 23.527 V18.6.0 cl. 8.3.2.4 step 8: "The AMF
+ * may consider to not trigger any NGAP signalling towards NG-RANs covering the MBS service area.") no node gets anything.
  */
 amf_mbs_update_action_e amf_namf_mbs_update_action(
         amf_mbs_context_t *mbs_context, amf_gnb_t *gnb, const amf_mbs_update_plan_t *plan)
@@ -2156,7 +2158,7 @@ amf_mbs_update_action_e amf_namf_mbs_update_action(
     ogs_assert(gnb);
     ogs_assert(plan);
 
-    if (!gnb->state.ng_setup_success)
+    if (plan->no_ngap_signalling || !gnb->state.ng_setup_success)
         return AMF_MBS_UPDATE_SKIP;
 
     if (plan->ran_id_list)
@@ -2757,7 +2759,10 @@ int amf_namf_handle_mbs_broadcast_context_update(
     // ranIdList (O): the update is performed in those NG-RANs only, with a Broadcast Session Setup Request that
     // carries the container of the request (TS 23.527 V18.6.0 cl. 8.3.2.3 step 6: "...ContextUpdate Request ...
     // including the MBS Session Setup or Modification Request Transfer IE and the NG-RAN ID").
-    if (ContextUpdateReqData->ran_id_list && ContextUpdateReqData->ran_id_list->count > 0) {
+    plan.no_ngap_signalling =
+        ContextUpdateReqData->no_ngap_signalling_ind == OpenAPI_context_update_req_data_NONGAPSIGNALLINGIND__true;
+
+    if (!plan.no_ngap_signalling && ContextUpdateReqData->ran_id_list && ContextUpdateReqData->ran_id_list->count > 0) {
         if (!n2mbssmbuf) {
             ogs_error("MBS Broadcast ContextUpdate: ranIdList without n2MbsSmInfo");
             ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
@@ -2778,6 +2783,23 @@ int amf_namf_handle_mbs_broadcast_context_update(
     if (ContextUpdateReqData->notify_uri) {
         amf_namf_set_mbs_context_notify_client(
                 mbs_context, ContextUpdateReqData->notify_uri, "ContextUpdate");
+    }
+
+    // noNgapSignallingInd: this AMF takes over the session (TS 23.527 V18.6.0 cl. 8.3.2.4 step 8: "...to request the
+    // AMF2 to be the AMF for the Broadcast MBS Session to handle subsequent MBS session signaling and be responsible
+    // for triggering restoration procedures for NG-RAN failure with or without restart") and keeps the service area and
+    // the container, both stored above, "just to store it for future potential NG-RAN restoration" (cl. 8.3.2.4).
+    // Nothing is sent to an NG-RAN, so nothing waits for a response: step 9, "The AMF responds the
+    // Namf_MBSBroadcast_ContextUpdate Request message.", is a 204 No Content (TS 29.518 cl. 5.6.2.3 step 2b).
+    if (plan.no_ngap_signalling) {
+        ogs_sbi_message_t sendmsg;
+        ogs_sbi_response_t *response = NULL;
+
+        memset(&sendmsg, 0, sizeof(sendmsg));
+        response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
+        ogs_assert(response);
+        ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+        goto cleanup;
     }
 
     // Reset B-2's completion-tracking counters: ContextCreate's own use of them has already finished by
