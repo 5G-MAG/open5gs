@@ -2673,14 +2673,19 @@ void amf_namf_send_mbs_broadcast_context_update_response(amf_mbs_context_t *mbs_
  * Sends the NGAP BROADCAST SESSION RELEASE REQUEST for \p mbs_context to every connected gNB and removes the
  * context. Used by ContextDelete and when a ContextCreate's consumer is gone before it could be answered.
  */
-static void amf_mbs_context_release(amf_mbs_context_t *mbs_context)
+static int amf_mbs_context_send_release(amf_mbs_context_t *mbs_context)
 {
     ogs_pkbuf_t *n2msgreq = NULL;
     amf_gnb_t *gnb = NULL;
     int gnb_rv = OGS_OK;
+    int reached = 0;
 
     // NGAP BROADCAST SESSION RELEASE REQUEST message
     n2msgreq = ngap_build_broadcast_session_release_request(mbs_context);
+    if (!n2msgreq) {
+        ogs_error("The Broadcast Session Release Request could not be built");
+        return 0;
+    }
 
         // Each gNB gets its own copy and the shared template is freed once after the loop, for the ownership
         // reason given in amf_namf_handle_mbs_broadcast_context_create()'s send loop above.
@@ -2696,9 +2701,43 @@ static void amf_mbs_context_release(amf_mbs_context_t *mbs_context)
             ogs_error("ngap_send_to_gnb() failed");
             break;
         }
+        reached++;
     }
     ogs_pkbuf_free(n2msgreq);
 
+    return reached;
+}
+
+static void amf_mbs_context_release(amf_mbs_context_t *mbs_context)
+{
+    amf_mbs_context_send_release(mbs_context);
+    amf_mbs_context_remove(mbs_context);
+}
+
+/*
+ * Completes a ContextRelease once an NG-RAN has answered the release (ngap_handle_broadcast_session_release_response()):
+ * sends the deferred 204 No Content and removes the context. If the consumer's stream is gone, only the context is removed.
+ */
+void amf_namf_send_mbs_broadcast_context_release_response(amf_mbs_context_t *mbs_context)
+{
+    ogs_sbi_message_t sendmsg;
+    ogs_sbi_stream_t *stream = NULL;
+    ogs_sbi_response_t *response = NULL;
+
+    ogs_assert(mbs_context);
+
+    stream = ogs_sbi_stream_find_by_id(mbs_context->stream_id);
+    if (!stream) {
+        ogs_warn("MBS Broadcast ContextRelease: stream [%d] no longer exists, response not sent",
+                (int)mbs_context->stream_id);
+    } else {
+        memset(&sendmsg, 0, sizeof(sendmsg));
+        response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
+        ogs_assert(response);
+        ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+    }
+
+    mbs_context->stream_id = OGS_INVALID_POOL_ID;
     amf_mbs_context_remove(mbs_context);
 }
 
@@ -2745,7 +2784,28 @@ int amf_namf_handle_mbs_broadcast_context_delete(
         return OGS_ERROR;
     }
 
-    amf_mbs_context_release(mbs_context);
+    if (mbs_context->release_pending) {
+        ogs_error("MBS Broadcast ContextDelete: mbsContextRef[%s] is already being released", mbs_context_ref);
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+            recvmsg, "Internal Server Error",
+            "Requested MBS Broadcast ContextDelete failed, the release is already in progress", "UNSPECIFIED_NF_FAILURE");
+        return OGS_ERROR;
+    }
+
+    mbs_context->gnb_request_count = 0;
+    mbs_context->gnb_response_count = 0;
+    mbs_context->gnb_request_count = amf_mbs_context_send_release(mbs_context);
+
+    if (mbs_context->gnb_request_count > 0) {
+        // TS 23.247 V18.8.0 cl. 7.3.2 step 8, "The AMF sends Namf_MBSBroadcast_ContextRelease response (TMGI) to the
+        // MB-SMF", follows step 7, the NG-RAN's release response: the 204 waits for the first one.
+        mbs_context->release_pending = true;
+        mbs_context->stream_id = ogs_sbi_id_from_stream(stream);
+        return OGS_OK;
+    }
+
+    // No NG-RAN was reached: none holds the session, so there is nothing to wait for.
+    amf_mbs_context_remove(mbs_context);
 
     /*********************************************************************
      * Send OGS_SBI_HTTP_STATUS_NO_CONTENT (/namf-mbs-bc/v1/mbs-contexts/{mbsContextRef}) to the consumer NF

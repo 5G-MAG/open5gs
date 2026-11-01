@@ -77,6 +77,7 @@ int amf_namf_handle_mbs_broadcast_context_update(
  * amf_namf_send_mbs_broadcast_context_create_response()'s own reasoning exactly.
  */
 void amf_namf_send_mbs_broadcast_context_update_response(amf_mbs_context_t *mbs_context);
+void amf_namf_send_mbs_broadcast_context_release_response(amf_mbs_context_t *mbs_context);
 
 /* Namf_MBSCommunication Service - N2MessageTransfer service operation (TS 29.518 cl.5.7.2.2) */
 int amf_namf_mbs_comm_handle_n2_message_transfer(

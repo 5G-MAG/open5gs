@@ -162,6 +162,9 @@ void ngap_state_operational(ogs_fsm_t *s, amf_event_t *e)
             case NGAP_ProcedureCode_id_BroadcastSessionModification:
                 ngap_handle_broadcast_session_modification_response(gnb, pdu);
                 break;
+            case NGAP_ProcedureCode_id_BroadcastSessionRelease:
+                ngap_handle_broadcast_session_release_response(gnb, pdu);
+                break;
             default:
                 ogs_error("Not implemented(choice:%d, proc:%d)",
                         pdu->present, (int)successfulOutcome->procedureCode);

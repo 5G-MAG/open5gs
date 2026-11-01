@@ -4807,6 +4807,58 @@ void ngap_handle_error_indication(amf_gnb_t *gnb, ogs_ngap_message_t *message)
  * MBS-SessionID IE (TS 38.413 clause 9.3.1.213), correlate it back to the AMF's own pending
  * amf_mbs_context_t by TMGI, and complete the deferred Namf_MBSBroadcast_ContextCreate response there.
  */
+/*
+ * BROADCAST SESSION RELEASE RESPONSE: the NG-RAN has released the session. The deferred ContextRelease response
+ * is sent on the first one (TS 23.247 V18.8.0 cl. 7.3.2 step 7 then step 8).
+ */
+void ngap_handle_broadcast_session_release_response(
+        amf_gnb_t *gnb, ogs_ngap_message_t *message)
+{
+    int i;
+
+    NGAP_SuccessfulOutcome_t *successfulOutcome = NULL;
+    NGAP_BroadcastSessionReleaseResponse_t *BroadcastSessionReleaseResponse = NULL;
+    NGAP_BroadcastSessionReleaseResponseIEs_t *ie = NULL;
+    NGAP_MBS_SessionID_t *MBS_SessionID = NULL;
+
+    ogs_tmgi_t tmgi;
+    amf_mbs_context_t *mbs_context = NULL;
+
+    ogs_assert(gnb);
+    ogs_assert(gnb->sctp.sock);
+
+    ogs_assert(message);
+    successfulOutcome = message->choice.successfulOutcome;
+    ogs_assert(successfulOutcome);
+
+    BroadcastSessionReleaseResponse =
+        &successfulOutcome->value.choice.BroadcastSessionReleaseResponse;
+
+    ogs_debug("BROADCAST SESSION RELEASE RESPONSE");
+
+    for (i = 0; i < BroadcastSessionReleaseResponse->protocolIEs.list.count; i++) {
+        ie = BroadcastSessionReleaseResponse->protocolIEs.list.array[i];
+        if (ie->value.present == NGAP_BroadcastSessionReleaseResponseIEs__value_PR_MBS_SessionID)
+            MBS_SessionID = &ie->value.choice.MBS_SessionID;
+    }
+
+    if (!MBS_SessionID) {
+        ogs_error("BROADCAST SESSION RELEASE RESPONSE: No MBS-SessionID IE");
+        return;
+    }
+
+    memset(&tmgi, 0, sizeof(tmgi));
+    ogs_ngap_ASN_to_5gs_tmgi(&MBS_SessionID->tMGI, &tmgi);
+
+    mbs_context = amf_mbs_context_find_by_tmgi(&tmgi);
+    if (mbs_context && mbs_context->release_pending)
+        amf_namf_send_mbs_broadcast_context_release_response(mbs_context);
+    else
+        ogs_warn("BROADCAST SESSION RELEASE RESPONSE: no MBS context waiting for its release for the given TMGI");
+
+    ogs_free(tmgi.mbs_service_id);
+}
+
 void ngap_handle_broadcast_session_setup_response(
         amf_gnb_t *gnb, ogs_ngap_message_t *message)
 {

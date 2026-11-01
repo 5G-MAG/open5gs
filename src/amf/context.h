@@ -903,6 +903,13 @@ typedef struct amf_mbs_context_s {
     uint32_t gnb_request_count;
     uint32_t gnb_response_count;
 
+    /*
+     * Set while a ContextRelease waits for the first NG-RAN release response: TS 23.247 V18.8.0 cl. 7.3.2
+     * puts "The NG-RAN reports successful release ... to the AMF(s)" (step 7) before "The AMF sends
+     * Namf_MBSBroadcast_ContextRelease response" (step 8). stream_id then holds the consumer's DELETE.
+     */
+    bool release_pending;
+
 } amf_mbs_context_t;
 
 void amf_context_init(void);
