@@ -4827,6 +4827,7 @@ void ngap_handle_broadcast_session_release_response(
     NGAP_BroadcastSessionReleaseResponse_t *BroadcastSessionReleaseResponse = NULL;
     NGAP_BroadcastSessionReleaseResponseIEs_t *ie = NULL;
     NGAP_MBS_SessionID_t *MBS_SessionID = NULL;
+    OCTET_STRING_t *transfer = NULL;
 
     ogs_tmgi_t tmgi;
     amf_mbs_context_t *mbs_context = NULL;
@@ -4847,6 +4848,9 @@ void ngap_handle_broadcast_session_release_response(
         ie = BroadcastSessionReleaseResponse->protocolIEs.list.array[i];
         if (ie->value.present == NGAP_BroadcastSessionReleaseResponseIEs__value_PR_MBS_SessionID)
             MBS_SessionID = &ie->value.choice.MBS_SessionID;
+        else if (ie->value.present ==
+                NGAP_BroadcastSessionReleaseResponseIEs__value_PR_OCTET_STRING_CONTAINING_MBSSessionReleaseResponseTransfer_)
+            transfer = &ie->value.choice.OCTET_STRING_CONTAINING_MBSSessionReleaseResponseTransfer_;
     }
 
     if (!MBS_SessionID) {
@@ -4859,7 +4863,7 @@ void ngap_handle_broadcast_session_release_response(
 
     mbs_context = amf_mbs_context_find_by_tmgi(&tmgi);
     if (mbs_context && mbs_context->release_pending)
-        amf_namf_send_mbs_broadcast_context_release_response(mbs_context);
+        amf_namf_send_mbs_broadcast_context_release_response(mbs_context, gnb, transfer);
     else
         ogs_warn("BROADCAST SESSION RELEASE RESPONSE: no MBS context waiting for its release for the given TMGI");
 

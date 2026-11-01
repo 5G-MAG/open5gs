@@ -2903,14 +2903,32 @@ static void amf_mbs_context_release(amf_mbs_context_t *mbs_context)
 /*
  * Completes a ContextRelease once an NG-RAN has answered the release (ngap_handle_broadcast_session_release_response()):
  * sends the deferred 204 No Content and removes the context. If the consumer's stream is gone, only the context is removed.
+ * TS 38.413 V18.8.0 cl. 8.17.3.2: "Upon reception of the BROADCAST SESSION RELEASE RESPONSE message, the AMF shall
+ * transfer transparently the Broadcast Session Release Response Transfer IE, if available, to the MB-SMF." The 204 cannot
+ * carry it (TS 29.518 cl. 5.6.2.4), so it goes first in a ContextStatusNotify request, whose content may be a "MBS
+ * Session Release Response Transfer IE" (cl. 5.6.2.5), before the context and its notification URI are removed.
  */
-void amf_namf_send_mbs_broadcast_context_release_response(amf_mbs_context_t *mbs_context)
+void amf_namf_send_mbs_broadcast_context_release_response(amf_mbs_context_t *mbs_context,
+        amf_gnb_t *gnb, const OCTET_STRING_t *transfer)
 {
     ogs_sbi_message_t sendmsg;
     ogs_sbi_stream_t *stream = NULL;
     ogs_sbi_response_t *response = NULL;
+    ogs_list_t n2_info_list;
+    amf_mbs_n2_info_t *n2_info = NULL;
 
     ogs_assert(mbs_context);
+    ogs_assert(gnb);
+
+    if (transfer && transfer->size > 0)
+        n2_info = amf_mbs_n2_info_create(gnb, OpenAPI_ngap_ie_type_MBS_SES_REL_RSP, transfer->buf, transfer->size);
+    if (n2_info) {
+        ogs_list_init(&n2_info_list);
+        ogs_list_add(&n2_info_list, n2_info);
+        amf_sbi_send_mbs_broadcast_context_status_notify(
+                mbs_context, &n2_info_list, OpenAPI_operation_status_NULL);
+        amf_mbs_n2_info_remove_all(&n2_info_list);
+    }
 
     stream = ogs_sbi_stream_find_by_id(mbs_context->stream_id);
     if (!stream) {

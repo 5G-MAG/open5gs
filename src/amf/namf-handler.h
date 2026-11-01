@@ -70,7 +70,8 @@ int amf_namf_handle_mbs_broadcast_context_update(
  */
 void amf_namf_handle_mbs_broadcast_ran_response(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb,
         bool update, bool success, OpenAPI_ngap_ie_type_e ngap_ie_type, const OCTET_STRING_t *transfer);
-void amf_namf_send_mbs_broadcast_context_release_response(amf_mbs_context_t *mbs_context);
+void amf_namf_send_mbs_broadcast_context_release_response(amf_mbs_context_t *mbs_context,
+        amf_gnb_t *gnb, const OCTET_STRING_t *transfer);
 
 /* Namf_MBSCommunication Service - N2MessageTransfer service operation (TS 29.518 cl.5.7.2.2) */
 int amf_namf_mbs_comm_handle_n2_message_transfer(
