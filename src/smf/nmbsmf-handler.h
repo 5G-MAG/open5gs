@@ -74,6 +74,7 @@ bool smf_nmbsmf_handle_tmgi_deallocate(
 #define NMBSMF_MBSESSION_UNKNOWN_MBS_SESSION          "UNKNOWN_MBS_SESSION"
 #define NMBSMF_MBSSESSION_SYSTEM_FAILURE              "SYSTEM_FAILURE"
 #define NMBSMF_MBSSESSION_INVALID_MBS_SERVICE_INFO    "INVALID_MBS_SERVICE_INFO"
+#define NMBSMF_MBSSESSION_FILTER_RESTRICTIONS_NOT_RESPECTED "FILTER_RESTRICTIONS_NOT_RESPECTED"
 #define NMBSMF_MBSSESSION_INSUFFICIENT_RESOURCES      "INSUFFICIENT_RESOURCES"
 #define NMBSMF_MBSSESSION_OVERLAPPING_MBS_SERVICE_AREA "OVERLAPPING_MBS_SERVICE_AREA"
 
@@ -87,6 +88,22 @@ bool smf_nmbsmf_handle_tmgi_deallocate(
  * 255 of TS 29.571 V18.12.0 (5Qi, "within the range 0 to 255"), and there are no more QoS flows than
  * SMF_MBS_MAX_QOS_FLOWS. Returns false with a description of the first fault in *detail. */
 bool smf_nmbsmf_mbs_service_info_is_valid(
+    OpenAPI_mbs_service_info_t *mbs_serv_info, const char **detail);
+
+/* The Flow-Description of an MBS flow against TS 29.214 V18.4.0 cl. 5.3.8: RESTRICTION when one of its
+ * restrictions is not respected (source port list or range, an action other than "permit", "options", the
+ * invert modifier, the keyword "assigned", more than one IP flow); MALFORMED when the text is not an
+ * IPFilterRule at all. *detail names the fault. */
+typedef enum smf_nmbsmf_flow_desc_result_e {
+    SMF_NMBSMF_FLOW_DESC_OK = 0,
+    SMF_NMBSMF_FLOW_DESC_RESTRICTION,
+    SMF_NMBSMF_FLOW_DESC_MALFORMED,
+} smf_nmbsmf_flow_desc_result_e;
+
+smf_nmbsmf_flow_desc_result_e smf_nmbsmf_flow_description_check(const char *flow_desc, const char **detail);
+
+/* Every mbsFlowDescs entry of the MBS service information, through the check above. */
+smf_nmbsmf_flow_desc_result_e smf_nmbsmf_mbs_flow_descriptions_check(
     OpenAPI_mbs_service_info_t *mbs_serv_info, const char **detail);
 
 /* Nmbsmf_MBSSession Service - MBS Session Create service operation */

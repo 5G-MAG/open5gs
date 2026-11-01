@@ -390,6 +390,187 @@ bool smf_nmbsmf_mbs_service_info_is_valid(
     return true;
 }
 
+static bool flow_token_is_option(const char *token)
+{
+    static const char *const options[] = {
+        "frag", "ipoptions", "tcpoptions", "established", "setup", "tcpflags", "icmptypes", NULL };
+    int i;
+
+    for (i = 0; options[i]; i++)
+        if (strcmp(token, options[i]) == 0)
+            return true;
+    return false;
+}
+
+/* The address token(s) at tokens[*pos]: "!" (attached, or as a token of its own) and "assigned" are what
+ * cl. 5.3.8 forbids. Returns false when there is no address token. */
+static bool flow_take_address(char **tokens, int count, int *pos, const char **fault)
+{
+    if (*pos < count && strcmp(tokens[*pos], "!") == 0) {
+        *fault = "the invert modifier \"!\" is used for an address";
+        (*pos)++;
+        return *pos < count;
+    }
+    if (*pos >= count)
+        return false;
+    if (tokens[*pos][0] == '!')
+        *fault = "the invert modifier \"!\" is used for an address";
+    else if (strcmp(tokens[*pos], "assigned") == 0)
+        *fault = "the keyword \"assigned\" is used";
+    (*pos)++;
+    return true;
+}
+
+/*
+ * One Flow-Description of the MBS service information against the restrictions of TS 29.214 V18.4.0 cl. 5.3.8.
+ * The IPFilterRule is "action dir proto from src [src port] to dst [dst port] [options]". A restriction that is
+ * not respected is reported first, whichever other fault the description has: the shape of the rule is checked
+ * only as far as it is needed to find the parts the restrictions speak of.
+ */
+smf_nmbsmf_flow_desc_result_e smf_nmbsmf_flow_description_check(const char *flow_desc, const char **detail)
+{
+    char *copy = NULL, *saveptr = NULL, *token;
+    char *tokens[64];
+    int count = 0, pos;
+    const char *fault = NULL;
+    smf_nmbsmf_flow_desc_result_e result = SMF_NMBSMF_FLOW_DESC_OK;
+
+    if (!flow_desc || !*flow_desc) {
+        if (detail)
+            *detail = "a flow description is empty";
+        return SMF_NMBSMF_FLOW_DESC_MALFORMED;
+    }
+
+    copy = ogs_strdup(flow_desc);
+    ogs_assert(copy);
+    for (token = strtok_r(copy, " \t\r\n", &saveptr); token; token = strtok_r(NULL, " \t\r\n", &saveptr)) {
+        if (count == (int)(sizeof(tokens) / sizeof(tokens[0]))) {
+            fault = "the flow description has more than one IP flow";
+            result = SMF_NMBSMF_FLOW_DESC_RESTRICTION;
+            goto done;
+        }
+        tokens[count++] = token;
+    }
+
+    /* action */
+    if (count < 1 || strcmp(tokens[0], "permit") != 0) {
+        if (count >= 1 && (strcmp(tokens[0], "deny") == 0 || strcmp(tokens[0], "!permit") == 0 ||
+                strcmp(tokens[0], "!deny") == 0)) {
+            fault = "the action is not \"permit\"";
+            result = SMF_NMBSMF_FLOW_DESC_RESTRICTION;
+        } else {
+            fault = "the flow description does not start with an action";
+            result = SMF_NMBSMF_FLOW_DESC_MALFORMED;
+        }
+        goto done;
+    }
+
+    /* direction, protocol, "from" */
+    if (count < 4 || (strcmp(tokens[1], "in") != 0 && strcmp(tokens[1], "out") != 0) ||
+            strcmp(tokens[3], "from") != 0) {
+        fault = "the flow description is not \"permit in|out protocol from ... to ...\"";
+        result = SMF_NMBSMF_FLOW_DESC_MALFORMED;
+        goto done;
+    }
+    pos = 4;
+
+    if (!flow_take_address(tokens, count, &pos, &fault)) {
+        fault = "the source address is missing";
+        result = SMF_NMBSMF_FLOW_DESC_MALFORMED;
+        goto done;
+    }
+    {
+        const char *src_fault = fault;
+
+        /* the source port, if there is one: "Lists or ranges shall not be used" */
+        if (pos < count && strcmp(tokens[pos], "to") != 0) {
+            if (strpbrk(tokens[pos], ",-")) {
+                if (!src_fault)
+                    src_fault = "the source port is a list or a range";
+            }
+            pos++;
+        }
+        if (pos >= count || strcmp(tokens[pos], "to") != 0) {
+            fault = src_fault ? src_fault : "the flow description has no \"to\"";
+            result = src_fault ? SMF_NMBSMF_FLOW_DESC_RESTRICTION : SMF_NMBSMF_FLOW_DESC_MALFORMED;
+            goto done;
+        }
+        pos++;
+        fault = src_fault;
+    }
+    {
+        const char *src_fault = fault;
+
+        fault = NULL;
+        if (!flow_take_address(tokens, count, &pos, &fault)) {
+            fault = src_fault ? src_fault : "the destination address is missing";
+            result = src_fault ? SMF_NMBSMF_FLOW_DESC_RESTRICTION : SMF_NMBSMF_FLOW_DESC_MALFORMED;
+            goto done;
+        }
+        if (src_fault)
+            fault = src_fault;
+    }
+    if (fault) {
+        result = SMF_NMBSMF_FLOW_DESC_RESTRICTION;
+        goto done;
+    }
+
+    /* the destination port, then nothing but options (forbidden) or another rule (not a single IP flow) */
+    if (pos < count && tokens[pos][0] >= '0' && tokens[pos][0] <= '9')
+        pos++;
+    if (pos < count) {
+        if (flow_token_is_option(tokens[pos])) {
+            fault = "\"options\" are used";
+            result = SMF_NMBSMF_FLOW_DESC_RESTRICTION;
+        } else if (strcmp(tokens[pos], "permit") == 0 || strcmp(tokens[pos], "deny") == 0) {
+            fault = "the flow description is not a single IP flow";
+            result = SMF_NMBSMF_FLOW_DESC_RESTRICTION;
+        } else {
+            fault = "the flow description has text after the destination";
+            result = SMF_NMBSMF_FLOW_DESC_MALFORMED;
+        }
+    }
+
+done:
+    if (result != SMF_NMBSMF_FLOW_DESC_OK && detail)
+        *detail = fault;
+    ogs_free(copy);
+    return result;
+}
+
+smf_nmbsmf_flow_desc_result_e smf_nmbsmf_mbs_flow_descriptions_check(
+    OpenAPI_mbs_service_info_t *mbs_serv_info, const char **detail)
+{
+    OpenAPI_lnode_t *node, *desc_node;
+    static char message[160];
+
+    if (!mbs_serv_info || !mbs_serv_info->mbs_media_comps)
+        return SMF_NMBSMF_FLOW_DESC_OK;
+
+    OpenAPI_list_for_each(mbs_serv_info->mbs_media_comps, node) {
+        OpenAPI_map_t *pair = (OpenAPI_map_t *)node->data;
+        OpenAPI_mbs_media_comp_rm_t *media_comp = pair ? (OpenAPI_mbs_media_comp_rm_t *)pair->value : NULL;
+
+        if (!media_comp || !media_comp->mbs_flow_descs)
+            continue;
+        OpenAPI_list_for_each(media_comp->mbs_flow_descs, desc_node) {
+            const char *fault = NULL;
+            smf_nmbsmf_flow_desc_result_e result =
+                smf_nmbsmf_flow_description_check((const char *)desc_node->data, &fault);
+
+            if (result != SMF_NMBSMF_FLOW_DESC_OK) {
+                if (detail) {
+                    snprintf(message, sizeof(message), "[mbsFlowDescs] of media component %s: %s",
+                            pair->key ? pair->key : "?", fault ? fault : "not acceptable");
+                    *detail = message;
+                }
+                return result;
+            }
+        }
+    }
+    return SMF_NMBSMF_FLOW_DESC_OK;
+}
+
 /* Nmbsmf_MBSSession Service API */
 
 /*
@@ -516,6 +697,28 @@ bool smf_nmbsmf_handle_mbs_session_create(
             ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
                 message, "Invalid MBS service information", service_info_fault,
                 NMBSMF_MBSSESSION_INVALID_MBS_SERVICE_INFO);
+            rv = OGS_ERROR;
+            goto cleanup;
+        }
+    }
+
+    /* TS 29.532 V18.6.0 table 6.2.7.3-1, FILTER_RESTRICTIONS_NOT_RESPECTED: "the MBS IP flow(s) description provided
+     * within the MBS Service Information cannot be handled due to the restrictions defined in clause 5.3.8 of 3GPP
+     * TS 29.214 [24] not being respected" */
+    {
+        const char *flow_fault = NULL;
+        smf_nmbsmf_flow_desc_result_e flow_result =
+            smf_nmbsmf_mbs_flow_descriptions_check(CreateReqData->mbs_session->mbs_serv_info, &flow_fault);
+
+        if (flow_result != SMF_NMBSMF_FLOW_DESC_OK) {
+            ogs_error("MBS Session Create: flow description: %s", flow_fault);
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST, message,
+                flow_result == SMF_NMBSMF_FLOW_DESC_RESTRICTION ?
+                    "Filter restrictions not respected" : "Invalid MBS service information",
+                flow_fault,
+                flow_result == SMF_NMBSMF_FLOW_DESC_RESTRICTION ?
+                    NMBSMF_MBSSESSION_FILTER_RESTRICTIONS_NOT_RESPECTED :
+                    NMBSMF_MBSSESSION_INVALID_MBS_SERVICE_INFO);
             rv = OGS_ERROR;
             goto cleanup;
         }
@@ -1234,6 +1437,11 @@ bool smf_nmbsmf_handle_mbs_session_patch(smf_mbs_sess_t *mbs_sess,
     case SMF_MBS_UPDATE_ERROR_INPUT_PARAMETERS:
         ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST, message, "Error input parameters",
                 update_detail, NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
+        return false;
+    case SMF_MBS_UPDATE_FILTER_RESTRICTIONS_NOT_RESPECTED:
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST, message,
+                "Filter restrictions not respected", update_detail,
+                NMBSMF_MBSSESSION_FILTER_RESTRICTIONS_NOT_RESPECTED);
         return false;
     case SMF_MBS_UPDATE_INVALID_MBS_SERVICE_INFO:
         ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST, message,

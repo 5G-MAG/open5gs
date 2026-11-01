@@ -795,6 +795,73 @@ static void test_service_info_validity(void)
     CHECK(detail && strstr(detail, "flows") != NULL);
 }
 
+/* TS 29.214 V18.4.0 cl. 5.3.8, Flow-Description AVP: "The Source Port may be omitted to indicate that any source
+ * port is allowed. Lists or ranges shall not be used.", "Only the Action "permit" shall be used.", "No "options"
+ * shall be used.", "The invert modifier "!" for addresses shall not be used.", "The keyword "assigned" shall not
+ * be used.", "the Flow description AVP shall be used to describe a single IP flow." */
+static void test_flow_description_restrictions(void)
+{
+    static const char *const valid[] = {
+        "permit out ip from any to any",
+        "permit out 17 from 10.0.0.1 to 224.0.2.1 5004",
+        "permit in 17 from 10.0.0.1/24 5000 to 224.0.2.1/32 5004",
+        "permit out udp from 2001:db8::1 to ff3e::1 5004-5010",
+        "permit out udp from any to any 5004,5006",
+        "permit out ip from me to any",
+        "permit  out  tcp  from any to any",
+        "permit out tcp from any 80 to any",
+    };
+    static const struct { const char *desc; smf_nmbsmf_flow_desc_result_e result; const char *fault; } bad[] = {
+        { "permit out udp from any 5000-5010 to any 5004", SMF_NMBSMF_FLOW_DESC_RESTRICTION, "source port" },
+        { "permit out udp from any 5000,5002 to any 5004", SMF_NMBSMF_FLOW_DESC_RESTRICTION, "source port" },
+        { "deny out udp from any to any", SMF_NMBSMF_FLOW_DESC_RESTRICTION, "permit" },
+        { "permit out udp from any to any 5004 frag", SMF_NMBSMF_FLOW_DESC_RESTRICTION, "options" },
+        { "permit out tcp from any to any established", SMF_NMBSMF_FLOW_DESC_RESTRICTION, "options" },
+        { "permit out udp from !10.0.0.1 to any", SMF_NMBSMF_FLOW_DESC_RESTRICTION, "invert" },
+        { "permit out udp from any to !224.0.2.1 5004", SMF_NMBSMF_FLOW_DESC_RESTRICTION, "invert" },
+        { "permit out udp from ! 10.0.0.1 to any", SMF_NMBSMF_FLOW_DESC_RESTRICTION, "invert" },
+        { "permit out udp from assigned to any", SMF_NMBSMF_FLOW_DESC_RESTRICTION, "assigned" },
+        { "permit out udp from any to assigned 5004", SMF_NMBSMF_FLOW_DESC_RESTRICTION, "assigned" },
+        { "permit out udp from any to any permit in udp from any to any", SMF_NMBSMF_FLOW_DESC_RESTRICTION, "single" },
+        { "", SMF_NMBSMF_FLOW_DESC_MALFORMED, "empty" },
+        { "allow out udp from any to any", SMF_NMBSMF_FLOW_DESC_MALFORMED, "action" },
+        { "permit sideways udp from any to any", SMF_NMBSMF_FLOW_DESC_MALFORMED, "permit in|out" },
+        { "permit out udp from any", SMF_NMBSMF_FLOW_DESC_MALFORMED, "to" },
+    };
+    OpenAPI_mbs_service_info_t *info;
+    OpenAPI_mbs_media_comp_rm_t *comp;
+    OpenAPI_map_t *pair;
+    const char *detail = NULL;
+    size_t i;
+
+    for (i = 0; i < sizeof(valid) / sizeof(valid[0]); i++) {
+        detail = NULL;
+        CHECK(smf_nmbsmf_flow_description_check(valid[i], &detail) == SMF_NMBSMF_FLOW_DESC_OK);
+    }
+    for (i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        detail = NULL;
+        CHECK(smf_nmbsmf_flow_description_check(bad[i].desc, &detail) == bad[i].result);
+        CHECK(detail && strstr(detail, bad[i].fault) != NULL);
+    }
+
+    /* through the service information: the flow of media component 2 carries the fault */
+    {
+        int five_qis[2] = { 9, 9 };
+
+        info = service_info_with_5qis(five_qis, 2);
+        CHECK(smf_nmbsmf_mbs_flow_descriptions_check(NULL, &detail) == SMF_NMBSMF_FLOW_DESC_OK);
+        CHECK(smf_nmbsmf_mbs_flow_descriptions_check(info, &detail) == SMF_NMBSMF_FLOW_DESC_OK);
+        pair = (OpenAPI_map_t *)info->mbs_media_comps->first->next->data;
+        comp = (OpenAPI_mbs_media_comp_rm_t *)pair->value;
+        comp->mbs_flow_descs = OpenAPI_list_create();
+        OpenAPI_list_add(comp->mbs_flow_descs, ogs_strdup("permit out udp from any to 224.0.2.1 5004"));
+        CHECK(smf_nmbsmf_mbs_flow_descriptions_check(info, &detail) == SMF_NMBSMF_FLOW_DESC_OK);
+        OpenAPI_list_add(comp->mbs_flow_descs, ogs_strdup("permit out udp from any to 224.0.2.1 5004 frag"));
+        CHECK(smf_nmbsmf_mbs_flow_descriptions_check(info, &detail) == SMF_NMBSMF_FLOW_DESC_RESTRICTION);
+        CHECK(detail && strstr(detail, "media component 2") != NULL);
+    }
+}
+
 /* TS 29.244 V18.10.0 cl. 5.34.2.2: "for each MBS QoS flow: a Create PDR ... a Create QER ... (associated with the
  * PDR ...) ...; the IQFISN ... flag in the Create QER IE shall be set to "1" ... a Create FAR ... (associated with
  * the PDR ...)", and table 7.5.2.7-1: the Traffic Endpoint ID that the DL PDR and the endpoint share. */
@@ -1246,6 +1313,18 @@ static void test_update(void)
         CHECK(detail != NULL);
         CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_replace,
                 "/mbsServInfo/mbsMediaComps/2/mbsQoSReq/5qi", "300") == SMF_MBS_UPDATE_INVALID_MBS_SERVICE_INFO);
+        CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_add,
+                "/mbsServInfo/mbsMediaComps/2/mbsFlowDescs",
+                "[\"permit out udp from any 1-9 to any 5004\"]") ==
+                SMF_MBS_UPDATE_FILTER_RESTRICTIONS_NOT_RESPECTED);
+        CHECK(detail && strstr(detail, "source port") != NULL);
+        CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_add,
+                "/mbsServInfo/mbsMediaComps/2/mbsFlowDescs",
+                "[\"permit out udp from any to any 5004 frag\"]") ==
+                SMF_MBS_UPDATE_FILTER_RESTRICTIONS_NOT_RESPECTED);
+        CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_add,
+                "/mbsServInfo/mbsMediaComps/2/mbsFlowDescs", "[\"nonsense\"]") ==
+                SMF_MBS_UPDATE_INVALID_MBS_SERVICE_INFO);
         CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_replace, "/mbsServiceArea",
                 "{\"taiList\":[{\"tac\":\"1\"}]}") == SMF_MBS_UPDATE_ERROR_INPUT_PARAMETERS);
         CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_add, "/mbsFsaIdList",
@@ -1256,6 +1335,11 @@ static void test_update(void)
         CHECK(flow_of(mbs_sess, "2")->five_qi == 7);
         CHECK(ogs_list_empty(&mbs_sess->mbs_fsa_id_list) && !mbs_sess->has_contact_pcf_ind);
     }
+
+    /* a valid flow description is accepted */
+    CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_add,
+            "/mbsServInfo/mbsMediaComps/2/mbsFlowDescs", "[\"permit out udp from any to 224.0.2.1 5004\"]") ==
+            SMF_MBS_UPDATE_OK);
 
     /* the FSA IDs and contactPcfInd */
     CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_add, "/mbsFsaIdList",
@@ -2153,6 +2237,7 @@ int main(void)
     test_context_create_optional_ids();
     test_date_time();
     test_service_info_validity();
+    test_flow_description_restrictions();
     test_per_flow_user_plane();
     test_json_patch();
     test_update();

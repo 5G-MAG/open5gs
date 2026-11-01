@@ -616,6 +616,20 @@ smf_mbs_update_result_e smf_mbs_sess_update(smf_mbs_sess_t *mbs_sess, OpenAPI_li
                 result = SMF_MBS_UPDATE_INVALID_MBS_SERVICE_INFO;
                 goto done;
             }
+            switch (smf_nmbsmf_mbs_flow_descriptions_check(api_serv_info, &fault)) {
+            case SMF_NMBSMF_FLOW_DESC_OK:
+                break;
+            case SMF_NMBSMF_FLOW_DESC_RESTRICTION:
+                if (detail)
+                    *detail = fault;
+                result = SMF_MBS_UPDATE_FILTER_RESTRICTIONS_NOT_RESPECTED;
+                goto done;
+            default:
+                if (detail)
+                    *detail = fault;
+                result = SMF_MBS_UPDATE_INVALID_MBS_SERVICE_INFO;
+                goto done;
+            }
         }
         serv_info_json = cJSON_PrintUnformatted(member);
     }
