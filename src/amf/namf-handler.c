@@ -2361,6 +2361,11 @@ int amf_namf_handle_mbs_broadcast_context_create(
         }
     }
 
+    // TS 23.527 V18.6.0 cl. 8.3.2.2 step 1: the AMF keeps the last N2 MBS SM container, for the restoration of the
+    // session in an NG-RAN.
+    if (!amf_mbs_context_store_n2_container(mbs_context, n2mbssmbuf))
+        ogs_warn("MBS Broadcast ContextCreate: the N2 MBS SM container could not be kept for restoration");
+
     // NGAP BROADCAST SESSION SETUP REQUEST message with MBS Session Setup or Modification Request Transfer IE
     n2msgreq = ngap_build_broadcast_session_setup_request(mbs_context, n2mbssmbuf);
 
@@ -2699,6 +2704,11 @@ int amf_namf_handle_mbs_broadcast_context_update(
         rv = OGS_ERROR;
         goto cleanup;
     }
+
+    // TS 23.527 V18.6.0 cl. 8.3.2.2 step 1: the AMF keeps the last N2 MBS SM container, from the establishment or
+    // from an update.
+    if (n2mbssmbuf && !amf_mbs_context_store_n2_container(mbs_context, n2mbssmbuf))
+        ogs_warn("MBS Broadcast ContextUpdate: the N2 MBS SM container could not be kept for restoration");
 
     // notifyUri (O): "if the NF Service Consumer wishes to modify the notification URI".
     if (ContextUpdateReqData->notify_uri) {

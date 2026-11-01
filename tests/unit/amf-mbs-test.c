@@ -521,6 +521,33 @@ static void test_transport_relay(void)
     ogs_free(other);
 }
 
+/* TS 23.527 V18.6.0 cl. 8.3.2.2 step 1: "The AMF stores the last N2 MBS SM container (i.e. MBS Session Setup or
+ * Modification Request Transfer IE defined in 3GPP TS 38.413 [11]) received from the MB-SMF during the establishment of
+ * the broadcast MBS session or during a broadcast MBS session update." */
+static void test_store_n2_container(void)
+{
+    static const uint8_t first[] = { 0x01, 0x02, 0x03 }, second[] = { 0x09 };
+    amf_mbs_context_t ctx = make_context();
+    ogs_pkbuf_t *a = ogs_pkbuf_alloc(NULL, sizeof(first)), *b = ogs_pkbuf_alloc(NULL, sizeof(second));
+
+    ogs_pkbuf_put_data(a, first, sizeof(first));
+    ogs_pkbuf_put_data(b, second, sizeof(second));
+
+    CHECK(ctx.n2_mbs_sm_request == NULL);
+    CHECK(amf_mbs_context_store_n2_container(&ctx, a));
+    CHECK(ctx.n2_mbs_sm_request != NULL && ctx.n2_mbs_sm_request != a);
+    CHECK(ctx.n2_mbs_sm_request && ctx.n2_mbs_sm_request->len == 3 && ctx.n2_mbs_sm_request->data[2] == 0x03);
+
+    /* the later container replaces the earlier one, and the copy does not depend on the source */
+    ogs_pkbuf_free(a);
+    CHECK(ctx.n2_mbs_sm_request->data[0] == 0x01);
+    CHECK(amf_mbs_context_store_n2_container(&ctx, b));
+    CHECK(ctx.n2_mbs_sm_request && ctx.n2_mbs_sm_request->len == 1 && ctx.n2_mbs_sm_request->data[0] == 0x09);
+
+    ogs_pkbuf_free(ctx.n2_mbs_sm_request);
+    ogs_pkbuf_free(b);
+}
+
 int main(int argc, const char *argv[])
 {
     ogs_pkbuf_config_t config;
@@ -541,6 +568,7 @@ int main(int argc, const char *argv[])
     test_status_notify();
     test_transport_messages();
     test_transport_relay();
+    test_store_n2_container();
 
     ogs_sbi_message_final();
     ogs_pkbuf_default_destroy();

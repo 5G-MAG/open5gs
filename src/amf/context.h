@@ -969,6 +969,15 @@ typedef struct amf_mbs_context_s {
     ogs_list_t involved_gnb_list;
 
     /*
+     * The last N2 MBS SM container (the MBS Session Setup or Modification Request Transfer IE) received from the
+     * MB-SMF, in a ContextCreate or in a ContextUpdate that carried one. TS 23.527 V18.6.0 cl. 8.3.2.2 step 1:
+     * "The AMF stores the last N2 MBS SM container (i.e. MBS Session Setup or Modification Request Transfer IE
+     * defined in 3GPP TS 38.413 [11]) received from the MB-SMF during the establishment of the broadcast MBS session
+     * or during a broadcast MBS session update." NULL until one has been stored.
+     */
+    ogs_pkbuf_t *n2_mbs_sm_request;
+
+    /*
      * The maximum response time of the ContextCreate or ContextUpdate in progress (TS 29.518 V18.14.0 cl. 5.6.2.2:
      * "since the reception of the Namf_MBSBroadcast_ContextCreate Request"): armed only when the request carried
      * maxResponseTime. response_deadline guards against an event of a timer that was stopped or of a context
@@ -1164,6 +1173,7 @@ amf_mbs_n2_info_t *amf_mbs_n2_info_create(amf_gnb_t *gnb,
         OpenAPI_ngap_ie_type_e ngap_ie_type, const uint8_t *transfer, size_t transfer_len);
 void amf_mbs_context_involve_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *gnb);
 amf_mbs_gnb_t *amf_mbs_context_find_involved_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *gnb);
+bool amf_mbs_context_store_n2_container(amf_mbs_context_t *amf_mbs_context, const ogs_pkbuf_t *container);
 void amf_mbs_n2_info_free(amf_mbs_n2_info_t *n2_info);
 void amf_mbs_n2_info_remove_all(ogs_list_t *n2_info_list);
 

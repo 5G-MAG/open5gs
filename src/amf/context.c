@@ -122,6 +122,31 @@ amf_mbs_gnb_t *amf_mbs_context_find_involved_gnb(amf_mbs_context_t *amf_mbs_cont
     return NULL;
 }
 
+/*
+ * Keeps a copy of \p container as the last N2 MBS SM container of the context (TS 23.527 V18.6.0 cl. 8.3.2.2 step 1),
+ * replacing the one held. Returns false, and keeps the one held, when the copy cannot be made.
+ */
+bool amf_mbs_context_store_n2_container(amf_mbs_context_t *amf_mbs_context, const ogs_pkbuf_t *container)
+{
+    ogs_pkbuf_t *copy = NULL;
+
+    ogs_assert(amf_mbs_context);
+    ogs_assert(container);
+
+    copy = ogs_pkbuf_alloc(NULL, container->len);
+    if (!copy) {
+        ogs_error("ogs_pkbuf_alloc() failed");
+        return false;
+    }
+    ogs_pkbuf_put_data(copy, container->data, container->len);
+
+    if (amf_mbs_context->n2_mbs_sm_request)
+        ogs_pkbuf_free(amf_mbs_context->n2_mbs_sm_request);
+    amf_mbs_context->n2_mbs_sm_request = copy;
+
+    return true;
+}
+
 /* \p n2_info must not be on a list */
 void amf_mbs_n2_info_free(amf_mbs_n2_info_t *n2_info)
 {
@@ -3226,6 +3251,8 @@ void amf_mbs_context_remove(amf_mbs_context_t *amf_mbs_context)
     if (amf_mbs_context->mbs_service_area)
         ogs_mbs_service_area_free(amf_mbs_context->mbs_service_area);
     amf_mbs_n2_info_remove_all(&amf_mbs_context->pending_n2_info_list);
+    if (amf_mbs_context->n2_mbs_sm_request)
+        ogs_pkbuf_free(amf_mbs_context->n2_mbs_sm_request);
     {
         amf_mbs_gnb_t *involved = NULL, *next = NULL;
 
