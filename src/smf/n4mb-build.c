@@ -63,6 +63,8 @@ ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
     uint8_t mbs_session_identifier_buf[sizeof(ogs_pfcp_mbs_session_identifier_t)];
     ogs_pfcp_mbsn4mbreq_flags_t mbsn4mbreq_flags;
     ogs_pfcp_local_ingress_tunnel_t local_ingress_tunnel;
+    uint8_t qer_indications = 0x01;    /* IQFISN */
+    uint8_t traffic_endpoint_id = 1;
 
     ogs_debug("N4mb Session Establishment Request");
 
@@ -122,6 +124,12 @@ ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
     i = 0;
     ogs_list_for_each(&mbs_sess->pfcp.qer_list, qer) {
         ogs_pfcp_build_create_qer(&req->create_qer[i], i, qer);
+        /* TS 29.244 V18.10.0 cl. 5.34.2.2: "the IQFISN (Insert DL MBS QFI Sequence Number) flag in the Create QER
+         * IE shall be set to "1" to request the MB-UPF to insert the DL MBS QFI Sequence Number in the PDU session
+         * container in user plane packets"; cl. 8.2.216: "Bit 1 - IQFISN" of octet 5. */
+        req->create_qer[i].qer_indications.presence = 1;
+        req->create_qer[i].qer_indications.data = &qer_indications;
+        req->create_qer[i].qer_indications.len = sizeof(qer_indications);
         i++;
     }
 
@@ -165,6 +173,22 @@ ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
             req->create_traffic_endpoint.local_ingress_tunnel.len = len;
         } else {
             ogs_warn("Couldn't add Local Ingress Tunnel address to PFCP request");
+        }
+    }
+
+    /* TS 29.244 V18.10.0 table 7.5.2.7-1: "Traffic Endpoint ID | M | This IE shall uniquely identify the Traffic
+     * Endpoint for that PFCP session." and "Local Ingress Tunnel | C | This IE shall be present over N4mb ...
+     * if Traffic Endpoint ID is present in the DL PDR." One endpoint carries the single ingress tunnel of the
+     * session (cl. 5.34.2.2: "the MB-UPF shall assign a single ingress tunnel address, regardless of the
+     * number of MBS QoS flows"); every DL PDR refers to it. */
+    if (req->create_traffic_endpoint.presence) {
+        req->create_traffic_endpoint.traffic_endpoint_id.presence = 1;
+        req->create_traffic_endpoint.traffic_endpoint_id.data = &traffic_endpoint_id;
+        req->create_traffic_endpoint.traffic_endpoint_id.len = sizeof(traffic_endpoint_id);
+        for (i = 0; i < OGS_MAX_NUM_OF_PDR && req->create_pdr[i].presence; i++) {
+            req->create_pdr[i].pdi.traffic_endpoint_id.presence = 1;
+            req->create_pdr[i].pdi.traffic_endpoint_id.data = &traffic_endpoint_id;
+            req->create_pdr[i].pdi.traffic_endpoint_id.len = sizeof(traffic_endpoint_id);
         }
     }
 

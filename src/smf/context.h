@@ -791,7 +791,9 @@ smf_mbs_sess_t *smf_mbs_sess_find_by_mbs_session_ref(char *mbs_session_ref);
 smf_mbs_sess_t *smf_mbs_sess_find_by_seid(uint64_t seid);
 smf_mbs_sess_t *smf_mbs_sess_find_by_tmgi(ogs_tmgi_t *tmgi_to_find);
 void smf_mbs_sess_select_upf(smf_mbs_sess_t *mbs_sess);
-void smf_mbs_sess_create_mbs_data_forwarding(smf_mbs_sess_t *mbs_sess);
+/* Provisions the user plane of the session: a PDR, a FAR and a QER for each MBS QoS flow. Returns false, with
+ * nothing provisioned, when there are more flows than the QERs of a PFCP session (OGS_MAX_NUM_OF_QER). */
+bool smf_mbs_sess_create_mbs_data_forwarding(smf_mbs_sess_t *mbs_sess);
 
 bool smf_context_have_matching_mbs_session_id(smf_mbs_sess_t *mbs_session);
 

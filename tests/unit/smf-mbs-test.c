@@ -790,6 +790,92 @@ static void test_service_info_validity(void)
     CHECK(detail && strstr(detail, "flows") != NULL);
 }
 
+/* TS 29.244 V18.10.0 cl. 5.34.2.2: "for each MBS QoS flow: a Create PDR ... a Create QER ... (associated with the
+ * PDR ...) ...; the IQFISN ... flag in the Create QER IE shall be set to "1" ... a Create FAR ... (associated with
+ * the PDR ...)", and table 7.5.2.7-1: the Traffic Endpoint ID that the DL PDR and the endpoint share. */
+static void test_per_flow_user_plane(void)
+{
+    char *expiration = smf_tmgi_gen_expiration_time(60);
+    ogs_tmgi_t *tmgi = smf_tmgi_allocate(expiration);
+    smf_mbs_sess_t *mbs_sess;
+    ogs_pfcp_message_t *msg;
+    ogs_pfcp_session_establishment_request_t *req;
+    int i;
+
+    ogs_free(expiration);
+    CHECK(tmgi != NULL);
+    if (!tmgi) return;
+    mbs_sess = smf_mbs_sess_create(tmgi, true, NULL, "BROADCAST", NULL, NULL, false, NULL);
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+    ogs_list_init(&mbs_sess->mbs_qos_flow_list);
+    ogs_list_init(&mbs_sess->mbs_fsa_id_list);
+    for (i = 0; i < 3; i++) {
+        smf_mbs_qos_flow_t *flow = ogs_calloc(1, sizeof(*flow));
+        flow->qfi = i + 1;
+        flow->five_qi = 9;
+        ogs_list_add(&mbs_sess->mbs_qos_flow_list, flow);
+    }
+    {
+        ogs_pfcp_node_t *node = NULL;
+        ogs_list_for_each(&ogs_pfcp_self()->pfcp_peer_list, node)
+            memcpy(&node->addr, node->sa_list, sizeof(node->addr));
+    }
+    mbs_sess->ingress_tun_addr_req = true;
+    CHECK(smf_mbs_sess_create_mbs_data_forwarding(mbs_sess));
+
+    msg = build_and_parse_establishment(mbs_sess);
+    CHECK(msg != NULL);
+    if (msg) {
+        req = &msg->pfcp_session_establishment_request;
+        for (i = 0; i < 3; i++) {
+            CHECK(req->create_pdr[i].presence);
+            CHECK(req->create_far[i].presence);
+            CHECK(req->create_qer[i].presence);
+            /* the QER of flow i carries QFI i+1 and IQFISN */
+            CHECK(req->create_qer[i].qos_flow_identifier.presence &&
+                    req->create_qer[i].qos_flow_identifier.u8 == i + 1);
+            CHECK(req->create_qer[i].qer_indications.presence &&
+                    req->create_qer[i].qer_indications.len == 1 &&
+                    (*(uint8_t *)req->create_qer[i].qer_indications.data & 0x01));
+            /* the PDR refers to its own QER and FAR, to the endpoint */
+            CHECK(req->create_pdr[i].qer_id.presence && req->create_qer[i].qer_id.presence &&
+                    req->create_pdr[i].qer_id.u32 == req->create_qer[i].qer_id.u32);
+            CHECK(req->create_pdr[i].far_id.presence && req->create_far[i].far_id.presence &&
+                    req->create_pdr[i].far_id.u32 == req->create_far[i].far_id.u32);
+            CHECK(req->create_pdr[i].pdi.traffic_endpoint_id.presence &&
+                    *(uint8_t *)req->create_pdr[i].pdi.traffic_endpoint_id.data == 1);
+        }
+        CHECK(!req->create_pdr[3].presence && !req->create_far[3].presence && !req->create_qer[3].presence);
+        CHECK(req->create_traffic_endpoint.presence);
+        CHECK(req->create_traffic_endpoint.traffic_endpoint_id.presence &&
+                *(uint8_t *)req->create_traffic_endpoint.traffic_endpoint_id.data == 1);
+        CHECK(req->create_traffic_endpoint.local_ingress_tunnel.presence);
+        /* distinct ids */
+        CHECK(req->create_qer[0].qer_id.u32 != req->create_qer[1].qer_id.u32);
+        CHECK(req->create_pdr[0].pdr_id.u16 != req->create_pdr[1].pdr_id.u16);
+    }
+    smf_mbs_sess_release(mbs_sess);
+
+    /* more flows than a PFCP session has QERs: refused, nothing provisioned */
+    tmgi = smf_tmgi_allocate(smf_tmgi_gen_expiration_time(60));
+    CHECK(tmgi != NULL);
+    if (!tmgi) return;
+    mbs_sess = smf_mbs_sess_create(tmgi, true, NULL, "BROADCAST", NULL, NULL, false, NULL);
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+    ogs_list_init(&mbs_sess->mbs_qos_flow_list);
+    ogs_list_init(&mbs_sess->mbs_fsa_id_list);
+    for (i = 0; i < OGS_MAX_NUM_OF_QER + 1; i++) {
+        smf_mbs_qos_flow_t *flow = ogs_calloc(1, sizeof(*flow));
+        flow->qfi = i + 1;
+        ogs_list_add(&mbs_sess->mbs_qos_flow_list, flow);
+    }
+    CHECK(!smf_mbs_sess_create_mbs_data_forwarding(mbs_sess));
+    CHECK(ogs_list_empty(&mbs_sess->pfcp.pdr_list));
+    smf_mbs_sess_release(mbs_sess);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -809,6 +895,7 @@ int main(void)
     test_context_create_optional_ids();
     test_date_time();
     test_service_info_validity();
+    test_per_flow_user_plane();
 
     printf("smf-mbs: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;

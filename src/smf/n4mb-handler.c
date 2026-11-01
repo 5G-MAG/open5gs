@@ -27,6 +27,26 @@
 
 static const char *_pfcp_cause_to_problem_cause(uint8_t pfcp_cause);
 
+static void _set_ingress_tunnel(smf_mbs_sess_t *mbs_sess, ogs_pfcp_local_ingress_tunnel_t *lit)
+{
+    ogs_assert(mbs_sess);
+    ogs_assert(lit);
+
+    if (mbs_sess->ingress_tun_addr) {
+        ogs_freeaddrinfo(mbs_sess->ingress_tun_addr);
+        mbs_sess->ingress_tun_addr = NULL;
+    }
+    if (lit->ipv4) {
+        char address[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &lit->addr, address, sizeof(address));
+        ogs_addaddrinfo(&mbs_sess->ingress_tun_addr, AF_INET, address, htons(lit->port), 0);
+    } else if (lit->ipv6) {
+        char address[INET6_ADDRSTRLEN];
+        inet_ntop(AF_INET6, &lit->addr6, address, sizeof(address));
+        ogs_addaddrinfo(&mbs_sess->ingress_tun_addr, AF_INET6, address, htons(lit->port), 0);
+    }
+}
+
 // The northbound request of a session that cannot be established has been answered with an error: the session must
 // not stay in the tables. A MB-UPF that accepted the request holds a session the MB-SMF will not use, so it is deleted
 // (the deletion response releases the local session); otherwise the session is released now.
@@ -132,24 +152,20 @@ uint8_t smf_n4mb_handle_session_establishment_response(
             break;
     }
 
-    if (rsp->created_traffic_endpoint.presence) {
-        ogs_debug("Got Created Traffic Endpoint");
-        if (rsp->created_traffic_endpoint.local_ingress_tunnel.presence) {
-            ogs_debug("Got Local Ingress Tunnel");
-            ogs_pfcp_local_ingress_tunnel_t *lit =
-                        (ogs_pfcp_local_ingress_tunnel_t*)rsp->created_traffic_endpoint.local_ingress_tunnel.data;
-            if (mbs_sess->ingress_tun_addr) {
-                ogs_freeaddrinfo(mbs_sess->ingress_tun_addr);
-                mbs_sess->ingress_tun_addr = NULL;
-            }
-            if (lit->ipv4) {
-                char address[INET_ADDRSTRLEN];
-                inet_ntop(AF_INET, &lit->addr, address, sizeof(address));
-                ogs_addaddrinfo(&mbs_sess->ingress_tun_addr, AF_INET, address, htons(lit->port), 0);
-            } else if (lit->ipv6) {
-                char address[INET6_ADDRSTRLEN];
-                inet_ntop(AF_INET6, &lit->addr6, address, sizeof(address));
-                ogs_addaddrinfo(&mbs_sess->ingress_tun_addr, AF_INET6, address, htons(lit->port), 0);
+    /* TS 29.244 V18.10.0 tables 7.5.3.2 and 7.5.3.5: "If the UP function allocates the Local Ingress Tunnel, this
+     * IE shall be present and shall contain the Local Ingress Tunnel to be used for this PDR." (Created PDR) and
+     * the same for the Created Traffic Endpoint: it is read from the endpoint when the request used one, else
+     * from a Created PDR. */
+    if (rsp->created_traffic_endpoint.presence &&
+            rsp->created_traffic_endpoint.local_ingress_tunnel.presence) {
+        ogs_debug("Got Local Ingress Tunnel in the Created Traffic Endpoint");
+        _set_ingress_tunnel(mbs_sess, rsp->created_traffic_endpoint.local_ingress_tunnel.data);
+    } else {
+        for (i = 0; i < OGS_MAX_NUM_OF_PDR && rsp->created_pdr[i].presence; i++) {
+            if (rsp->created_pdr[i].local_ingress_tunnel.presence) {
+                ogs_debug("Got Local Ingress Tunnel in a Created PDR");
+                _set_ingress_tunnel(mbs_sess, rsp->created_pdr[i].local_ingress_tunnel.data);
+                break;
             }
         }
     }

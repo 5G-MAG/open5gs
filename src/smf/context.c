@@ -4186,7 +4186,8 @@ void smf_mbs_sess_select_upf(smf_mbs_sess_t *mbs_sess)
     OGS_SETUP_PFCP_NODE(mbs_sess, ogs_pfcp_self()->pfcp_node);
 }
 
-void smf_mbs_sess_create_mbs_data_forwarding(smf_mbs_sess_t *mbs_sess)
+/* The downlink PDR, FAR and QER of one MBS QoS flow (see below). precedence is the ordinal of the flow. */
+static void smf_mbs_sess_add_flow_forwarding(smf_mbs_sess_t *mbs_sess, uint8_t qfi, uint32_t precedence)
 {
     ogs_pfcp_pdr_t *dl_pdr = NULL;
     ogs_pfcp_far_t *dl_far = NULL;
@@ -4194,31 +4195,11 @@ void smf_mbs_sess_create_mbs_data_forwarding(smf_mbs_sess_t *mbs_sess)
 
     ogs_assert(mbs_sess);
 
-    smf_mbs_sess_select_upf(mbs_sess);
-
-    // Check the selected UPF is associated with SMF
-    ogs_assert(mbs_sess->pfcp_node);
-    if (!OGS_FSM_CHECK(&mbs_sess->pfcp_node->sm, smf_pfcp_state_associated)) {
-        ogs_error("No existing PFCP association");
-    }
-
-    // Add the UPF N3mb address to the MBS Session
-    if (mbs_sess->pfcp_node->addr.ogs_sa_family == AF_INET)
-        ogs_assert(OGS_OK ==
-            ogs_copyaddrinfo(
-                &mbs_sess->upf_n3mb_addr, &mbs_sess->pfcp_node->addr));
-    else if (mbs_sess->pfcp_node->addr.ogs_sa_family == AF_INET6)
-        ogs_assert(OGS_OK ==
-            ogs_copyaddrinfo(
-                &mbs_sess->upf_n3mb_addr6, &mbs_sess->pfcp_node->addr));
-    else
-        ogs_assert_if_reached();
-
-    // Creating downlink PDR and FAR
     /* DL PDR */
     dl_pdr = ogs_pfcp_pdr_add(&mbs_sess->pfcp);
     ogs_assert(dl_pdr);
     dl_pdr->src_if = OGS_PFCP_INTERFACE_CORE;
+    dl_pdr->precedence = precedence;
 
     // For the PDR in MBS
     if (mbs_sess->ssm) {
@@ -4287,13 +4268,60 @@ void smf_mbs_sess_create_mbs_data_forwarding(smf_mbs_sess_t *mbs_sess)
         // the UPF emits for a broadcast or multicast session lacks that mandatory header and a gNB rejects it
         // ("Incomplete PDU at NG-U interface: missing or invalid PDU session container").
         //
-        // Nothing upstream of this function models a per-flow QoS profile for MBS: no AF-supplied 5QI and no QFI
-        // pool for mbs_sess. A single fixed QFI is used, which is correct for the single-flow broadcast delivery
-        // this stack supports. Unicast flows get theirs from smf_qos_flow_add().
+        // TS 29.244 V18.10.0 cl. 5.34.2.2, "for each MBS QoS flow": a Create PDR with its PDI, a Create QER
+        // "instructing the MB-UPF to insert the QFI of the MBS QoS flow in user plane packets" and a Create FAR,
+        // the QER and the FAR associated with the PDR. This is that set for one flow, with the QFI of the flow.
     dl_qer = ogs_pfcp_qer_add(&mbs_sess->pfcp);
     ogs_assert(dl_qer);
-    dl_qer->qfi = 1;
+    dl_qer->qfi = qfi;
     ogs_pfcp_pdr_associate_qer(dl_pdr, dl_qer);
+}
+
+
+bool smf_mbs_sess_create_mbs_data_forwarding(smf_mbs_sess_t *mbs_sess)
+{
+    smf_mbs_qos_flow_t *flow = NULL;
+    uint32_t ordinal = 0;
+
+    ogs_assert(mbs_sess);
+
+    if (ogs_list_count(&mbs_sess->mbs_qos_flow_list) > OGS_MAX_NUM_OF_QER) {
+        ogs_error("%d MBS QoS flows exceed the %d QERs of a PFCP session", ogs_list_count(&mbs_sess->mbs_qos_flow_list),
+                OGS_MAX_NUM_OF_QER);
+        return false;
+    }
+
+    smf_mbs_sess_select_upf(mbs_sess);
+
+    // Check the selected UPF is associated with SMF
+    ogs_assert(mbs_sess->pfcp_node);
+    if (!OGS_FSM_CHECK(&mbs_sess->pfcp_node->sm, smf_pfcp_state_associated)) {
+        ogs_error("No existing PFCP association");
+    }
+
+    // Add the UPF N3mb address to the MBS Session
+    if (mbs_sess->pfcp_node->addr.ogs_sa_family == AF_INET)
+        ogs_assert(OGS_OK ==
+            ogs_copyaddrinfo(
+                &mbs_sess->upf_n3mb_addr, &mbs_sess->pfcp_node->addr));
+    else if (mbs_sess->pfcp_node->addr.ogs_sa_family == AF_INET6)
+        ogs_assert(OGS_OK ==
+            ogs_copyaddrinfo(
+                &mbs_sess->upf_n3mb_addr6, &mbs_sess->pfcp_node->addr));
+    else
+        ogs_assert_if_reached();
+
+    // TS 29.244 V18.10.0 cl. 5.34.2.2: "for each MBS QoS flow: a Create PDR ... a Create QER ... a Create FAR".
+    // A session whose request carried no QoS requirement (the handler always adds one) has the one flow QFI 1.
+    if (ogs_list_empty(&mbs_sess->mbs_qos_flow_list)) {
+        smf_mbs_sess_add_flow_forwarding(mbs_sess, 1, 0);
+        return true;
+    }
+
+    ogs_list_for_each(&mbs_sess->mbs_qos_flow_list, flow)
+        smf_mbs_sess_add_flow_forwarding(mbs_sess, flow->qfi, ordinal++);
+
+    return true;
 }
 
 static int smf_mbs_sess_list_delete_hash_entry(void *rec, const void *key, int klen, const void *value)

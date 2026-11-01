@@ -894,7 +894,19 @@ bool smf_nmbsmf_handle_mbs_session_create(
      * Send PFCP N4mb Session Establishment Request to the UPF
      *********************************************************************/
 
-    smf_mbs_sess_create_mbs_data_forwarding(mbs_sess);
+    if (!smf_mbs_sess_create_mbs_data_forwarding(mbs_sess)) {
+        /* The request is valid but this MB-SMF provisions at most OGS_MAX_NUM_OF_QER QoS flows per MBS session
+         * over N4mb (one QER each, in a PFCP message that holds that many). TS 29.500 V18.10.0 table 5.2.7.2-1,
+         * row INSUFFICIENT_RESOURCES, "500 Internal Server Error": "The request is rejected due to insufficient
+         * resources." */
+        ogs_error("MBS Session Create: more MBS QoS flows than can be provisioned over N4mb");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+            message, "Insufficient resources", "MBS Session Create failed, too many MBS QoS flows for this MB-SMF",
+            NMBSMF_MBSSESSION_INSUFFICIENT_RESOURCES);
+        smf_mbs_sess_release(mbs_sess);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
 
     smf_5gc_pfcp_n4mb_send_session_establishment_request(mbs_sess, 0, stream);
 
