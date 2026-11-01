@@ -154,6 +154,8 @@ typedef struct upf_mbs_sess_s {
     } smf_n4mb_f_seid;      /* SMF N4mb SEID is received from Peer */
 
     ogs_mbs_session_id_t mbs_session_id;
+    bool area_session_id_presence;  /* location dependent MBS service: the session is of one service area */
+    uint16_t area_session_id;
     char *service_type;
 
     ogs_pfcp_sess_t pfcp;   /* PFCP session context */

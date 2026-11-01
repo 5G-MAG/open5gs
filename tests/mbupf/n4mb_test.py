@@ -759,6 +759,19 @@ def t_U03_14_range_and_any_flags():
         U.delete(s)
 
 
+@test
+def t_U02_7_area_session_id():
+    area = ie(314, b'\x01\x2c')
+    s = accepted(U.establish(replace_ie(good(cp_seid=0xa001), T_N4MB_CTRL, n4mb_ctrl(extra=(area,)))), 'with an Area Session ID')
+    assert 'Area Session ID [300]' in U.log_text(), 'Area Session ID not read'
+    U.delete(s)
+    for name, v in (('1 octet', b'\x01'), ('3 octets', b'\x00\x01\x2c'), ('empty', b'')):
+        r = U.establish(replace_ie(good(cp_seid=0xa002), T_N4MB_CTRL, n4mb_ctrl(extra=(ie(314, v),))))
+        assert r and cause(r) == CAUSE_INVALID_LENGTH, '%s: cause %s' % (name, cause(r) if r else None)
+        assert offending(r) == 314, '%s: offending IE %s' % (name, offending(r))
+    accepted_and_deleted(U.establish(good(cp_seid=0xa003)), 'after the rejections')
+
+
 # E-TESTS-BELOW
 
 

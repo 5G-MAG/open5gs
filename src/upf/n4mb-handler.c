@@ -347,6 +347,15 @@ bool upf_n4mb_check_session_establishment_request(
     }
 
     if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED &&
+            req->mbs_session_n4mb_control_information.area_session_id.presence &&
+            req->mbs_session_n4mb_control_information.area_session_id.len != 2) {
+        /* TS 29.244 cl. 8.2.213: "Length = 2" */
+        ogs_error("Area Session ID length %u", req->mbs_session_n4mb_control_information.area_session_id.len);
+        cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
+        offending_ie_value = OGS_PFCP_AREA_SESSION_ID_TYPE;
+    }
+
+    if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED &&
             req->mbs_session_n4mb_control_information.mbs_session_identifier.presence) {
         ogs_pfcp_mbs_session_identifier_t mbs_session_identifier;
 
@@ -636,6 +645,16 @@ void upf_n4mb_handle_session_establishment_request(
                     ogs_debug("MBS Session Identifier: NID [%s]", nid);
                 }
             }
+        }
+
+        // Area Session ID IE: with the MBS Session Identifier it identifies the service area part of a
+        // location dependent MBS service (TS 29.244 cl. 8.2.213); this PFCP session is that part.
+        if (req->mbs_session_n4mb_control_information.area_session_id.presence) {
+            uint8_t *v = req->mbs_session_n4mb_control_information.area_session_id.data;
+
+            mbs_sess->area_session_id_presence = true;
+            mbs_sess->area_session_id = (uint16_t)((v[0] << 8) | v[1]);
+            ogs_debug("MBS session Area Session ID [%u]", mbs_sess->area_session_id);
         }
 
         // MBSN4mbReq-Flags IE
