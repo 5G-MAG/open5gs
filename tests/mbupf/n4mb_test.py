@@ -220,8 +220,8 @@ def far(far_id=1, apply=0x0008, params=True, drop=(), mc_extra=()):
     return ie(T_CREATE_FAR, parts)
 
 
-def qer(qer_id=1):
-    return ie(T_CREATE_QER, [ie(T_QER_ID, struct.pack('>I', qer_id)), ie(T_GATE, b'\x00'), ie(T_QFI, b'\x01')])
+def qer(qer_id=1, gate=0):
+    return ie(T_CREATE_QER, [ie(T_QER_ID, struct.pack('>I', qer_id)), ie(T_GATE, bytes([gate])), ie(T_QFI, b'\x01')])
 
 
 def lit_choose(v4=True, v6=False):
@@ -1016,6 +1016,30 @@ def t_U06_5_transport_level_marking_and_network_instance():
     # a Network Instance is accepted
     ni = ie(T_NET_INST, b'\x03mbs')
     accepted_and_deleted(U.establish(replace_ie(mc_request(0xc014, b'\x02' + V4G, None), T_CREATE_FAR, far(mc_extra=(ni,)))), 'with a Network Instance')
+
+
+@test
+def t_U13_4_closed_downlink_gate_discards():
+    # DL gate (bits 2 to 1) closed = 1
+    r = U.establish(replace_ie(mc_request(0xd001, b'\x02' + V4G, None), T_CREATE_QER, qer(gate=0x01)))
+    s = accepted(r, 'closed DL gate')
+    lst = N3mbListener(mc_group_of(r))
+    try:
+        send_multicast('10.46.0.1', '232.1.1.1')
+        assert not inner_payload_seen(lst.packets()), 'data forwarded through a closed downlink gate'
+    finally:
+        lst.close()
+        U.delete(s)
+    # only the uplink gate closed (bits 4 to 3 = 1): downlink traffic flows
+    r = U.establish(replace_ie(mc_request(0xd002, b'\x02' + V4G, None), T_CREATE_QER, qer(gate=0x04)))
+    s = accepted(r, 'closed UL gate')
+    lst = N3mbListener(mc_group_of(r))
+    try:
+        send_multicast('10.46.0.1', '232.1.1.1')
+        assert inner_payload_seen(lst.packets()), 'an open downlink gate did not forward'
+    finally:
+        lst.close()
+        U.delete(s)
 
 
 # E-TESTS-BELOW

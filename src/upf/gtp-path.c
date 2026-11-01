@@ -237,6 +237,13 @@ void upf_gtpv1_receive_buffer_for_mbs_sess(ogs_pkbuf_t *recvbuf, upf_mbs_sess_t 
         return;
     }
 
+    /* The downlink gate of the QER closes the MBS session's flow: "shall be discarded (the gate is closed)" */
+    if (!sess && pdr->qer && pdr->qer->gate_status.downlink == OGS_PFCP_GATE_CLOSE) {
+        ogs_debug("MBS data discarded: the downlink gate of the QER is closed");
+        ogs_pkbuf_free(recvbuf);
+        return;
+    }
+
         // Skipped on the MBS-session branch, where sess is NULL (see the top of this function):
         // upf_sess_urr_acc_add() dereferences sess->urr_acc[...] with no NULL check, and an MBS PDR can carry a
         // non-zero URR count through the generic Create PDR URR-ID association path. NOT IMPLEMENTED: charging
