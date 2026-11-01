@@ -377,6 +377,14 @@ def t_U02_6_nid_is_stored():
     assert r and cause(r) == CAUSE_MANDATORY_INCORRECT, 'short NID: cause %s' % (cause(r) if r else None)
 
 
+@test
+def t_U03_2_pdr_without_precedence():
+    r = U.establish(replace_ie(good(cp_seid=0x4001), T_CREATE_PDR, pdr(drop=(T_PRECEDENCE,))))
+    assert r and cause(r) == CAUSE_MANDATORY_MISSING, 'cause %s' % (cause(r) if r else None)
+    assert offending(r) == T_PRECEDENCE, 'offending IE %s' % offending(r)
+    accepted_and_deleted(U.establish(good(cp_seid=0x4002)), 'after the rejection')
+
+
 # E-TESTS-BELOW
 
 

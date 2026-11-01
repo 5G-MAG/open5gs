@@ -70,7 +70,23 @@ bool upf_n4mb_check_session_establishment_request(
         ogs_error("No Create FAR in N4mb Session Establishment Request");
         cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
         offending_ie_value = OGS_PFCP_CREATE_FAR_TYPE;
-    } else if (req->mbs_session_n4mb_control_information.mbs_session_identifier.presence) {
+    } else {
+        int i;
+
+        /* Precedence is mandatory in a Create PDR on N4mb. The shared PDR handler cannot require it: its
+         * other callers (Sxa) carry no Precedence. */
+        for (i = 0; i < OGS_MAX_NUM_OF_PDR && req->create_pdr[i].presence; i++) {
+            if (req->create_pdr[i].precedence.presence == 0) {
+                ogs_error("No Precedence in Create PDR of N4mb Session Establishment Request");
+                cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+                offending_ie_value = OGS_PFCP_PRECEDENCE_TYPE;
+                break;
+            }
+        }
+    }
+
+    if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED &&
+            req->mbs_session_n4mb_control_information.mbs_session_identifier.presence) {
         ogs_pfcp_mbs_session_identifier_t mbs_session_identifier;
 
         if (ogs_pfcp_parse_mbs_session_identifier(&mbs_session_identifier,
