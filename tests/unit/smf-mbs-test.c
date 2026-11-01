@@ -916,6 +916,42 @@ static void test_tmgi_octets(void)
     smf_mbs_sess_release(mbs_sess);
 }
 
+/* TS 29.518 V18.14.0 table 6.5.6.2.4-1: areaSessionId names the part of a location dependent session; releasedInd
+ * true: the context is released in the AMF. */
+static void test_notification_routing(void)
+{
+    smf_mbs_sess_t *a, *b, *plain;
+    ogs_tmgi_t *tmgi = smf_tmgi_allocate(smf_tmgi_gen_expiration_time(60));
+    ogs_tmgi_t *tmgi2 = smf_tmgi_allocate(smf_tmgi_gen_expiration_time(60));
+
+    CHECK(tmgi != NULL && tmgi2 != NULL);
+    if (!tmgi || !tmgi2) return;
+
+    a = create_session(tmgi, true, true, "1", NULL, NULL);
+    b = create_session(tmgi, false, true, "2", NULL, NULL);
+    plain = create_session(tmgi2, true, false, NULL, NULL, NULL);
+    CHECK(a && b && plain);
+    if (!a || !b || !plain) return;
+
+    CHECK(smf_mbs_sess_find_by_tmgi_and_area(tmgi, true, a->area_session_id) == a);
+    CHECK(smf_mbs_sess_find_by_tmgi_and_area(tmgi, true, b->area_session_id) == b);
+    CHECK(smf_mbs_sess_find_by_tmgi_and_area(tmgi, true, 99) == NULL);
+    CHECK(smf_mbs_sess_find_by_tmgi_and_area(tmgi, false, 0) != NULL);
+    /* a session that is not location dependent is found by its TMGI */
+    CHECK(smf_mbs_sess_find_by_tmgi_and_area(tmgi2, false, 0) == plain);
+    CHECK(smf_mbs_sess_find_by_tmgi_and_area(tmgi2, true, 5) == plain);
+
+    a->mbs_context_ref = ogs_strdup("17");
+    smf_mbs_sess_context_released(a);
+    CHECK(a->mbs_context_ref == NULL);
+    smf_mbs_sess_context_released(a);   /* nothing to release a second time */
+    CHECK(a->mbs_context_ref == NULL);
+
+    smf_mbs_sess_release(a);
+    smf_mbs_sess_release(b);
+    smf_mbs_sess_release(plain);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -937,6 +973,7 @@ int main(void)
     test_service_info_validity();
     test_per_flow_user_plane();
     test_tmgi_octets();
+    test_notification_routing();
 
     printf("smf-mbs: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;

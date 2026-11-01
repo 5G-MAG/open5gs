@@ -3743,6 +3743,44 @@ smf_mbs_sess_t *smf_mbs_sess_find_by_tmgi(ogs_tmgi_t *tmgi_to_find)
     return NULL;
 }
 
+/* The AMF reported its broadcast MBS session context released: there is no mbsContextRef to address any more,
+ * so a later release of the MBS session sends nothing to the AMF. */
+void smf_mbs_sess_context_released(smf_mbs_sess_t *mbs_sess)
+{
+    ogs_assert(mbs_sess);
+
+    if (mbs_sess->mbs_context_ref) {
+        ogs_free(mbs_sess->mbs_context_ref);
+        mbs_sess->mbs_context_ref = NULL;
+    }
+}
+
+/* The MBS session of a TMGI that a notification names: for a location dependent MBS session the part with
+ * the Area Session ID of the notification, otherwise the session of the TMGI. */
+smf_mbs_sess_t *smf_mbs_sess_find_by_tmgi_and_area(
+        ogs_tmgi_t *tmgi_to_find, bool has_area_session_id, uint16_t area_session_id)
+{
+    smf_mbs_sess_t *mbs_sess = NULL;
+
+    ogs_assert(tmgi_to_find);
+
+    ogs_list_for_each(&self.smf_mbs_sess_list, mbs_sess) {
+        if (!mbs_sess->tmgi)
+            continue;
+        if (strcmp(mbs_sess->tmgi->mbs_service_id, tmgi_to_find->mbs_service_id) != 0 ||
+                ogs_plmn_id_mcc(&mbs_sess->tmgi->plmn_id) != ogs_plmn_id_mcc(&tmgi_to_find->plmn_id) ||
+                ogs_plmn_id_mnc(&mbs_sess->tmgi->plmn_id) != ogs_plmn_id_mnc(&tmgi_to_find->plmn_id) ||
+                ogs_plmn_id_mnc_len(&mbs_sess->tmgi->plmn_id) != ogs_plmn_id_mnc_len(&tmgi_to_find->plmn_id))
+            continue;
+        if (has_area_session_id && mbs_sess->location_dependent &&
+                mbs_sess->area_session_id != area_session_id)
+            continue;
+        return mbs_sess;
+    }
+
+    return NULL;
+}
+
 static smf_mbs_sess_t *smf_mbs_sess_add(void)
 {
     smf_mbs_sess_t *smf_mbs_sess = NULL;

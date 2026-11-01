@@ -367,9 +367,13 @@ bool smf_namf_handle_mbs_broadcast_context_status_notify(
     memset(&tmgi, 0, sizeof(tmgi));
     ogs_sbi_parse_tmgi(&tmgi, MbsSessionId->tmgi);
 
-    mbs_sess = smf_mbs_sess_find_by_tmgi(&tmgi);
+    /* TS 29.518 V18.14.0 table 6.5.6.2.4-1, areaSessionId: "This IE shall be present if this is a Location
+     * dependent broadcast MBS service." It names the part of the MBS session the notification is about. */
+    mbs_sess = smf_mbs_sess_find_by_tmgi_and_area(&tmgi,
+            ContextStatusNotification->is_area_session_id,
+            (uint16_t)ContextStatusNotification->area_session_id);
     if (!mbs_sess) {
-        ogs_warn("MBS Broadcast ContextStatusNotify: no MBS session found for the given TMGI");
+        ogs_warn("MBS Broadcast ContextStatusNotify: no MBS session found for the given TMGI and Area Session ID");
         /* TS 29.518 defines no specific error cause for this case; a genuine race (e.g. very late
          * notification after this SMF already released the session locally) is not itself malformed. */
         ogs_assert(true ==
@@ -387,6 +391,13 @@ bool smf_namf_handle_mbs_broadcast_context_status_notify(
              ContextStatusNotification->n2_mbs_sm_info_list->count > 0) ? "present" : "absent",
             ContextStatusNotification->released_ind ==
                     OpenAPI_context_status_notification_RELEASEDIND__true ? "true" : "false");
+
+    /* TS 29.518 V18.14.0 table 6.5.6.2.4-1, releasedInd: "This shall be present and set to "true" if all NG-RANs
+     * serving the Broadcast MBS session requested the AMF to release the Broadcast MBS session and the Broadcast
+     * MBS session (context) has been released in the AMF." */
+    if (ContextStatusNotification->released_ind ==
+            OpenAPI_context_status_notification_RELEASEDIND__true)
+        smf_mbs_sess_context_released(mbs_sess);
 
     response = ogs_sbi_build_response(recvmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
     ogs_assert(response);
