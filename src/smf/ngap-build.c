@@ -558,6 +558,11 @@ ogs_pkbuf_t *ngap_build_handover_command_transfer(smf_sess_t *sess)
 
 ogs_pkbuf_t *ngap_build_mbs_session_setup_or_modification_request_transfer(smf_mbs_sess_t *mbs_sess)
 {
+    return ngap_build_mbs_session_modification_request_transfer(mbs_sess, false);
+}
+
+ogs_pkbuf_t *ngap_build_mbs_session_modification_request_transfer(smf_mbs_sess_t *mbs_sess, bool n3mb_path_failure)
+{
     /*
     maxnoofMBSQoSFlows - Maximum no. of QoS Flows allowed within one MBS session. Value is 64.
     maxnoofMBSFSAs - Maximum no. of FSA IDs for one MBS session. Value is 64.
@@ -766,6 +771,42 @@ ogs_pkbuf_t *ngap_build_mbs_session_setup_or_modification_request_transfer(smf_m
             ogs_assert(supportedUEType);
             *supportedUEType = NGAP_SupportedUEType_redCap_eRedCap_UE;
             ASN_SEQUENCE_ADD(&supportedUETypeList->list, supportedUEType);
+        }
+    }
+
+    /* MBS NG-U Failure Indication (TS 38.413 V18.8.0 clause 9.3.5.3, "MBS NG-U Failure Indication | O |  | 9.3.2.18",
+     * criticality reject): "This IE provides information that the 5GC has detected an NG-U failure." For the
+     * Broadcast MBS session restoration upon N3mb path failure (TS 23.527 V18.6.0 clause 8.5 step 3, "a Broadcast
+     * Session Modification Request Transfer including an N3mb path failure indication"). Clause 9.3.2.18 has the
+     * location independent arm, and for a location dependent session an item of the MBS Area Session ID. */
+    if (n3mb_path_failure) {
+        NGAP_MBS_NGUFailureIndication_t *failure = NULL;
+
+        ie = CALLOC(1, sizeof(NGAP_MBSSessionSetupOrModRequestTransferIEs_t));
+        ogs_assert(ie);
+        ASN_SEQUENCE_ADD(&message.protocolIEs, ie);
+
+        ie->id = NGAP_ProtocolIE_ID_id_MBS_NGUFailureIndication;
+        ie->criticality = NGAP_Criticality_reject;
+        ie->value.present = NGAP_MBSSessionSetupOrModRequestTransferIEs__value_PR_MBS_NGUFailureIndication;
+        failure = &ie->value.choice.MBS_NGUFailureIndication;
+
+        if (mbs_sess->location_dependent) {
+            NGAP_MBS_UP_FailureIndicationList_t *list = NULL;
+            NGAP_MBS_UP_FailureIndicationItem_t *item = NULL;
+
+            list = CALLOC(1, sizeof(*list));
+            ogs_assert(list);
+            item = CALLOC(1, sizeof(*item));
+            ogs_assert(item);
+            item->mBS_AreaSessionID = mbs_sess->area_session_id;
+            item->mBS_UP_FailureIndication = NGAP_MBS_UP_FailureIndication_ng_u_path_failure_detected;
+            ASN_SEQUENCE_ADD(&list->list, item);
+            failure->present = NGAP_MBS_NGUFailureIndication_PR_locationdependent;
+            failure->choice.locationdependent = list;
+        } else {
+            failure->present = NGAP_MBS_NGUFailureIndication_PR_locationindependent;
+            failure->choice.locationindependent = NGAP_MBS_UP_FailureIndication_ng_u_path_failure_detected;
         }
     }
 

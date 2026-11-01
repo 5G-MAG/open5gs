@@ -1614,6 +1614,9 @@ static void test_amf_entries(void)
  * Local broadcast MBS session; updated list of Area Session ID and related MBS service area, for a Location
  * dependent broadcast MBS session" and "the n2MbsInfoChangeInd IE set to "true" or "false""; the resource is
  * mbs-contexts/{mbsContextRef}/update (table 6.5.3.2.4.1-1, POST). */
+static const char *const ran_a_text = "{\"plmnId\":{\"mcc\":\"001\",\"mnc\":\"01\"},\"gNbId\":{\"bitLength\":24,\"gNBValue\":\"000001\"}}";
+static const char *const ran_b_text = "{\"plmnId\":{\"mcc\":\"001\",\"mnc\":\"01\"},\"gNbId\":{\"bitLength\":24,\"gNBValue\":\"000002\"}}";
+
 static void test_context_update_request(void)
 {
     smf_mbs_sess_t *mbs_sess = make_session(serv_info_2_text, area_1_text);
@@ -2039,8 +2042,6 @@ static ogs_pkbuf_t *encode_failure_transfer(long radio_network_cause)
     return pkbuf;
 }
 
-static const char *const ran_a_text = "{\"plmnId\":{\"mcc\":\"001\",\"mnc\":\"01\"},\"gNbId\":{\"bitLength\":24,\"gNBValue\":\"000001\"}}";
-
 static OpenAPI_n2_mbs_sm_info_t *n2_info(OpenAPI_ngap_ie_type_e type, const char *content_id, const char *ran_text)
 {
     cJSON *json = ran_text ? cJSON_Parse(ran_text) : NULL;
@@ -2396,7 +2397,6 @@ static ogs_pkbuf_t *encode_release_response_transfer(bool with_tunnel, const cha
     return ogs_asn_encode(&asn_DEF_NGAP_MBSSessionReleaseResponseTransfer, &transfer);
 }
 
-static const char *const ran_b_text = "{\"plmnId\":{\"mcc\":\"001\",\"mnc\":\"01\"},\"gNbId\":{\"bitLength\":24,\"gNBValue\":\"000002\"}}";
 
 /* TS 29.518 V18.14.0 clause 6.5.6.4.2.2: "An MBS Session Release Response Transfer IE shall only be sent to the MB-SMF
  * during a Broadcast MBS Session Release Require procedure (see clause 7.3.6 of TS 23.247 [55]), when unicast transport
@@ -2681,6 +2681,63 @@ static void test_notification_routing(void)
     smf_mbs_sess_release(plain);
 }
 
+/* TS 38.413 V18.8.0 clause 9.3.5.3: "MBS NG-U Failure Indication | O |  | 9.3.2.18 |  | YES | reject", and clause
+ * 9.3.2.18: location independent "MBS User Plane Failure Indication | M |  | ENUMERATED (NG-U path failure
+ * detected, ...)"; location dependent, an item of "MBS Area Session ID" and that indication. */
+static void test_ngu_failure_indication(void)
+{
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    int pass;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+
+    for (pass = 0; pass < 3; pass++) {
+        ogs_pkbuf_t *pkbuf;
+        NGAP_MBSSessionSetupOrModRequestTransfer_t message;
+        int i, found = 0;
+
+        if (pass == 2) {
+            mbs_sess->location_dependent = true;
+            mbs_sess->area_session_id = 7;
+        }
+        /* pass 0: no failure; pass 1: failure, location independent; pass 2: failure, location dependent */
+        pkbuf = ngap_build_mbs_session_modification_request_transfer(mbs_sess, pass != 0);
+        CHECK(pkbuf != NULL);
+        if (!pkbuf) continue;
+        memset(&message, 0, sizeof(message));
+        CHECK(ogs_asn_decode(&asn_DEF_NGAP_MBSSessionSetupOrModRequestTransfer, &message, sizeof(message), pkbuf) ==
+                OGS_OK);
+        for (i = 0; i < message.protocolIEs.list.count; i++) {
+            NGAP_MBSSessionSetupOrModRequestTransferIEs_t *ie = message.protocolIEs.list.array[i];
+            NGAP_MBS_NGUFailureIndication_t *f;
+
+            if (ie->id != NGAP_ProtocolIE_ID_id_MBS_NGUFailureIndication)
+                continue;
+            found++;
+            CHECK(ie->criticality == NGAP_Criticality_reject);
+            f = &ie->value.choice.MBS_NGUFailureIndication;
+            if (pass == 1) {
+                CHECK(f->present == NGAP_MBS_NGUFailureIndication_PR_locationindependent);
+                CHECK(f->choice.locationindependent == NGAP_MBS_UP_FailureIndication_ng_u_path_failure_detected);
+            } else {
+                CHECK(f->present == NGAP_MBS_NGUFailureIndication_PR_locationdependent);
+                CHECK(f->choice.locationdependent && f->choice.locationdependent->list.count == 1);
+                if (f->choice.locationdependent && f->choice.locationdependent->list.count == 1) {
+                    CHECK(f->choice.locationdependent->list.array[0]->mBS_AreaSessionID == 7);
+                    CHECK(f->choice.locationdependent->list.array[0]->mBS_UP_FailureIndication ==
+                            NGAP_MBS_UP_FailureIndication_ng_u_path_failure_detected);
+                }
+            }
+        }
+        CHECK(found == (pass != 0 ? 1 : 0));
+        ogs_asn_free(&asn_DEF_NGAP_MBSSessionSetupOrModRequestTransfer, &message);
+        ogs_pkbuf_free(pkbuf);
+    }
+
+    smf_mbs_sess_release(mbs_sess);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -2719,6 +2776,7 @@ int main(void)
     test_ip_multicast_addressing_info_layout();
     test_tmgi_octets();
     test_notification_routing();
+    test_ngu_failure_indication();
 
     printf("smf-mbs: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;

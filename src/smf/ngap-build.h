@@ -44,6 +44,10 @@ ogs_pkbuf_t *ngap_build_handover_command_transfer(smf_sess_t *sess);
 ogs_pkbuf_t *ngap_build_mbs_session_setup_or_modification_request_transfer(
         smf_mbs_sess_t *mbs_sess);
 
+/* The same container of a Broadcast Session Modification, with the MBS NG-U Failure Indication of an N3mb path
+ * failure when \p n3mb_path_failure is set. */
+ogs_pkbuf_t *ngap_build_mbs_session_modification_request_transfer(smf_mbs_sess_t *mbs_sess, bool n3mb_path_failure);
+
 /* The Broadcast Transport Response Transfer (TS 38.413 clause 9.3.5.16) and Failure Transfer (clause 9.3.5.17) for
  * the MBS session of \p tmgi; the Failure Transfer carries \p cause_value of the Cause group \p cause_group. */
 ogs_pkbuf_t *ngap_build_broadcast_transport_response_transfer(const ogs_tmgi_t *tmgi);
