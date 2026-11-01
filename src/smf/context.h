@@ -599,6 +599,10 @@ typedef struct smf_mbs_sess_s {
 
     char *dnn;
 
+    /* MBS start time and MBS termination time of the Create request (DateTime), echoed in the representation */
+    char *start_time;
+    char *termination_time;
+
     /* S_NSSAI, set when the Create request carried one (has_s_nssai) */
     bool has_s_nssai;
     ogs_s_nssai_t s_nssai;
@@ -755,6 +759,7 @@ int smf_tmgi_count(void);
 char *smf_tmgi_gen_expiration_time(int validity_seconds);
 bool smf_tmgi_own_plmn(ogs_plmn_id_t *plmn_id);
 bool smf_nid_is_valid(const char *nid);
+bool smf_is_date_time(const char *date_time);
 OpenAPI_snssai_t *smf_mbs_sess_build_snssai(const smf_mbs_sess_t *mbs_sess);
 OpenAPI_list_t *smf_mbs_sess_build_fsa_id_list(const smf_mbs_sess_t *mbs_sess);
 const char *smf_own_nid(void);

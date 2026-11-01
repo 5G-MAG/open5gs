@@ -3510,6 +3510,16 @@ bool smf_mbs_max_response_time(int *seconds)
     return true;
 }
 
+/* TS 29.571 V18.12.0 DateTime: an RFC 3339 date-time. */
+bool smf_is_date_time(const char *date_time)
+{
+    ogs_time_t t;
+
+    /* the library parser also takes a date alone; an RFC 3339 date-time has a time part, after a "T" */
+    return date_time && strchr(date_time, 'T') &&
+        ogs_sbi_time_from_string(&t, (char *)date_time);
+}
+
 /* TS 23.003 V18.8.0 clause 12.7.1: "The NID shall consist of 11 hexadecimal digits"; TS 29.571 V18.12.0
  * Nid, pattern '^[A-Fa-f0-9]{11}$'. */
 bool smf_nid_is_valid(const char *nid)
@@ -3786,6 +3796,12 @@ static void smf_mbs_sess_free(smf_mbs_sess_t *smf_mbs_sess)
 
     if (smf_mbs_sess->dnn)
         ogs_free(smf_mbs_sess->dnn);
+
+    if (smf_mbs_sess->start_time)
+        ogs_free(smf_mbs_sess->start_time);
+
+    if (smf_mbs_sess->termination_time)
+        ogs_free(smf_mbs_sess->termination_time);
 
     // If not allocated with MBS session, TMGI is allocated/freed separately. Location dependent sessions of
     // one TMGI share it: it goes with the last of them.

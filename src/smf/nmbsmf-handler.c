@@ -457,6 +457,20 @@ bool smf_nmbsmf_handle_mbs_session_create(
         goto cleanup;
     }
 
+    /* TS 29.532 V18.6.0 cl. 5.3.2.2.1, step 1: "-MBS start time; -MBS termination time;" are DateTime attributes
+     * (TS 29.571 V18.12.0 DateTime, RFC 3339 date-time); one that is not a date-time is an erroneous input. */
+    if ((CreateReqData->mbs_session->start_time &&
+                !smf_is_date_time(CreateReqData->mbs_session->start_time)) ||
+            (CreateReqData->mbs_session->termination_time &&
+                !smf_is_date_time(CreateReqData->mbs_session->termination_time))) {
+        ogs_error("MBS Session Create: startTime or terminationTime is not a date-time");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            message, "Error input parameters", "MBS Session Create failed, [startTime] or [terminationTime] is not a date-time",
+            NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
     // Extract the SSM
     is_multicast_service = (ogs_strcasecmp(service_type, "MULTICAST") == 0);
     if (CreateReqData->mbs_session->mbs_session_id && CreateReqData->mbs_session->mbs_session_id->ssm && is_multicast_service) {
@@ -747,6 +761,10 @@ bool smf_nmbsmf_handle_mbs_session_create(
         mbs_sess->dnn = ogs_strdup(CreateReqData->mbs_session->dnn);
         ogs_assert(mbs_sess->dnn);
     }
+    if (CreateReqData->mbs_session->start_time)
+        mbs_sess->start_time = ogs_strdup(CreateReqData->mbs_session->start_time);
+    if (CreateReqData->mbs_session->termination_time)
+        mbs_sess->termination_time = ogs_strdup(CreateReqData->mbs_session->termination_time);
     if (CreateReqData->mbs_session->snssai) {
         mbs_sess->s_nssai.sst = CreateReqData->mbs_session->snssai->sst;
         mbs_sess->s_nssai.sd = ogs_s_nssai_sd_from_string(CreateReqData->mbs_session->snssai->sd);
@@ -1219,8 +1237,8 @@ bool smf_nmbsmf_handle_mbs_session_patch(smf_mbs_sess_t *mbs_sess,
                 mbs_sess->dnn ? ogs_strdup(mbs_sess->dnn) : NULL /* dnn */,
                 smf_mbs_sess_build_snssai(mbs_sess) /* snssai */,
                 NULL            /* activation_time */,
-                NULL            /* start_time */,
-                NULL            /* termination_time */,
+                mbs_sess->start_time ? ogs_strdup(mbs_sess->start_time) : NULL /* start_time */,
+                mbs_sess->termination_time ? ogs_strdup(mbs_sess->termination_time) : NULL /* termination_time */,
                 NULL            /* mbs_serv_info */,
                 NULL            /* mbs_session_subsc */,
                 mbs_sess->activity_status /* activity_status */,

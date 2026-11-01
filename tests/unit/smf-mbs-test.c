@@ -731,6 +731,18 @@ static void test_context_create_optional_ids(void)
     smf_mbs_sess_release(mbs_sess);
 }
 
+/* TS 29.571 V18.12.0 DateTime (RFC 3339 date-time): the MBS start and termination times of a Create request */
+static void test_date_time(void)
+{
+    CHECK(smf_is_date_time("2026-11-01T10:00:00Z"));
+    CHECK(smf_is_date_time("2026-11-01T10:00:00.123456Z"));
+    CHECK(smf_is_date_time("2026-11-01T10:00:00+01:00"));
+    CHECK(!smf_is_date_time(NULL));
+    CHECK(!smf_is_date_time(""));
+    CHECK(!smf_is_date_time("tomorrow"));
+    CHECK(!smf_is_date_time("2026-11-01"));
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -748,6 +760,7 @@ int main(void)
     test_reduced_area_is_used();
     test_fsa_id_list();
     test_context_create_optional_ids();
+    test_date_time();
 
     printf("smf-mbs: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
