@@ -1449,6 +1449,22 @@ static void test_context_update_request(void)
     smf_mbs_sess_release(mbs_sess);
 }
 
+/* TS 29.244 V18.10.0 cl. 8.2.209 Local Ingress Tunnel: with the CH bit set the UDP port and the address fields are
+ * not present; the spare bits of octet 5 are "0": octet 5 of a CHOOSE for IPv4 is 0x05, for IPv6 0x06. */
+static void test_local_ingress_tunnel_choose(void)
+{
+    ogs_pfcp_local_ingress_tunnel_t tunnel;
+    int len = 0;
+
+    memset(&tunnel, 0xff, sizeof(tunnel));
+    CHECK(ogs_pfcp_proto_choice_to_local_ingress_tunnel(true, false, &tunnel, &len) == OGS_OK);
+    CHECK(len == 1 && tunnel.flags == 0x05);
+
+    memset(&tunnel, 0xff, sizeof(tunnel));
+    CHECK(ogs_pfcp_proto_choice_to_local_ingress_tunnel(false, true, &tunnel, &len) == OGS_OK);
+    CHECK(len == 1 && tunnel.flags == 0x06);
+}
+
 /* TS 24.008 V18.8.0 figure 10.5.154 (octets 3 to 8 of the TMGI, as TS 29.244 V18.10.0 cl. 8.2.206 requires):
  * octet 6 "MCC digit 2 | MCC digit 1", octet 7 "MNC digit 3 | MCC digit 3", octet 8 "MNC digit 2 | MNC digit 1"
  * (a two-digit MNC leaves digit 3 as F, as the identity form of the IE says: "If a network operator decides to use
@@ -1559,6 +1575,7 @@ int main(void)
     test_update_reduced_area();
     test_amf_entries();
     test_context_update_request();
+    test_local_ingress_tunnel_choose();
     test_tmgi_octets();
     test_notification_routing();
 

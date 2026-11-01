@@ -513,6 +513,9 @@ int ogs_pfcp_proto_choice_to_local_ingress_tunnel(bool ipv4, bool ipv6,
     ogs_assert(local_ingress_tunnel);
     ogs_assert(len);
 
+    /* the spare bits of octet 5 are set to "0" (TS 29.244 V18.10.0 cl. 8.2.209), whatever the caller's memory held */
+    memset(local_ingress_tunnel, 0, sizeof(*local_ingress_tunnel));
+
     local_ingress_tunnel->choose = 1;
     local_ingress_tunnel->ipv4 = ipv4?1:0;
     local_ingress_tunnel->ipv6 = ipv6?1:0;
