@@ -57,6 +57,17 @@ ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_create_request(
 ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_delete_request(
         smf_mbs_sess_t *mbs_sess, void *data);
 
+/* What a Namf_MBSBroadcast ContextUpdate request is built from (the data of the builder) */
+typedef struct smf_namf_context_update_param_s {
+    smf_mbs_amf_t *amf;         /* the AMF whose context is updated */
+    bool service_area;          /* the request carries the updated MBS service area */
+    bool n2_info_changed;       /* the N2 MBS Session Management information changed (n2MbsInfoChangeInd) */
+} smf_namf_context_update_param_t;
+
+/* POST /namf-mbs-bc/v1/mbs-contexts/{mbsContextRef}/update, TS 29.518 V18.14.0 cl. 5.6.2.3 */
+ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_update_request(
+        smf_mbs_sess_t *mbs_sess, void *data);
+
 #ifdef __cplusplus
 }
 #endif

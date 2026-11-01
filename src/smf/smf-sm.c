@@ -1107,7 +1107,11 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
             CASE(OGS_SBI_RESOURCE_NAME_MBS_CONTEXTS)
                 SWITCH(sbi_message.h.method)
                 CASE(OGS_SBI_HTTP_METHOD_POST)
-                    if (sbi_message.res_status == OGS_SBI_HTTP_STATUS_CREATED) {
+                    if (sbi_message.h.resource.component[1]) {
+                        /* POST on the individual context: ContextUpdate. The context stays, whatever the answer. */
+                        smf_namf_handle_mbs_broadcast_context_update_response(
+                                mbs_sess, mbs_amf, &sbi_message);
+                    } else if (sbi_message.res_status == OGS_SBI_HTTP_STATUS_CREATED) {
                         if (!smf_namf_handle_mbs_broadcast_context_create_response(
                                 mbs_sess, mbs_amf, &sbi_message))
                             smf_mbs_sess_amf_remove(mbs_sess, mbs_amf);

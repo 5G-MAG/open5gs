@@ -299,6 +299,34 @@ bool smf_namf_handle_mbs_broadcast_context_create_response(
     return true;
 }
 
+/*
+ * TS 29.518 V18.14.0 cl. 5.6.2.3 steps 2a and 2b: "On success, "200 OK" shall be returned if additional information
+ * needs to be returned in the response." and "On success, "204 No Content" shall be returned if no additional
+ * information needs to be returned in the response." Both are success.
+ */
+bool smf_namf_handle_mbs_broadcast_context_update_response(
+        smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf, ogs_sbi_message_t *recvmsg)
+{
+    ogs_assert(mbs_sess);
+    ogs_assert(amf);
+    ogs_assert(recvmsg);
+
+    if (recvmsg->res_status == OGS_SBI_HTTP_STATUS_NO_CONTENT) {
+        ogs_info("MBS Broadcast ContextUpdate: mbsContextRef[%s] updated", amf->mbs_context_ref);
+        return true;
+    }
+
+    if (recvmsg->res_status != OGS_SBI_HTTP_STATUS_OK) {
+        ogs_error("MBS Broadcast ContextUpdate: unexpected HTTP response [%d] for mbsContextRef[%s]",
+                recvmsg->res_status, amf->mbs_context_ref);
+        return false;
+    }
+
+    ogs_info("MBS Broadcast ContextUpdate: mbsContextRef[%s] updated, with content", amf->mbs_context_ref);
+
+    return true;
+}
+
 bool smf_namf_handle_mbs_broadcast_context_delete_response(
         smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf, ogs_sbi_message_t *recvmsg)
 {

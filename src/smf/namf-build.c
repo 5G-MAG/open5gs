@@ -189,67 +189,19 @@ ogs_sbi_request_t *smf_namf_callback_build_sm_context_status(
     return request;
 }
 
-/* Namf_MBSBroadcast Service API */
-
-ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_create_request(
-        smf_mbs_sess_t *mbs_sess, void *data)
+/* The MBS service area of a broadcast context request: mbsServiceAreaInfoList, one entry carrying this session's
+ * area_session_id and service area, when the session is location dependent, and mbsServiceArea otherwise. The two
+ * are mutually exclusive (TS 29.518 V18.14.0 table 6.5.6.2.2-1 NOTE 1 and table 6.5.6.2.5-1 NOTE), and sending
+ * mbsServiceArea unconditionally would claim location-independent delivery for every session whatever was
+ * requested. See smf_nmbsmf_handle_mbs_session_create() (TS 29.532 cl.5.3.2.2.1). */
+static void smf_namf_build_mbs_service_area(smf_mbs_sess_t *mbs_sess, const char *operation,
+        OpenAPI_mbs_service_area_t **mbs_service_area, OpenAPI_list_t **mbs_service_area_info_list)
 {
-    ogs_debug("Building MBS Broadcast ContextCreate request");
-
-    ogs_sbi_message_t message;
-    ogs_sbi_request_t *request = NULL;
-
-    OpenAPI_context_create_req_data_t *ContextCreateReqData = NULL;
-
-    char *mcc, *mnc;
-    OpenAPI_plmn_id_t *plmn_id = NULL;
-    OpenAPI_tmgi_t *tmgi = NULL;
-    OpenAPI_mbs_session_id_t *mbs_session_id = NULL;
-
-    // Fill mbsServiceArea / mbsServiceAreaInfoList
     OpenAPI_plmn_id_t *plmn_id_copy = NULL;
     OpenAPI_tai_t *tai_list_item = NULL;
     OpenAPI_list_t *tai_list = NULL;
     OpenAPI_list_t *ncgi_list = NULL;
-    OpenAPI_mbs_service_area_t *mbs_service_area = NULL;
-    OpenAPI_list_t *mbs_service_area_info_list = NULL;
 
-    OpenAPI_n2_mbs_sm_info_t *n2_mbs_sm_info = NULL;
-    OpenAPI_ref_to_binary_data_t *ngap_data = NULL;
-
-    char *notify_uri = NULL;
-    char *amf_id_string = NULL;
-    ogs_sbi_server_t *server = NULL;
-    ogs_sbi_header_t header;
-
-    ogs_sbi_nf_instance_t *nf_instance = NULL;
-    ogs_sbi_nf_info_t *nf_info = NULL;
-    ogs_s_nssai_t *self_s_nssai = NULL;
-    OpenAPI_snssai_t *snssai = NULL;
-
-    ogs_assert(mbs_sess);
-
-    memset(&message, 0, sizeof(message));
-    message.h.method = (char *) OGS_SBI_HTTP_METHOD_POST;
-    message.h.service.name = (char *) OGS_SBI_SERVICE_NAME_NAMF_MBS_BC;
-    message.h.api.version = (char *) OGS_SBI_API_V1;
-    message.h.resource.component[0] = (char *) OGS_SBI_RESOURCE_NAME_MBS_CONTEXTS;
-
-    memset(&ContextCreateReqData, 0, sizeof(ContextCreateReqData));
-
-    // mbsSessionId
-    mcc = ogs_plmn_id_mcc_string(&mbs_sess->tmgi->plmn_id);
-    mnc = ogs_plmn_id_mnc_string(&mbs_sess->tmgi->plmn_id);
-    plmn_id = OpenAPI_plmn_id_create(mcc, mnc);
-
-    tmgi = OpenAPI_tmgi_create(ogs_strdup(mbs_sess->tmgi->mbs_service_id), plmn_id);
-
-    // TS 29.518 V18.14.0 table 6.5.6.2.2-1 (mbsSessionId): the TMGI together with the NID of an SNPN
-    mbs_session_id = OpenAPI_mbs_session_id_create(tmgi, NULL,
-            mbs_sess->mbs_session_id.nid ? ogs_strdup(mbs_sess->mbs_session_id.nid) : NULL);
-
-    // mbsServiceArea / mbsServiceAreaInfoList (mutually exclusive, TS29518_Namf_MBSBroadcast.yaml's own
-    // ContextCreateReqData schema)
     // Forward the TAI list and NCGI-TAI list this session's own MBS Session Create request actually
     // carried (mbs_sess->mbs_service_area->tai_list/ncgi_tai_list, populated by
     // smf_nmbsmf_handle_mbs_session_create() from the request's own tai_list/ncgi_list) instead of a
@@ -294,22 +246,79 @@ ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_create_request(
     }
 
     if (!tai_list->count && !ncgi_list) {
-        ogs_error("MBS Broadcast ContextCreate: no TAI or NCGI in this session's own MBS Service Area; "
-                "sending an empty TAI list");
+        ogs_error("MBS Broadcast %s: no TAI or NCGI in this session's own MBS Service Area; "
+                "sending an empty TAI list", operation);
     }
 
-        // Builds mbsServiceAreaInfoList, one entry carrying this session's area_session_id and service area,
-        // when the session is location dependent, and mbsServiceArea otherwise. The two are mutually exclusive,
-        // and sending mbsServiceArea unconditionally would claim location-independent delivery for every
-        // session whatever was requested. See smf_nmbsmf_handle_mbs_session_create() (TS 29.532 cl.5.3.2.2.1).
     if (mbs_sess->location_dependent) {
-        mbs_service_area_info_list = OpenAPI_list_create();
-        OpenAPI_list_add(mbs_service_area_info_list,
+        *mbs_service_area_info_list = OpenAPI_list_create();
+        OpenAPI_list_add(*mbs_service_area_info_list,
                 OpenAPI_mbs_service_area_info_create(mbs_sess->area_session_id,
                         OpenAPI_mbs_service_area_create(ncgi_list, tai_list)));
     } else {
-        mbs_service_area = OpenAPI_mbs_service_area_create(ncgi_list, tai_list);
+        *mbs_service_area = OpenAPI_mbs_service_area_create(ncgi_list, tai_list);
     }
+
+}
+
+/* Namf_MBSBroadcast Service API */
+
+ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_create_request(
+        smf_mbs_sess_t *mbs_sess, void *data)
+{
+    ogs_debug("Building MBS Broadcast ContextCreate request");
+
+    ogs_sbi_message_t message;
+    ogs_sbi_request_t *request = NULL;
+
+    OpenAPI_context_create_req_data_t *ContextCreateReqData = NULL;
+
+    char *mcc, *mnc;
+    OpenAPI_plmn_id_t *plmn_id = NULL;
+    OpenAPI_tmgi_t *tmgi = NULL;
+    OpenAPI_mbs_session_id_t *mbs_session_id = NULL;
+
+    // mbsServiceArea / mbsServiceAreaInfoList
+    OpenAPI_mbs_service_area_t *mbs_service_area = NULL;
+    OpenAPI_list_t *mbs_service_area_info_list = NULL;
+
+    OpenAPI_n2_mbs_sm_info_t *n2_mbs_sm_info = NULL;
+    OpenAPI_ref_to_binary_data_t *ngap_data = NULL;
+
+    char *notify_uri = NULL;
+    char *amf_id_string = NULL;
+    ogs_sbi_server_t *server = NULL;
+    ogs_sbi_header_t header;
+
+    ogs_sbi_nf_instance_t *nf_instance = NULL;
+    ogs_sbi_nf_info_t *nf_info = NULL;
+    ogs_s_nssai_t *self_s_nssai = NULL;
+    OpenAPI_snssai_t *snssai = NULL;
+
+    ogs_assert(mbs_sess);
+
+    memset(&message, 0, sizeof(message));
+    message.h.method = (char *) OGS_SBI_HTTP_METHOD_POST;
+    message.h.service.name = (char *) OGS_SBI_SERVICE_NAME_NAMF_MBS_BC;
+    message.h.api.version = (char *) OGS_SBI_API_V1;
+    message.h.resource.component[0] = (char *) OGS_SBI_RESOURCE_NAME_MBS_CONTEXTS;
+
+    memset(&ContextCreateReqData, 0, sizeof(ContextCreateReqData));
+
+    // mbsSessionId
+    mcc = ogs_plmn_id_mcc_string(&mbs_sess->tmgi->plmn_id);
+    mnc = ogs_plmn_id_mnc_string(&mbs_sess->tmgi->plmn_id);
+    plmn_id = OpenAPI_plmn_id_create(mcc, mnc);
+
+    tmgi = OpenAPI_tmgi_create(ogs_strdup(mbs_sess->tmgi->mbs_service_id), plmn_id);
+
+    // TS 29.518 V18.14.0 table 6.5.6.2.2-1 (mbsSessionId): the TMGI together with the NID of an SNPN
+    mbs_session_id = OpenAPI_mbs_session_id_create(tmgi, NULL,
+            mbs_sess->mbs_session_id.nid ? ogs_strdup(mbs_sess->mbs_session_id.nid) : NULL);
+
+    // mbsServiceArea / mbsServiceAreaInfoList (mutually exclusive, TS29518_Namf_MBSBroadcast.yaml's own
+    // ContextCreateReqData schema)
+    smf_namf_build_mbs_service_area(mbs_sess, "ContextCreate", &mbs_service_area, &mbs_service_area_info_list);
 
     // n2MbsSmInfo. randId (added to OpenAPI_n2_mbs_sm_info_t by the schema-collision fix this session --
     // see namf-build.c's own account in src/amf/) is NULL here deliberately, not a stopgap: TS 29.518
@@ -438,6 +447,84 @@ ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_delete_request(
 
     request = ogs_sbi_build_request(&message);
     ogs_expect(request);
+
+    return request;
+}
+
+/*
+ * 3GPP TS 29.518 V18.14.0 cl. 5.6.2.3 - Namf_MBSBroadcast Service API - ContextUpdate service operation
+ *
+ * "The NF Service Consumer shall send a POST request targeting the individual Broadcast MBS session context
+ * resource to be updated in the AMF. The content of the POST request may contain the following information:
+ * N2 MBS Session Management container (see MBS Session Setup or Modification Request Transfer IE in TS 38.413);
+ * Notification URI ...; updated MBS service area, for a Local broadcast MBS session; updated list of Area
+ * Session ID and related MBS service area, for a Location dependent broadcast MBS session; the
+ * n2MbsInfoChangeInd IE set to "true" or "false" to indicate to the AMF whether the information within the N2 MBS
+ * Session Management container has changed or not for the MBS session". "The NF Service Consumer may also include
+ * the maxResponseTime IE in the request". The resource is {apiRoot}/namf-mbs-bc/<apiVersion>/mbscontexts/
+ * {mbsContextRef}/update (table 6.5.3.2.4.1-1, custom operation "update", POST).
+ */
+ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_update_request(
+        smf_mbs_sess_t *mbs_sess, void *data)
+{
+    smf_namf_context_update_param_t *param = data;
+    ogs_sbi_message_t message;
+    ogs_sbi_request_t *request = NULL;
+    OpenAPI_context_update_req_data_t *ContextUpdateReqData = NULL;
+    OpenAPI_mbs_service_area_t *mbs_service_area = NULL;
+    OpenAPI_list_t *mbs_service_area_info_list = NULL;
+    OpenAPI_n2_mbs_sm_info_t *n2_mbs_sm_info = NULL;
+    ogs_pkbuf_t *n2_pkbuf = NULL;
+    int max_response_time = 0;
+    bool has_max_response_time;
+
+    ogs_debug("Building MBS Broadcast ContextUpdate request");
+
+    ogs_assert(mbs_sess);
+    ogs_assert(param);
+    ogs_assert(param->amf);
+    ogs_assert(param->amf->mbs_context_ref);
+
+    memset(&message, 0, sizeof(message));
+    message.h.method = (char *) OGS_SBI_HTTP_METHOD_POST;
+    message.h.service.name = (char *) OGS_SBI_SERVICE_NAME_NAMF_MBS_BC;
+    message.h.api.version = (char *) OGS_SBI_API_V1;
+    message.h.resource.component[0] = (char *) OGS_SBI_RESOURCE_NAME_MBS_CONTEXTS;
+    message.h.resource.component[1] = param->amf->mbs_context_ref;
+    message.h.resource.component[2] = (char *) OGS_SBI_RESOURCE_NAME_UPDATE;
+
+    if (param->service_area)
+        smf_namf_build_mbs_service_area(mbs_sess, "ContextUpdate", &mbs_service_area, &mbs_service_area_info_list);
+
+    /* the N2 container: the information the NG-RANs are to use now */
+    n2_pkbuf = ngap_build_mbs_session_setup_or_modification_request_transfer(mbs_sess);
+    if (n2_pkbuf) {
+        n2_mbs_sm_info = OpenAPI_n2_mbs_sm_info_create(OpenAPI_ngap_ie_type_MBS_SES_REQ,
+                OpenAPI_ref_to_binary_data_create(ogs_strdup((char *) OGS_SBI_CONTENT_NGAP_SM_ID)), NULL);
+        message.part[message.num_of_part].pkbuf = n2_pkbuf;
+        message.part[message.num_of_part].content_id = (char *) OGS_SBI_CONTENT_NGAP_SM_ID;
+        message.part[message.num_of_part].content_type = (char *) OGS_SBI_CONTENT_NGAP_TYPE;
+        message.num_of_part++;
+    }
+
+    has_max_response_time = smf_mbs_max_response_time(&max_response_time);
+
+    ContextUpdateReqData = OpenAPI_context_update_req_data_create(mbs_service_area, mbs_service_area_info_list,
+            n2_mbs_sm_info, NULL, OpenAPI_context_update_req_data_NONGAPSIGNALLINGIND_NULL, NULL,
+            has_max_response_time, max_response_time, true, param->n2_info_changed);
+    message.ContextUpdateReqData = ContextUpdateReqData;
+
+    message.http.accept = (char *) (OGS_SBI_CONTENT_JSON_TYPE ","
+        OGS_SBI_CONTENT_NGAP_TYPE "," OGS_SBI_CONTENT_PROBLEM_TYPE);
+
+    request = ogs_sbi_build_request(&message);
+    ogs_expect(request);
+
+    if (ContextUpdateReqData)
+        OpenAPI_context_update_req_data_free(ContextUpdateReqData);
+    /* the request holds a copy of the part */
+    if (n2_pkbuf)
+        ogs_pkbuf_free(n2_pkbuf);
 
     return request;
 }

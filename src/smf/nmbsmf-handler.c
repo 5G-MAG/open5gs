@@ -1298,6 +1298,13 @@ bool smf_nmbsmf_handle_mbs_session_patch(smf_mbs_sess_t *mbs_sess,
             OpenAPI_update_rsp_data_free(UpdateRspData);
     }
 
+    /* TS 23.247 V18.8.0 cl. 7.3.3 step 2: for a broadcast MBS session "The MB-SMF sends Namf_MBSBroadcast_
+     * ContextUpdate Request (TMGI, N2 SM information (...), [updated MBS service area]) to the AMFs." The updated
+     * area is sent when the area changed; the N2 information says whether it changed. */
+    if (ogs_strcasecmp(mbs_sess->service_type, "BROADCAST") == 0 &&
+            (update.area_changed || update.n2_info_changed))
+        smf_sbi_send_mbs_broadcast_context_update_all(mbs_sess, update.area_changed, update.n2_info_changed);
+
     ogs_assert(response);
 
     ogs_assert(true == ogs_sbi_server_send_response(stream, response));

@@ -37,6 +37,9 @@ bool smf_namf_comm_handle_n1_n2_message_transfer_failure_notify(
 bool smf_namf_handle_mbs_broadcast_context_create_response(
         smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf, ogs_sbi_message_t *recvmsg);
 
+bool smf_namf_handle_mbs_broadcast_context_update_response(
+        smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf, ogs_sbi_message_t *recvmsg);
+
 bool smf_namf_handle_mbs_broadcast_context_delete_response(
         smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf, ogs_sbi_message_t *recvmsg);
 

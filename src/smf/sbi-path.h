@@ -118,6 +118,12 @@ int smf_sbi_send_mbs_broadcast_context_create(smf_mbs_sess_t *mbs_sess);
  * requests that could not be sent. */
 int smf_sbi_send_mbs_broadcast_context_delete_all(smf_mbs_sess_t *mbs_sess);
 
+/* Namf_MBSBroadcast ContextUpdate towards every AMF that has a context of the MBS session: with the updated MBS
+ * service area if service_area, and telling whether the N2 information changed. Returns the number of requests that
+ * could not be sent. */
+int smf_sbi_send_mbs_broadcast_context_update_all(
+        smf_mbs_sess_t *mbs_sess, bool service_area, bool n2_info_changed);
+
 #ifdef __cplusplus
 }
 #endif

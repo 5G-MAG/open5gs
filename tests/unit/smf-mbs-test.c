@@ -13,6 +13,7 @@
 #include "context.h"
 #include "n4mb-build.h"
 #include "namf-build.h"
+#include "namf-handler.h"
 #include "nmbsmf-handler.h"
 #include "mbs-update.h"
 
@@ -1292,6 +1293,103 @@ static void test_amf_entries(void)
     smf_mbs_sess_release(mbs_sess);     /* the entries go with the session */
 }
 
+/* TS 29.518 V18.14.0 cl. 5.6.2.3: the ContextUpdate "shall send a POST request targeting the individual Broadcast
+ * MBS session context resource", with "N2 MBS Session Management container", "updated MBS service area, for a
+ * Local broadcast MBS session; updated list of Area Session ID and related MBS service area, for a Location
+ * dependent broadcast MBS session" and "the n2MbsInfoChangeInd IE set to "true" or "false""; the resource is
+ * mbs-contexts/{mbsContextRef}/update (table 6.5.3.2.4.1-1, POST). */
+static void test_context_update_request(void)
+{
+    smf_mbs_sess_t *mbs_sess = make_session(serv_info_2_text, area_1_text);
+    smf_mbs_amf_t *amf;
+    smf_namf_context_update_param_t param;
+    ogs_sbi_request_t *request;
+    cJSON *json;
+    const char *content;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+    amf = smf_mbs_sess_amf_add(mbs_sess);
+    amf->mbs_context_ref = ogs_strdup("5");
+
+    memset(&param, 0, sizeof(param));
+    param.amf = amf;
+    param.service_area = true;
+    param.n2_info_changed = false;
+    request = smf_namf_build_mbs_broadcast_context_update_request(mbs_sess, &param);
+    CHECK(request != NULL);
+    if (request) {
+        CHECK(request->h.method && strcmp(request->h.method, OGS_SBI_HTTP_METHOD_POST) == 0);
+        CHECK(request->h.service.name && strcmp(request->h.service.name, "namf-mbs-bc") == 0);
+        CHECK(request->h.resource.component[0] && strcmp(request->h.resource.component[0], "mbs-contexts") == 0);
+        CHECK(request->h.resource.component[1] && strcmp(request->h.resource.component[1], "5") == 0);
+        CHECK(request->h.resource.component[2] && strcmp(request->h.resource.component[2], "update") == 0);
+        content = request->http.content;
+        CHECK(content != NULL);
+        if (content) {
+            /* the JSON part, then the N2 container as the part n2MbsSmInfo refers to */
+            const char *brace = strchr(content, '{');
+            const char *end = brace ? strstr(brace, "\r\n--") : NULL;
+            char *text = (brace && end) ? ogs_strndup(brace, end - brace) : NULL;
+
+            CHECK(text != NULL);
+            json = text ? cJSON_Parse(text) : NULL;
+            CHECK(json != NULL);
+            if (json) {
+                CHECK(cJSON_GetObjectItemCaseSensitive(json, "mbsServiceArea") != NULL);
+                CHECK(cJSON_GetObjectItemCaseSensitive(json, "mbsServiceAreaInfoList") == NULL);
+                CHECK(cJSON_GetObjectItemCaseSensitive(json, "n2MbsSmInfo") != NULL);
+                CHECK(cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(json, "n2MbsInfoChangeInd")));
+                CHECK(cJSON_GetObjectItemCaseSensitive(json, "notifyUri") == NULL);
+                cJSON_Delete(json);
+            }
+            if (text) ogs_free(text);
+            CHECK(strstr(content, "Content-Id: ngap-sm") != NULL || strstr(content, "Content-ID: ngap-sm") != NULL);
+        }
+        ogs_sbi_request_free(request);
+    }
+
+    /* the area is left out when it did not change, the change indication is true */
+    param.service_area = false;
+    param.n2_info_changed = true;
+    request = smf_namf_build_mbs_broadcast_context_update_request(mbs_sess, &param);
+    CHECK(request != NULL);
+    if (request) {
+        CHECK(request->http.content && strstr(request->http.content, "mbsServiceArea") == NULL);
+        CHECK(request->http.content && strstr(request->http.content, "\"n2MbsInfoChangeInd\":true") != NULL);
+        ogs_sbi_request_free(request);
+    }
+
+    /* a location dependent session sends the list of Area Session ID and area */
+    mbs_sess->location_dependent = true;
+    mbs_sess->area_session_id = 3;
+    param.service_area = true;
+    request = smf_namf_build_mbs_broadcast_context_update_request(mbs_sess, &param);
+    CHECK(request != NULL);
+    if (request) {
+        CHECK(request->http.content && strstr(request->http.content, "\"mbsServiceAreaInfoList\"") != NULL);
+        CHECK(request->http.content && strstr(request->http.content, "\"areaSessionId\":3") != NULL);
+        ogs_sbi_request_free(request);
+    }
+
+    /* TS 29.518 cl. 5.6.2.3 steps 2a and 2b: "200 OK" and "204 No Content" are both success */
+    {
+        ogs_sbi_message_t answer;
+
+        memset(&answer, 0, sizeof(answer));
+        answer.res_status = OGS_SBI_HTTP_STATUS_NO_CONTENT;
+        CHECK(smf_namf_handle_mbs_broadcast_context_update_response(mbs_sess, amf, &answer));
+        answer.res_status = OGS_SBI_HTTP_STATUS_OK;
+        CHECK(smf_namf_handle_mbs_broadcast_context_update_response(mbs_sess, amf, &answer));
+        answer.res_status = OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR;
+        CHECK(!smf_namf_handle_mbs_broadcast_context_update_response(mbs_sess, amf, &answer));
+        /* a failed update leaves the context in place */
+        CHECK(smf_mbs_sess_amf_find(mbs_sess, amf->id) == amf && amf->mbs_context_ref != NULL);
+    }
+
+    smf_mbs_sess_release(mbs_sess);
+}
+
 /* TS 24.008 V18.8.0 figure 10.5.154 (octets 3 to 8 of the TMGI, as TS 29.244 V18.10.0 cl. 8.2.206 requires):
  * octet 6 "MCC digit 2 | MCC digit 1", octet 7 "MNC digit 3 | MCC digit 3", octet 8 "MNC digit 2 | MNC digit 1"
  * (a two-digit MNC leaves digit 3 as F, as the identity form of the IE says: "If a network operator decides to use
@@ -1401,6 +1499,7 @@ int main(void)
     test_update();
     test_update_reduced_area();
     test_amf_entries();
+    test_context_update_request();
     test_tmgi_octets();
     test_notification_routing();
 
