@@ -746,6 +746,7 @@ int smf_tmgi_reclaim_expired(void);
 void smf_tmgi_deallocate(ogs_tmgi_t *tmgi);
 void smf_tmgi_deallocate_all(void);
 ogs_tmgi_t *smf_tmgi_find_by_tmgi(ogs_tmgi_t *tmgi_to_find);
+bool smf_tmgi_is_expired(ogs_tmgi_t *tmgi);
 
 smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, bool tmgi_allocated_for_mbs_session, ogs_ssm_t *ssm, const char *service_type,
                                     ogs_mbs_service_area_t *mbs_service_area, ogs_ext_mbs_service_area_t *ext_mbs_service_area);

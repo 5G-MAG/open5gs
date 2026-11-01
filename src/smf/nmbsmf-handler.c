@@ -102,8 +102,9 @@ bool smf_nmbsmf_handle_tmgi_allocate(
             ogs_sbi_parse_tmgi(&tmgi_received, Tmgi_received);
             tmgi_found = smf_tmgi_find_by_tmgi(&tmgi_received);
 
-            if (!tmgi_found) {
-                ogs_error("TMGI Allocate: refresh error, TMGI not present");
+            // TS 29.532 V18.6.0 cl. 6.1.3.2.3.1: "UNKNOWN_TMGI, if the TMGI to be refreshed is expired or not found in the MB-SMF."
+            if (!tmgi_found || smf_tmgi_is_expired(tmgi_found)) {
+                ogs_error("TMGI Allocate: refresh error, TMGI not present or expired");
                 // TMGI not found, send error (404 + UNKNOWN_TMGI)
                 ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_NOT_FOUND,
                     message, "Unknown TMGI", "Requested TMGI Allocate (refresh) failed, TMGI expired or cannot be found",

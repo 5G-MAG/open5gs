@@ -3512,6 +3512,22 @@ int smf_tmgi_reclaim_expired(void)
     return reclaimed;
 }
 
+/* True when the TMGI's advertised expiration time has passed. A TMGI without a parsable expiration
+ * time is not reported as expired, as in smf_tmgi_reclaim_expired(). */
+bool smf_tmgi_is_expired(ogs_tmgi_t *tmgi)
+{
+    ogs_time_t expiry;
+
+    ogs_assert(tmgi);
+
+    if (!tmgi->expiration_time)
+        return false;
+    if (ogs_sbi_time_from_string(&expiry, tmgi->expiration_time) == false)
+        return false;
+
+    return expiry <= ogs_time_now();
+}
+
 ogs_tmgi_t *smf_tmgi_find_by_tmgi(ogs_tmgi_t *tmgi_to_find)
 {
     ogs_tmgi_t *tmgi = NULL;
