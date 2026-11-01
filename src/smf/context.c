@@ -121,6 +121,14 @@ void smf_context_init(void)
     ogs_pool_init(&smf_n4_seid_pool, ogs_app()->pool.sess);
     ogs_pool_random_id_generate(&smf_n4_seid_pool);
 
+    /* TS 23.003 V18.8.0 clause 30.2: "MBS Service ID consists of a 6-digit fixed-length hexadecimal number
+     * between 000000 and FFFFFF." A TMGI pool larger than that cannot be given distinct identifiers. */
+    if (ogs_global_conf()->max.mbs.tmgis > (uint64_t)OGS_MAX_MBS_SERVICE_ID + 1) {
+        ogs_fatal("max.mbs.tmgis[%" PRIu64 "] exceeds the %u MBS Service IDs a TMGI can carry",
+                ogs_global_conf()->max.mbs.tmgis, OGS_MAX_MBS_SERVICE_ID + 1);
+        ogs_assert_if_reached();
+    }
+
     ogs_pool_init(&tmgi_pool, ogs_global_conf()->max.mbs.tmgis);
     ogs_list_init(&self.tmgi_list);
     ogs_pool_init(&smf_mbs_sess_pool, ogs_global_conf()->max.mbs.mbs_sessions);
@@ -3392,15 +3400,45 @@ int smf_tmgi_count(void)
     return ogs_list_count(&self.tmgi_list);
 }
 
-static char *smf_tmgi_gen_random_mbs_service_id(void)
+/* TS 23.003 V18.8.0 clause 30.2: "MBS Service ID uniquely identifies an MBS service within a PLMN."
+ * Starting at "start", returns the first 6-digit MBS Service ID (000000 to FFFFFF, wrapping) that no TMGI of
+ * tmgi_list with the same PLMN carries, or NULL when every value is taken. With fewer TMGIs than values it
+ * ends after at most one step per TMGI. */
+char *smf_tmgi_pick_mbs_service_id(
+        ogs_list_t *tmgi_list, const ogs_plmn_id_t *plmn_id, uint32_t start)
 {
-    char *mbs_service_id = NULL;
+    uint32_t tried;
 
-    uint32_t random_id = ogs_random32() % (OGS_MAX_MBS_SERVICE_ID + 1);
+    ogs_assert(tmgi_list);
+    ogs_assert(plmn_id);
 
-    mbs_service_id = ogs_msprintf("%06X", random_id);
+    for (tried = 0; tried <= OGS_MAX_MBS_SERVICE_ID; tried++) {
+        ogs_tmgi_t *tmgi = NULL;
+        bool in_use = false;
+        char *mbs_service_id = ogs_msprintf("%06X",
+                (start + tried) % (OGS_MAX_MBS_SERVICE_ID + 1));
 
-    return mbs_service_id;
+        ogs_assert(mbs_service_id);
+
+        ogs_list_for_each(tmgi_list, tmgi) {
+            if (tmgi->mbs_service_id &&
+                ogs_plmn_id_mcc(&tmgi->plmn_id) == ogs_plmn_id_mcc(plmn_id) &&
+                ogs_plmn_id_mnc(&tmgi->plmn_id) == ogs_plmn_id_mnc(plmn_id) &&
+                ogs_plmn_id_mnc_len(&tmgi->plmn_id) ==
+                    ogs_plmn_id_mnc_len(plmn_id) &&
+                ogs_strcasecmp(tmgi->mbs_service_id, mbs_service_id) == 0) {
+                in_use = true;
+                break;
+            }
+        }
+
+        if (!in_use)
+            return mbs_service_id;
+
+        ogs_free(mbs_service_id);
+    }
+
+    return NULL;
 }
 
 // Using the 2024-05-13T13:05:40.483504Z format (UTC)
@@ -3428,9 +3466,7 @@ ogs_tmgi_t *smf_tmgi_allocate(char *expiration_time)
     // Option 1: TMGI range
     // TODO (borieher): Grab TMGI from the TMGI range
 
-    // Option 2: Random MBS Service ID + PLMN from SMF info
-    tmgi->mbs_service_id = smf_tmgi_gen_random_mbs_service_id();
-
+    // Option 2: PLMN from SMF info, then a random MBS Service ID that is free within that PLMN
     // NOTE (borieher): What happens when there is more than one PLMN?
     ogs_sbi_nf_info_t *nf_info = NULL;
     ogs_list_for_each(&ogs_sbi_self()->nf_instance->nf_info_list, nf_info) {
@@ -3440,6 +3476,14 @@ ogs_tmgi_t *smf_tmgi_allocate(char *expiration_time)
         for (int l = 0; l < smf_info->num_of_nr_tai; l++) {
             memcpy(&tmgi->plmn_id, &smf_info->nr_tai[l].plmn_id, sizeof(ogs_plmn_id_t));
         }
+    }
+
+    tmgi->mbs_service_id = smf_tmgi_pick_mbs_service_id(&self.tmgi_list,
+            &tmgi->plmn_id, ogs_random32() % (OGS_MAX_MBS_SERVICE_ID + 1));
+    if (!tmgi->mbs_service_id) {
+        ogs_error("smf_tmgi_allocate(): every MBS Service ID of the PLMN is in use");
+        smf_tmgi_remove(tmgi);
+        return NULL;
     }
 
     tmgi->expiration_time = ogs_strdup(expiration_time);

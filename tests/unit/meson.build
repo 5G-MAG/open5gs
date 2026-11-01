@@ -45,3 +45,11 @@ amf_mbs_unit_exe = executable('amf-mbs',
     dependencies : libamf_dep)
 
 test('amf-mbs', amf_mbs_unit_exe, is_parallel : false, suite: 'unit')
+
+smf_mbs_unit_exe = executable('smf-mbs',
+    sources : files('smf-mbs-test.c'),
+    include_directories : include_directories('../../src/smf'),
+    c_args : [testunit_core_cc_flags, sbi_cc_flags],
+    dependencies : libsmf_dep)
+
+test('smf-mbs', smf_mbs_unit_exe, is_parallel : false, suite: 'unit')

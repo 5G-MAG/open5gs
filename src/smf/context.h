@@ -742,6 +742,8 @@ int smf_instance_get_load(void);
 int smf_tmgi_count(void);
 char *smf_tmgi_gen_expiration_time(int validity_seconds);
 ogs_tmgi_t *smf_tmgi_allocate(char *expiration_time);
+char *smf_tmgi_pick_mbs_service_id(
+        ogs_list_t *tmgi_list, const ogs_plmn_id_t *plmn_id, uint32_t start);
 int smf_tmgi_reclaim_expired(void);
 void smf_tmgi_deallocate(ogs_tmgi_t *tmgi);
 void smf_tmgi_deallocate_all(void);
