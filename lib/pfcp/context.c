@@ -1021,6 +1021,39 @@ int ogs_pfcp_setup_far_gtpu_node(ogs_pfcp_far_t *far)
     return OGS_OK;
 }
 
+int ogs_pfcp_setup_mbs_unicast_gtpu_node(ogs_pfcp_mbs_unicast_t *mu)
+{
+    int rv;
+    ogs_ip_t ip;
+    ogs_gtp_node_t *gnode = NULL;
+
+    ogs_assert(mu);
+
+    ogs_pfcp_outer_header_creation_to_ip(&mu->outer_header_creation, &ip);
+    if (ip.len == 0) return OGS_DONE;
+
+    gnode = ogs_gtp_node_find_by_ip(&ogs_gtp_self()->gtpu_peer_list, &ip);
+    if (!gnode) {
+        gnode = ogs_gtp_node_add_by_ip(
+            &ogs_gtp_self()->gtpu_peer_list, &ip, ogs_gtp_self()->gtpu_port);
+        if (!gnode) {
+            ogs_error("ogs_gtp_node_add_by_ip() failed");
+            return OGS_ERROR;
+        }
+
+        rv = ogs_gtp_connect(
+                ogs_gtp_self()->gtpu_sock, ogs_gtp_self()->gtpu_sock6, gnode);
+        if (rv != OGS_OK) {
+            ogs_error("ogs_gtp_connect() failed");
+            return rv;
+        }
+    }
+
+    OGS_SETUP_GTP_NODE(mu, gnode);
+
+    return OGS_OK;
+}
+
 int ogs_pfcp_setup_pdr_gtpu_node(ogs_pfcp_pdr_t *pdr)
 {
     int rv;
@@ -1635,6 +1668,65 @@ ogs_pfcp_far_t *ogs_pfcp_far_find_by_teid(uint32_t teid)
             self.far_teid_hash, &teid, sizeof(teid));
 }
 
+ogs_pfcp_mbs_unicast_t *ogs_pfcp_mbs_unicast_find(ogs_pfcp_far_t *far, uint16_t id)
+{
+    ogs_pfcp_mbs_unicast_t *mu = NULL;
+
+    ogs_assert(far);
+
+    ogs_list_for_each(&far->mbs_unicast_list, mu)
+        if (mu->id == id) return mu;
+
+    return NULL;
+}
+
+ogs_pfcp_mbs_unicast_t *ogs_pfcp_mbs_unicast_add(ogs_pfcp_far_t *far, uint16_t id)
+{
+    ogs_pfcp_mbs_unicast_t *mu = NULL;
+
+    ogs_assert(far);
+
+    mu = ogs_calloc(1, sizeof(*mu));
+    if (!mu) {
+        ogs_error("ogs_calloc() failed");
+        return NULL;
+    }
+    mu->far = far;
+    mu->id = id;
+    mu->dst_if = OGS_PFCP_INTERFACE_UNKNOWN;
+    ogs_list_add(&far->mbs_unicast_list, mu);
+
+    return mu;
+}
+
+void ogs_pfcp_mbs_unicast_free(ogs_pfcp_mbs_unicast_t *mu)
+{
+    ogs_assert(mu);
+
+    if (mu->dnn)
+        ogs_free(mu->dnn);
+    ogs_free(mu);
+}
+
+void ogs_pfcp_mbs_unicast_remove(ogs_pfcp_mbs_unicast_t *mu)
+{
+    ogs_assert(mu);
+    ogs_assert(mu->far);
+
+    ogs_list_remove(&mu->far->mbs_unicast_list, mu);
+    ogs_pfcp_mbs_unicast_free(mu);
+}
+
+void ogs_pfcp_mbs_unicast_remove_all(ogs_pfcp_far_t *far)
+{
+    ogs_pfcp_mbs_unicast_t *mu = NULL, *next_mu = NULL;
+
+    ogs_assert(far);
+
+    ogs_list_for_each_safe(&far->mbs_unicast_list, next_mu, mu)
+        ogs_pfcp_mbs_unicast_remove(mu);
+}
+
 void ogs_pfcp_far_remove(ogs_pfcp_far_t *far)
 {
     int i;
@@ -1653,6 +1745,8 @@ void ogs_pfcp_far_remove(ogs_pfcp_far_t *far)
     if (far->hash.f_teid.len)
         ogs_hash_set(self.far_f_teid_hash,
                 &far->hash.f_teid.key, far->hash.f_teid.len, NULL);
+
+    ogs_pfcp_mbs_unicast_remove_all(far);
 
     if (far->dnn)
         ogs_free(far->dnn);

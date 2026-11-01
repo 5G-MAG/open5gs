@@ -978,7 +978,6 @@ typedef ogs_tlv_octet_t ogs_pfcp_tlv_event_notification_uri_t;
 typedef ogs_tlv_octet_t ogs_pfcp_tlv_notification_correlation_id_t;
 typedef ogs_tlv_octet_t ogs_pfcp_tlv_reporting_flags_t;
 typedef ogs_tlv_octet_t ogs_pfcp_tlv_predefined_rules_name_t;
-typedef ogs_tlv_octet_t ogs_pfcp_tlv_remove_mbs_unicast_parameters_t;
 typedef ogs_tlv_octet_t ogs_pfcp_tlv_mbs_session_identifier_t;
 typedef ogs_tlv_octet_t ogs_pfcp_tlv_multicast_transport_information_t;
 typedef ogs_tlv_octet_t ogs_pfcp_tlv_mbsn4mbreq_flags_t;
@@ -1108,6 +1107,12 @@ typedef struct ogs_pfcp_tlv_mbs_multicast_parameters_s {
     ogs_pfcp_tlv__interface_type_t destination_interface_type;
 } ogs_pfcp_tlv_mbs_multicast_parameters_t;
 
+/* TS 29.244 Table 7.5.4.3-4: grouped, with the MBS Unicast Parameters ID (M) */
+typedef struct ogs_pfcp_tlv_remove_mbs_unicast_parameters_s {
+    ogs_tlv_presence_t presence;
+    ogs_pfcp_tlv_mbs_unicast_parameters_id_t mbs_unicast_parameters_id;
+} ogs_pfcp_tlv_remove_mbs_unicast_parameters_t;
+
 typedef struct ogs_pfcp_tlv_add_mbs_unicast_parameters_s {
     ogs_tlv_presence_t presence;
     ogs_pfcp_tlv_destination_interface_t destination_interface;
@@ -1127,7 +1132,7 @@ typedef struct ogs_pfcp_tlv_create_far_s {
     ogs_pfcp_tlv_bar_id_t bar_id;
     ogs_pfcp_tlv_redundant_transmission_forwarding_parameters_t redundant_transmission_forwarding_parameters;
     ogs_pfcp_tlv_mbs_multicast_parameters_t mbs_multicast_parameters;
-    ogs_pfcp_tlv_add_mbs_unicast_parameters_t add_mbs_unicast_parameters;
+    ogs_pfcp_tlv_add_mbs_unicast_parameters_t add_mbs_unicast_parameters[8];
 } ogs_pfcp_tlv_create_far_t;
 
 typedef struct ogs_pfcp_tlv_update_forwarding_parameters_s {
@@ -1162,8 +1167,8 @@ typedef struct ogs_pfcp_tlv_update_far_s {
     ogs_pfcp_tlv_update_duplicating_parameters_t update_duplicating_parameters;
     ogs_pfcp_tlv_redundant_transmission_forwarding_parameters_t redundant_transmission_forwarding_parameters;
     ogs_pfcp_tlv_bar_id_t bar_id;
-    ogs_pfcp_tlv_add_mbs_unicast_parameters_t add_mbs_unicast_parameters;
-    ogs_pfcp_tlv_remove_mbs_unicast_parameters_t remove_mbs_unicast_parameters;
+    ogs_pfcp_tlv_add_mbs_unicast_parameters_t add_mbs_unicast_parameters[8];
+    ogs_pfcp_tlv_remove_mbs_unicast_parameters_t remove_mbs_unicast_parameters[8];
 } ogs_pfcp_tlv_update_far_t;
 
 typedef struct ogs_pfcp_tlv_pfd_context_s {

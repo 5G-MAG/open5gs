@@ -847,10 +847,10 @@ static bool _modification_ie_not_supported(const ogs_pfcp_session_modification_r
 }
 
 /*
- * Checks one Update FAR of an N4mb Session Modification Request against the session, without changing it, so that a
- * request that fails is rejected as a whole and leaves the session as it was.
+ * The Update FAR of an N4mb Session Modification Request names an existing FAR of the session (TS 29.244
+ * Table 7.5.4.3-1: FAR ID, M).
  */
-static int _check_update_far(upf_mbs_sess_t *mbs_sess, const ogs_pfcp_tlv_update_far_t *uf,
+static ogs_pfcp_far_t *_find_update_far(upf_mbs_sess_t *mbs_sess, const ogs_pfcp_tlv_update_far_t *uf,
         uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     ogs_pfcp_far_t *far;
@@ -859,16 +859,22 @@ static int _check_update_far(upf_mbs_sess_t *mbs_sess, const ogs_pfcp_tlv_update
         ogs_error("No FAR ID in an Update FAR");
         *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
         *offending_ie_value = OGS_PFCP_FAR_ID_TYPE;
-        return OGS_ERROR;
+        return NULL;
     }
     far = ogs_pfcp_far_find(&mbs_sess->pfcp, uf->far_id.u32);
     if (!far) {
         ogs_error("Update FAR names the unknown FAR ID %u", uf->far_id.u32);
         *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
         *offending_ie_value = OGS_PFCP_FAR_ID_TYPE;
-        return OGS_ERROR;
+        return NULL;
     }
+    return far;
+}
 
+/* Checks the Apply Action of an Update FAR against the FAR as the request leaves it. */
+static int _check_apply_action(upf_mbs_sess_t *mbs_sess, const ogs_pfcp_tlv_update_far_t *uf, ogs_pfcp_far_t *far,
+        uint8_t *cause_value, uint16_t *offending_ie_value)
+{
     if (uf->apply_action.presence && (uf->apply_action.u16 & OGS_PFCP_APPLY_ACTION_FSSM)) {
         /* TS 29.244 cl. 5.34.2.1A: FSSM makes the MB-UPF "forward the MBS session data using the LLSSM and the
          * C-TEID, which the MB-UPF has earlier assigned to the MBS session"; the destination interface, the outer
@@ -891,9 +897,74 @@ static int _check_update_far(upf_mbs_sess_t *mbs_sess, const ogs_pfcp_tlv_update
     return OGS_OK;
 }
 
+#define MAX_UPDATE_FAR_ADDS (OGS_MAX_NUM_OF_FAR * 8)
+
 /*
- * N4mb Session Modification Request (TS 29.244 cl. 7.5.4, N4mb column of Table 7.5.4.1-1): the Apply Action of the
- * FARs of the MBS session. The request is checked as a whole first and applied only if every part is valid.
+ * The peers a request added to and removed from the FARs, kept until the whole request is known to be valid: a
+ * removed peer is only unlinked, so that a request that fails can put the FARs back as they were.
+ */
+typedef struct {
+    ogs_list_t removed;     /* ogs_pfcp_mbs_unicast_t, unlinked from their FAR */
+    ogs_pfcp_mbs_unicast_t *added[MAX_UPDATE_FAR_ADDS];
+    int num_of_added;
+} mbs_unicast_journal_t;
+
+static void _journal_rollback(mbs_unicast_journal_t *j)
+{
+    ogs_pfcp_mbs_unicast_t *mu, *next;
+    int i;
+
+    ogs_list_for_each_safe(&j->removed, next, mu) {
+        ogs_list_remove(&j->removed, mu);
+        ogs_list_add(&mu->far->mbs_unicast_list, mu);
+    }
+    for (i = 0; i < j->num_of_added; i++)
+        ogs_pfcp_mbs_unicast_remove(j->added[i]);
+    j->num_of_added = 0;
+}
+
+static void _journal_commit(mbs_unicast_journal_t *j)
+{
+    ogs_pfcp_mbs_unicast_t *mu, *next;
+
+    ogs_list_for_each_safe(&j->removed, next, mu) {
+        ogs_list_remove(&j->removed, mu);
+        ogs_pfcp_mbs_unicast_free(mu);
+    }
+    j->num_of_added = 0;
+}
+
+/* The Remove and Add MBS Unicast Parameters of one Update FAR (removals first). */
+static int _update_far_unicast(ogs_pfcp_far_t *far, ogs_pfcp_tlv_update_far_t *uf, mbs_unicast_journal_t *j,
+        uint8_t *cause_value, uint16_t *offending_ie_value)
+{
+    size_t i;
+    ogs_pfcp_mbs_unicast_t *mu;
+
+    for (i = 0; i < OGS_ARRAY_SIZE(uf->remove_mbs_unicast_parameters) &&
+            uf->remove_mbs_unicast_parameters[i].presence; i++) {
+        mu = ogs_pfcp_handle_remove_mbs_unicast_parameters(far, &uf->remove_mbs_unicast_parameters[i],
+                cause_value, offending_ie_value);
+        if (!mu)
+            return OGS_ERROR;
+        ogs_list_remove(&far->mbs_unicast_list, mu);
+        ogs_list_add(&j->removed, mu);
+    }
+    for (i = 0; i < OGS_ARRAY_SIZE(uf->add_mbs_unicast_parameters) &&
+            uf->add_mbs_unicast_parameters[i].presence; i++) {
+        mu = ogs_pfcp_handle_add_mbs_unicast_parameters(far, &uf->add_mbs_unicast_parameters[i],
+                cause_value, offending_ie_value);
+        if (!mu)
+            return OGS_ERROR;
+        ogs_assert(j->num_of_added < MAX_UPDATE_FAR_ADDS);
+        j->added[j->num_of_added++] = mu;
+    }
+    return OGS_OK;
+}
+
+/*
+ * N4mb Session Modification Request (TS 29.244 cl. 7.5.4, N4mb column of Table 7.5.4.1-1): the Apply Action and the
+ * remote GTP-U peers of the FARs of the MBS session. The request is applied as a whole or not at all.
  */
 void upf_n4mb_handle_session_modification_request(
         upf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
@@ -902,6 +973,8 @@ void upf_n4mb_handle_session_modification_request(
     int i;
     uint8_t cause_value = OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
     uint16_t offending_ie_value = 0;
+    mbs_unicast_journal_t journal;
+    ogs_pfcp_far_t *far;
 
     ogs_assert(xact);
     ogs_assert(req);
@@ -916,6 +989,8 @@ void upf_n4mb_handle_session_modification_request(
         return;
     }
 
+    memset(&journal, 0, sizeof(journal));
+
     if (_modification_ie_not_supported(req, &offending_ie_value)) {
         ogs_error("IE type %u of the N4mb Session Modification Request is not supported", offending_ie_value);
         cause_value = OGS_PFCP_CAUSE_SERVICE_NOT_SUPPORTED;
@@ -923,13 +998,28 @@ void upf_n4mb_handle_session_modification_request(
     }
 
     for (i = 0; i < OGS_MAX_NUM_OF_FAR && req->update_far[i].presence; i++) {
-        if (_check_update_far(mbs_sess, &req->update_far[i], &cause_value, &offending_ie_value) != OGS_OK)
+        if (!_find_update_far(mbs_sess, &req->update_far[i], &cause_value, &offending_ie_value))
             goto reject;
     }
 
     for (i = 0; i < OGS_MAX_NUM_OF_FAR && req->update_far[i].presence; i++) {
-        ogs_pfcp_far_t *far = ogs_pfcp_far_find(&mbs_sess->pfcp, req->update_far[i].far_id.u32);
+        far = ogs_pfcp_far_find(&mbs_sess->pfcp, req->update_far[i].far_id.u32);
+        ogs_assert(far);
+        if (_update_far_unicast(far, &req->update_far[i], &journal, &cause_value, &offending_ie_value) != OGS_OK)
+            goto rollback;
+    }
 
+    for (i = 0; i < OGS_MAX_NUM_OF_FAR && req->update_far[i].presence; i++) {
+        far = ogs_pfcp_far_find(&mbs_sess->pfcp, req->update_far[i].far_id.u32);
+        ogs_assert(far);
+        if (_check_apply_action(mbs_sess, &req->update_far[i], far, &cause_value, &offending_ie_value) != OGS_OK)
+            goto rollback;
+    }
+
+    _journal_commit(&journal);
+
+    for (i = 0; i < OGS_MAX_NUM_OF_FAR && req->update_far[i].presence; i++) {
+        far = ogs_pfcp_far_find(&mbs_sess->pfcp, req->update_far[i].far_id.u32);
         ogs_assert(far);
         if (req->update_far[i].apply_action.presence)
             far->apply_action = req->update_far[i].apply_action.u16;
@@ -938,6 +1028,8 @@ void upf_n4mb_handle_session_modification_request(
     ogs_assert(OGS_OK == upf_pfcp_n4mb_send_session_modification_response(xact, mbs_sess));
     return;
 
+rollback:
+    _journal_rollback(&journal);
 reject:
     ogs_pfcp_send_error_message(xact, mbs_sess->smf_n4mb_f_seid.seid,
             OGS_PFCP_SESSION_MODIFICATION_RESPONSE_TYPE, cause_value, offending_ie_value);

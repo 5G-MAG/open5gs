@@ -69,6 +69,17 @@ bool ogs_pfcp_handle_remove_pdr(ogs_pfcp_sess_t *sess,
 ogs_pfcp_far_t *ogs_pfcp_handle_create_far(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_create_far_t *message,
         uint8_t *cause_value, uint16_t *offending_ie_value);
+/* Add MBS Unicast Parameters of a Create FAR or an Update FAR: validates the IE and adds the peer to the FAR.
+ * Returns NULL, with the cause and the Offending IE set and nothing added, if the IE is not valid. */
+ogs_pfcp_mbs_unicast_t *ogs_pfcp_handle_add_mbs_unicast_parameters(ogs_pfcp_far_t *far,
+        ogs_pfcp_tlv_add_mbs_unicast_parameters_t *message,
+        uint8_t *cause_value, uint16_t *offending_ie_value);
+/* Remove MBS Unicast Parameters: returns the peer of the FAR the IE names (still in the FAR's list), or NULL with the
+ * cause and the Offending IE set. */
+ogs_pfcp_mbs_unicast_t *ogs_pfcp_handle_remove_mbs_unicast_parameters(ogs_pfcp_far_t *far,
+        ogs_pfcp_tlv_remove_mbs_unicast_parameters_t *message,
+        uint8_t *cause_value, uint16_t *offending_ie_value);
+
 ogs_pfcp_far_t *ogs_pfcp_handle_update_far_flags(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_update_far_t *message,
         uint8_t *cause_value, uint16_t *offending_ie_value);

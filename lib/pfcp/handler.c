@@ -967,6 +967,7 @@ ogs_pfcp_far_t *ogs_pfcp_handle_create_far(ogs_pfcp_sess_t *sess,
         uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     ogs_pfcp_far_t *far = NULL;
+    int i;
 
     ogs_assert(message);
     ogs_assert(sess);
@@ -1045,6 +1046,14 @@ ogs_pfcp_far_t *ogs_pfcp_handle_create_far(ogs_pfcp_sess_t *sess,
     far->tos = far->tos_mask = 0;
     far->mbs_multicast_parameters = message->mbs_multicast_parameters.presence;
 
+    ogs_pfcp_mbs_unicast_remove_all(far);
+    for (i = 0; i < OGS_ARRAY_SIZE(message->add_mbs_unicast_parameters) &&
+            message->add_mbs_unicast_parameters[i].presence; i++) {
+        if (ogs_pfcp_handle_add_mbs_unicast_parameters(far, &message->add_mbs_unicast_parameters[i],
+                    cause_value, offending_ie_value) == NULL)
+            return NULL;
+    }
+
     if (message->mbs_multicast_parameters.presence) {
         // TODO (borieher): Keep adding the optional and conditional IEs
         if (message->mbs_multicast_parameters.destination_interface.presence) {
@@ -1103,6 +1112,169 @@ ogs_pfcp_far_t *ogs_pfcp_handle_create_far(ogs_pfcp_sess_t *sess,
     }
 
     return far;
+}
+
+ogs_pfcp_mbs_unicast_t *ogs_pfcp_handle_add_mbs_unicast_parameters(ogs_pfcp_far_t *far,
+        ogs_pfcp_tlv_add_mbs_unicast_parameters_t *message,
+        uint8_t *cause_value, uint16_t *offending_ie_value)
+{
+    ogs_pfcp_mbs_unicast_t *mu = NULL;
+    const ogs_pfcp_outer_header_creation_t *ohc;
+    uint16_t id, want;
+    int rv;
+
+    ogs_assert(far);
+    ogs_assert(message);
+
+    /* TS 29.244 Table 7.5.2.3-6: Destination Interface (M), MBS Unicast Parameters ID (M), Outer Header Creation (M) */
+    if (message->destination_interface.presence == 0) {
+        ogs_error("No Destination Interface in Add MBS Unicast Parameters");
+        *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+        *offending_ie_value = OGS_PFCP_DESTINATION_INTERFACE_TYPE;
+        return NULL;
+    }
+    if (message->mbs_unicast_parameters_id.presence == 0) {
+        ogs_error("No MBS Unicast Parameters ID in Add MBS Unicast Parameters");
+        *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+        *offending_ie_value = OGS_PFCP_MBS_UNICAST_PARAMETERS_ID_TYPE;
+        return NULL;
+    }
+    /* TS 29.244 cl. 8.2.210: the value field is an Unsigned16 */
+    if (message->mbs_unicast_parameters_id.len != 2) {
+        ogs_error("MBS Unicast Parameters ID of length %u", message->mbs_unicast_parameters_id.len);
+        *cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
+        *offending_ie_value = OGS_PFCP_MBS_UNICAST_PARAMETERS_ID_TYPE;
+        return NULL;
+    }
+    id = be16toh(*(uint16_t *)message->mbs_unicast_parameters_id.data);
+
+    if (message->outer_header_creation.presence == 0) {
+        ogs_error("No Outer Header Creation in Add MBS Unicast Parameters");
+        *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+        *offending_ie_value = OGS_PFCP_OUTER_HEADER_CREATION_TYPE;
+        return NULL;
+    }
+    /* "It shall contain the F-TEID of the remote GTP-U peer when adding a GTP-U/UDP/IP header": the description
+     * (octets 5 and 6) and then the TEID and the address of each family the description names */
+    ohc = message->outer_header_creation.data;
+    if (message->outer_header_creation.len < 2) {
+        *cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
+        *offending_ie_value = OGS_PFCP_OUTER_HEADER_CREATION_TYPE;
+        return NULL;
+    }
+    if (!ohc->gtpu4 && !ohc->gtpu6) {
+        ogs_error("Add MBS Unicast Parameters: the Outer Header Creation is not GTP-U/UDP/IP");
+        *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+        *offending_ie_value = OGS_PFCP_OUTER_HEADER_CREATION_TYPE;
+        return NULL;
+    }
+    if (ohc->udp4 || ohc->udp6 || ohc->ip4 || ohc->ip6 || ohc->ctag || ohc->stag ||
+            ohc->n19 || ohc->n6 || ohc->ssm_c_teid) {
+        ogs_error("Add MBS Unicast Parameters: an Outer Header Creation besides GTP-U/UDP/IP");
+        *cause_value = OGS_PFCP_CAUSE_SERVICE_NOT_SUPPORTED;
+        *offending_ie_value = OGS_PFCP_OUTER_HEADER_CREATION_TYPE;
+        return NULL;
+    }
+    want = 2 + 4 + (ohc->gtpu4 ? OGS_IPV4_LEN : 0) + (ohc->gtpu6 ? OGS_IPV6_LEN : 0);
+    if (message->outer_header_creation.len != want) {
+        ogs_error("Outer Header Creation of length %u, expected %u", message->outer_header_creation.len, want);
+        *cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
+        *offending_ie_value = OGS_PFCP_OUTER_HEADER_CREATION_TYPE;
+        return NULL;
+    }
+    if (message->transport_level_marking.presence && message->transport_level_marking.len != 2) {
+        ogs_error("Transport Level Marking length %u", message->transport_level_marking.len);
+        *cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
+        *offending_ie_value = OGS_PFCP_TRANSPORT_LEVEL_MARKING_TYPE;
+        return NULL;
+    }
+    if (ogs_pfcp_mbs_unicast_find(far, id)) {
+        ogs_error("MBS Unicast Parameters ID %u of FAR %u is already provisioned", id, far->id);
+        *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+        *offending_ie_value = OGS_PFCP_MBS_UNICAST_PARAMETERS_ID_TYPE;
+        return NULL;
+    }
+
+    mu = ogs_pfcp_mbs_unicast_add(far, id);
+    if (!mu) {
+        *cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+        *offending_ie_value = OGS_PFCP_ADD_MBS_UNICAST_PARAMETERS_TYPE;
+        return NULL;
+    }
+
+    mu->dst_if = message->destination_interface.u8;
+    memcpy(&mu->outer_header_creation, ohc, message->outer_header_creation.len);
+    mu->outer_header_creation.teid = be32toh(mu->outer_header_creation.teid);
+
+    if (message->network_instance.presence) {
+        char dnn[OGS_MAX_DNN_LEN+1];
+
+        if (ogs_fqdn_parse(dnn, message->network_instance.data,
+                ogs_min(message->network_instance.len, OGS_MAX_DNN_LEN)) <= 0) {
+            ogs_error("Invalid Network Instance in Add MBS Unicast Parameters");
+            *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+            *offending_ie_value = OGS_PFCP_NETWORK_INSTANCE_TYPE;
+            ogs_pfcp_mbs_unicast_remove(mu);
+            return NULL;
+        }
+        mu->dnn = ogs_strdup(dnn);
+        ogs_assert(mu->dnn);
+    }
+
+    /* TS 29.244 cl. 8.2.12: the DSCP in the first octet, the mask (0xFC) in the second */
+    if (message->transport_level_marking.presence) {
+        const uint8_t *tlm = message->transport_level_marking.data;
+
+        mu->transport_level_marking = true;
+        mu->tos = tlm[0];
+        mu->tos_mask = tlm[1];
+    }
+
+    rv = ogs_pfcp_setup_mbs_unicast_gtpu_node(mu);
+    if (rv != OGS_OK) {
+        ogs_error("ogs_pfcp_setup_mbs_unicast_gtpu_node() failed");
+        *cause_value = OGS_PFCP_CAUSE_SYSTEM_FAILURE;
+        *offending_ie_value = OGS_PFCP_OUTER_HEADER_CREATION_TYPE;
+        ogs_pfcp_mbs_unicast_remove(mu);
+        return NULL;
+    }
+
+    return mu;
+}
+
+ogs_pfcp_mbs_unicast_t *ogs_pfcp_handle_remove_mbs_unicast_parameters(ogs_pfcp_far_t *far,
+        ogs_pfcp_tlv_remove_mbs_unicast_parameters_t *message,
+        uint8_t *cause_value, uint16_t *offending_ie_value)
+{
+    ogs_pfcp_mbs_unicast_t *mu = NULL;
+    uint16_t id;
+
+    ogs_assert(far);
+    ogs_assert(message);
+
+    if (message->mbs_unicast_parameters_id.presence == 0) {
+        ogs_error("No MBS Unicast Parameters ID in Remove MBS Unicast Parameters");
+        *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+        *offending_ie_value = OGS_PFCP_MBS_UNICAST_PARAMETERS_ID_TYPE;
+        return NULL;
+    }
+    if (message->mbs_unicast_parameters_id.len != 2) {
+        ogs_error("MBS Unicast Parameters ID of length %u", message->mbs_unicast_parameters_id.len);
+        *cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
+        *offending_ie_value = OGS_PFCP_MBS_UNICAST_PARAMETERS_ID_TYPE;
+        return NULL;
+    }
+    id = be16toh(*(uint16_t *)message->mbs_unicast_parameters_id.data);
+
+    mu = ogs_pfcp_mbs_unicast_find(far, id);
+    if (!mu) {
+        ogs_error("MBS Unicast Parameters ID %u is not provisioned in FAR %u", id, far->id);
+        *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+        *offending_ie_value = OGS_PFCP_MBS_UNICAST_PARAMETERS_ID_TYPE;
+        return NULL;
+    }
+
+    return mu;
 }
 
 ogs_pfcp_far_t *ogs_pfcp_handle_update_far_flags(ogs_pfcp_sess_t *sess,

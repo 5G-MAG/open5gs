@@ -20,6 +20,7 @@ CP = ('127.0.0.77', 8805)
 # IE types
 T_CREATE_PDR, T_PDI, T_CREATE_FAR, T_CREATE_QER = 1, 2, 3, 7
 T_UPDATE_FAR = 10
+T_ADD_UNICAST, T_REMOVE_UNICAST, T_UNICAST_ID, T_TLM = 302, 304, 309, 30
 MODIFICATION_REQUEST = 52
 T_CAUSE, T_SRC_IF, T_NET_INST, T_GATE, T_PRECEDENCE, T_OFFENDING, T_DST_IF, T_APPLY = 19, 20, 22, 25, 29, 40, 42, 44
 T_PDR_ID, T_F_SEID, T_NODE_ID, T_OHC, T_FAR_ID, T_QER_ID, T_QFI = 56, 57, 60, 84, 108, 109, 124
@@ -1270,6 +1271,102 @@ def t_U08_modification_that_is_not_valid_changes_nothing():
         assert m and cause(m) == CAUSE_MANDATORY_INCORRECT and offending(m) == T_APPLY, '%s/%s' % (cause(m), offending(m))
     finally:
         U.delete(s)
+
+
+def add_unicast(uid, teid=0x1000, ip='127.0.0.41', dst_if=0, ohc=None, drop=(), extra=()):
+    """Add MBS Unicast Parameters (Table 7.5.2.3-6): a GTP-U/UDP/IPv4 outer header toward a remote peer."""
+    if ohc is None:
+        ohc = b'\x01\x00' + struct.pack('>I', teid) + socket.inet_aton(ip)
+    parts = [ie(T_DST_IF, bytes([dst_if])), ie(T_UNICAST_ID, struct.pack('>H', uid)), ie(T_OHC, ohc)]
+    parts = [p for p in parts if struct.unpack('>H', p[:2])[0] not in drop]
+    return ie(T_ADD_UNICAST, parts + list(extra))
+
+
+def remove_unicast(uid, drop=()):
+    parts = [] if T_UNICAST_ID in drop else [ie(T_UNICAST_ID, struct.pack('>H', uid))]
+    return ie(T_REMOVE_UNICAST, parts)
+
+
+@test
+def t_U08_3_U08_6_add_and_remove_mbs_unicast_parameters():
+    r, s = drop_session(0xe201)
+    try:
+        def ok(what, *ies):
+            m = modify(s, *ies)
+            assert m and cause(m) == CAUSE_ACCEPTED, '%s: cause %s offending %s' % (what, cause(m) if m else None, offending(m) if m else None)
+
+        def bad(what, cause_want, off_want, *ies):
+            m = modify(s, *ies)
+            assert m and cause(m) == cause_want and offending(m) == off_want, '%s: cause %s offending %s, wanted %s/%s' % (
+                what, cause(m) if m else None, offending(m) if m else None, cause_want, off_want)
+
+        ok('one peer', update_far(extra=(add_unicast(1),)))
+        ok('several peers', update_far(extra=(add_unicast(2, 0x2000, '127.0.0.42'), add_unicast(3, 0x3000, '127.0.0.43'))))
+        bad('the same ID again', CAUSE_MANDATORY_INCORRECT, T_UNICAST_ID, update_far(extra=(add_unicast(1),)))
+        bad('the same ID twice in a request', CAUSE_MANDATORY_INCORRECT, T_UNICAST_ID,
+            update_far(extra=(add_unicast(4), add_unicast(4))))
+        # the first ID 4 of the request was undone with the request
+        ok('ID 4 after the failed request', update_far(extra=(add_unicast(4),)))
+        bad('remove of an ID that is not provisioned', CAUSE_MANDATORY_INCORRECT, T_UNICAST_ID,
+            update_far(extra=(remove_unicast(77),)))
+        ok('remove', update_far(extra=(remove_unicast(1),)))
+        bad('remove again', CAUSE_MANDATORY_INCORRECT, T_UNICAST_ID, update_far(extra=(remove_unicast(1),)))
+        ok('the ID is free again', update_far(extra=(add_unicast(1),)))
+        # a failed request puts a removed peer back
+        bad('remove then fail', CAUSE_MANDATORY_INCORRECT, T_UNICAST_ID,
+            update_far(extra=(remove_unicast(2), remove_unicast(88))))
+        bad('ID 2 is still provisioned', CAUSE_MANDATORY_INCORRECT, T_UNICAST_ID, update_far(extra=(add_unicast(2),)))
+        # removal and addition of one ID in one request: removals first
+        ok('replace ID 3', update_far(extra=(add_unicast(3, 0x3333, '127.0.0.44'), remove_unicast(3))))
+        # content of the IE
+        bad('no Destination Interface', CAUSE_MANDATORY_MISSING, T_DST_IF, update_far(extra=(add_unicast(5, drop=(T_DST_IF,)),)))
+        bad('no ID', CAUSE_MANDATORY_MISSING, T_UNICAST_ID, update_far(extra=(add_unicast(5, drop=(T_UNICAST_ID,)),)))
+        bad('no Outer Header Creation', CAUSE_MANDATORY_MISSING, T_OHC, update_far(extra=(add_unicast(5, drop=(T_OHC,)),)))
+        bad('Outer Header Creation that is not GTP-U', CAUSE_MANDATORY_INCORRECT, T_OHC,
+            update_far(extra=(add_unicast(5, ohc=b'\x00\x00'),)))
+        bad('UDP/IPv4 outer header', CAUSE_SERVICE_NOT_SUPPORTED, T_OHC,
+            update_far(extra=(add_unicast(5, ohc=b'\x05\x00' + struct.pack('>I', 1) + socket.inet_aton('127.0.0.45')),)))
+        bad('Outer Header Creation too short', CAUSE_INVALID_LENGTH, T_OHC,
+            update_far(extra=(add_unicast(5, ohc=b'\x01\x00\x00\x00\x10\x00'),)))
+        bad('ID of the wrong length', CAUSE_INVALID_LENGTH, T_UNICAST_ID,
+            update_far(extra=(ie(T_ADD_UNICAST, [ie(T_DST_IF, b'\x00'), ie(T_UNICAST_ID, b'\x01'),
+                                                 ie(T_OHC, b'\x01\x00' + struct.pack('>I', 1) + socket.inet_aton('127.0.0.45'))]),)))
+        bad('Transport Level Marking of the wrong length', CAUSE_INVALID_LENGTH, T_TLM,
+            update_far(extra=(add_unicast(5, extra=(ie(T_TLM, b'\xb8'),)),)))
+        # an IPv6 peer when the UPF has no IPv6 GTP-U socket (the test configuration): not reachable, the request fails
+        bad('IPv6 peer without an IPv6 GTP-U socket', CAUSE_SYSTEM_FAILURE, T_OHC, update_far(extra=(
+            add_unicast(6, ohc=b'\x02\x00' + struct.pack('>I', 6) + bytes.fromhex('fd000000000000000000000000000041')),)))
+        ok('ID 6 was not kept', update_far(extra=(add_unicast(6),)))
+        ok('with a Transport Level Marking and a Network Instance', update_far(extra=(
+            add_unicast(7, extra=(ie(T_TLM, b'\xb8\xfc'), ie(T_NET_INST, b'\x03n3a')) ),)))
+    finally:
+        U.delete(s)
+
+
+@test
+def t_U08_3_add_mbs_unicast_parameters_in_the_create_far():
+    ies = replace_ie(mc_request(0xe211, b'\x02' + V4G, None), T_CREATE_FAR,
+                     far(apply=APPLY_FSSM | APPLY_MBSU, mc_extra=()))
+    # the Add IEs are children of the Create FAR: rebuild it with two peers
+    cfar = ie(T_CREATE_FAR, [ie(T_FAR_ID, struct.pack('>I', 1)), ie(T_APPLY, struct.pack('>H', APPLY_FSSM | APPLY_MBSU)),
+                             ie(T_MBS_MC_PARAMS, [ie(T_DST_IF, b'\x00'), ie(T_OHC, b'\x00\x04')]),
+                             add_unicast(1), add_unicast(2, 0x2000, '127.0.0.42')])
+    r = U.establish(replace_ie(ies, T_CREATE_FAR, cfar))
+    s = accepted(r, 'Create FAR with two Add MBS Unicast Parameters')
+    try:
+        m = modify(s, update_far(extra=(add_unicast(2),)))
+        assert m and cause(m) == CAUSE_MANDATORY_INCORRECT and offending(m) == T_UNICAST_ID, 'ID 2 of the Create FAR is not provisioned'
+        m = modify(s, update_far(extra=(remove_unicast(1), remove_unicast(2))))
+        assert m and cause(m) == CAUSE_ACCEPTED
+    finally:
+        U.delete(s)
+    # an invalid Add in the Create FAR rejects the establishment with the Offending IE above 255
+    cfar = ie(T_CREATE_FAR, [ie(T_FAR_ID, struct.pack('>I', 1)), ie(T_APPLY, struct.pack('>H', APPLY_MBSU)),
+                             add_unicast(1, drop=(T_UNICAST_ID,))])
+    r = U.establish(replace_ie(mc_request(0xe212, b'\x02' + V4G, None), T_CREATE_FAR, cfar))
+    assert r and cause(r) == CAUSE_MANDATORY_MISSING and offending(r) == T_UNICAST_ID, 'cause %s offending %s' % (
+        cause(r) if r else None, offending(r) if r else None)
+    accepted_and_deleted(U.establish(good(cp_seid=0xe213)), 'after the rejection')
 
 
 # E-TESTS-BELOW

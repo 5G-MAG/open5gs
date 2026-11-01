@@ -2369,17 +2369,6 @@ ogs_tlv_desc_t ogs_pfcp_tlv_desc_predefined_rules_name =
     { NULL }
 };
 
-ogs_tlv_desc_t ogs_pfcp_tlv_desc_remove_mbs_unicast_parameters =
-{
-    OGS_TLV_VAR_STR,
-    "Remove MBS Unicast Parameters",
-    OGS_PFCP_REMOVE_MBS_UNICAST_PARAMETERS_TYPE,
-    0,
-    0,
-    sizeof(ogs_pfcp_tlv_remove_mbs_unicast_parameters_t),
-    { NULL }
-};
-
 ogs_tlv_desc_t ogs_pfcp_tlv_desc_mbs_session_identifier =
 {
     OGS_TLV_VAR_STR,
@@ -2761,6 +2750,20 @@ ogs_tlv_desc_t ogs_pfcp_tlv_desc_add_mbs_unicast_parameters =
     }
 };
 
+ogs_tlv_desc_t ogs_pfcp_tlv_desc_remove_mbs_unicast_parameters =
+{
+    OGS_TLV_COMPOUND,
+    "Remove MBS Unicast Parameters",
+    OGS_PFCP_REMOVE_MBS_UNICAST_PARAMETERS_TYPE,
+    0,
+    0,
+    sizeof(ogs_pfcp_tlv_remove_mbs_unicast_parameters_t),
+    {
+        &ogs_pfcp_tlv_desc_mbs_unicast_parameters_id,
+        NULL,
+    }
+};
+
 ogs_tlv_desc_t ogs_pfcp_tlv_desc_create_far =
 {
     OGS_TLV_COMPOUND,
@@ -2778,6 +2781,7 @@ ogs_tlv_desc_t ogs_pfcp_tlv_desc_create_far =
         &ogs_pfcp_tlv_desc_redundant_transmission_forwarding_parameters,
         &ogs_pfcp_tlv_desc_mbs_multicast_parameters,
         &ogs_pfcp_tlv_desc_add_mbs_unicast_parameters,
+        &ogs_tlv_desc_more8,
         NULL,
     }
 };
@@ -2840,7 +2844,9 @@ ogs_tlv_desc_t ogs_pfcp_tlv_desc_update_far =
         &ogs_pfcp_tlv_desc_redundant_transmission_forwarding_parameters,
         &ogs_pfcp_tlv_desc_bar_id,
         &ogs_pfcp_tlv_desc_add_mbs_unicast_parameters,
+        &ogs_tlv_desc_more8,
         &ogs_pfcp_tlv_desc_remove_mbs_unicast_parameters,
+        &ogs_tlv_desc_more8,
         NULL,
     }
 };

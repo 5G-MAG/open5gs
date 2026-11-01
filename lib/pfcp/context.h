@@ -225,6 +225,23 @@ typedef struct ogs_pfcp_far_hash_f_teid_s {
     uint32_t addr[4];
 } ogs_pfcp_far_hash_f_teid_t;
 
+/*
+ * One remote GTP-U peer of an MBS session's FAR for unicast transport: an Add MBS Unicast Parameters IE
+ * (TS 29.244 Table 7.5.2.3-6), identified by its MBS Unicast Parameters ID within the FAR.
+ */
+typedef struct ogs_pfcp_mbs_unicast_s {
+    ogs_lnode_t             lnode;
+    ogs_pfcp_far_t          *far;
+    uint16_t                id;
+    ogs_pfcp_interface_t    dst_if;
+    char                    *dnn;                   /* Network Instance */
+    ogs_pfcp_outer_header_creation_t outer_header_creation; /* the F-TEID of the peer */
+    bool                    transport_level_marking;
+    uint8_t                 tos;
+    uint8_t                 tos_mask;
+    void                    *gnode;
+} ogs_pfcp_mbs_unicast_t;
+
 typedef struct ogs_pfcp_far_s {
     ogs_lnode_t             lnode;
 
@@ -262,6 +279,8 @@ typedef struct ogs_pfcp_far_s {
     uint8_t                 tos_mask;
 
     ogs_pfcp_smreq_flags_t  smreq_flags;
+
+    ogs_list_t              mbs_unicast_list;       /* ogs_pfcp_mbs_unicast_t: the remote GTP-U peers of MBSU */
 
     uint32_t                num_of_buffered_packet;
     ogs_pkbuf_t             *buffered_packet[OGS_MAX_NUM_OF_PACKET_BUFFER];
@@ -476,6 +495,15 @@ ogs_pfcp_far_t *ogs_pfcp_far_find_by_teid(uint32_t teid);
 
 void ogs_pfcp_far_remove(ogs_pfcp_far_t *far);
 void ogs_pfcp_far_remove_all(ogs_pfcp_sess_t *sess);
+
+ogs_pfcp_mbs_unicast_t *ogs_pfcp_mbs_unicast_find(ogs_pfcp_far_t *far, uint16_t id);
+ogs_pfcp_mbs_unicast_t *ogs_pfcp_mbs_unicast_add(ogs_pfcp_far_t *far, uint16_t id);
+/* Unlinks from the FAR and frees */
+void ogs_pfcp_mbs_unicast_remove(ogs_pfcp_mbs_unicast_t *mu);
+/* Frees an entry that is not in a FAR's list */
+void ogs_pfcp_mbs_unicast_free(ogs_pfcp_mbs_unicast_t *mu);
+void ogs_pfcp_mbs_unicast_remove_all(ogs_pfcp_far_t *far);
+int ogs_pfcp_setup_mbs_unicast_gtpu_node(ogs_pfcp_mbs_unicast_t *mu);
 
 ogs_pfcp_urr_t *ogs_pfcp_urr_add(ogs_pfcp_sess_t *sess);
 ogs_pfcp_urr_t *ogs_pfcp_urr_find(
