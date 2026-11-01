@@ -1536,6 +1536,49 @@ def t_U08_8_transport_level_marking_of_a_peer():
         U.delete(s)
 
 
+def smreq_flags(v):
+    return ie(49, bytes([v]))
+
+
+@test
+def t_U08_7_deteid_deletes_all_provisioned_f_teids():
+    r, s = drop_session(0xe401)
+    peers = [GtpuPeer('127.0.0.41'), GtpuPeer('127.0.0.42')]
+    try:
+        m = modify(s, update_far(apply=APPLY_MBSU, extra=(add_unicast(1, 0x1111, '127.0.0.41'), add_unicast(2, 0x2222, '127.0.0.42'))))
+        assert m and cause(m) == CAUSE_ACCEPTED
+        assert [len(x) for x in sent_to(r, *peers)[0]] == [1, 1]
+        # TS 29.244 cl. 5.34.2.4: Apply Action from MBSU to BUFF or DROP, with DETEID
+        m = modify(s, update_far(apply=APPLY_BUFF), smreq_flags(0x20))
+        assert m and cause(m) == CAUSE_ACCEPTED, '%s/%s' % (cause(m) if m else None, offending(m) if m else None)
+        # the IDs are free again
+        m = modify(s, update_far(extra=(add_unicast(1, 0x1111, '127.0.0.41'), add_unicast(2, 0x2222, '127.0.0.42'))))
+        assert m and cause(m) == CAUSE_ACCEPTED, 'the F-TEIDs were not deleted: %s/%s' % (cause(m) if m else None, offending(m) if m else None)
+        # without DETEID the F-TEIDs are kept (cl. 5.34.2.4: "Otherwise, MB-UPF will keep all unicast DL N3mb F-TEIDs")
+        m = modify(s, update_far(apply=APPLY_DROP))
+        assert m and cause(m) == CAUSE_ACCEPTED
+        m = modify(s, update_far(apply=APPLY_MBSU))
+        assert m and cause(m) == CAUSE_ACCEPTED, 'peers were not kept'
+        assert [len(x) for x in sent_to(r, *peers)[0]] == [1, 1], 'kept peers did not receive'
+        # DETEID and the new F-TEIDs in one request: the deletion first, then the additions
+        m = modify(s, update_far(apply=APPLY_MBSU, extra=(add_unicast(1, 0x9999, '127.0.0.41'),)), smreq_flags(0x20))
+        assert m and cause(m) == CAUSE_ACCEPTED, '%s/%s' % (cause(m) if m else None, offending(m) if m else None)
+        got = sent_to(r, *peers)[0]
+        assert [len(x) for x in got] == [1, 0] and gtpu_parse(got[0][0])['teid'] == 0x9999, 'after DETEID and Add: %s' % [len(x) for x in got]
+        # a failing request keeps what DETEID deleted
+        m = modify(s, update_far(extra=(add_unicast(3, 0xaaaa, '127.0.0.43'),)), update_far(far_id=99, apply=APPLY_DROP), smreq_flags(0x20))
+        assert m and cause(m) == CAUSE_MANDATORY_INCORRECT
+        got = sent_to(r, *peers)[0]
+        assert [len(x) for x in got] == [1, 0], 'a rejected request with DETEID deleted the peers'
+        # other flags are not supported: rejected, not ignored
+        m = modify(s, update_far(apply=APPLY_DROP), smreq_flags(0x04))
+        assert m and cause(m) == CAUSE_SERVICE_NOT_SUPPORTED and offending(m) == 49, '%s/%s' % (cause(m) if m else None, offending(m) if m else None)
+    finally:
+        for p in peers:
+            p.close()
+        U.delete(s)
+
+
 # E-TESTS-BELOW
 
 

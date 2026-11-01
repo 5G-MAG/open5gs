@@ -994,6 +994,7 @@ void upf_n4mb_handle_session_modification_request(
     uint16_t offending_ie_value = 0;
     mbs_unicast_journal_t journal;
     ogs_pfcp_far_t *far;
+    bool delete_all_f_teids = false;
 
     ogs_assert(xact);
     ogs_assert(req);
@@ -1016,9 +1017,37 @@ void upf_n4mb_handle_session_modification_request(
         goto reject;
     }
 
+    /* PFCPSMReq-Flags (TS 29.244 Table 7.5.4.1-1): of its flags, DETEID is the one of the MB-UPF's MBS procedures
+     * (cl. 5.34.2.4); the others ask for what this handler does not do (buffered packets, usage reports) */
+    if (req->pfcpsmreq_flags.presence) {
+        ogs_pfcp_smreq_flags_t flags;
+
+        flags.value = req->pfcpsmreq_flags.u8;
+        if (flags.value & ~(uint8_t)(1 << 5)) {   /* bit 6, DETEID, is the only one supported */
+            ogs_error("PFCPSMReq-Flags 0x%02x: only DETEID is supported", flags.value);
+            cause_value = OGS_PFCP_CAUSE_SERVICE_NOT_SUPPORTED;
+            offending_ie_value = OGS_PFCP_PFCPSMREQ_FLAGS_TYPE;
+            goto reject;
+        }
+        delete_all_f_teids = flags.delete_all_dl_n3mb_and_or_n19mb_f_teids;
+    }
+
     for (i = 0; i < OGS_MAX_NUM_OF_FAR && req->update_far[i].presence; i++) {
         if (!_find_update_far(mbs_sess, &req->update_far[i], &cause_value, &offending_ie_value))
             goto reject;
+    }
+
+    /* DETEID: "the MB-UPF shall delete all NG-RAN N3mb DL F-TEIDs and all UPF N19mb DL F-TEIDs which were provisioned in
+     * Add MBS Unicast Parameters IEs for the MBS session" (cl. 8.2.31); before the additions of this request */
+    if (delete_all_f_teids) {
+        ogs_list_for_each(&mbs_sess->pfcp.far_list, far) {
+            ogs_pfcp_mbs_unicast_t *mu, *next;
+
+            ogs_list_for_each_safe(&far->mbs_unicast_list, next, mu) {
+                ogs_list_remove(&far->mbs_unicast_list, mu);
+                ogs_list_add(&journal.removed, mu);
+            }
+        }
     }
 
     for (i = 0; i < OGS_MAX_NUM_OF_FAR && req->update_far[i].presence; i++) {
