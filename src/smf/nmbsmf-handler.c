@@ -82,7 +82,7 @@ bool smf_nmbsmf_handle_tmgi_allocate(
         goto cleanup;
     }
 
-    if (!TmgiAllocate->tmgi_number && !TmgiAllocate->tmgi_list) {
+    if (!TmgiAllocate->is_tmgi_number && !TmgiAllocate->tmgi_list) {
         ogs_error("TMGI Allocate: no tmgi_number or tmgi_list present");
         // tmgi_number or tmgi_list should be present, send error (400 + MANDATORY_IE_MISSING)
         ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
@@ -115,7 +115,7 @@ bool smf_nmbsmf_handle_tmgi_allocate(
     }
 
     // Error checking for TmgiAllocate->tmgi_number
-    if (TmgiAllocate->tmgi_number) {
+    if (TmgiAllocate->is_tmgi_number) {
         /* The ceiling is the smaller of what the attribute may carry and what this MB-SMF could ever
          * hold: a tmgiNumber above either is a request that no amount of waiting would satisfy, which
          * is what TS 29.532 V18.6.0 table 6.1.3.2.3.1-3 answers with 403 MANDATORY_IE_INCORRECT in the
