@@ -233,6 +233,8 @@ void ogs_sbi_message_free(ogs_sbi_message_t *message)
         OpenAPI_context_create_rsp_data_free(message->ContextCreateRspData);
     if (message->ContextStatusNotification)
         OpenAPI_context_status_notification_free(message->ContextStatusNotification);
+    if (message->ContextStatusNotificationResponse)
+        OpenAPI_context_status_notification_response_free(message->ContextStatusNotificationResponse);
     if (message->ContextUpdateReqData)
         OpenAPI_context_update_req_data_free(message->ContextUpdateReqData);
     if (message->ContextUpdateRspData)
@@ -1522,6 +1524,10 @@ static char *build_json(ogs_sbi_message_t *message)
     } else if (message->ContextStatusNotification) {
         item = OpenAPI_context_status_notification_convertToJSON(
                 message->ContextStatusNotification);
+        ogs_assert(item);
+    } else if (message->ContextStatusNotificationResponse) {
+        item = OpenAPI_context_status_notification_response_convertToJSON(
+                message->ContextStatusNotificationResponse);
         ogs_assert(item);
     } else if (message->ContextUpdateReqData) {
         item = OpenAPI_context_update_req_data_convertToJSON(
@@ -2881,6 +2887,16 @@ static int parse_json(ogs_sbi_message_t *message,
                         message->ContextStatusNotification =
                             OpenAPI_context_status_notification_parseFromJSON(item);
                         if (!message->ContextStatusNotification) {
+                            rv = OGS_ERROR;
+                            ogs_error("JSON parse error");
+                        }
+                    }
+                    /* "200 OK" with the ContextStatusNotificationResponse of TS 29.518 V18.14.0 cl. 5.6.2.5 step 2a,
+                     * when the notification carried a Broadcast Session Transport Request Transfer. */
+                    else if (message->res_status == OGS_SBI_HTTP_STATUS_OK) {
+                        message->ContextStatusNotificationResponse =
+                            OpenAPI_context_status_notification_response_parseFromJSON(item);
+                        if (!message->ContextStatusNotificationResponse) {
                             rv = OGS_ERROR;
                             ogs_error("JSON parse error");
                         }

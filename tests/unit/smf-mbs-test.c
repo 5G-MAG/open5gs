@@ -753,6 +753,46 @@ static void test_nr_red_cap_ue_info_n2(void)
     smf_mbs_sess_release(mbs_sess);
 }
 
+/* TS 29.518 V18.14.0 table 6.5.6.2.10-1, type ContextStatusNotificationResponse: "mbsSessionId | MbsSessionId | M |
+ * 1", "areaSessionId | AreaSessionId | C | 0..1" and "n2MbsSmInfoList | array(N2MbsSmInfo) | O | 1..10"; and the
+ * NgapIeType values "BC_TRA_REQ", "BC_TRA_RSP" and "BC_TRA_FAIL" (Broadcast Transport Request, Response and Failure
+ * Transfer). */
+static void test_context_status_notification_response_model(void)
+{
+    const char *text = "{\"mbsSessionId\":{\"tmgi\":{\"mbsServiceId\":\"000001\",\"plmnId\":{\"mcc\":\"001\","
+        "\"mnc\":\"01\"}}},\"areaSessionId\":3,\"n2MbsSmInfoList\":[{\"ngapIeType\":\"BC_TRA_RSP\","
+        "\"ngapData\":{\"contentId\":\"n2msg1\"}}]}";
+    cJSON *json = cJSON_Parse(text), *back;
+    OpenAPI_context_status_notification_response_t *response =
+        OpenAPI_context_status_notification_response_parseFromJSON(json);
+    OpenAPI_n2_mbs_sm_info_t *info = NULL;
+
+    cJSON_Delete(json);
+    CHECK(response != NULL);
+    if (!response)
+        return;
+    CHECK(response->mbs_session_id && response->mbs_session_id->tmgi);
+    CHECK(response->is_area_session_id && response->area_session_id == 3);
+    CHECK(response->n2_mbs_sm_info_list && response->n2_mbs_sm_info_list->count == 1);
+    if (response->n2_mbs_sm_info_list && response->n2_mbs_sm_info_list->count == 1)
+        info = response->n2_mbs_sm_info_list->first->data;
+    CHECK(info && info->ngap_ie_type == OpenAPI_ngap_ie_type_BC_TRA_RSP);
+    back = OpenAPI_context_status_notification_response_convertToJSON(response);
+    CHECK(back && cJSON_GetObjectItemCaseSensitive(back, "mbsSessionId") &&
+            cJSON_GetObjectItemCaseSensitive(back, "n2MbsSmInfoList"));
+    if (back) cJSON_Delete(back);
+    OpenAPI_context_status_notification_response_free(response);
+
+    CHECK(OpenAPI_ngap_ie_type_FromString((char *)"BC_TRA_REQ") == OpenAPI_ngap_ie_type_BC_TRA_REQ);
+    CHECK(OpenAPI_ngap_ie_type_FromString((char *)"BC_TRA_FAIL") == OpenAPI_ngap_ie_type_BC_TRA_FAIL);
+    CHECK(strcmp(OpenAPI_ngap_ie_type_ToString(OpenAPI_ngap_ie_type_BC_TRA_RSP), "BC_TRA_RSP") == 0);
+
+    /* the mandatory mbsSessionId */
+    json = cJSON_Parse("{\"areaSessionId\":1}");
+    CHECK(OpenAPI_context_status_notification_response_parseFromJSON(json) == NULL);
+    cJSON_Delete(json);
+}
+
 static void test_fsa_id_list(void)
 {
     smf_mbs_sess_t *mbs_sess = new_broadcast_session();
@@ -2356,6 +2396,7 @@ int main(void)
     test_reduced_area_is_used();
     test_nr_red_cap_ue_info_model();
     test_nr_red_cap_ue_info_n2();
+    test_context_status_notification_response_model();
     test_fsa_id_list();
     test_context_create_optional_ids();
     test_date_time();

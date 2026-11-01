@@ -102,6 +102,7 @@
 #include "model/context_create_req_data.h"
 #include "model/context_create_rsp_data.h"
 #include "model/context_status_notification.h"
+#include "model/context_status_notification_response.h"
 #include "model/context_update_req_data.h"
 #include "model/context_update_rsp_data.h"
 #include "model/mbs_n2_message_transfer_req_data.h"

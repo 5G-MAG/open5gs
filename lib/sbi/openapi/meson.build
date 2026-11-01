@@ -1395,6 +1395,7 @@ libsbi_openapi_sources = files('''
     model/context_create_rsp_data.c
     model/operation_status.c
     model/context_status_notification.c
+    model/context_status_notification_response.c
     model/operation_event.c
     model/ngran_failure_event.c
     model/ngran_failure_indication.c

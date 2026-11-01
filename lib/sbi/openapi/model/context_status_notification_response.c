@@ -1,0 +1,207 @@
+
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+#include "context_status_notification_response.h"
+
+OpenAPI_context_status_notification_response_t *OpenAPI_context_status_notification_response_create(
+    OpenAPI_mbs_session_id_t *mbs_session_id,
+    bool is_area_session_id,
+    int area_session_id,
+    OpenAPI_list_t *n2_mbs_sm_info_list
+)
+{
+    OpenAPI_context_status_notification_response_t *context_status_notification_response_local_var = ogs_malloc(sizeof(OpenAPI_context_status_notification_response_t));
+    ogs_assert(context_status_notification_response_local_var);
+
+    context_status_notification_response_local_var->mbs_session_id = mbs_session_id;
+    context_status_notification_response_local_var->is_area_session_id = is_area_session_id;
+    context_status_notification_response_local_var->area_session_id = area_session_id;
+    context_status_notification_response_local_var->n2_mbs_sm_info_list = n2_mbs_sm_info_list;
+
+    return context_status_notification_response_local_var;
+}
+
+void OpenAPI_context_status_notification_response_free(OpenAPI_context_status_notification_response_t *context_status_notification_response)
+{
+    OpenAPI_lnode_t *node = NULL;
+
+    if (NULL == context_status_notification_response) {
+        return;
+    }
+    if (context_status_notification_response->mbs_session_id) {
+        OpenAPI_mbs_session_id_free(context_status_notification_response->mbs_session_id);
+        context_status_notification_response->mbs_session_id = NULL;
+    }
+    if (context_status_notification_response->n2_mbs_sm_info_list) {
+        OpenAPI_list_for_each(context_status_notification_response->n2_mbs_sm_info_list, node) {
+            OpenAPI_n2_mbs_sm_info_free(node->data);
+        }
+        OpenAPI_list_free(context_status_notification_response->n2_mbs_sm_info_list);
+        context_status_notification_response->n2_mbs_sm_info_list = NULL;
+    }
+    ogs_free(context_status_notification_response);
+}
+
+cJSON *OpenAPI_context_status_notification_response_convertToJSON(OpenAPI_context_status_notification_response_t *context_status_notification_response)
+{
+    cJSON *item = NULL;
+    OpenAPI_lnode_t *node = NULL;
+
+    if (context_status_notification_response == NULL) {
+        ogs_error("OpenAPI_context_status_notification_response_convertToJSON() failed [ContextStatusNotification]");
+        return NULL;
+    }
+
+    item = cJSON_CreateObject();
+    if (!context_status_notification_response->mbs_session_id) {
+        ogs_error("OpenAPI_context_status_notification_response_convertToJSON() failed [mbs_session_id]");
+        return NULL;
+    }
+    cJSON *mbs_session_id_local_JSON = OpenAPI_mbs_session_id_convertToJSON(context_status_notification_response->mbs_session_id);
+    if (mbs_session_id_local_JSON == NULL) {
+        ogs_error("OpenAPI_context_status_notification_response_convertToJSON() failed [mbs_session_id]");
+        goto end;
+    }
+    cJSON_AddItemToObject(item, "mbsSessionId", mbs_session_id_local_JSON);
+    if (item->child == NULL) {
+        ogs_error("OpenAPI_context_status_notification_response_convertToJSON() failed [mbs_session_id]");
+        goto end;
+    }
+
+    if (context_status_notification_response->is_area_session_id) {
+    if (cJSON_AddNumberToObject(item, "areaSessionId", context_status_notification_response->area_session_id) == NULL) {
+        ogs_error("OpenAPI_context_status_notification_response_convertToJSON() failed [area_session_id]");
+        goto end;
+    }
+    }
+
+    if (context_status_notification_response->n2_mbs_sm_info_list) {
+    cJSON *n2_mbs_sm_info_listList = cJSON_AddArrayToObject(item, "n2MbsSmInfoList");
+    if (n2_mbs_sm_info_listList == NULL) {
+        ogs_error("OpenAPI_context_status_notification_response_convertToJSON() failed [n2_mbs_sm_info_list]");
+        goto end;
+    }
+    OpenAPI_list_for_each(context_status_notification_response->n2_mbs_sm_info_list, node) {
+        cJSON *itemLocal = OpenAPI_n2_mbs_sm_info_convertToJSON(node->data);
+        if (itemLocal == NULL) {
+            ogs_error("OpenAPI_context_status_notification_response_convertToJSON() failed [n2_mbs_sm_info_list]");
+            goto end;
+        }
+        cJSON_AddItemToArray(n2_mbs_sm_info_listList, itemLocal);
+    }
+    }
+
+end:
+    return item;
+}
+
+OpenAPI_context_status_notification_response_t *OpenAPI_context_status_notification_response_parseFromJSON(cJSON *context_status_notification_responseJSON)
+{
+    OpenAPI_context_status_notification_response_t *context_status_notification_response_local_var = NULL;
+    OpenAPI_lnode_t *node = NULL;
+    cJSON *mbs_session_id = NULL;
+    OpenAPI_mbs_session_id_t *mbs_session_id_local_nonprim = NULL;
+    cJSON *area_session_id = NULL;
+    cJSON *n2_mbs_sm_info_list = NULL;
+    OpenAPI_list_t *n2_mbs_sm_info_listList = NULL;
+    mbs_session_id = cJSON_GetObjectItemCaseSensitive(context_status_notification_responseJSON, "mbsSessionId");
+    if (!mbs_session_id) {
+        ogs_error("OpenAPI_context_status_notification_response_parseFromJSON() failed [mbs_session_id]");
+        goto end;
+    }
+    mbs_session_id_local_nonprim = OpenAPI_mbs_session_id_parseFromJSON(mbs_session_id);
+    if (!mbs_session_id_local_nonprim) {
+        ogs_error("OpenAPI_mbs_session_id_parseFromJSON failed [mbs_session_id]");
+        goto end;
+    }
+
+    area_session_id = cJSON_GetObjectItemCaseSensitive(context_status_notification_responseJSON, "areaSessionId");
+    if (area_session_id) {
+    if (!cJSON_IsNumber(area_session_id)) {
+        ogs_error("OpenAPI_context_status_notification_response_parseFromJSON() failed [area_session_id]");
+        goto end;
+    }
+    }
+
+    n2_mbs_sm_info_list = cJSON_GetObjectItemCaseSensitive(context_status_notification_responseJSON, "n2MbsSmInfoList");
+    if (n2_mbs_sm_info_list) {
+        cJSON *n2_mbs_sm_info_list_local = NULL;
+        if (!cJSON_IsArray(n2_mbs_sm_info_list)) {
+            ogs_error("OpenAPI_context_status_notification_response_parseFromJSON() failed [n2_mbs_sm_info_list]");
+            goto end;
+        }
+
+        n2_mbs_sm_info_listList = OpenAPI_list_create();
+
+        cJSON_ArrayForEach(n2_mbs_sm_info_list_local, n2_mbs_sm_info_list) {
+            if (!cJSON_IsObject(n2_mbs_sm_info_list_local)) {
+                ogs_error("OpenAPI_context_status_notification_response_parseFromJSON() failed [n2_mbs_sm_info_list]");
+                goto end;
+            }
+            OpenAPI_n2_mbs_sm_info_t *n2_mbs_sm_info_listItem = OpenAPI_n2_mbs_sm_info_parseFromJSON(n2_mbs_sm_info_list_local);
+            if (!n2_mbs_sm_info_listItem) {
+                ogs_error("No n2_mbs_sm_info_listItem");
+                goto end;
+            }
+            OpenAPI_list_add(n2_mbs_sm_info_listList, n2_mbs_sm_info_listItem);
+        }
+    }
+
+    context_status_notification_response_local_var = OpenAPI_context_status_notification_response_create (
+        mbs_session_id_local_nonprim,
+        area_session_id ? true : false,
+        area_session_id ? area_session_id->valuedouble : 0,
+        n2_mbs_sm_info_list ? n2_mbs_sm_info_listList : NULL
+    );
+
+    return context_status_notification_response_local_var;
+end:
+    if (mbs_session_id_local_nonprim) {
+        OpenAPI_mbs_session_id_free(mbs_session_id_local_nonprim);
+        mbs_session_id_local_nonprim = NULL;
+    }
+    if (n2_mbs_sm_info_listList) {
+        OpenAPI_list_for_each(n2_mbs_sm_info_listList, node) {
+            OpenAPI_n2_mbs_sm_info_free(node->data);
+        }
+        OpenAPI_list_free(n2_mbs_sm_info_listList);
+        n2_mbs_sm_info_listList = NULL;
+    }
+    return NULL;
+}
+
+OpenAPI_context_status_notification_response_t *OpenAPI_context_status_notification_response_copy(OpenAPI_context_status_notification_response_t *dst, OpenAPI_context_status_notification_response_t *src)
+{
+    cJSON *item = NULL;
+    char *content = NULL;
+
+    ogs_assert(src);
+    item = OpenAPI_context_status_notification_response_convertToJSON(src);
+    if (!item) {
+        ogs_error("OpenAPI_context_status_notification_response_convertToJSON() failed");
+        return NULL;
+    }
+
+    content = cJSON_Print(item);
+    cJSON_Delete(item);
+
+    if (!content) {
+        ogs_error("cJSON_Print() failed");
+        return NULL;
+    }
+
+    item = cJSON_Parse(content);
+    ogs_free(content);
+    if (!item) {
+        ogs_error("cJSON_Parse() failed");
+        return NULL;
+    }
+
+    OpenAPI_context_status_notification_response_free(dst);
+    dst = OpenAPI_context_status_notification_response_parseFromJSON(item);
+    cJSON_Delete(item);
+
+    return dst;
+}
+

@@ -585,6 +585,7 @@ typedef struct ogs_sbi_message_s {
     OpenAPI_context_create_req_data_t *ContextCreateReqData;
     OpenAPI_context_create_rsp_data_t *ContextCreateRspData;
     OpenAPI_context_status_notification_t *ContextStatusNotification;
+    OpenAPI_context_status_notification_response_t *ContextStatusNotificationResponse;
     OpenAPI_context_update_req_data_t *ContextUpdateReqData;
     OpenAPI_context_update_rsp_data_t *ContextUpdateRspData;
     OpenAPI_mbs_n2_message_transfer_req_data_t *MbsN2MessageTransferReqData;
