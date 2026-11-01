@@ -976,35 +976,11 @@ bool smf_nmbsmf_handle_mbs_session_release(
         // smf_mbs_sess_t is freed only once the UPF's N4mb Session Deletion Response arrives, in
         // smf_n4mb_handle_session_deletion_response() (n4mb-handler.c).
 
-    // Release the AMF/NGAP broadcast context, if one was ever actually created for this session (a
-    // Multicast session, or a Broadcast session that never got far enough to receive a mbsContextRef,
-    // has nothing to release here).
-    if (mbs_sess->mbs_context_ref) {
-                // The cached nf_instance is cleared before this call. mbs_sess->sbi holds whatever instance the
-                // first namf-mbs-bc call for this session resolved (OGS_SBI_SETUP_NF_INSTANCE in
-                // ogs_sbi_discover_and_send()) and is reused for every later call to that service: ContextCreate at
-                // session-create time, then this ContextDelete. By delete time that cached instance's
-                // nf_service_list has no "namf-mbs-bc" entry, so ogs_sbi_client_find_by_service_name() falls back
-                // to the NF-instance-level default client, which carries no port. The request then goes out with a
-                // portless 3gpp-Sbi-Target-apiRoot ("http://<amf-ip>"), the SCP fails the downstream HTTP/2
-                // connection ("Remote peer returned unexpected data while we expected SETTINGS frame") and returns
-                // 500, so the AMF's ContextDelete, and the NGAP Broadcast Session Release it would trigger, never
-                // happen and the gNB never frees the session's MRB and LCID.
-                //
-                // ContextCreate does not hit this because it starts from an empty cache slot, being the session's
-                // first namf-mbs-bc call, and goes through the SCP's own fresh discovery, which resolves the
-                // complete profile. Clearing the slot puts this call on that same path.
-        mbs_sess->sbi.service_type_array[OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC].nf_instance = NULL;
-        mbs_sess->sbi.service_type_array[OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC].validity_timeout = 0;
-
-        int r = smf_sbi_old_discover_and_send(
-                OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC, NULL,
-                smf_namf_build_mbs_broadcast_context_delete_request,
-                mbs_sess, NULL, 0, NULL);
-        if (r != OGS_OK)
-            ogs_error("Failed to send MBS Broadcast ContextDelete for mbsContextRef[%s]",
-                    mbs_sess->mbs_context_ref);
-    }
+    // Release the AMF/NGAP broadcast contexts that were actually created for this session (a Multicast session,
+    // or a Broadcast session that never got far enough to receive a mbsContextRef, has nothing to release here).
+    // TS 23.247 V18.8.0 cl. 7.3.2 step 3: "MB-SMF sends Namf_MBSBroadcast_ContextRelease request (TMGI) to the
+    // AMF(s) that has been involved in the MBS Session."
+    smf_sbi_send_mbs_broadcast_context_delete_all(mbs_sess);
 
     // Release the UPF-side N4mb PFCP session. If no PFCP peer was ever associated (e.g. the session
     // never got far enough to be established), there is nothing to tell the UPF -- release local state

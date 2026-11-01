@@ -3743,16 +3743,52 @@ smf_mbs_sess_t *smf_mbs_sess_find_by_tmgi(ogs_tmgi_t *tmgi_to_find)
     return NULL;
 }
 
-/* The AMF reported its broadcast MBS session context released: there is no mbsContextRef to address any more,
- * so a later release of the MBS session sends nothing to the AMF. */
-void smf_mbs_sess_context_released(smf_mbs_sess_t *mbs_sess)
+smf_mbs_amf_t *smf_mbs_sess_amf_add(smf_mbs_sess_t *mbs_sess)
+{
+    smf_mbs_amf_t *amf = NULL;
+
+    ogs_assert(mbs_sess);
+
+    amf = ogs_calloc(1, sizeof(*amf));
+    ogs_assert(amf);
+    amf->id = ++mbs_sess->next_amf_id;
+    ogs_list_add(&mbs_sess->amf_list, amf);
+
+    return amf;
+}
+
+smf_mbs_amf_t *smf_mbs_sess_amf_find(smf_mbs_sess_t *mbs_sess, uint32_t id)
+{
+    smf_mbs_amf_t *amf = NULL;
+
+    ogs_assert(mbs_sess);
+
+    ogs_list_for_each(&mbs_sess->amf_list, amf)
+        if (amf->id == id)
+            return amf;
+
+    return NULL;
+}
+
+void smf_mbs_sess_amf_remove(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf)
+{
+    ogs_assert(mbs_sess);
+    ogs_assert(amf);
+
+    ogs_list_remove(&mbs_sess->amf_list, amf);
+    if (amf->mbs_context_ref)
+        ogs_free(amf->mbs_context_ref);
+    ogs_free(amf);
+}
+
+/* The AMF reported its broadcast MBS session context released: there is no mbsContextRef to address any more, so
+ * a later release of the MBS session sends nothing to that AMF. */
+void smf_mbs_sess_context_released(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf)
 {
     ogs_assert(mbs_sess);
 
-    if (mbs_sess->mbs_context_ref) {
-        ogs_free(mbs_sess->mbs_context_ref);
-        mbs_sess->mbs_context_ref = NULL;
-    }
+    if (amf)
+        smf_mbs_sess_amf_remove(mbs_sess, amf);
 }
 
 /* The MBS session of a TMGI that a notification names: for a location dependent MBS session the part with
@@ -3826,8 +3862,12 @@ static void smf_mbs_sess_free(smf_mbs_sess_t *smf_mbs_sess)
     if (smf_mbs_sess->mbs_session_ref)
         ogs_free(smf_mbs_sess->mbs_session_ref);
 
-    if (smf_mbs_sess->mbs_context_ref)
-        ogs_free(smf_mbs_sess->mbs_context_ref);
+    {
+        smf_mbs_amf_t *amf = NULL, *next_amf = NULL;
+
+        ogs_list_for_each_safe(&smf_mbs_sess->amf_list, next_amf, amf)
+            smf_mbs_sess_amf_remove(smf_mbs_sess, amf);
+    }
 
     if (smf_mbs_sess->service_type)
         ogs_free(smf_mbs_sess->service_type);

@@ -562,6 +562,20 @@ typedef struct smf_mbs_fsa_id_s {
     ogs_uint24_t id;
 } smf_mbs_fsa_id_t;
 
+/* An AMF of the broadcast MBS session context of an MBS session */
+typedef struct smf_mbs_amf_s {
+    ogs_lnode_t lnode;
+
+    /* Identifies the entry in the session. It is carried in the notification URI given to the AMF, so that a
+     * Namf_MBSBroadcast ContextStatusNotify tells which AMF sent it, and in the SBI transaction of each request. */
+    uint32_t id;
+
+    /* mbsContextRef assigned by the AMF in the Location header of the 201 Created response (TS 29.518 V18.14.0
+     * cl. 5.6.2.2), so that the context can be addressed again (DELETE /namf-mbs-bc/v1/mbs-contexts/{ref}, POST
+     * .../{ref}/update). NULL until the AMF answered. */
+    char *mbs_context_ref;
+} smf_mbs_amf_t;
+
 typedef struct smf_mbs_sess_s {
     ogs_lnode_t lnode;      /* A node of list_t */
 
@@ -578,11 +592,11 @@ typedef struct smf_mbs_sess_s {
     ogs_ssm_t *ssm;
     char *service_type;
 
-    /* mbsContextRef assigned by the AMF in the Location header of a Namf_MBSBroadcast ContextCreate
-     * response (TS 29.518 5.6.2.2), so it can be addressed again on release
-     * (DELETE /namf-mbs-bc/v1/mbs-contexts/{mbsContextRef}, TS 29.518 5.6.2.3). NULL if no AMF broadcast
-     * context was ever created for this session (e.g. a Multicast session). */
-    char *mbs_context_ref;
+    /* The AMFs the broadcast MBS session context was asked of (TS 23.247 V18.8.0 cl. 7.3.1 step 7: "The MB-SMF
+     * stores the AMF(s) which responds success in the MBS Session Context as the downstream nodes."). An entry
+     * has an mbs_context_ref once its AMF answered the Namf_MBSBroadcast ContextCreate with "201 Created". */
+    ogs_list_t amf_list;
+    uint32_t next_amf_id;
 
     // Multicast specific
     OpenAPI_mbs_session_activity_status_e activity_status;
@@ -806,7 +820,11 @@ smf_mbs_sess_t *smf_mbs_sess_find_by_id(ogs_pool_id_t id);
 smf_mbs_sess_t *smf_mbs_sess_find_by_mbs_session_ref(char *mbs_session_ref);
 smf_mbs_sess_t *smf_mbs_sess_find_by_seid(uint64_t seid);
 smf_mbs_sess_t *smf_mbs_sess_find_by_tmgi(ogs_tmgi_t *tmgi_to_find);
-void smf_mbs_sess_context_released(smf_mbs_sess_t *mbs_sess);
+smf_mbs_amf_t *smf_mbs_sess_amf_add(smf_mbs_sess_t *mbs_sess);
+smf_mbs_amf_t *smf_mbs_sess_amf_find(smf_mbs_sess_t *mbs_sess, uint32_t id);
+void smf_mbs_sess_amf_remove(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf);
+/* The AMF reported its broadcast MBS session context released: the entry goes. */
+void smf_mbs_sess_context_released(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf);
 smf_mbs_sess_t *smf_mbs_sess_find_by_tmgi_and_area(ogs_tmgi_t *tmgi_to_find, bool has_area_session_id, uint16_t area_session_id);
 void smf_mbs_sess_select_upf(smf_mbs_sess_t *mbs_sess);
 /* Provisions the user plane of the session: a PDR, a FAR and a QER for each MBS QoS flow. Returns false, with

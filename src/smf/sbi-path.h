@@ -110,6 +110,14 @@ int smf_sbi_old_discover_and_send(
         ogs_sbi_request_t *(*build)(smf_mbs_sess_t *mbs_sess, void *data),
         smf_mbs_sess_t *mbs_sess, ogs_sbi_stream_t *stream, int state, void *data);
 
+/* Namf_MBSBroadcast ContextCreate towards an AMF of the MBS session: a new entry of amf_list (kept only while the
+ * request is outstanding or answered with "201 Created"). */
+int smf_sbi_send_mbs_broadcast_context_create(smf_mbs_sess_t *mbs_sess);
+
+/* Namf_MBSBroadcast ContextRelease towards every AMF that has a context of the MBS session. Returns the number of
+ * requests that could not be sent. */
+int smf_sbi_send_mbs_broadcast_context_delete_all(smf_mbs_sess_t *mbs_sess);
+
 #ifdef __cplusplus
 }
 #endif

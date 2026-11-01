@@ -594,20 +594,9 @@ static void pfcp_mbs_restoration(ogs_pfcp_node_t *node)
                 "releasing stale SMF-side state so its TMGI/SSM can be reused",
                 mbs_sess->mbs_session_ref);
 
-        if (mbs_sess->mbs_context_ref) {
-                        // Clear the cached nf_instance so this call takes the fresh-discovery path, for the reason
-                        // given at the matching ContextDelete in nmbsmf-handler.c.
-            mbs_sess->sbi.service_type_array[OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC].nf_instance = NULL;
-            mbs_sess->sbi.service_type_array[OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC].validity_timeout = 0;
-
-            int r = smf_sbi_old_discover_and_send(
-                    OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC, NULL,
-                    smf_namf_build_mbs_broadcast_context_delete_request,
-                    mbs_sess, NULL, 0, NULL);
-            if (r != OGS_OK)
-                ogs_error("Failed to send MBS Broadcast ContextDelete for "
-                        "mbsSessionRef[%s]", mbs_sess->mbs_session_ref);
-        }
+        // Every AMF that holds a context of the session is told; the cached nf_instance is cleared for each, for
+        // the reason given at smf_sbi_send_mbs_broadcast_context_delete_all().
+        smf_sbi_send_mbs_broadcast_context_delete_all(mbs_sess);
 
         smf_mbs_sess_release(mbs_sess);
     }

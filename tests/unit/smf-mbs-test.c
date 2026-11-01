@@ -1254,6 +1254,44 @@ static void test_update_reduced_area(void)
     ogs_mbs_service_area_free(coverage);
 }
 
+/* TS 23.247 V18.8.0 cl. 7.3.2 step 3: "MB-SMF sends Namf_MBSBroadcast_ContextRelease request (TMGI) to the AMF(s)
+ * that has been involved in the MBS Session."; the notification URI of a ContextCreate ends with the id of the
+ * AMF entry, so that a ContextStatusNotify tells which AMF sent it. */
+static void test_amf_entries(void)
+{
+    smf_mbs_sess_t *mbs_sess = make_session(NULL, area_1_text);
+    smf_mbs_amf_t *amf1, *amf2;
+    ogs_sbi_request_t *request;
+    char expected[64];
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+    amf1 = smf_mbs_sess_amf_add(mbs_sess);
+    amf2 = smf_mbs_sess_amf_add(mbs_sess);
+
+    request = smf_namf_build_mbs_broadcast_context_create_request(mbs_sess, amf2);
+    CHECK(request != NULL);
+    if (request) {
+        snprintf(expected, sizeof(expected), "/mbs-context-status-notify/%u\"", amf2->id);
+        CHECK(request->http.content && strstr(request->http.content, expected) != NULL);
+        ogs_sbi_request_free(request);
+    }
+
+    /* the request that releases one AMF's context addresses that context */
+    amf1->mbs_context_ref = ogs_strdup("11");
+    amf2->mbs_context_ref = ogs_strdup("22");
+    request = smf_namf_build_mbs_broadcast_context_delete_request(mbs_sess, amf2);
+    CHECK(request != NULL);
+    if (request) {
+        CHECK(request->h.method && strcmp(request->h.method, OGS_SBI_HTTP_METHOD_DELETE) == 0);
+        CHECK(request->h.resource.component[0] && strcmp(request->h.resource.component[0], "mbs-contexts") == 0);
+        CHECK(request->h.resource.component[1] && strcmp(request->h.resource.component[1], "22") == 0);
+        ogs_sbi_request_free(request);
+    }
+
+    smf_mbs_sess_release(mbs_sess);     /* the entries go with the session */
+}
+
 /* TS 24.008 V18.8.0 figure 10.5.154 (octets 3 to 8 of the TMGI, as TS 29.244 V18.10.0 cl. 8.2.206 requires):
  * octet 6 "MCC digit 2 | MCC digit 1", octet 7 "MNC digit 3 | MCC digit 3", octet 8 "MNC digit 2 | MNC digit 1"
  * (a two-digit MNC leaves digit 3 as F, as the identity form of the IE says: "If a network operator decides to use
@@ -1319,11 +1357,20 @@ static void test_notification_routing(void)
     CHECK(smf_mbs_sess_find_by_tmgi_and_area(tmgi2, false, 0) == plain);
     CHECK(smf_mbs_sess_find_by_tmgi_and_area(tmgi2, true, 5) == plain);
 
-    a->mbs_context_ref = ogs_strdup("17");
-    smf_mbs_sess_context_released(a);
-    CHECK(a->mbs_context_ref == NULL);
-    smf_mbs_sess_context_released(a);   /* nothing to release a second time */
-    CHECK(a->mbs_context_ref == NULL);
+    {
+        smf_mbs_amf_t *amf1 = smf_mbs_sess_amf_add(a), *amf2 = smf_mbs_sess_amf_add(a);
+
+        CHECK(amf1 && amf2 && amf1->id != amf2->id);
+        amf1->mbs_context_ref = ogs_strdup("17");
+        amf2->mbs_context_ref = ogs_strdup("18");
+        CHECK(smf_mbs_sess_amf_find(a, amf1->id) == amf1 && smf_mbs_sess_amf_find(a, amf2->id) == amf2);
+        CHECK(smf_mbs_sess_amf_find(a, amf2->id + 1) == NULL);
+        /* the AMF that reported its context released goes, the other stays */
+        smf_mbs_sess_context_released(a, amf1);
+        CHECK(ogs_list_count(&a->amf_list) == 1 && smf_mbs_sess_amf_find(a, amf2->id) == amf2);
+        smf_mbs_sess_context_released(a, NULL);   /* a notification from an unknown AMF */
+        CHECK(ogs_list_count(&a->amf_list) == 1);
+    }
 
     smf_mbs_sess_release(a);
     smf_mbs_sess_release(b);
@@ -1353,6 +1400,7 @@ int main(void)
     test_json_patch();
     test_update();
     test_update_reduced_area();
+    test_amf_entries();
     test_tmgi_octets();
     test_notification_routing();
 

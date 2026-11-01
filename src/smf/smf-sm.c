@@ -58,6 +58,7 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
     smf_ue_t *smf_ue = NULL;
     smf_gtp_node_t *smf_gnode = NULL;
     smf_mbs_sess_t *mbs_sess = NULL;
+    smf_mbs_amf_t *mbs_amf = NULL;
 
     ogs_gtp_xact_t *gtp_xact = NULL;
     ogs_gtp2_message_t gtp2_message;
@@ -1085,10 +1086,20 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
              * needed later to release the context). Mirrors the NUDM_UECM case above. */
             mbs_sess = smf_mbs_sess_find_by_id(sbi_xact->sbi_object_id);
 
+            /* the AMF entry of the request is in the transaction's state (smf_sbi_old_discover_and_send()) */
+            if (mbs_sess)
+                mbs_amf = smf_mbs_sess_amf_find(mbs_sess, (uint32_t)sbi_xact->state);
+
             ogs_sbi_xact_remove(sbi_xact);
 
             if (!mbs_sess) {
                 ogs_error("MBS Session has already been removed");
+                break;
+            }
+
+            if (!mbs_amf) {
+                ogs_error("MBS Session mbsSessionRef[%s]: the AMF of the response is not (any longer) one of the "
+                        "session", mbs_sess->mbs_session_ref);
                 break;
             }
 
@@ -1097,17 +1108,21 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
                 SWITCH(sbi_message.h.method)
                 CASE(OGS_SBI_HTTP_METHOD_POST)
                     if (sbi_message.res_status == OGS_SBI_HTTP_STATUS_CREATED) {
-                        smf_namf_handle_mbs_broadcast_context_create_response(
-                                mbs_sess, &sbi_message);
+                        if (!smf_namf_handle_mbs_broadcast_context_create_response(
+                                mbs_sess, mbs_amf, &sbi_message))
+                            smf_mbs_sess_amf_remove(mbs_sess, mbs_amf);
                     } else {
+                        /* only an AMF that answered success is stored as a downstream node */
                         ogs_error("HTTP response error : %d",
                                 sbi_message.res_status);
+                        smf_mbs_sess_amf_remove(mbs_sess, mbs_amf);
                     }
                     break;
 
                 CASE(OGS_SBI_HTTP_METHOD_DELETE)
                     smf_namf_handle_mbs_broadcast_context_delete_response(
-                            mbs_sess, &sbi_message);
+                            mbs_sess, mbs_amf, &sbi_message);
+                    smf_mbs_sess_amf_remove(mbs_sess, mbs_amf);
                     break;
 
                 DEFAULT

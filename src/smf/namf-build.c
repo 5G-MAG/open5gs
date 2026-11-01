@@ -218,6 +218,7 @@ ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_create_request(
     OpenAPI_ref_to_binary_data_t *ngap_data = NULL;
 
     char *notify_uri = NULL;
+    char *amf_id_string = NULL;
     ogs_sbi_server_t *server = NULL;
     ogs_sbi_header_t header;
 
@@ -327,8 +328,19 @@ ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_create_request(
     header.api.version = (char *) OGS_SBI_API_V1;
     header.resource.component[0] =
             (char *) OGS_SBI_RESOURCE_NAME_MBS_CONTEXT_STATUS_NOTIFY;
+    /* data is the AMF entry this request is for: its id is the last segment of the notification URI (the URI is the
+     * provider's own, TS 29.518 V18.14.0 table 6.5.6.2.2-1: "the notification URI where to be notified about the
+     * status change"), so that the notification tells which AMF it comes from. */
+    if (data) {
+        smf_mbs_amf_t *amf = data;
+
+        amf_id_string = ogs_msprintf("%u", amf->id);
+        header.resource.component[1] = amf_id_string;
+    }
     notify_uri = ogs_sbi_server_uri(server, &header);
     ogs_assert(notify_uri);
+    if (amf_id_string)
+        ogs_free(amf_id_string);
 
     // snssai: TS 29.518 V18.14.0 table 6.5.6.2.2-1, row snssai: "This IE shall be included to indicate the
     // S-NSSAI of the MBS session." and NOTE 2: "If an MB-SMF does not receive the S-NSSAI from the NEF/MBSF,
@@ -411,15 +423,18 @@ ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_delete_request(
     ogs_sbi_message_t message;
     ogs_sbi_request_t *request = NULL;
 
+    smf_mbs_amf_t *amf = data;
+
     ogs_assert(mbs_sess);
-    ogs_assert(mbs_sess->mbs_context_ref);
+    ogs_assert(amf);
+    ogs_assert(amf->mbs_context_ref);
 
     memset(&message, 0, sizeof(message));
     message.h.method = (char *) OGS_SBI_HTTP_METHOD_DELETE;
     message.h.service.name = (char *) OGS_SBI_SERVICE_NAME_NAMF_MBS_BC;
     message.h.api.version = (char *) OGS_SBI_API_V1;
     message.h.resource.component[0] = (char *) OGS_SBI_RESOURCE_NAME_MBS_CONTEXTS;
-    message.h.resource.component[1] = mbs_sess->mbs_context_ref;
+    message.h.resource.component[1] = amf->mbs_context_ref;
 
     request = ogs_sbi_build_request(&message);
     ogs_expect(request);

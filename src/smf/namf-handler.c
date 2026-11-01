@@ -250,7 +250,7 @@ bool smf_namf_comm_handle_n1_n2_message_transfer_failure_notify(
 /* Namf_MBSBroadcast Service API */
 
 bool smf_namf_handle_mbs_broadcast_context_create_response(
-        smf_mbs_sess_t *mbs_sess, ogs_sbi_message_t *recvmsg)
+        smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf, ogs_sbi_message_t *recvmsg)
 {
     ogs_debug("Handling MBS Broadcast ContextCreate response");
 
@@ -259,6 +259,7 @@ bool smf_namf_handle_mbs_broadcast_context_create_response(
     int rv;
 
     ogs_assert(mbs_sess);
+    ogs_assert(amf);
     ogs_assert(recvmsg);
 
         // Stores the AMF-assigned mbsContextRef from the Location header of the 201 Created response
@@ -286,31 +287,33 @@ bool smf_namf_handle_mbs_broadcast_context_create_response(
         return false;
     }
 
-    if (mbs_sess->mbs_context_ref)
-        ogs_free(mbs_sess->mbs_context_ref);
-    mbs_sess->mbs_context_ref = ogs_strdup(location_message.h.resource.component[1]);
-    ogs_assert(mbs_sess->mbs_context_ref);
+    if (amf->mbs_context_ref)
+        ogs_free(amf->mbs_context_ref);
+    amf->mbs_context_ref = ogs_strdup(location_message.h.resource.component[1]);
+    ogs_assert(amf->mbs_context_ref);
 
     ogs_sbi_header_free(&header);
 
-    ogs_info("MBS Broadcast ContextCreate: mbsContextRef[%s]", mbs_sess->mbs_context_ref);
+    ogs_info("MBS Broadcast ContextCreate: mbsContextRef[%s]", amf->mbs_context_ref);
 
     return true;
 }
 
 bool smf_namf_handle_mbs_broadcast_context_delete_response(
-        smf_mbs_sess_t *mbs_sess, ogs_sbi_message_t *recvmsg)
+        smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf, ogs_sbi_message_t *recvmsg)
 {
     ogs_assert(mbs_sess);
+    ogs_assert(amf);
     ogs_assert(recvmsg);
 
     if (recvmsg->res_status != OGS_SBI_HTTP_STATUS_NO_CONTENT) {
         ogs_error("MBS Broadcast ContextDelete: unexpected HTTP response [%d] for mbsContextRef[%s]",
-                recvmsg->res_status, mbs_sess->mbs_context_ref);
+                recvmsg->res_status, amf->mbs_context_ref ? amf->mbs_context_ref : "(none)");
         return false;
     }
 
-    ogs_info("MBS Broadcast ContextDelete: mbsContextRef[%s] released", mbs_sess->mbs_context_ref);
+    ogs_info("MBS Broadcast ContextDelete: mbsContextRef[%s] released",
+            amf->mbs_context_ref ? amf->mbs_context_ref : "(none)");
 
     return true;
 }
@@ -341,6 +344,7 @@ bool smf_namf_handle_mbs_broadcast_context_status_notify(
     OpenAPI_mbs_session_id_t *MbsSessionId = NULL;
     ogs_tmgi_t tmgi;
     smf_mbs_sess_t *mbs_sess = NULL;
+    smf_mbs_amf_t *amf = NULL;
     ogs_sbi_response_t *response = NULL;
 
     ogs_assert(stream);
@@ -382,9 +386,14 @@ bool smf_namf_handle_mbs_broadcast_context_status_notify(
         return false;
     }
 
+    /* the AMF is the one whose entry id the notification URI ends with (smf_namf_build_mbs_broadcast_context_create_
+     * request()) */
+    if (recvmsg->h.resource.component[1])
+        amf = smf_mbs_sess_amf_find(mbs_sess, (uint32_t)atol(recvmsg->h.resource.component[1]));
+
     ogs_info("MBS Broadcast ContextStatusNotify: mbsContextRef[%s] "
             "operationStatus[%s] areaSessionId%s n2MbsSmInfo[%s] releasedInd[%s]",
-            mbs_sess->mbs_context_ref ? mbs_sess->mbs_context_ref : "(none)",
+            (amf && amf->mbs_context_ref) ? amf->mbs_context_ref : "(none)",
             OpenAPI_operation_status_ToString(ContextStatusNotification->operation_status),
             ContextStatusNotification->is_area_session_id ? "[present]" : "[absent]",
             (ContextStatusNotification->n2_mbs_sm_info_list &&
@@ -397,7 +406,7 @@ bool smf_namf_handle_mbs_broadcast_context_status_notify(
      * MBS session (context) has been released in the AMF." */
     if (ContextStatusNotification->released_ind ==
             OpenAPI_context_status_notification_RELEASEDIND__true)
-        smf_mbs_sess_context_released(mbs_sess);
+        smf_mbs_sess_context_released(mbs_sess, amf);
 
     response = ogs_sbi_build_response(recvmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
     ogs_assert(response);

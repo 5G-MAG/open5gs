@@ -20,6 +20,7 @@
 #include "context.h"
 #include "ngap-path.h"
 #include "sbi-path.h"
+#include "namf-build.h"
 
 int smf_sbi_open(void)
 {
@@ -608,4 +609,58 @@ int smf_sbi_old_discover_and_send(
     }
 
     return OGS_OK;
+}
+
+int smf_sbi_send_mbs_broadcast_context_create(smf_mbs_sess_t *mbs_sess)
+{
+    smf_mbs_amf_t *amf = NULL;
+    int r;
+
+    ogs_assert(mbs_sess);
+
+    amf = smf_mbs_sess_amf_add(mbs_sess);
+    r = smf_sbi_old_discover_and_send(
+            OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC, NULL,
+            smf_namf_build_mbs_broadcast_context_create_request,
+            mbs_sess, NULL, amf->id, amf);
+    if (r != OGS_OK) {
+        ogs_error("Failed to send MBS Broadcast ContextCreate for mbsSessionRef[%s]", mbs_sess->mbs_session_ref);
+        smf_mbs_sess_amf_remove(mbs_sess, amf);
+    }
+
+    return r;
+}
+
+int smf_sbi_send_mbs_broadcast_context_delete_all(smf_mbs_sess_t *mbs_sess)
+{
+    smf_mbs_amf_t *amf = NULL;
+    int failures = 0;
+
+    ogs_assert(mbs_sess);
+
+    ogs_list_for_each(&mbs_sess->amf_list, amf) {
+        if (!amf->mbs_context_ref)
+            continue;
+
+        /* The cached nf_instance is cleared before the call. mbs_sess->sbi holds whatever instance the first
+         * namf-mbs-bc call for this session resolved and reuses it for every later call to that service. By delete
+         * time that cached instance's nf_service_list has no "namf-mbs-bc" entry, so
+         * ogs_sbi_client_find_by_service_name() falls back to the NF-instance-level default client, which carries no
+         * port: the request goes out with a portless 3gpp-Sbi-Target-apiRoot, the SCP fails the downstream HTTP/2
+         * connection and answers 500, and the AMF never releases the context. ContextCreate starts from an empty
+         * slot and goes through the SCP's own fresh discovery, which resolves the complete profile; clearing the slot
+         * puts this call on that path. */
+        mbs_sess->sbi.service_type_array[OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC].nf_instance = NULL;
+        mbs_sess->sbi.service_type_array[OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC].validity_timeout = 0;
+
+        if (smf_sbi_old_discover_and_send(
+                OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC, NULL,
+                smf_namf_build_mbs_broadcast_context_delete_request,
+                mbs_sess, NULL, amf->id, amf) != OGS_OK) {
+            ogs_error("Failed to send MBS Broadcast ContextDelete for mbsContextRef[%s]", amf->mbs_context_ref);
+            failures++;
+        }
+    }
+
+    return failures;
 }
