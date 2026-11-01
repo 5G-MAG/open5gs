@@ -2735,6 +2735,82 @@ ogs_pkbuf_t *ngap_build_downlink_ran_status_transfer(
     return ogs_ngap_encode(&pdu);
 }
 
+/*
+ * The number of NR CGIs in \p service_area's NCGI-TAI list (the wire's MBS-ServiceAreaCellList is a flat NR-CGI list).
+ */
+static int mbs_service_area_num_cells(const ogs_mbs_service_area_t *service_area)
+{
+    ogs_ncgi_tai_t *ncgi_tai = NULL;
+    int count = 0;
+
+    if (!service_area || !service_area->ncgi_tai_list)
+        return 0;
+
+    ogs_list_for_each(service_area->ncgi_tai_list, ncgi_tai)
+        count += ogs_list_count(&ncgi_tai->cell_list);
+
+    return count;
+}
+
+/*
+ * Adds the TAI list and the cell list of \p service_area to \p info. TS 38.413 V18.8.0 cl. 9.3.1.209 makes both lists
+ * optional ("MBS Service Area Cell List ... 0..<maxnoofCellsforMBS>", "MBS Service Area TAI List ...
+ * 0..<maxnoofTAIforMBS>"): a list that the request does not carry is left out, not replaced by the gNBs the AMF
+ * knows.
+ */
+static void mbs_service_area_information_set(
+        NGAP_MBS_ServiceAreaInformation_t *info, const ogs_mbs_service_area_t *service_area)
+{
+    ogs_assert(info);
+
+    if (service_area && service_area->tai_list && ogs_list_count(service_area->tai_list) > 0) {
+        NGAP_MBS_ServiceAreaTAIList_t *tai_list = CALLOC(1, sizeof(NGAP_MBS_ServiceAreaTAIList_t));
+        ogs_tai_t *tai_entry = NULL;
+
+        ogs_assert(tai_list);
+        info->mBS_ServiceAreaTAIList = tai_list;
+
+        ogs_list_for_each(service_area->tai_list, tai_entry) {
+            ogs_5gs_tai_t tai;
+            NGAP_TAI_t *tAI = CALLOC(1, sizeof(NGAP_TAI_t));
+            ogs_assert(tAI);
+            ASN_SEQUENCE_ADD(tai_list, tAI);
+
+            tai.plmn_id = tai_entry->plmn_id;
+            tai.tac = ogs_uint24_from_string(tai_entry->tac ? tai_entry->tac : (char *)"0");
+
+            ogs_ngap_5gs_tai_to_ASN(&tai, tAI);
+        }
+    }
+
+    if (mbs_service_area_num_cells(service_area) > 0) {
+        NGAP_MBS_ServiceAreaCellList_t *cell_list = CALLOC(1, sizeof(NGAP_MBS_ServiceAreaCellList_t));
+        ogs_ncgi_tai_t *ncgi_tai = NULL;
+
+        ogs_assert(cell_list);
+        info->mBS_ServiceAreaCellList = cell_list;
+
+        ogs_list_for_each(service_area->ncgi_tai_list, ncgi_tai) {
+            ogs_ncgi_t *ncgi_entry = NULL;
+
+            ogs_list_for_each(&ncgi_tai->cell_list, ncgi_entry) {
+                ogs_nr_cgi_t nr_cgi;
+                NGAP_NR_CGI_t *nR_CGI = CALLOC(1, sizeof(NGAP_NR_CGI_t));
+                ogs_assert(nR_CGI);
+                ASN_SEQUENCE_ADD(cell_list, nR_CGI);
+
+                nr_cgi.plmn_id = ncgi_entry->plmn_id;
+                // NrCellId (TS 29.571): 9 hex chars, 36 bits -- same encoding ogs_nr_cgi_t.cell_id
+                // already expects.
+                nr_cgi.cell_id = ncgi_entry->nr_cell_id ?
+                    ogs_uint64_from_string(ncgi_entry->nr_cell_id) : 0;
+
+                ogs_ngap_nr_cgi_to_ASN(&nr_cgi, nR_CGI);
+            }
+        }
+    }
+}
+
 ogs_pkbuf_t *ngap_build_broadcast_session_setup_request(amf_mbs_context_t *mbs_context, ogs_pkbuf_t *pkbuf)
 {
     /*
@@ -2759,17 +2835,9 @@ ogs_pkbuf_t *ngap_build_broadcast_session_setup_request(amf_mbs_context_t *mbs_c
     NGAP_MBS_ServiceArea_t *mBS_ServiceArea = NULL;
     // MBS Service Area Information
     NGAP_MBS_ServiceAreaInformation_t *mBS_ServiceAreaInformation = NULL;
-    NGAP_MBS_ServiceAreaTAIList_t *mBS_ServiceAreaTAIList = NULL;
-    NGAP_MBS_ServiceAreaCellList_t *mBS_ServiceAreaCellList = NULL;
-    // TAI
-    NGAP_TAI_t *tAI = NULL;
-    // NR-CGI
-    NGAP_NR_CGI_t *nR_CGI = NULL;
 
     // MBS Session Setup Request Transfer
     OCTET_STRING_t *oCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer = NULL;
-
-    amf_gnb_t *gnb = NULL;
 
     ogs_assert(pkbuf);
 
@@ -2862,98 +2930,7 @@ ogs_pkbuf_t *ngap_build_broadcast_session_setup_request(amf_mbs_context_t *mbs_c
         mBS_ServiceArea->choice.locationindependent = mBS_ServiceAreaInformation;
     }
 
-    mBS_ServiceAreaTAIList = CALLOC(1, sizeof(NGAP_MBS_ServiceAreaTAIList_t));
-    ogs_assert(mBS_ServiceAreaTAIList);
-    mBS_ServiceAreaInformation->mBS_ServiceAreaTAIList = mBS_ServiceAreaTAIList;
-
-        // Sends the TAI list the request carried, which
-        // amf_namf_handle_mbs_broadcast_context_create() stores on mbs_context when present, rather than every
-        // connected gNB's own TAI. Falls back to that only when the request used mbsServiceAreaInfoList
-        // instead. NOT IMPLEMENTED: NCGI and NCGI-TAI-list forwarding, a separate gap.
-    if (mbs_context->mbs_service_area && mbs_context->mbs_service_area->tai_list) {
-        ogs_tai_t *tai_entry;
-        ogs_list_for_each(mbs_context->mbs_service_area->tai_list, tai_entry) {
-            ogs_5gs_tai_t tai;
-
-            tAI = CALLOC(1, sizeof(NGAP_TAI_t));
-            ogs_assert(tAI);
-            ASN_SEQUENCE_ADD(mBS_ServiceAreaTAIList, tAI);
-
-            tai.plmn_id = tai_entry->plmn_id;
-            tai.tac = tai_entry->tac ?
-                ogs_uint24_from_string(tai_entry->tac) : ogs_uint24_from_string(ogs_strdup("0"));
-
-            ogs_ngap_5gs_tai_to_ASN(&tai, tAI);
-        }
-    } else {
-        ogs_list_for_each(&amf_self()->gnb_list, gnb) {
-            // TAI - 9.3.3.11 (M)
-            tAI = CALLOC(1, sizeof(NGAP_TAI_t));
-            ogs_assert(tAI);
-            ASN_SEQUENCE_ADD(mBS_ServiceAreaTAIList, tAI);
-
-            int i;
-            for (i = 0; i < gnb->num_of_supported_ta_list; i++) {
-                ogs_5gs_tai_t tai;
-                // Grab the first PLMN only
-                // PLMN Identity - 9.3.3.5 (M)
-                tai.plmn_id = gnb->supported_ta_list[i].bplmn_list[0].plmn_id;
-                // TAC - 9.3.3.10 (M)
-                tai.tac = gnb->supported_ta_list[i].tac;
-
-                ogs_ngap_5gs_tai_to_ASN(&tai, tAI);
-            }
-        }
-    }
-
-    mBS_ServiceAreaCellList = CALLOC(1, sizeof(NGAP_MBS_ServiceAreaCellList_t));
-    ogs_assert(mBS_ServiceAreaCellList);
-    mBS_ServiceAreaInformation->mBS_ServiceAreaCellList = mBS_ServiceAreaCellList;
-
-        // Sends the NCGI-TAI list the request carried, which
-        // amf_namf_handle_mbs_broadcast_context_create() stores on mbs_context when present, flattened because
-        // the wire's MBS-ServiceAreaCellList is a flat NR-CGI list while the internal ncgi_tai_list groups by
-        // TAI. Falls back to every connected gNB's own NR-CGI only when the request carried none.
-    if (mbs_context->mbs_service_area && mbs_context->mbs_service_area->ncgi_tai_list) {
-        ogs_ncgi_tai_t *ncgi_tai;
-        ogs_list_for_each(mbs_context->mbs_service_area->ncgi_tai_list, ncgi_tai) {
-            ogs_ncgi_t *ncgi_entry;
-            ogs_list_for_each(&ncgi_tai->cell_list, ncgi_entry) {
-                ogs_nr_cgi_t nr_cgi;
-
-                nR_CGI = CALLOC(1, sizeof(NGAP_NR_CGI_t));
-                ogs_assert(nR_CGI);
-                ASN_SEQUENCE_ADD(mBS_ServiceAreaCellList, nR_CGI);
-
-                nr_cgi.plmn_id = ncgi_entry->plmn_id;
-                // NrCellId (TS 29.571): 9 hex chars, 36 bits -- same encoding ogs_nr_cgi_t.cell_id
-                // already expects.
-                nr_cgi.cell_id = ncgi_entry->nr_cell_id ?
-                    ogs_uint64_from_string(ncgi_entry->nr_cell_id) : 0;
-
-                ogs_ngap_nr_cgi_to_ASN(&nr_cgi, nR_CGI);
-            }
-        }
-    } else {
-        ogs_list_for_each(&amf_self()->gnb_list, gnb) {
-            // NR-CGI - 9.3.1.7 (M)
-            nR_CGI = CALLOC(1, sizeof(NGAP_NR_CGI_t));
-            ogs_assert(nR_CGI);
-            ASN_SEQUENCE_ADD(mBS_ServiceAreaCellList, nR_CGI);
-
-            // PLMN Identity - 9.3.3.5 (M)
-            // NR Cell Identity (M)
-            ogs_nr_cgi_t nr_cgi;
-            ogs_plmn_id_build(&nr_cgi.plmn_id, ogs_plmn_id_mcc(&gnb->plmn_id), ogs_plmn_id_mnc(&gnb->plmn_id),
-                ogs_plmn_id_mnc_len(&gnb->plmn_id));
-
-            // Build NR-CGI from the gNB ID (assuming 22 bits) + Sector ID hardcoded to 0
-            // NR-CGI is 36 bits, in case of gNB ID using 22 bits the rest (14) is the Sector ID
-            nr_cgi.cell_id = gnb->gnb_id << 14;
-
-            ogs_ngap_nr_cgi_to_ASN(&nr_cgi, nR_CGI);
-        }
-    }
+    mbs_service_area_information_set(mBS_ServiceAreaInformation, mbs_context->mbs_service_area);
 
     // MBS Session Setup Request Transfer - OCTET STRING (SIZE(3)) (M)
     ie = CALLOC(1, sizeof(NGAP_BroadcastSessionSetupRequestIEs_t));
@@ -3074,15 +3051,9 @@ ogs_pkbuf_t *ngap_build_broadcast_session_modification_request(
     // MBS Service Area
     NGAP_MBS_ServiceArea_t *mBS_ServiceArea = NULL;
     NGAP_MBS_ServiceAreaInformation_t *mBS_ServiceAreaInformation = NULL;
-    NGAP_MBS_ServiceAreaTAIList_t *mBS_ServiceAreaTAIList = NULL;
-    NGAP_MBS_ServiceAreaCellList_t *mBS_ServiceAreaCellList = NULL;
-    NGAP_TAI_t *tAI = NULL;
-    NGAP_NR_CGI_t *nR_CGI = NULL;
 
     // MBS Session Modification Request Transfer
     OCTET_STRING_t *oCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer = NULL;
-
-    amf_gnb_t *gnb = NULL;
 
     ogs_assert(mbs_context);
 
@@ -3151,84 +3122,7 @@ ogs_pkbuf_t *ngap_build_broadcast_session_modification_request(
             mBS_ServiceArea->choice.locationindependent = mBS_ServiceAreaInformation;
         }
 
-        mBS_ServiceAreaTAIList = CALLOC(1, sizeof(NGAP_MBS_ServiceAreaTAIList_t));
-        ogs_assert(mBS_ServiceAreaTAIList);
-        mBS_ServiceAreaInformation->mBS_ServiceAreaTAIList = mBS_ServiceAreaTAIList;
-
-                    // Uses the TAI list this Update carried, which
-                    // amf_namf_handle_mbs_broadcast_context_update() stores on mbs_context when present, falling
-                    // back to every connected gNB's own TAI only when the request used mbsServiceAreaInfoList.
-        if (mbs_context->mbs_service_area && mbs_context->mbs_service_area->tai_list) {
-            ogs_tai_t *tai_entry;
-            ogs_list_for_each(mbs_context->mbs_service_area->tai_list, tai_entry) {
-                ogs_5gs_tai_t tai;
-
-                tAI = CALLOC(1, sizeof(NGAP_TAI_t));
-                ogs_assert(tAI);
-                ASN_SEQUENCE_ADD(mBS_ServiceAreaTAIList, tAI);
-
-                tai.plmn_id = tai_entry->plmn_id;
-                tai.tac = tai_entry->tac ?
-                    ogs_uint24_from_string(tai_entry->tac) : ogs_uint24_from_string(ogs_strdup("0"));
-
-                ogs_ngap_5gs_tai_to_ASN(&tai, tAI);
-            }
-        } else {
-            ogs_list_for_each(&amf_self()->gnb_list, gnb) {
-                tAI = CALLOC(1, sizeof(NGAP_TAI_t));
-                ogs_assert(tAI);
-                ASN_SEQUENCE_ADD(mBS_ServiceAreaTAIList, tAI);
-
-                int i;
-                for (i = 0; i < gnb->num_of_supported_ta_list; i++) {
-                    ogs_5gs_tai_t tai;
-                    tai.plmn_id = gnb->supported_ta_list[i].bplmn_list[0].plmn_id;
-                    tai.tac = gnb->supported_ta_list[i].tac;
-
-                    ogs_ngap_5gs_tai_to_ASN(&tai, tAI);
-                }
-            }
-        }
-
-        mBS_ServiceAreaCellList = CALLOC(1, sizeof(NGAP_MBS_ServiceAreaCellList_t));
-        ogs_assert(mBS_ServiceAreaCellList);
-        mBS_ServiceAreaInformation->mBS_ServiceAreaCellList = mBS_ServiceAreaCellList;
-
-                    // Uses mbs_context's NCGI-TAI list when present, rather than every connected gNB's own NR-CGI,
-                    // as ngap_build_broadcast_session_setup_request() does.
-        if (mbs_context->mbs_service_area && mbs_context->mbs_service_area->ncgi_tai_list) {
-            ogs_ncgi_tai_t *ncgi_tai;
-            ogs_list_for_each(mbs_context->mbs_service_area->ncgi_tai_list, ncgi_tai) {
-                ogs_ncgi_t *ncgi_entry;
-                ogs_list_for_each(&ncgi_tai->cell_list, ncgi_entry) {
-                    ogs_nr_cgi_t nr_cgi;
-
-                    nR_CGI = CALLOC(1, sizeof(NGAP_NR_CGI_t));
-                    ogs_assert(nR_CGI);
-                    ASN_SEQUENCE_ADD(mBS_ServiceAreaCellList, nR_CGI);
-
-                    nr_cgi.plmn_id = ncgi_entry->plmn_id;
-                    nr_cgi.cell_id = ncgi_entry->nr_cell_id ?
-                        ogs_uint64_from_string(ncgi_entry->nr_cell_id) : 0;
-
-                    ogs_ngap_nr_cgi_to_ASN(&nr_cgi, nR_CGI);
-                }
-            }
-        } else {
-            ogs_list_for_each(&amf_self()->gnb_list, gnb) {
-                nR_CGI = CALLOC(1, sizeof(NGAP_NR_CGI_t));
-                ogs_assert(nR_CGI);
-                ASN_SEQUENCE_ADD(mBS_ServiceAreaCellList, nR_CGI);
-
-                ogs_nr_cgi_t nr_cgi;
-                ogs_plmn_id_build(&nr_cgi.plmn_id, ogs_plmn_id_mcc(&gnb->plmn_id), ogs_plmn_id_mnc(&gnb->plmn_id),
-                    ogs_plmn_id_mnc_len(&gnb->plmn_id));
-
-                nr_cgi.cell_id = gnb->gnb_id << 14;
-
-                ogs_ngap_nr_cgi_to_ASN(&nr_cgi, nR_CGI);
-            }
-        }
+        mbs_service_area_information_set(mBS_ServiceAreaInformation, mbs_context->mbs_service_area);
     }
 
     // MBS Session Modification Request Transfer - OCTET STRING (O)
