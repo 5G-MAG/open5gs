@@ -90,6 +90,8 @@ void ngap_handle_broadcast_session_setup_failure(
         amf_gnb_t *gnb, ogs_ngap_message_t *message);
 void ngap_handle_broadcast_session_modification_response(
         amf_gnb_t *gnb, ogs_ngap_message_t *message);
+void ngap_handle_broadcast_session_release_required(
+        amf_gnb_t *gnb, ogs_ngap_message_t *message);
 void ngap_handle_broadcast_session_release_response(
         amf_gnb_t *gnb, ogs_ngap_message_t *message);
 void ngap_handle_broadcast_session_modification_failure(

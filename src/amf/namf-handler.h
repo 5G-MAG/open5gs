@@ -68,6 +68,9 @@ int amf_namf_handle_mbs_broadcast_context_update(
  * the Response or Failure Transfer IE if it carried one): completes the deferred ContextCreate or ContextUpdate
  * response or sends a ContextStatusNotify request. See the function's own comment (namf-handler.c).
  */
+void amf_namf_handle_mbs_broadcast_release_required(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb);
+bool amf_namf_handle_mbs_broadcast_required_release_response(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb,
+        const OCTET_STRING_t *transfer);
 void amf_namf_handle_mbs_broadcast_ran_response(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb,
         bool update, bool success, OpenAPI_ngap_ie_type_e ngap_ie_type, const OCTET_STRING_t *transfer);
 /* The maximum response time of a ContextCreate or ContextUpdate has elapsed (AMF_EVENT_MBS_TIMER) */

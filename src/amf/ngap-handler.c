@@ -4815,8 +4815,76 @@ void ngap_handle_error_indication(amf_gnb_t *gnb, ogs_ngap_message_t *message)
 }
 
 /*
+ * BROADCAST SESSION RELEASE REQUIRED: the NG-RAN lacks the resources to continue the session (TS 38.413 V18.8.0
+ * cl. 8.17.4.2). The IEs are the MBS Session ID and the Cause, both mandatory (cl. 9.2.16.9). The AMF releases the
+ * session in that NG-RAN (amf_namf_handle_mbs_broadcast_release_required()).
+ */
+void ngap_handle_broadcast_session_release_required(
+        amf_gnb_t *gnb, ogs_ngap_message_t *message)
+{
+    int i;
+
+    NGAP_InitiatingMessage_t *initiatingMessage = NULL;
+    NGAP_BroadcastSessionReleaseRequired_t *BroadcastSessionReleaseRequired = NULL;
+    NGAP_BroadcastSessionReleaseRequiredIEs_t *ie = NULL;
+    NGAP_MBS_SessionID_t *MBS_SessionID = NULL;
+    NGAP_Cause_t *Cause = NULL;
+
+    ogs_tmgi_t tmgi;
+    amf_mbs_context_t *mbs_context = NULL;
+
+    ogs_assert(gnb);
+    ogs_assert(gnb->sctp.sock);
+
+    ogs_assert(message);
+    initiatingMessage = message->choice.initiatingMessage;
+    ogs_assert(initiatingMessage);
+
+    BroadcastSessionReleaseRequired =
+        &initiatingMessage->value.choice.BroadcastSessionReleaseRequired;
+
+    ogs_debug("BROADCAST SESSION RELEASE REQUIRED");
+
+    for (i = 0; i < BroadcastSessionReleaseRequired->protocolIEs.list.count; i++) {
+        ie = BroadcastSessionReleaseRequired->protocolIEs.list.array[i];
+        switch (ie->value.present) {
+        case NGAP_BroadcastSessionReleaseRequiredIEs__value_PR_MBS_SessionID:
+            MBS_SessionID = &ie->value.choice.MBS_SessionID;
+            break;
+        case NGAP_BroadcastSessionReleaseRequiredIEs__value_PR_Cause:
+            Cause = &ie->value.choice.Cause;
+            break;
+        default:
+            break;
+        }
+    }
+
+    if (!MBS_SessionID) {
+        ogs_error("BROADCAST SESSION RELEASE REQUIRED: No MBS-SessionID IE");
+        return;
+    }
+
+    if (Cause)
+        ogs_warn("BROADCAST SESSION RELEASE REQUIRED from gNB %i, Cause[Group:%d]", gnb->gnb_id, Cause->present);
+    else
+        ogs_warn("BROADCAST SESSION RELEASE REQUIRED from gNB %i, no Cause IE", gnb->gnb_id);
+
+    memset(&tmgi, 0, sizeof(tmgi));
+    ogs_ngap_ASN_to_5gs_tmgi(&MBS_SessionID->tMGI, &tmgi);
+
+    mbs_context = amf_mbs_context_find_by_tmgi(&tmgi);
+    if (mbs_context)
+        amf_namf_handle_mbs_broadcast_release_required(mbs_context, gnb);
+    else
+        ogs_warn("BROADCAST SESSION RELEASE REQUIRED: no MBS context found for the given TMGI");
+
+    ogs_free(tmgi.mbs_service_id);
+}
+
+/*
  * BROADCAST SESSION RELEASE RESPONSE: the NG-RAN has released the session. The deferred ContextRelease response
- * is sent on the first one (TS 23.247 V18.8.0 cl. 7.3.2 step 7 then step 8).
+ * is sent on the first one (TS 23.247 V18.8.0 cl. 7.3.2 step 7 then step 8); the answer of an NG-RAN to a release it
+ * asked for (BROADCAST SESSION RELEASE REQUIRED) is reported to the MB-SMF instead.
  */
 void ngap_handle_broadcast_session_release_response(
         amf_gnb_t *gnb, ogs_ngap_message_t *message)
@@ -4862,7 +4930,9 @@ void ngap_handle_broadcast_session_release_response(
     ogs_ngap_ASN_to_5gs_tmgi(&MBS_SessionID->tMGI, &tmgi);
 
     mbs_context = amf_mbs_context_find_by_tmgi(&tmgi);
-    if (mbs_context && mbs_context->release_pending)
+    if (mbs_context && amf_namf_handle_mbs_broadcast_required_release_response(mbs_context, gnb, transfer))
+        ;   // the answer to a release that this NG-RAN asked for
+    else if (mbs_context && mbs_context->release_pending)
         amf_namf_send_mbs_broadcast_context_release_response(mbs_context, gnb, transfer);
     else
         ogs_warn("BROADCAST SESSION RELEASE RESPONSE: no MBS context waiting for its release for the given TMGI");

@@ -2840,6 +2840,18 @@ void amf_namf_handle_mbs_broadcast_ran_response(amf_mbs_context_t *mbs_context, 
     ogs_assert(mbs_context);
     ogs_assert(gnb);
 
+    {
+        amf_mbs_gnb_t *involved = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
+
+        // A failed Setup means the node does not serve the session (it is then not one of "all the NG-RANs serving
+        // the Broadcast MBS session", TS 29.518 cl. 5.6.2.5); any success, or a failure of a Modification, leaves
+        // it as it was.
+        if (involved && success)
+            involved->setup_failed = false;
+        else if (involved && !update)
+            involved->setup_failed = true;
+    }
+
     mbs_context->gnb_response_count++;
     completed = mbs_context->gnb_response_count >= mbs_context->gnb_request_count;
     if (completed)
@@ -2953,6 +2965,10 @@ static int amf_mbs_context_send_release(amf_mbs_context_t *mbs_context)
             ogs_debug("A gNB involved in the MBS session has disconnected, no release sent to it");
             continue;
         }
+        if (involved->release_required) {
+            ogs_debug("gNB %i has asked for the release and has already been sent it", gnb->gnb_id);
+            continue;
+        }
 
         n2msgreq_copy = ogs_pkbuf_copy(n2msgreq);
         if (!n2msgreq_copy) {
@@ -3021,6 +3037,156 @@ void amf_namf_send_mbs_broadcast_context_release_response(amf_mbs_context_t *mbs
 
     mbs_context->stream_id = OGS_INVALID_POOL_ID;
     amf_mbs_context_remove(mbs_context);
+}
+
+/*
+ * Sends a ContextStatusNotify request that reports a release that NG-RAN \p gnb asked for: the Broadcast Session
+ * Release Response Transfer IE it returned, if any (\p transfer), and releasedInd when \p released_ind.
+ */
+static void amf_mbs_context_notify_required_release(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb,
+        const OCTET_STRING_t *transfer, bool released_ind)
+{
+    ogs_list_t n2_info_list;
+    amf_mbs_n2_info_t *n2_info = NULL;
+
+    if (gnb && transfer && transfer->size > 0)
+        n2_info = amf_mbs_n2_info_create(gnb, OpenAPI_ngap_ie_type_MBS_SES_REL_RSP, transfer->buf, transfer->size);
+
+    if (!n2_info && !released_ind)
+        return;
+
+    ogs_list_init(&n2_info_list);
+    if (n2_info)
+        ogs_list_add(&n2_info_list, n2_info);
+    amf_sbi_send_mbs_broadcast_context_status_notify(
+            mbs_context, &n2_info_list, OpenAPI_operation_status_NULL, released_ind);
+    amf_mbs_n2_info_remove_all(&n2_info_list);
+}
+
+/*
+ * True when every NG-RAN serving the session has asked for its release and has been released: each gNB of the record
+ * that is still connected and did not fail its Setup (TS 29.518 V18.14.0 cl. 5.6.2.5: "If all the NG-RANs serving the
+ * Broadcast MBS session requested the AMF to release the Broadcast MBS session"). False when no gNB serves it.
+ */
+static bool amf_mbs_context_all_released_on_request(amf_mbs_context_t *mbs_context)
+{
+    amf_mbs_gnb_t *involved = NULL;
+    int serving = 0;
+
+    ogs_list_for_each(&mbs_context->involved_gnb_list, involved) {
+        if (!amf_gnb_find_by_id(involved->gnb_id) || involved->setup_failed)
+            continue;
+        if (!involved->release_required || !involved->released)
+            return false;
+        serving++;
+    }
+
+    return serving > 0;
+}
+
+/*
+ * The release asked for by NG-RAN \p gnb is over (it answered, \p transfer is the Broadcast Session Release Response
+ * Transfer IE if it sent one, or the request could not be sent): tell the MB-SMF, and when this was the last of all the
+ * NG-RANs serving the session, release the context (TS 29.518 V18.14.0 cl. 5.6.2.5: "the AMF shall release the
+ * Broadcast MBS session context and send a notification with the releaseInd attribute set to true to report to the
+ * MB-SMF that the Broadcast MBS session (context) is released at the AMF and NG-RANs.").
+ */
+static void amf_mbs_context_required_release_done(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb,
+        const OCTET_STRING_t *transfer)
+{
+    bool all;
+
+    ogs_assert(mbs_context);
+    ogs_assert(gnb);
+
+    all = !mbs_context->release_pending && amf_mbs_context_all_released_on_request(mbs_context);
+
+    // TS 23.247 V18.8.0 cl. 7.3.6 step 3: "The AMF notifies the MB-SMF about the DL tunnel release via
+    // Namf_MBSBroadcast_ContextStatusNotify with N3mb DL Tunnel Info and corresponding NG-RAN ID." The container is
+    // what the NG-RAN returned (TS 38.413 V18.8.0 cl. 8.17.3.2), with the identity of the node.
+    amf_mbs_context_notify_required_release(mbs_context, gnb, transfer, all);
+
+    if (!all)
+        return;
+
+    // A ContextCreate or ContextUpdate still waiting for its NG-RAN responses will never be answered by them. No
+    // clause names the status (as for the failure of a Setup).
+    if (mbs_context->stream_id != OGS_INVALID_POOL_ID) {
+        ogs_sbi_stream_t *stream = ogs_sbi_stream_find_by_id(mbs_context->stream_id);
+
+        mbs_context->stream_id = OGS_INVALID_POOL_ID;
+        if (stream)
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR, NULL,
+                    "MBS Broadcast context released",
+                    "Every NG-RAN asked for the release of the Broadcast MBS session", NULL);
+    }
+
+    amf_mbs_context_remove(mbs_context);
+}
+
+/*
+ * BROADCAST SESSION RELEASE REQUIRED of NG-RAN \p gnb for \p mbs_context. TS 38.413 V18.8.0 cl. 8.17.4.2: "Upon
+ * reception of the BROADCAST SESSION RELEASE REQUIRED message, the AMF shall realize that the NG-RAN node is lacking
+ * adequate MBS session resources for a previously established broadcast MBS session and initiate the release of the
+ * MBS session resources." TS 23.247 V18.8.0 cl. 7.3.6 step 2: "The AMF initiates Broadcast Session Release towards
+ * the NG-RAN as defined in steps 4 - 7 in clause 7.3.2." The release goes to that NG-RAN only; the context goes when
+ * all the NG-RANs serving the session have asked (amf_mbs_context_required_release_done()).
+ */
+void amf_namf_handle_mbs_broadcast_release_required(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb)
+{
+    amf_mbs_gnb_t *involved = NULL;
+    ogs_pkbuf_t *n2msgreq = NULL;
+
+    ogs_assert(mbs_context);
+    ogs_assert(gnb);
+
+    involved = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
+    if (!involved) {
+        ogs_warn("BROADCAST SESSION RELEASE REQUIRED from gNB %i, which has not been sent the session, ignored",
+                gnb->gnb_id);
+        return;
+    }
+    if (involved->release_required) {
+        ogs_warn("BROADCAST SESSION RELEASE REQUIRED from gNB %i, which has asked before, ignored", gnb->gnb_id);
+        return;
+    }
+    if (mbs_context->release_pending) {
+        // The consumer's ContextRelease is releasing the session in every NG-RAN.
+        ogs_warn("BROADCAST SESSION RELEASE REQUIRED from gNB %i while the context is being released, ignored",
+                gnb->gnb_id);
+        return;
+    }
+
+    involved->release_required = true;
+
+    n2msgreq = ngap_build_broadcast_session_release_request(mbs_context);
+    if (!n2msgreq || ngap_send_to_gnb(gnb, n2msgreq, NGAP_NON_UE_SIGNALLING) != OGS_OK) {
+        // No release response will come: the NG-RAN has asked for the release and counts as released.
+        ogs_error("The Broadcast Session Release Request could not be sent to gNB %i", gnb->gnb_id);
+        involved->released = true;
+        amf_mbs_context_required_release_done(mbs_context, gnb, NULL);
+    }
+}
+
+/*
+ * BROADCAST SESSION RELEASE RESPONSE of NG-RAN \p gnb to a release that it asked for. Returns false when it is not
+ * the answer to such a release.
+ */
+bool amf_namf_handle_mbs_broadcast_required_release_response(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb,
+        const OCTET_STRING_t *transfer)
+{
+    amf_mbs_gnb_t *involved = NULL;
+
+    ogs_assert(mbs_context);
+    ogs_assert(gnb);
+
+    involved = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
+    if (!involved || !involved->release_required || involved->released)
+        return false;
+
+    involved->released = true;
+    amf_mbs_context_required_release_done(mbs_context, gnb, transfer);
+    return true;
 }
 
 /*

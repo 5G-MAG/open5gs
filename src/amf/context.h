@@ -863,6 +863,15 @@ typedef struct amf_mbs_gnb_s {
     ogs_lnode_t lnode;
 
     ogs_pool_id_t gnb_id;   /* amf_gnb_t.id; the gNB may have disconnected since */
+
+    /* The gNB answered the last Setup Request with a failure and no later request succeeded: it does not serve the
+     * session. */
+    bool setup_failed;
+    /* The gNB sent a BROADCAST SESSION RELEASE REQUIRED for the session (TS 38.413 V18.8.0 cl. 8.17.4); the AMF
+     * has released the session in it, and released is set once that release has been answered (or could not be
+     * sent). */
+    bool release_required;
+    bool released;
 } amf_mbs_gnb_t;
 
 typedef struct amf_mbs_context_s {
@@ -1147,6 +1156,7 @@ void amf_mbs_context_remove(amf_mbs_context_t *amf_mbs_context);
 amf_mbs_n2_info_t *amf_mbs_n2_info_create(amf_gnb_t *gnb,
         OpenAPI_ngap_ie_type_e ngap_ie_type, const uint8_t *transfer, size_t transfer_len);
 void amf_mbs_context_involve_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *gnb);
+amf_mbs_gnb_t *amf_mbs_context_find_involved_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *gnb);
 void amf_mbs_n2_info_free(amf_mbs_n2_info_t *n2_info);
 void amf_mbs_n2_info_remove_all(ogs_list_t *n2_info_list);
 

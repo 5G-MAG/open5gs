@@ -102,6 +102,22 @@ void amf_mbs_context_involve_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *
     ogs_list_add(&amf_mbs_context->involved_gnb_list, involved);
 }
 
+/* The record of \p gnb in the context, NULL if the gNB has not been sent a request of the session */
+amf_mbs_gnb_t *amf_mbs_context_find_involved_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *gnb)
+{
+    amf_mbs_gnb_t *involved = NULL;
+
+    ogs_assert(amf_mbs_context);
+    ogs_assert(gnb);
+
+    ogs_list_for_each(&amf_mbs_context->involved_gnb_list, involved) {
+        if (involved->gnb_id == gnb->id)
+            return involved;
+    }
+
+    return NULL;
+}
+
 /* \p n2_info must not be on a list */
 void amf_mbs_n2_info_free(amf_mbs_n2_info_t *n2_info)
 {
