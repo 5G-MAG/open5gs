@@ -22,6 +22,7 @@
 #include "binding.h"
 #include "namf-handler.h"
 #include "mbs-n3mb.h"
+#include "mbs-restore.h"
 
 bool smf_namf_comm_handle_n1_n2_message_transfer(
         smf_sess_t *sess, int state, ogs_sbi_message_t *recvmsg)
@@ -456,6 +457,51 @@ static bool smf_namf_send_transport_answers(ogs_sbi_stream_t *stream, ogs_sbi_me
     return true;
 }
 
+/* One ngranFailureEvent of a ContextStatusNotify of the AMF \p amf: the MB-UPF is told of the DL tunnel that goes
+ * (TS 23.527 V18.6.0 clauses 8.3.2.3 step 5 and 8.3.3 step 5), and an NG-RAN that is to get the session again gets
+ * a ContextUpdate through the AMF that reported it, with its NG-RAN ID in the ranIdList (clause 8.3.2.3 step 6). */
+static void handle_ngran_failure_event(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf,
+        OpenAPI_ngran_failure_event_t *event)
+{
+    smf_mbs_tunnel_changes_t changes;
+    smf_mbs_ngran_restore_t restore;
+
+    if (!event)
+        return;
+
+    memset(&changes, 0, sizeof(changes));
+    smf_mbs_sess_take_ngran_failure_event(mbs_sess, event, &changes, &restore);
+    if (changes.count > 0)
+        smf_mbs_sess_send_tunnel_changes(mbs_sess, &changes);
+
+    if (restore.restore) {
+        smf_namf_context_update_param_t *param = NULL;
+        const char **ran_ids = NULL;
+
+        if (!amf || !amf->mbs_context_ref) {
+            ogs_error("MBS Broadcast ContextStatusNotify: NG-RAN [%s] cannot be restored, the AMF that reported it "
+                    "holds no context of the MBS session", restore.ran_id);
+            ogs_free(restore.ran_id);
+            return;
+        }
+        param = ogs_calloc(1, sizeof(*param));
+        ogs_assert(param);
+        ran_ids = ogs_calloc(1, sizeof(*ran_ids));
+        ogs_assert(ran_ids);
+        ran_ids[0] = restore.ran_id;
+        param->amf = amf;
+        param->no_n2_info_change_ind = true;
+        param->ran_ids = ran_ids;
+        param->num_ran_ids = 1;
+        param->heap_owned = true;
+        ogs_info("MBS Broadcast ContextStatusNotify: restoring the MBS session in NG-RAN [%s]", restore.ran_id);
+        /* the builder frees param, ran_ids and the text once it ran; when sending fails it may or may not have
+         * run, so nothing is freed here (a failed send leaks these few bytes rather than risk a double free) */
+        if (smf_sbi_send_mbs_broadcast_context_update(mbs_sess, param) != OGS_OK)
+            ogs_error("Failed to send MBS Broadcast ContextUpdate to restore an NG-RAN");
+    }
+}
+
 /*
  * BUG FIX: this receiving-side handler and its own callback resource
  * (OGS_SBI_RESOURCE_NAME_MBS_CONTEXT_STATUS_NOTIFY, smf-sm.c's own dispatch case) did not previously exist
@@ -552,19 +598,33 @@ bool smf_namf_handle_mbs_broadcast_context_status_notify(
         take_amf_answer(mbs_sess, amf, ContextStatusNotification->operation_status,
                 ContextStatusNotification->n2_mbs_sm_info_list, recvmsg);
 
-    /* operationEvents: "failure to reach one or more NG-RANs" (cl. 5.6.2.3: "The AMF may send one or more
-     * Namf_MBSBroadcast_ContextStatusNotify request including an operationEvents attribute to report the MB-SMF
-     * about failure to reach one or more NG-RANs.") What the MB-SMF does about it is the restoration of TS 23.527,
-     * not held: the events are reported in the log. */
-    if (ContextStatusNotification->operation_events) {
+    /* operationEvents (TS 29.518 V18.14.0 table 6.5.6.2.4-1): "This IE may be present to report a list of operation
+     * events related to the Broadcast MBS Session, e.g., when the Broadcast MBS Session is released in one of
+     * NG-RANs as required by the NG-RAN, a failure of a NG-RAN." The NG-RAN events are the restoration of TS 23.527
+     * V18.6.0 clauses 8.3.2.3 and 8.3.3 (smf_mbs_sess_take_ngran_failure_event()). */
+    if (ContextStatusNotification->operation_events &&
+            ContextStatusNotification->released_ind != OpenAPI_context_status_notification_RELEASEDIND__true) {
         OpenAPI_lnode_t *node;
 
         OpenAPI_list_for_each(ContextStatusNotification->operation_events, node) {
             OpenAPI_operation_event_t *event = node->data;
+            OpenAPI_lnode_t *fnode;
 
-            if (event)
+            if (!event)
+                continue;
+            if (event->op_event_type != OpenAPI_op_event_type_NG_RAN_EVENT) {
                 ogs_warn("MBS Broadcast ContextStatusNotify: operation event [%s]",
                         OpenAPI_op_event_type_ToString(event->op_event_type));
+                continue;
+            }
+            if (!event->ngran_failure_event_list) {
+                /* table 6.5.6.2.8-1: "ngranFailureEventList ... shall be present if the event type is related to a
+                 * NG-RAN" */
+                ogs_error("MBS Broadcast ContextStatusNotify: an NG_RAN_EVENT without the ngranFailureEventList");
+                continue;
+            }
+            OpenAPI_list_for_each(event->ngran_failure_event_list, fnode)
+                handle_ngran_failure_event(mbs_sess, amf, fnode->data);
         }
     }
 

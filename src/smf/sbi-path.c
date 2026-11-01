@@ -709,6 +709,23 @@ int smf_sbi_send_mbs_broadcast_context_delete_all(smf_mbs_sess_t *mbs_sess)
     return failures;
 }
 
+int smf_sbi_send_mbs_broadcast_context_update(smf_mbs_sess_t *mbs_sess, smf_namf_context_update_param_t *param)
+{
+    ogs_assert(mbs_sess);
+    ogs_assert(param);
+    ogs_assert(param->amf);
+
+    if (!param->amf->mbs_context_ref)
+        return OGS_ERROR;
+
+    mbs_bc_reset_cached_instance(mbs_sess);
+
+    return smf_sbi_old_discover_and_send(
+            OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC, NULL,
+            smf_namf_build_mbs_broadcast_context_update_request,
+            mbs_sess, NULL, param->amf->id, param);
+}
+
 int smf_sbi_send_mbs_broadcast_context_update_all(
         smf_mbs_sess_t *mbs_sess, bool service_area, bool n2_info_changed)
 {

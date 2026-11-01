@@ -127,6 +127,10 @@ bool smf_sbi_send_mbs_status_notify(smf_mbs_subsc_t *subsc, ogs_sbi_request_t *r
 int smf_sbi_send_mbs_broadcast_context_update_all(
         smf_mbs_sess_t *mbs_sess, bool service_area, bool n2_info_changed);
 
+/* Namf_MBSBroadcast ContextUpdate towards the one AMF param->amf, built from \p param (which has to stay valid until
+ * the request is built). Returns OGS_OK when the request was handed to the SBI. */
+int smf_sbi_send_mbs_broadcast_context_update(smf_mbs_sess_t *mbs_sess, smf_namf_context_update_param_t *param);
+
 #ifdef __cplusplus
 }
 #endif

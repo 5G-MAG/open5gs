@@ -530,7 +530,7 @@ ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_update_request(
 
     ContextUpdateReqData = OpenAPI_context_update_req_data_create(mbs_service_area, mbs_service_area_info_list,
             n2_mbs_sm_info, ran_id_list, OpenAPI_context_update_req_data_NONGAPSIGNALLINGIND_NULL, NULL,
-            has_max_response_time, max_response_time, true, param->n2_info_changed);
+            has_max_response_time, max_response_time, !param->no_n2_info_change_ind, param->n2_info_changed);
     message.ContextUpdateReqData = ContextUpdateReqData;
 
     message.http.accept = (char *) (OGS_SBI_CONTENT_JSON_TYPE ","
@@ -541,6 +541,13 @@ ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_update_request(
 
     if (ContextUpdateReqData)
         OpenAPI_context_update_req_data_free(ContextUpdateReqData);
+    if (param->heap_owned) {
+        for (i = 0; i < param->num_ran_ids; i++)
+            ogs_free((char *)param->ran_ids[i]);
+        if (param->ran_ids)
+            ogs_free((void *)param->ran_ids);
+        ogs_free(param);
+    }
     /* the request holds a copy of the part */
     if (n2_pkbuf)
         ogs_pkbuf_free(n2_pkbuf);

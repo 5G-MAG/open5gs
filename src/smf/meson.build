@@ -71,6 +71,7 @@ libsmf_sources = files('''
     mbs-update.h
     mbs-subsc.h
     mbs-n3mb.h
+    mbs-restore.h
     n4mb-build.h
     n4mb-handler.h
 
@@ -116,6 +117,7 @@ libsmf_sources = files('''
     mbs-update.c
     mbs-subsc.c
     mbs-n3mb.c
+    mbs-restore.c
     n4mb-build.c
     n4mb-handler.c
 '''.split())

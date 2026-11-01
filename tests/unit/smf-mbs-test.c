@@ -19,6 +19,7 @@
 #include "mbs-update.h"
 #include "mbs-subsc.h"
 #include "mbs-n3mb.h"
+#include "mbs-restore.h"
 #include "asn_internal.h"
 
 static int checks, failures;
@@ -2778,6 +2779,119 @@ static void test_ngu_failure_indication(void)
     smf_mbs_sess_release(mbs_sess);
 }
 
+/* TS 23.527 V18.6.0 clause 8.3.2.3 steps 5 and 6 (NG-RAN restart or new NG-RAN) and clause 8.3.3 step 5 (NG-RAN failure
+ * without restart); TS 29.518 V18.14.0 table 6.5.6.2.9-1, NgranFailureEvent. */
+static void test_ngran_failure_events(void)
+{
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    smf_mbs_dl_tunnel_t *a, *b;
+    smf_mbs_tunnel_changes_t changes;
+    smf_mbs_ngran_restore_t restore;
+    OpenAPI_ngran_failure_event_t event;
+    ogs_ip_t addr;
+    bool changed;
+    char *text_a, *text_b;
+    OpenAPI_global_ran_node_id_t *ran_a, *ran_b;
+    cJSON *json;
+    uint16_t id_a, id_b;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+
+    json = cJSON_Parse(ran_a_text);
+    ran_a = OpenAPI_global_ran_node_id_parseFromJSON(json);
+    cJSON_Delete(json);
+    json = cJSON_Parse(ran_b_text);
+    ran_b = OpenAPI_global_ran_node_id_parseFromJSON(json);
+    cJSON_Delete(json);
+    CHECK(ran_a && ran_b);
+    if (!ran_a || !ran_b) return;
+    text_a = smf_mbs_ran_id_text(ran_a);
+    text_b = smf_mbs_ran_id_text(ran_b);
+
+    memset(&addr, 0, sizeof(addr));
+    addr.ipv4 = 1;
+    addr.len = OGS_IPV4_LEN;
+    addr.addr = htonl(0x0a141e28);
+    a = smf_mbs_sess_dl_tunnel_set(mbs_sess, text_a, &addr, 0x11, &changed);
+    addr.addr = htonl(0x0a141e29);
+    b = smf_mbs_sess_dl_tunnel_set(mbs_sess, text_b, &addr, 0x22, &changed);
+    CHECK(a && b);
+    id_a = a->unicast_params_id;
+    id_b = b->unicast_params_id;
+    CHECK(id_a != 0 && id_b != 0 && id_a != id_b);
+
+    memset(&event, 0, sizeof(event));
+
+    /* a restart or start: the DL tunnel goes (the MB-UPF is told), and the NG-RAN gets the session again */
+    event.ngran_id = ran_a;
+    event.ngran_failure_indication = OpenAPI_ngran_failure_indication_NG_RAN_RESTART_OR_START;
+    memset(&changes, 0, sizeof(changes));
+    CHECK(smf_mbs_sess_take_ngran_failure_event(mbs_sess, &event, &changes, &restore) == 1);
+    CHECK(restore.restore && restore.ran_id && strcmp(restore.ran_id, text_a) == 0);
+    CHECK(changes.count == 1 && changes.change[0].has_remove && !changes.change[0].has_add &&
+            changes.change[0].remove_id == id_a);
+    CHECK(smf_mbs_sess_dl_tunnel_find(mbs_sess, text_a) == NULL && smf_mbs_sess_dl_tunnel_find(mbs_sess, text_b));
+    if (restore.ran_id) ogs_free(restore.ran_id);
+
+    /* the same again: no tunnel left, the restoration still goes (multicast transport has none) */
+    memset(&changes, 0, sizeof(changes));
+    CHECK(smf_mbs_sess_take_ngran_failure_event(mbs_sess, &event, &changes, &restore) == 0);
+    CHECK(restore.restore && changes.count == 0);
+    if (restore.ran_id) ogs_free(restore.ran_id);
+
+    /* a failure without restart: the DL tunnel goes, nothing is restored */
+    event.ngran_id = ran_b;
+    event.ngran_failure_indication = OpenAPI_ngran_failure_indication_NG_RAN_FAILURE_WITHOUT_RESTART;
+    memset(&changes, 0, sizeof(changes));
+    CHECK(smf_mbs_sess_take_ngran_failure_event(mbs_sess, &event, &changes, &restore) == 1);
+    CHECK(!restore.restore && restore.ran_id == NULL);
+    CHECK(changes.count == 1 && changes.change[0].remove_id == id_b);
+    CHECK(smf_mbs_sess_dl_tunnel_find(mbs_sess, text_b) == NULL);
+
+    /* the other indications change nothing */
+    smf_mbs_sess_dl_tunnel_set(mbs_sess, text_b, &addr, 0x22, &changed);
+    event.ngran_failure_indication = OpenAPI_ngran_failure_indication_NG_RAN_NOT_REACHABLE;
+    memset(&changes, 0, sizeof(changes));
+    CHECK(smf_mbs_sess_take_ngran_failure_event(mbs_sess, &event, &changes, &restore) == 0);
+    CHECK(!restore.restore && changes.count == 0 && smf_mbs_sess_dl_tunnel_find(mbs_sess, text_b));
+    event.ngran_failure_indication = OpenAPI_ngran_failure_indication_NG_RAN_REQUIRED_RELEASE;
+    CHECK(smf_mbs_sess_take_ngran_failure_event(mbs_sess, &event, &changes, &restore) == 0);
+    CHECK(!restore.restore && changes.count == 0);
+
+    /* an event without the NG-RAN ID (mandatory in the table) is ignored */
+    event.ngran_id = NULL;
+    event.ngran_failure_indication = OpenAPI_ngran_failure_indication_NG_RAN_RESTART_OR_START;
+    CHECK(smf_mbs_sess_take_ngran_failure_event(mbs_sess, &event, &changes, &restore) == 0);
+    CHECK(!restore.restore && changes.count == 0);
+
+    /* a restoration ContextUpdate whose parameters the builder owns: built and freed once */
+    {
+        smf_namf_context_update_param_t *param = ogs_calloc(1, sizeof(*param));
+        const char **ids = ogs_calloc(1, sizeof(*ids));
+        smf_mbs_amf_t *amf = smf_mbs_sess_amf_add(mbs_sess);
+        ogs_sbi_request_t *request;
+
+        amf->mbs_context_ref = ogs_strdup("9");
+        ids[0] = ogs_strdup(text_a);
+        param->amf = amf;
+        param->no_n2_info_change_ind = true;
+        param->ran_ids = ids;
+        param->num_ran_ids = 1;
+        param->heap_owned = true;
+        request = smf_namf_build_mbs_broadcast_context_update_request(mbs_sess, param);
+        CHECK(request && request->http.content && strstr(request->http.content, "\"ranIdList\"") &&
+                strstr(request->http.content, "n2MbsInfoChangeInd") == NULL);
+        if (request) ogs_sbi_request_free(request);
+    }
+
+    ogs_free(text_a);
+    ogs_free(text_b);
+    OpenAPI_global_ran_node_id_free(ran_a);
+    OpenAPI_global_ran_node_id_free(ran_b);
+    smf_mbs_sess_release(mbs_sess);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -2817,6 +2931,7 @@ int main(void)
     test_tmgi_octets();
     test_notification_routing();
     test_ngu_failure_indication();
+    test_ngran_failure_events();
 
     printf("smf-mbs: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;

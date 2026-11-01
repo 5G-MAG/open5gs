@@ -62,10 +62,14 @@ typedef struct smf_namf_context_update_param_s {
     smf_mbs_amf_t *amf;         /* the AMF whose context is updated */
     bool service_area;          /* the request carries the updated MBS service area */
     bool n2_info_changed;       /* the N2 MBS Session Management information changed (n2MbsInfoChangeInd) */
+    bool no_n2_info_change_ind; /* n2MbsInfoChangeInd is left out: nothing about the information is changed */
     /* ranIdList: the NG-RANs the update is to be performed in (TS 29.518 V18.14.0 table 6.5.6.2.5-1), each a
      * GlobalRanNodeId as JSON text (smf_mbs_ran_id_text()); none: all the NG-RANs of the context */
     const char *const *ran_ids;
     int num_ran_ids;
+    /* the param and the NG-RAN ID texts are on the heap and the builder frees them once the request is built (the
+     * request can be built after an asynchronous NF discovery, when the sender has returned) */
+    bool heap_owned;
     /* the container carries the MBS NG-U Failure Indication of an N3mb path failure (TS 23.527 V18.6.0 cl. 8.5) */
     bool n3mb_path_failure;
 } smf_namf_context_update_param_t;
