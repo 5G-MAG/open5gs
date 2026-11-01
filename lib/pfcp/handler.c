@@ -1276,7 +1276,7 @@ ogs_pfcp_qer_t *ogs_pfcp_handle_create_qer(ogs_pfcp_sess_t *sess,
     if (message->gate_status.presence == 0) {
         ogs_error("No Gate Status");
         *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
-        *offending_ie_value = OGS_PFCP_APPLY_ACTION_TYPE;
+        *offending_ie_value = OGS_PFCP_GATE_STATUS_TYPE;
         return NULL;
     }
 

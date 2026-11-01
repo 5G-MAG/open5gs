@@ -220,8 +220,9 @@ def far(far_id=1, apply=0x0008, params=True, drop=(), mc_extra=()):
     return ie(T_CREATE_FAR, parts)
 
 
-def qer(qer_id=1, gate=0, qfi=1, indications=None):
+def qer(qer_id=1, gate=0, qfi=1, indications=None, drop=()):
     parts = [ie(T_QER_ID, struct.pack('>I', qer_id)), ie(T_GATE, bytes([gate])), ie(T_QFI, bytes([qfi]))]
+    parts = [p for p in parts if struct.unpack('>H', p[:2])[0] not in drop]
     if indications is not None:
         parts.append(ie(319, bytes([indications])))
     return ie(T_CREATE_QER, parts)
@@ -1152,6 +1153,15 @@ def t_tmgi_plmn_octets_of_ts_24_008():
         s = accepted(U.establish(good(cp_seid=seid)[:-1] + [n4mb_ctrl(tmgi_id(plmn=plmn))]), want)
         assert want in U.log_text(), '%s not read from %s' % (want, plmn.hex())
         U.delete(s)
+
+
+@test
+def t_create_qer_without_gate_status_reports_gate_status():
+    # TS 29.244 Table 7.5.2.5-1: Gate Status is M; the Offending IE is its own type (25), not Apply Action (44)
+    r = U.establish(replace_ie(good(cp_seid=0xd001), T_CREATE_QER, qer(drop=(T_GATE,))))
+    assert r and cause(r) == CAUSE_MANDATORY_MISSING, 'cause %s' % (cause(r) if r else None)
+    assert offending(r) == T_GATE, 'offending IE %s, expected %d' % (offending(r), T_GATE)
+    accepted_and_deleted(U.establish(good(cp_seid=0xd002)), 'after the rejection')
 
 
 # E-TESTS-BELOW
