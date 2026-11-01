@@ -2084,6 +2084,45 @@ static void amf_namf_parse_mbs_service_area(ogs_mbs_service_area_t **out, OpenAP
     }
 }
 
+/*
+ * Whether an MBS session's setup or modification goes to \p gnb. TS 23.247 V18.8.0 cl. 7.3.1 step 3: "The AMF transfers
+ * the MBS Session Resource Setup Request message ... to all NG-RANs which support MBS in the MBS service area."
+ * A gNB that has not completed NG Setup is not reachable for non-UE signalling. When the stored service area carries
+ * TAIs, the gNB must serve one of them. A service area without TAIs (none given, or NCGIs only) does not narrow the
+ * choice here. NOT IMPLEMENTED: whether the gNB supports MBS (no NGAP indication of it is held), NCGI matching.
+ */
+static bool amf_gnb_takes_mbs_session(amf_gnb_t *gnb, amf_mbs_context_t *mbs_context)
+{
+    ogs_tai_t *tai = NULL;
+    int i, j;
+
+    ogs_assert(gnb);
+    ogs_assert(mbs_context);
+
+    if (!gnb->state.ng_setup_success)
+        return false;
+
+    if (!mbs_context->mbs_service_area || !mbs_context->mbs_service_area->tai_list ||
+            ogs_list_count(mbs_context->mbs_service_area->tai_list) == 0)
+        return true;
+
+    ogs_list_for_each(mbs_context->mbs_service_area->tai_list, tai) {
+        ogs_uint24_t tac = ogs_uint24_from_string(tai->tac ? tai->tac : (char *)"0");
+
+        for (i = 0; i < gnb->num_of_supported_ta_list; i++) {
+            if (gnb->supported_ta_list[i].tac.v != tac.v)
+                continue;
+            for (j = 0; j < gnb->supported_ta_list[i].num_of_bplmn_list; j++) {
+                if (memcmp(&gnb->supported_ta_list[i].bplmn_list[j].plmn_id, &tai->plmn_id,
+                            sizeof(ogs_plmn_id_t)) == 0)
+                    return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 int amf_namf_handle_mbs_broadcast_context_create(
         ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg)
 {
@@ -2280,6 +2319,8 @@ int amf_namf_handle_mbs_broadcast_context_create(
         // buffer after the first iteration, or splice the same list node into a second queue while the first
         // still references it. The shared template is freed once after the loop, never being sent itself.
     ogs_list_for_each(&amf_self()->gnb_list, gnb) {
+        if (!amf_gnb_takes_mbs_session(gnb, mbs_context))
+            continue;
         ogs_pkbuf_t *n2msgreq_copy = ogs_pkbuf_copy(n2msgreq);
         if (!n2msgreq_copy) {
             ogs_error("ogs_pkbuf_copy() failed");
@@ -2591,6 +2632,8 @@ int amf_namf_handle_mbs_broadcast_context_update(
 
         // Each gNB gets its own copy, for the ownership reason given in ContextCreate's send loop.
     ogs_list_for_each(&amf_self()->gnb_list, gnb) {
+        if (!amf_gnb_takes_mbs_session(gnb, mbs_context))
+            continue;
         ogs_pkbuf_t *n2msgreq_copy = ogs_pkbuf_copy(n2msgreq);
         if (!n2msgreq_copy) {
             ogs_error("ogs_pkbuf_copy() failed");
