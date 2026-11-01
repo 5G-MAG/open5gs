@@ -482,7 +482,8 @@ static bool fsa_id_is_valid(const char *id)
 
 bool smf_mbs_update_path_is_modifiable(const char *path)
 {
-    static const char *const attributes[] = { "/mbsServiceArea", "/mbsServInfo", "/mbsFsaIdList", "/contactPcfInd" };
+    static const char *const attributes[] = { "/mbsServiceArea", "/mbsServInfo", "/mbsFsaIdList", "/contactPcfInd",
+        "/nrRedCapUeInfo" };
     size_t i;
 
     if (!path)
@@ -525,6 +526,7 @@ smf_mbs_update_result_e smf_mbs_sess_update(smf_mbs_sess_t *mbs_sess, OpenAPI_li
     char **fsa_ids = NULL;
     int num_fsa_ids = 0, i;
     bool has_contact_pcf_ind = false, contact_pcf_ind = false;
+    smf_mbs_nr_red_cap_e nr_red_cap = SMF_MBS_NR_RED_CAP_NONE;
     char *area_json = NULL, *serv_info_json = NULL;
     bool has_area = false, has_serv_info = false;
     bool flows_replaced = false;
@@ -561,6 +563,12 @@ smf_mbs_update_result_e smf_mbs_sess_update(smf_mbs_sess_t *mbs_sess, OpenAPI_li
     }
     if (mbs_sess->has_contact_pcf_ind)
         cJSON_AddItemToObject(doc, "contactPcfInd", cJSON_CreateBool(mbs_sess->contact_pcf_ind));
+    if (mbs_sess->nr_red_cap_ue_info != SMF_MBS_NR_RED_CAP_NONE) {
+        static const char *const values[] = { NULL, "NR_REDCAP_UE_ONLY", "BOTH_NR_REDCAP_UE_AND_NON_REDCAP_UE",
+            "NON_REDCAP_UE_ONLY" };
+
+        cJSON_AddItemToObject(doc, "nrRedCapUeInfo", cJSON_CreateString(values[mbs_sess->nr_red_cap_ue_info]));
+    }
 
     /* the items that name what an Update modifies, in their order */
     modifications = OpenAPI_list_create();
@@ -673,6 +681,17 @@ smf_mbs_update_result_e smf_mbs_sess_update(smf_mbs_sess_t *mbs_sess, OpenAPI_li
         contact_pcf_ind = cJSON_IsTrue(member);
     }
 
+    member = cJSON_GetObjectItemCaseSensitive(doc, "nrRedCapUeInfo");
+    if (member && !cJSON_IsNull(member)) {
+        if (!cJSON_IsString(member)) {
+            if (detail)
+                *detail = "[nrRedCapUeInfo] is not a string";
+            result = SMF_MBS_UPDATE_ERROR_INPUT_PARAMETERS;
+            goto done;
+        }
+        nr_red_cap = smf_mbs_nr_red_cap_from_string(member->valuestring);
+    }
+
     /* From here the result is accepted: the flows are the first thing that can still fail (more rules than a
      * PFCP session holds), so they are applied first. */
     if (!smf_mbs_sess_replace_flows(mbs_sess, &new_flows, &update->flow_change)) {
@@ -715,7 +734,7 @@ smf_mbs_update_result_e smf_mbs_sess_update(smf_mbs_sess_t *mbs_sess, OpenAPI_li
             has_contact_pcf_ind != mbs_sess->has_contact_pcf_ind ||
             (has_contact_pcf_ind && contact_pcf_ind != mbs_sess->contact_pcf_ind);
     update->n2_info_changed = update->flow_change.num_added || update->flow_change.num_removed ||
-            update->flow_change.qos_changed || update->fsa_changed;
+            update->flow_change.qos_changed || update->fsa_changed || nr_red_cap != mbs_sess->nr_red_cap_ue_info;
 
     if (update->area_changed) {
         if (mbs_sess->mbs_service_area)
@@ -751,6 +770,7 @@ smf_mbs_update_result_e smf_mbs_sess_update(smf_mbs_sess_t *mbs_sess, OpenAPI_li
     }
     mbs_sess->has_contact_pcf_ind = has_contact_pcf_ind;
     mbs_sess->contact_pcf_ind = contact_pcf_ind;
+    mbs_sess->nr_red_cap_ue_info = nr_red_cap;
 
 done:
     (void)flows_replaced;

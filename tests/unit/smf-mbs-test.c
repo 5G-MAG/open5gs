@@ -1458,6 +1458,31 @@ static void test_update(void)
             "true") == SMF_MBS_UPDATE_OK);
     CHECK(!update.contact_pcf_ind_changed);
 
+    /* TS 29.532 V18.6.0 cl. 5.3.2.3.1: "NR RedCap UE information to indicate whether the broadcast MBS session is
+     * intended only for NR (e)RedCap UEs, only for UEs that are neither NR RedCap UEs nor NR eRedCap UEs, or for any
+     * kind of UEs." is a modification of a broadcast MBS session; the N2 information changes with it. */
+    {
+        long types[8];
+
+        CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_add, "/nrRedCapUeInfo",
+                "\"NR_REDCAP_UE_ONLY\"") == SMF_MBS_UPDATE_OK);
+        CHECK(update.n2_info_changed && mbs_sess->nr_red_cap_ue_info == SMF_MBS_NR_RED_CAP_UE_ONLY);
+        CHECK(supported_ue_types_of(mbs_sess, types, 8) == 1 && types[0] == NGAP_SupportedUEType_redCap_eRedCap_UE);
+        CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_replace, "/nrRedCapUeInfo",
+                "\"NR_REDCAP_UE_ONLY\"") == SMF_MBS_UPDATE_OK);
+        CHECK(!update.n2_info_changed);
+        CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_replace, "/nrRedCapUeInfo",
+                "\"BOTH_NR_REDCAP_UE_AND_NON_REDCAP_UE\"") == SMF_MBS_UPDATE_OK);
+        CHECK(update.n2_info_changed && supported_ue_types_of(mbs_sess, types, 8) == 2);
+        CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_add, "/nrRedCapUeInfo", "7") ==
+                SMF_MBS_UPDATE_ERROR_INPUT_PARAMETERS);
+        CHECK(mbs_sess->nr_red_cap_ue_info == SMF_MBS_NR_RED_CAP_BOTH);
+        CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation__remove, "/nrRedCapUeInfo",
+                NULL) == SMF_MBS_UPDATE_OK);
+        CHECK(update.n2_info_changed && mbs_sess->nr_red_cap_ue_info == SMF_MBS_NR_RED_CAP_NONE &&
+                supported_ue_types_of(mbs_sess, types, 8) == -1);
+    }
+
     smf_mbs_sess_release(mbs_sess);
 }
 

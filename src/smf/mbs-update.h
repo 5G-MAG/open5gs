@@ -28,7 +28,7 @@ extern "C" {
 
 /* The modification of an MBS session by an Nmbsmf_MBSSession Update (TS 29.532 V18.6.0 cl. 5.3.2.3.1): the
  * attributes of the representation the clause lets the consumer modify and this MB-SMF models are the MBS
- * service area, the MBS service information, the list of MBS FSA IDs and contactPcfInd. */
+ * service area, the MBS service information, the list of MBS FSA IDs, contactPcfInd and nrRedCapUeInfo. */
 
 typedef enum smf_mbs_update_result_e {
     SMF_MBS_UPDATE_OK = 0,
@@ -51,7 +51,7 @@ typedef struct smf_mbs_update_s {
 } smf_mbs_update_t;
 
 /* Whether the patch path names an attribute smf_mbs_sess_update() applies: the first segment is mbsServiceArea,
- * mbsServInfo, mbsFsaIdList or contactPcfInd. */
+ * mbsServInfo, mbsFsaIdList, contactPcfInd or nrRedCapUeInfo. */
 bool smf_mbs_update_path_is_modifiable(const char *path);
 
 /* Applies the patch items to the representation of the MBS session and, if the result is acceptable, to the
