@@ -1073,6 +1073,29 @@ static int count_tais(smf_mbs_sess_t *mbs_sess)
     return n;
 }
 
+/* Parses the N4mb Session Modification Request built for the change of the flows of mbs_sess. */
+static ogs_pfcp_message_t *build_and_parse_modification(smf_mbs_sess_t *mbs_sess, const smf_mbs_flow_change_t *flows)
+{
+    static ogs_pfcp_message_t *message;
+    static ogs_pkbuf_t *pkbuf;
+    ogs_pfcp_header_t h;
+
+    if (message) { ogs_pfcp_message_free(message); message = NULL; }
+    if (pkbuf) { ogs_pkbuf_free(pkbuf); pkbuf = NULL; }
+
+    pkbuf = smf_n4mb_build_session_modification_request(mbs_sess, flows);
+    if (!pkbuf) return NULL;
+    memset(&h, 0, sizeof(h));
+    h.version = 1;
+    h.seid_presence = 1;
+    h.type = OGS_PFCP_SESSION_MODIFICATION_REQUEST_TYPE;
+    h.length = htobe16(pkbuf->len + OGS_PFCP_HEADER_LEN - 4);
+    ogs_pkbuf_push(pkbuf, OGS_PFCP_HEADER_LEN);
+    memcpy(pkbuf->data, &h, OGS_PFCP_HEADER_LEN);
+    message = ogs_pfcp_parse_msg(pkbuf);
+    return message;
+}
+
 /* TS 29.532 V18.6.0 cl. 5.3.2.3.1: "The following parameters may be modified: ... MBS Service Area and/or; MBS
  * service information." and for a broadcast MBS session "list of MBS FSA IDs", and "the NF service consumer shall
  * include the corresponding "contactPcfInd" attribute within the set of requested modifications."; TS 23.247
@@ -1118,6 +1141,28 @@ static void test_update(void)
     CHECK(update.flow_change.num_added == 1 && update.flow_change.num_removed == 0 && update.n2_info_changed);
     CHECK(flow_of(mbs_sess, "3") && flow_of(mbs_sess, "3")->qfi == 3);
     CHECK(ogs_list_count(&mbs_sess->pfcp.pdr_list) == pdrs + 1);
+    /* the MB-UPF is told with a Create PDR, FAR and QER of the new flow, as at the establishment */
+    {
+        ogs_pfcp_message_t *msg = build_and_parse_modification(mbs_sess, &update.flow_change);
+        ogs_pfcp_session_modification_request_t *req;
+
+        CHECK(msg != NULL);
+        if (msg) {
+            req = &msg->pfcp_session_modification_request;
+            CHECK(req->create_pdr[0].presence && !req->create_pdr[1].presence);
+            CHECK(req->create_far[0].presence && !req->create_far[1].presence);
+            CHECK(req->create_qer[0].presence && !req->create_qer[1].presence);
+            CHECK(!req->remove_pdr[0].presence && !req->remove_far[0].presence && !req->remove_qer[0].presence);
+            CHECK(req->create_qer[0].qos_flow_identifier.presence && req->create_qer[0].qos_flow_identifier.u8 == 3);
+            CHECK(req->create_qer[0].qer_indications.presence && req->create_qer[0].qer_indications.len == 1 &&
+                    (*(uint8_t *)req->create_qer[0].qer_indications.data & 0x01));
+            CHECK(req->create_pdr[0].pdr_id.presence && req->create_pdr[0].pdr_id.u16 == update.flow_change.added[0]->id);
+            CHECK(req->create_pdr[0].precedence.presence);
+            CHECK(req->create_pdr[0].far_id.presence && req->create_pdr[0].far_id.u32 == req->create_far[0].far_id.u32);
+            CHECK(req->create_pdr[0].qer_id.presence && req->create_pdr[0].qer_id.u32 == req->create_qer[0].qer_id.u32);
+            CHECK(req->create_far[0].apply_action.presence);
+        }
+    }
     if (update.flow_change.num_added == 1) {
         ogs_pfcp_pdr_t *pdr = update.flow_change.added[0];
         CHECK(pdr == flow_of(mbs_sess, "3")->pdr && pdr->far && pdr->qer && pdr->qer->qfi == 3);
@@ -1136,6 +1181,20 @@ static void test_update(void)
         CHECK(update.flow_change.num_removed == 1 && update.flow_change.num_added == 0);
         CHECK(update.flow_change.removed[0].pdr_id == pdr_id && update.flow_change.removed[0].qer_id == qer_id &&
                 update.flow_change.removed[0].far_id == far_id);
+        /* and a Remove PDR, FAR and QER of the flow that went, nothing created */
+        {
+            ogs_pfcp_message_t *msg = build_and_parse_modification(mbs_sess, &update.flow_change);
+
+            CHECK(msg != NULL);
+            if (msg) {
+                ogs_pfcp_session_modification_request_t *req = &msg->pfcp_session_modification_request;
+
+                CHECK(req->remove_pdr[0].presence && req->remove_pdr[0].pdr_id.u16 == pdr_id && !req->remove_pdr[1].presence);
+                CHECK(req->remove_far[0].presence && req->remove_far[0].far_id.u32 == far_id && !req->remove_far[1].presence);
+                CHECK(req->remove_qer[0].presence && req->remove_qer[0].qer_id.u32 == qer_id && !req->remove_qer[1].presence);
+                CHECK(!req->create_pdr[0].presence && !req->create_far[0].presence && !req->create_qer[0].presence);
+            }
+        }
     }
     CHECK(count_flows(mbs_sess) == 2);
     CHECK(flow_of(mbs_sess, "1") == NULL && flow_of(mbs_sess, "2")->qfi == qfi2 && flow_of(mbs_sess, "3")->qfi == 3);

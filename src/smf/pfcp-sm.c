@@ -380,6 +380,13 @@ void smf_pfcp_state_associated(ogs_fsm_t *s, smf_event_t *e)
         case OGS_PFCP_SESSION_MODIFICATION_RESPONSE_TYPE:
             if (!message->h.seid_presence) ogs_error("No SEID");
 
+            /* the answer to an N4mb Session Modification Request: `sess` is NULL for an MBS SEID */
+            if (mbs_sess) {
+                smf_n4mb_handle_session_modification_response(mbs_sess, xact,
+                    &message->pfcp_session_modification_response);
+                break;
+            }
+
             if (xact->epc)
                 smf_epc_n4_handle_session_modification_response(
                     sess, xact, e->gtp2_message,

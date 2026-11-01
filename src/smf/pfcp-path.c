@@ -1084,6 +1084,57 @@ int smf_5gc_pfcp_n4mb_send_session_deletion_request(smf_mbs_sess_t *mbs_sess)
     return rv;
 }
 
+/* The N4mb Session Modification Request of the change of the QoS flows of an MBS session (see
+ * smf_n4mb_build_session_modification_request()). The answer is handled by
+ * smf_n4mb_handle_session_modification_response(). */
+int smf_5gc_pfcp_n4mb_send_session_modification_request(
+        smf_mbs_sess_t *mbs_sess, const smf_mbs_flow_change_t *flows)
+{
+    int rv;
+    ogs_pkbuf_t *n4mbbuf = NULL;
+    ogs_pfcp_header_t h;
+    ogs_pfcp_xact_t *xact = NULL;
+
+    ogs_assert(mbs_sess);
+    ogs_assert(flows);
+
+    if (!mbs_sess->pfcp_node || !mbs_sess->upf_n4mb_seid) {
+        ogs_error("The MBS session has no N4mb session at the MB-UPF to modify");
+        return OGS_ERROR;
+    }
+
+    xact = ogs_pfcp_xact_local_create(
+            mbs_sess->pfcp_node, mbs_sess_5gc_timeout, OGS_UINT_TO_POINTER(mbs_sess->id));
+    if (!xact) {
+        ogs_error("ogs_pfcp_xact_local_create() failed");
+        return OGS_ERROR;
+    }
+
+    xact->local_seid = mbs_sess->smf_n4mb_seid;
+
+    memset(&h, 0, sizeof(ogs_pfcp_header_t));
+    h.type = OGS_PFCP_SESSION_MODIFICATION_REQUEST_TYPE;
+    h.seid = mbs_sess->upf_n4mb_seid;
+
+    n4mbbuf = smf_n4mb_build_session_modification_request(mbs_sess, flows);
+    if (!n4mbbuf) {
+        ogs_error("smf_n4mb_build_session_modification_request() failed");
+        ogs_pfcp_xact_delete(xact);
+        return OGS_ERROR;
+    }
+
+    rv = ogs_pfcp_xact_update_tx(xact, &h, n4mbbuf);
+    if (rv != OGS_OK) {
+        ogs_error("ogs_pfcp_xact_update_tx() failed");
+        return OGS_ERROR;
+    }
+
+    rv = ogs_pfcp_xact_commit(xact);
+    ogs_expect(rv == OGS_OK);
+
+    return rv;
+}
+
 int smf_5gc_pfcp_n4mb_send_session_establishment_request(
         smf_mbs_sess_t *mbs_sess, uint64_t flags, ogs_sbi_stream_t *stream)
 {

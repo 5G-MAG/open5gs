@@ -32,6 +32,12 @@ bool smf_n4mb_nid_to_octets(const char *nid, uint8_t octets[6]);
 ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
         smf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact);
 
+/* The N4mb Session Modification Request that tells the MB-UPF about the change of the QoS flows of an MBS session
+ * (TS 29.244 V18.10.0 table 7.5.4.1-1: Create PDR, Create FAR, Create QER for a flow that came; Remove PDR, Remove
+ * FAR, Remove QER for one that went). */
+ogs_pkbuf_t *smf_n4mb_build_session_modification_request(
+        smf_mbs_sess_t *mbs_sess, const smf_mbs_flow_change_t *flows);
+
 ogs_pkbuf_t *smf_n4mb_build_session_deletion_request(
         uint8_t type, smf_mbs_sess_t *mbs_sess);
 

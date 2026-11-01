@@ -42,6 +42,12 @@ uint8_t smf_n4mb_handle_session_establishment_response(
         smf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
         ogs_pfcp_session_establishment_response_t *rsp);
 
+/* The answer to an N4mb Session Modification Request: the Cause decides (TS 29.244 V18.10.0 table 7.5.5.1-1, Cause
+ * "M"); a rejection is reported, the MBS session keeps what the MB-SMF decided. */
+uint8_t smf_n4mb_handle_session_modification_response(
+        smf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
+        ogs_pfcp_session_modification_response_t *rsp);
+
 uint8_t smf_n4mb_handle_session_deletion_response(
         smf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
         ogs_pfcp_session_deletion_response_t *rsp);

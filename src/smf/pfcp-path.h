@@ -70,6 +70,8 @@ int smf_5gc_pfcp_n4mb_send_session_establishment_request(
         smf_mbs_sess_t *mbs_sess, uint64_t flags, ogs_sbi_stream_t *stream);
 
 int smf_5gc_pfcp_n4mb_send_session_deletion_request(smf_mbs_sess_t *mbs_sess);
+int smf_5gc_pfcp_n4mb_send_session_modification_request(
+        smf_mbs_sess_t *mbs_sess, const smf_mbs_flow_change_t *flows);
 
 #ifdef __cplusplus
 }

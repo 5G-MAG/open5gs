@@ -392,6 +392,34 @@ static const char *_pfcp_cause_to_problem_cause(uint8_t pfcp_cause)
     return "SYSTEM_FAILURE";
 }
 
+uint8_t smf_n4mb_handle_session_modification_response(
+        smf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
+        ogs_pfcp_session_modification_response_t *rsp)
+{
+    uint8_t cause_value = OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
+
+    ogs_assert(mbs_sess);
+    ogs_assert(xact);
+    ogs_assert(rsp);
+
+    ogs_debug("N4mb Session Modification Response");
+
+    ogs_pfcp_xact_commit(xact);
+
+    if (rsp->cause.presence) {
+        if (rsp->cause.u8 != OGS_PFCP_CAUSE_REQUEST_ACCEPTED) {
+            cause_value = rsp->cause.u8;
+            ogs_error("N4mb Session Modification of mbsSessionRef[%s] rejected by the MB-UPF: PFCP Cause [%d]",
+                    mbs_sess->mbs_session_ref, cause_value);
+        }
+    } else {
+        ogs_error("N4mb Session Modification Response: No Cause");
+        cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+    }
+
+    return cause_value;
+}
+
 /*
  * BUG FIX: this response handler did not exist before -- no N4mb Session Deletion Request was ever sent
  * (see smf_5gc_pfcp_n4mb_send_session_deletion_request() in pfcp-path.c), so there was nothing to

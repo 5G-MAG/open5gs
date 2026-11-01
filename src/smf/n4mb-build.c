@@ -318,3 +318,79 @@ ogs_pkbuf_t *smf_n4mb_build_session_deletion_request(
 
     return pkbuf;
 }
+
+/*
+ * TS 29.244 V18.10.0 cl. 5.34.2.2: "for each MBS QoS flow: a Create PDR ..., a Create QER ..., a Create FAR ...",
+ * table 7.5.4.1-1 (PFCP Session Modification Request, the N4mb column): Create PDR "This IE shall be present if the
+ * CP function requests the UP function to create a new PDR.", Create FAR, Create QER, and Remove PDR, Remove FAR,
+ * Remove QER "When present, this IE shall contain the ... Rule which is requested to be removed.", each "Several
+ * IEs within the same IE type may be present". A flow that came is provisioned as at the establishment (the rules
+ * are built by the same functions); a flow that went is identified by the identifiers of its three rules.
+ */
+ogs_pkbuf_t *smf_n4mb_build_session_modification_request(
+        smf_mbs_sess_t *mbs_sess, const smf_mbs_flow_change_t *flows)
+{
+    ogs_pfcp_message_t *pfcp_message = NULL;
+    ogs_pfcp_session_modification_request_t *req = NULL;
+    ogs_pkbuf_t *pkbuf = NULL;
+    uint8_t qer_indications = 0x01;    /* IQFISN */
+    uint8_t traffic_endpoint_id = 1;
+    int i;
+
+    ogs_debug("N4mb Session Modification Request");
+
+    ogs_assert(mbs_sess);
+    ogs_assert(flows);
+
+    pfcp_message = ogs_calloc(1, sizeof(*pfcp_message));
+    if (!pfcp_message) {
+        ogs_error("ogs_calloc() failed");
+        return NULL;
+    }
+
+    req = &pfcp_message->pfcp_session_modification_request;
+
+    ogs_pfcp_pdrbuf_init();
+
+    for (i = 0; i < flows->num_removed; i++) {
+        req->remove_pdr[i].presence = 1;
+        req->remove_pdr[i].pdr_id.presence = 1;
+        req->remove_pdr[i].pdr_id.u16 = flows->removed[i].pdr_id;
+        req->remove_far[i].presence = 1;
+        req->remove_far[i].far_id.presence = 1;
+        req->remove_far[i].far_id.u32 = flows->removed[i].far_id;
+        req->remove_qer[i].presence = 1;
+        req->remove_qer[i].qer_id.presence = 1;
+        req->remove_qer[i].qer_id.u32 = flows->removed[i].qer_id;
+    }
+
+    for (i = 0; i < flows->num_added; i++) {
+        ogs_pfcp_pdr_t *pdr = flows->added[i];
+
+        ogs_assert(pdr && pdr->far && pdr->qer);
+
+        ogs_pfcp_build_create_pdr(&req->create_pdr[i], i, pdr);
+        /* the downlink PDR refers to the Traffic Endpoint that carries the ingress tunnel of the session (table
+         * 7.5.2.7-1) */
+        if (mbs_sess->ingress_tun_addr_req || mbs_sess->ingress_tun_addr) {
+            req->create_pdr[i].pdi.traffic_endpoint_id.presence = 1;
+            req->create_pdr[i].pdi.traffic_endpoint_id.data = &traffic_endpoint_id;
+            req->create_pdr[i].pdi.traffic_endpoint_id.len = sizeof(traffic_endpoint_id);
+        }
+        ogs_pfcp_build_create_far(&req->create_far[i], i, pdr->far);
+        ogs_pfcp_build_create_qer(&req->create_qer[i], i, pdr->qer);
+        /* cl. 5.34.2.2: the IQFISN flag in the Create QER IE "shall be set to "1"" */
+        req->create_qer[i].qer_indications.presence = 1;
+        req->create_qer[i].qer_indications.data = &qer_indications;
+        req->create_qer[i].qer_indications.len = sizeof(qer_indications);
+    }
+
+    pfcp_message->h.type = OGS_PFCP_SESSION_MODIFICATION_REQUEST_TYPE;
+    pkbuf = ogs_pfcp_build_msg(pfcp_message);
+    ogs_expect(pkbuf);
+
+    ogs_pfcp_pdrbuf_clear();
+    ogs_free(pfcp_message);
+
+    return pkbuf;
+}
