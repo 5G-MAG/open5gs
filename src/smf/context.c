@@ -4099,6 +4099,25 @@ OpenAPI_snssai_t *smf_mbs_sess_build_snssai(const smf_mbs_sess_t *mbs_sess)
                 ogs_s_nssai_sd_to_string(mbs_sess->s_nssai.sd) : NULL);
 }
 
+/* The MBS FSA IDs of the session as the list of six hexadecimal digits of TS 29.571 MbsFsaId, or NULL when it
+ * has none. */
+OpenAPI_list_t *smf_mbs_sess_build_fsa_id_list(const smf_mbs_sess_t *mbs_sess)
+{
+    OpenAPI_list_t *list = NULL;
+    smf_mbs_fsa_id_t *fsa_id = NULL;
+
+    ogs_assert(mbs_sess);
+
+    if (ogs_list_empty(&mbs_sess->mbs_fsa_id_list))
+        return NULL;
+
+    list = OpenAPI_list_create();
+    ogs_list_for_each(&mbs_sess->mbs_fsa_id_list, fsa_id)
+        OpenAPI_list_add(list, ogs_uint24_to_0string(fsa_id->id));
+
+    return list;
+}
+
 smf_mbs_sess_t *smf_mbs_sess_find_by_seid(uint64_t seid)
 {
     smf_mbs_sess_t *mbs_sess = ogs_hash_get(self.smf_n4_seid_hash, &seid, sizeof(seid));

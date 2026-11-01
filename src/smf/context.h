@@ -751,6 +751,7 @@ char *smf_tmgi_gen_expiration_time(int validity_seconds);
 bool smf_tmgi_own_plmn(ogs_plmn_id_t *plmn_id);
 bool smf_nid_is_valid(const char *nid);
 OpenAPI_snssai_t *smf_mbs_sess_build_snssai(const smf_mbs_sess_t *mbs_sess);
+OpenAPI_list_t *smf_mbs_sess_build_fsa_id_list(const smf_mbs_sess_t *mbs_sess);
 const char *smf_own_nid(void);
 ogs_tmgi_t *smf_tmgi_allocate(char *expiration_time);
 char *smf_tmgi_pick_mbs_service_id(

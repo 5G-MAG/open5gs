@@ -1225,7 +1225,7 @@ bool smf_nmbsmf_handle_mbs_session_patch(smf_mbs_sess_t *mbs_sess,
                 NULL            /* mbs_session_subsc */,
                 mbs_sess->activity_status /* activity_status */,
                 false, 0        /* any_ue_ind */,
-                NULL            /* mbs_fsa_id_list */,
+                smf_mbs_sess_build_fsa_id_list(mbs_sess) /* mbs_fsa_id_list */,
                 NULL            /* mbs_security_context */,
                 false, 0        /* contact_pcf_ind */);
 

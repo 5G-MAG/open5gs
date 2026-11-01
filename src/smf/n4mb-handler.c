@@ -310,7 +310,7 @@ uint8_t smf_n4mb_handle_session_establishment_response(
                                                      NULL             /* mbs_session_subsc */,
                                                      mbs_sess->activity_status /* activity_status */,
                                                      false            /* is_any_ue_ind */, 0 /* any_ue_ind */,
-                                                     NULL             /* mbs_fsa_id_list */,
+                                                     smf_mbs_sess_build_fsa_id_list(mbs_sess) /* mbs_fsa_id_list */,
                                                      NULL             /* mbs_security_context */,
                                                      false            /* is_contact_pcf_ind */, 0 /* contact_pcf_ind */);
 

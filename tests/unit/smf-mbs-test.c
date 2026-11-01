@@ -649,6 +649,45 @@ static void test_reduced_area_is_used(void)
     ogs_mbs_service_area_free(coverage);
 }
 
+/* TS 29.532 V18.6.0 cl. 5.3.2.2.1, step 2a: the response contains "list of MBS FSA IDs, if any, for a broadcast
+ * MBS session" (six hexadecimal digits, TS 23.003 V18.8.0 cl. 30.4). */
+static void test_fsa_id_list(void)
+{
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    smf_mbs_fsa_id_t *a, *b;
+    OpenAPI_list_t *list;
+    OpenAPI_lnode_t *node;
+    int count = 0;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+
+    CHECK(smf_mbs_sess_build_fsa_id_list(mbs_sess) == NULL);
+
+    a = ogs_calloc(1, sizeof(*a));
+    a->id = ogs_uint24_from_string("00abcd");
+    ogs_list_add(&mbs_sess->mbs_fsa_id_list, a);
+    b = ogs_calloc(1, sizeof(*b));
+    b->id = ogs_uint24_from_string("7");
+    ogs_list_add(&mbs_sess->mbs_fsa_id_list, b);
+
+    list = smf_mbs_sess_build_fsa_id_list(mbs_sess);
+    CHECK(list != NULL);
+    if (list) {
+        OpenAPI_list_for_each(list, node) {
+            if (count == 0) CHECK_STR("00abcd", (char *)node->data);
+            if (count == 1) CHECK_STR("000007", (char *)node->data);
+            count++;
+        }
+        CHECK(count == 2);
+        OpenAPI_list_for_each(list, node)
+            ogs_free(node->data);
+        OpenAPI_list_free(list);
+    }
+
+    smf_mbs_sess_release(mbs_sess);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -664,6 +703,7 @@ int main(void)
     test_tmgi_index_after_refresh();
     test_create_outcomes();
     test_reduced_area_is_used();
+    test_fsa_id_list();
 
     printf("smf-mbs: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
