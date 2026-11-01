@@ -1591,6 +1591,26 @@ def t_upf_exits_cleanly_on_sigterm():
     U.start()
 
 
+@test
+def t_memory_of_a_deleted_session_is_released():
+    """The allocator (talloc) reports at a clean exit every block still allocated: after sessions created and deleted
+    none of the session's may be left."""
+    U.restart()
+    for n in range(3):
+        cp = 0xf100 + n
+        accepted_and_deleted(U.establish(good(cp_seid=cp)), 'TMGI session')
+        accepted_and_deleted(U.establish(mc_request(cp + 0x10, b'\x02' + V4G, None)), 'session with a PDR addressing')
+        ssm = ssm_id(0x04, socket.inet_aton('232.2.2.2'), 0x04, socket.inet_aton('10.46.0.1'))
+        accepted_and_deleted(U.establish(good(cp_seid=cp + 0x20)[:-1] + [n4mb_ctrl(ssm)]), 'SSM session')
+    U.stop()
+    status = U.proc.returncode
+    report = open(U.err, errors='replace').read()
+    U.start()
+    assert status == 0 and 'UPF terminate...done' in report, 'the UPF exited with %s' % status
+    # ogs_mem_final(): the report is written only if blocks other than the allocator's own are left
+    assert 'full talloc report' not in report, 'blocks still allocated at exit:\n' + report[report.index('full talloc report'):][:1500]
+
+
 # E-TESTS-BELOW
 
 

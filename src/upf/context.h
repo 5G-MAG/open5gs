@@ -193,6 +193,8 @@ typedef struct upf_mbs_sess_s {
     ogs_pkbuf_pool_t *udp_tunnel_pkbuf_pool;
 } upf_mbs_sess_t;
 
+void upf_mbs_session_id_clear(ogs_mbs_session_id_t *id);
+
 void upf_context_init(void);
 void upf_context_final(void);
 upf_context_t *upf_self(void);

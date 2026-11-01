@@ -652,20 +652,8 @@ void upf_n4mb_handle_session_establishment_request(
                 offending_ie_value = OGS_PFCP_MBS_SESSION_IDENTIFIER_TYPE;
                 goto cleanup;
             } else {
-                // Free old values
-                if (mbs_sess->mbs_session_id.is_tmgi && mbs_sess->mbs_session_id.tmgi) ogs_free(mbs_sess->mbs_session_id.tmgi);
-                if (mbs_sess->mbs_session_id.is_ssm && mbs_sess->mbs_session_id.ssm) ogs_free(mbs_sess->mbs_session_id.ssm);
-                if (mbs_sess->mbs_session_id.nid) ogs_free(mbs_sess->mbs_session_id.nid);
-
-                // Initialise to empty
-                mbs_sess->mbs_session_id.is_tmgi = 0;
-                mbs_sess->mbs_session_id.is_ssm = 0;
-                mbs_sess->mbs_session_id.tmgi = NULL;
-                                // NULLed after the free just above (the is_ssm/ssm check); left dangling it is freed a
-                                // second time by upf_mbs_sess_remove() (context.c) at teardown, if the session updates away
-                                // from SSM form before it is deleted.
-                mbs_sess->mbs_session_id.ssm = NULL;
-                mbs_sess->mbs_session_id.nid = NULL;
+                // Free the old values and initialise to empty
+                upf_mbs_session_id_clear(&mbs_sess->mbs_session_id);
 
                 if (mbs_session_identifier.tmgif) {
                     mbs_sess->mbs_session_id.is_tmgi = 1;

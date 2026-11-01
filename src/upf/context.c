@@ -1185,6 +1185,31 @@ static upf_mbs_sess_t *upf_mbs_sess_add(ogs_pfcp_f_seid_t *cp_f_seid)
     return upf_mbs_sess;
 }
 
+/*
+ * Frees what an MBS Session Identifier holds: the TMGI with its MBS Service ID string, or the SSM, and the NID. The
+ * TMGI and the SSM share the pointer (a union), so which one it is comes from the flags.
+ */
+void upf_mbs_session_id_clear(ogs_mbs_session_id_t *id)
+{
+    ogs_assert(id);
+
+    if (id->is_tmgi && id->tmgi) {
+        if (id->tmgi->mbs_service_id)
+            ogs_free(id->tmgi->mbs_service_id);
+        if (id->tmgi->expiration_time)
+            ogs_free(id->tmgi->expiration_time);
+        ogs_free(id->tmgi);
+    } else if (id->is_ssm && id->ssm) {
+        ogs_free(id->ssm);
+    }
+    id->tmgi = NULL;
+    if (id->nid)
+        ogs_free(id->nid);
+    id->nid = NULL;
+    id->is_tmgi = 0;
+    id->is_ssm = 0;
+}
+
 // Non-static so upf_n4mb_handle_session_deletion_request() below can call it at runtime. Reachable only
 // through upf_mbs_sess_remove_all(), which runs from upf_context_final() at process shutdown, the
 // fixed-size MBS session pool (OGS_MAX_NUM_OF_MBS_SESSIONS) never drains across create and delete cycles.
@@ -1250,14 +1275,7 @@ void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess)
         upf_mbs_sess->udp_tunnel_pkbuf_pool = NULL;
     }
 
-    if (upf_mbs_sess->mbs_session_id.ssm) {
-        ogs_free(upf_mbs_sess->mbs_session_id.ssm);
-        upf_mbs_sess->mbs_session_id.ssm = NULL;
-    }
-    if (upf_mbs_sess->mbs_session_id.nid) {
-        ogs_free(upf_mbs_sess->mbs_session_id.nid);
-        upf_mbs_sess->mbs_session_id.nid = NULL;
-    }
+    upf_mbs_session_id_clear(&upf_mbs_sess->mbs_session_id);
 
     // PFCP finalization
     ogs_pfcp_pool_final(&upf_mbs_sess->pfcp);
