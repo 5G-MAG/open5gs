@@ -99,7 +99,8 @@ upf:
         self.start()
 
     def start(self):
-        self.proc = subprocess.Popen([UPFD, '-c', self.cfg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.err = os.path.join(self.dir, 'upf.err')
+        self.proc = subprocess.Popen([UPFD, '-c', self.cfg], stdout=subprocess.DEVNULL, stderr=open(self.err, 'w'))
         time.sleep(1.5)
         assert self.proc.poll() is None, 'upfd did not start, see ' + self.log
         if self.sock:
@@ -1577,6 +1578,17 @@ def t_U08_7_deteid_deletes_all_provisioned_f_teids():
         for p in peers:
             p.close()
         U.delete(s)
+
+
+@test
+def t_upf_exits_cleanly_on_sigterm():
+    # the configuration has upf.mbs.udptunnel.address: its host name is freed by the allocator that made it
+    U.restart()
+    U.stop()
+    assert U.proc.returncode == 0, 'upfd exited with status %s on SIGTERM, end of its output:\n%s' % (
+        U.proc.returncode, open(U.err, errors='replace').read()[-400:])
+    assert 'UPF terminate...done' in open(U.err, errors='replace').read()
+    U.start()
 
 
 # E-TESTS-BELOW

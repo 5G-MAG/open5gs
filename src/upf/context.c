@@ -218,7 +218,7 @@ int upf_context_parse_config(void)
                                             return OGS_ERROR;
                                         }
                                         if (!self.mbs_udp_tun_base_addr->hostname) {
-                                            self.mbs_udp_tun_base_addr->hostname = strdup(upf_mbs_tunnel_addr);
+                                            self.mbs_udp_tun_base_addr->hostname = ogs_strdup(upf_mbs_tunnel_addr);
                                         }
                                     } else {
                                         ogs_error("upf/mbs/udptunnel/address must be a single address or hostname");
