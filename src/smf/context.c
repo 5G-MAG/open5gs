@@ -3745,6 +3745,9 @@ static void smf_mbs_sess_free(smf_mbs_sess_t *smf_mbs_sess)
     if (smf_mbs_sess->service_type)
         ogs_free(smf_mbs_sess->service_type);
 
+    if (smf_mbs_sess->dnn)
+        ogs_free(smf_mbs_sess->dnn);
+
     // If not allocated with MBS session, TMGI is allocated/freed separately
     if (smf_mbs_sess->tmgi_allocated && smf_mbs_sess->tmgi)
         smf_tmgi_deallocate(smf_mbs_sess->tmgi);
@@ -3898,6 +3901,19 @@ smf_mbs_sess_t *smf_mbs_sess_find_by_mbs_session_ref(char *mbs_session_ref)
 void smf_mbs_sess_release(smf_mbs_sess_t *smf_mbs_sess)
 {
     smf_mbs_sess_remove(smf_mbs_sess);
+}
+
+/* The S-NSSAI the Create request carried, as an SBI Snssai, or NULL when it carried none. */
+OpenAPI_snssai_t *smf_mbs_sess_build_snssai(const smf_mbs_sess_t *mbs_sess)
+{
+    ogs_assert(mbs_sess);
+
+    if (!mbs_sess->has_s_nssai)
+        return NULL;
+
+    return OpenAPI_snssai_create(mbs_sess->s_nssai.sst,
+            mbs_sess->s_nssai.sd.v != OGS_S_NSSAI_NO_SD_VALUE ?
+                ogs_s_nssai_sd_to_string(mbs_sess->s_nssai.sd) : NULL);
 }
 
 smf_mbs_sess_t *smf_mbs_sess_find_by_seid(uint64_t seid)

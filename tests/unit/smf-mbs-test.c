@@ -373,6 +373,75 @@ static void test_nid(void)
     smf_mbs_sess_release(mbs_sess);
 }
 
+/* TS 29.532 V18.6.0 cl. 5.3.2.2.1: DNN and S-NSSAI of the Create request; TS 29.518 V18.14.0 table 6.5.6.2.2-1
+ * (snssai) and NOTE 2: the S-NSSAI received, else a pre-configured default. */
+static void test_dnn_snssai(void)
+{
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    ogs_pfcp_message_t *msg;
+    ogs_sbi_request_t *request;
+    OpenAPI_snssai_t *snssai;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+
+    /* none given: neither IE in the N4mb request; the ContextCreate takes the configured slice (1, sd 000001) */
+    msg = build_and_parse_establishment(mbs_sess);
+    CHECK(msg != NULL);
+    if (msg) {
+        CHECK(!msg->pfcp_session_establishment_request.apn_dnn.presence);
+        CHECK(!msg->pfcp_session_establishment_request.s_nssai.presence);
+    }
+    CHECK(smf_mbs_sess_build_snssai(mbs_sess) == NULL);
+    request = smf_namf_build_mbs_broadcast_context_create_request(mbs_sess, NULL);
+    CHECK(request != NULL);
+    if (request) {
+        CHECK(request->http.content && strstr(request->http.content, "\"snssai\":{\"sst\":1,\"sd\":\"000001\"}"));
+        ogs_sbi_request_free(request);
+    }
+
+    /* given: both are sent to the MB-UPF and the S-NSSAI to the AMF, in place of the configured one */
+    mbs_sess->dnn = ogs_strdup("mbs");
+    mbs_sess->has_s_nssai = true;
+    mbs_sess->s_nssai.sst = 3;
+    mbs_sess->s_nssai.sd = ogs_s_nssai_sd_from_string("0000AB");
+    msg = build_and_parse_establishment(mbs_sess);
+    CHECK(msg != NULL);
+    if (msg) {
+        ogs_tlv_octet_t *dnn = &msg->pfcp_session_establishment_request.apn_dnn;
+        ogs_tlv_octet_t *nssai = &msg->pfcp_session_establishment_request.s_nssai;
+        CHECK(dnn->presence);
+        CHECK(dnn->len == 4 && memcmp(dnn->data, "\x03mbs", 4) == 0);
+        CHECK(nssai->presence);
+        CHECK(nssai->len == 4 && ((uint8_t *)nssai->data)[0] == 3);
+    }
+    snssai = smf_mbs_sess_build_snssai(mbs_sess);
+    CHECK(snssai != NULL);
+    if (snssai) {
+        CHECK(snssai->sst == 3);
+        CHECK_STR("0000ab", snssai->sd);
+        OpenAPI_snssai_free(snssai);
+    }
+    request = smf_namf_build_mbs_broadcast_context_create_request(mbs_sess, NULL);
+    CHECK(request != NULL);
+    if (request) {
+        CHECK(request->http.content && strstr(request->http.content, "\"snssai\":{\"sst\":3,\"sd\":\"0000ab\"}"));
+        ogs_sbi_request_free(request);
+    }
+
+    /* an S-NSSAI without SD */
+    mbs_sess->s_nssai.sd = ogs_s_nssai_sd_from_string(NULL);
+    snssai = smf_mbs_sess_build_snssai(mbs_sess);
+    CHECK(snssai != NULL);
+    if (snssai) {
+        CHECK(snssai->sst == 3);
+        CHECK(snssai->sd == NULL);
+        OpenAPI_snssai_free(snssai);
+    }
+
+    smf_mbs_sess_release(mbs_sess);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -384,6 +453,7 @@ int main(void)
     test_pick_mbs_service_id();
     test_tmgi_plmn();
     test_nid();
+    test_dnn_snssai();
 
     printf("smf-mbs: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;

@@ -594,7 +594,8 @@ typedef struct smf_mbs_sess_s {
 
     char *dnn;
 
-    /* S_NSSAI */
+    /* S_NSSAI, set when the Create request carried one (has_s_nssai) */
+    bool has_s_nssai;
     ogs_s_nssai_t s_nssai;
 
     /* MBS UDP Tunnel */
@@ -748,6 +749,7 @@ int smf_tmgi_count(void);
 char *smf_tmgi_gen_expiration_time(int validity_seconds);
 bool smf_tmgi_own_plmn(ogs_plmn_id_t *plmn_id);
 bool smf_nid_is_valid(const char *nid);
+OpenAPI_snssai_t *smf_mbs_sess_build_snssai(const smf_mbs_sess_t *mbs_sess);
 const char *smf_own_nid(void);
 ogs_tmgi_t *smf_tmgi_allocate(char *expiration_time);
 char *smf_tmgi_pick_mbs_service_id(

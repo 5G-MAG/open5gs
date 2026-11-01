@@ -330,30 +330,28 @@ ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_create_request(
     notify_uri = ogs_sbi_server_uri(server, &header);
     ogs_assert(notify_uri);
 
-    // snssai
-    // Vendored schema, TS29518_Namf_MBSBroadcast.yaml, ContextCreateReqData's own
-    // "required" list: "- mbsSessionId\n- n2MbsSmInfo\n- notifyUri\n- snssai" -- this
-    // field is mandatory. The Nmbsmf_MBSSession Create request this SMF received has no
-    // S-NSSAI field at all (confirmed absent from TS29532_Nmbsmf_MBSSession.yaml's
-    // MbsSession schema), so no per-request value exists to forward. This SMF's own
-    // configured slice list (smf.yaml's info.s_nssai, the same config
-    // smf_context_parse_config() already requires to be non-empty at startup) is a
-    // documented, operator-set default; the first configured slice is used (rule 12 --
-    // no authority opened this session chooses among several, so this is an engineering
-    // default resting on that config, not a guess).
-    nf_instance = ogs_sbi_self()->nf_instance;
-    ogs_assert(nf_instance);
-    ogs_list_for_each(&nf_instance->nf_info_list, nf_info) {
-        if (nf_info->nf_type == OpenAPI_nf_type_SMF &&
-                nf_info->smf.num_of_slice > 0) {
-            self_s_nssai = &nf_info->smf.slice[0].s_nssai;
-            break;
+    // snssai: TS 29.518 V18.14.0 table 6.5.6.2.2-1, row snssai: "This IE shall be included to indicate the
+    // S-NSSAI of the MBS session." and NOTE 2: "If an MB-SMF does not receive the S-NSSAI from the NEF/MBSF,
+    // the MB-SMF shall include a pre-configured default SNSSAI." The S-NSSAI of the Create request is used;
+    // without one, the first slice of this SMF's own configuration (smf.yaml info.s_nssai, required to be
+    // non-empty at start-up) is the pre-configured default.
+    if (mbs_sess->has_s_nssai) {
+        snssai = smf_mbs_sess_build_snssai(mbs_sess);
+    } else {
+        nf_instance = ogs_sbi_self()->nf_instance;
+        ogs_assert(nf_instance);
+        ogs_list_for_each(&nf_instance->nf_info_list, nf_info) {
+            if (nf_info->nf_type == OpenAPI_nf_type_SMF &&
+                    nf_info->smf.num_of_slice > 0) {
+                self_s_nssai = &nf_info->smf.slice[0].s_nssai;
+                break;
+            }
         }
+        ogs_assert(self_s_nssai);
+        snssai = OpenAPI_snssai_create(self_s_nssai->sst,
+                self_s_nssai->sd.v != OGS_S_NSSAI_NO_SD_VALUE ?
+                    ogs_s_nssai_sd_to_string(self_s_nssai->sd) : NULL);
     }
-    ogs_assert(self_s_nssai);
-    snssai = OpenAPI_snssai_create(self_s_nssai->sst,
-            self_s_nssai->sd.v != OGS_S_NSSAI_NO_SD_VALUE ?
-                ogs_s_nssai_sd_to_string(self_s_nssai->sd) : NULL);
 
     ContextCreateReqData = OpenAPI_context_create_req_data_create(mbs_session_id, mbs_service_area_info_list,
         mbs_service_area, n2_mbs_sm_info, notify_uri, NULL, 0, snssai, NULL, NULL);

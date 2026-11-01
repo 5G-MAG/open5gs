@@ -134,7 +134,7 @@ ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
     }
 
     /* S-NSSAI */
-    if (mbs_sess->s_nssai.sst) {
+    if (mbs_sess->has_s_nssai) {
         req->s_nssai.presence = 1;
         req->s_nssai.len = 4;
         req->s_nssai.data = &mbs_sess->s_nssai;

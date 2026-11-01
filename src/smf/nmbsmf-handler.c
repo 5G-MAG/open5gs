@@ -712,6 +712,20 @@ bool smf_nmbsmf_handle_mbs_session_create(
         }
     }
 
+    /* TS 29.532 V18.6.0 cl. 5.3.2.2.1, step 1, "The content of the POST request may further contain the following
+     * parameters: ... DNN; S-NSSAI;". Both go to the MB-UPF in the N4mb Session Establishment Request (TS 29.244
+     * V18.10.0 table 7.5.2.1-1: the S-NSSAI IE "shall indicate the S-NSSAI of the PDU session or MBS session") and
+     * the S-NSSAI to the AMF in the Namf_MBSBroadcast ContextCreate request. */
+    if (CreateReqData->mbs_session->dnn) {
+        mbs_sess->dnn = ogs_strdup(CreateReqData->mbs_session->dnn);
+        ogs_assert(mbs_sess->dnn);
+    }
+    if (CreateReqData->mbs_session->snssai) {
+        mbs_sess->s_nssai.sst = CreateReqData->mbs_session->snssai->sst;
+        mbs_sess->s_nssai.sd = ogs_s_nssai_sd_from_string(CreateReqData->mbs_session->snssai->sd);
+        mbs_sess->has_s_nssai = true;
+    }
+
     mbs_sess->ingress_tun_addr_req = (CreateReqData->mbs_session->is_ingress_tun_addr_req &&
                                       CreateReqData->mbs_session->ingress_tun_addr_req != 0);
 
@@ -1182,8 +1196,8 @@ bool smf_nmbsmf_handle_mbs_session_patch(smf_mbs_sess_t *mbs_sess,
                                    own Create-side commit for this choice */,
                 Red_mbs_service_area /* red_mbs_service_area */,
                 NULL            /* ext_mbs_service_area */,
-                NULL            /* dnn */,
-                NULL            /* snssai */,
+                mbs_sess->dnn ? ogs_strdup(mbs_sess->dnn) : NULL /* dnn */,
+                smf_mbs_sess_build_snssai(mbs_sess) /* snssai */,
                 NULL            /* activation_time */,
                 NULL            /* start_time */,
                 NULL            /* termination_time */,
