@@ -23,6 +23,7 @@
 #include "n4-handler.h"
 #include "n4mb-handler.h"
 #include "namf-build.h"
+#include "mbs-subsc.h"
 
 static void pfcp_restoration(ogs_pfcp_node_t *node);
 static void pfcp_mbs_restoration(ogs_pfcp_node_t *node);
@@ -600,6 +601,11 @@ static void pfcp_mbs_restoration(ogs_pfcp_node_t *node)
         ogs_error("MBS Session mbsSessionRef[%s] lost on restarted UPF -- "
                 "releasing stale SMF-side state so its TMGI/SSM can be reused",
                 mbs_sess->mbs_session_ref);
+
+        // The subscribers are told that the broadcast MBS session has ended (TS 29.532 V18.6.0 cl. 5.3.2.8.1:
+        // "the new broadcast delivery status (e.g. the MBS session has been STARTED or TERMINATED)").
+        if (ogs_strcasecmp(mbs_sess->service_type, "BROADCAST") == 0)
+            smf_mbs_sess_report_broadcast_delivery_status(mbs_sess, OpenAPI_broadcast_delivery_status_TERMINATED);
 
         // Every AMF that holds a context of the session is told; the cached nf_instance is cleared for each, for
         // the reason given at smf_sbi_send_mbs_broadcast_context_delete_all().

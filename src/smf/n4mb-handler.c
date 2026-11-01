@@ -20,6 +20,7 @@
 
 #include "context.h"
 #include "n4mb-handler.h"
+#include "mbs-subsc.h"
 #include "pfcp-path.h"
 
 // NOTE (borieher): Needed for the SBI request
@@ -27,15 +28,19 @@
 
 static const char *_pfcp_cause_to_problem_cause(uint8_t pfcp_cause);
 
-static void _set_ingress_tunnel(smf_mbs_sess_t *mbs_sess, ogs_pfcp_local_ingress_tunnel_t *lit)
+/* Sets the ingress tunnel of the session from a Local Ingress Tunnel IE. Returns whether it is another one than the
+ * session had (false for the first one: nothing changed from a tunnel that was not there). */
+static bool _set_ingress_tunnel(smf_mbs_sess_t *mbs_sess, ogs_pfcp_local_ingress_tunnel_t *lit)
 {
+    ogs_sockaddr_t *old = NULL;
+    bool changed = false;
+
     ogs_assert(mbs_sess);
     ogs_assert(lit);
 
-    if (mbs_sess->ingress_tun_addr) {
-        ogs_freeaddrinfo(mbs_sess->ingress_tun_addr);
-        mbs_sess->ingress_tun_addr = NULL;
-    }
+    old = mbs_sess->ingress_tun_addr;
+    mbs_sess->ingress_tun_addr = NULL;
+
     if (lit->ipv4) {
         char address[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &lit->addr, address, sizeof(address));
@@ -45,6 +50,15 @@ static void _set_ingress_tunnel(smf_mbs_sess_t *mbs_sess, ogs_pfcp_local_ingress
         inet_ntop(AF_INET6, &lit->addr6, address, sizeof(address));
         ogs_addaddrinfo(&mbs_sess->ingress_tun_addr, AF_INET6, address, htons(lit->port), 0);
     }
+
+    if (old) {
+        changed = !mbs_sess->ingress_tun_addr ||
+            !ogs_sockaddr_is_equal(old, mbs_sess->ingress_tun_addr) ||
+            OGS_PORT(old) != OGS_PORT(mbs_sess->ingress_tun_addr);
+        ogs_freeaddrinfo(old);
+    }
+
+    return changed;
 }
 
 // The northbound request of a session that cannot be established has been answered with an error: the session must
@@ -292,6 +306,25 @@ uint8_t smf_n4mb_handle_session_establishment_response(
         expiration_time = ogs_strdup(mbs_sess->tmgi->expiration_time);
     }
 
+    /* TS 29.532 V18.6.0 cl. 5.3.2.2.1 step 2a: the response contains "a representation of the created MBS session
+     * status subscription, including the list of MBS session events successfully subscribed, the URI of the created
+     * subscription and the expiry time after which the subscription becomes invalid, if the Create request includes
+     * the subscription to events about the MBS session and the subscription was created successfully." The
+     * subscription of the request is the session's only one: nobody holds the session's reference yet. */
+    OpenAPI_mbs_session_subscription_t *mbs_session_subsc = NULL;
+    {
+        smf_mbs_subsc_t *subsc = NULL;
+        ogs_list_for_each(&smf_self()->smf_mbs_subsc_list, subsc) {
+            if (subsc->mbs_sess_id == mbs_sess->id) {
+                char *subsc_uri = smf_mbs_subsc_uri(ogs_sbi_server_from_stream(sbi_stream), subsc);
+
+                mbs_session_subsc = smf_mbs_subsc_build(subsc, mbs_sess, subsc_uri);
+                ogs_free(subsc_uri);
+                break;
+            }
+        }
+    }
+
     // TS 29.532 V18.6.0 cl.5.3.2.2.1 step 2b: if this session's own requested MBS service area is
     // not entirely covered by this MB-SMF's own configured coverage (smf.yaml mbsServiceArea,
     // unconfigured means no restriction -- rule 12), report the reduced area back in
@@ -323,7 +356,7 @@ uint8_t smf_n4mb_handle_session_establishment_response(
                                                      mbs_sess->start_time ? ogs_strdup(mbs_sess->start_time) : NULL /* start_time */,
                                                      mbs_sess->termination_time ? ogs_strdup(mbs_sess->termination_time) : NULL /* termination_time */,
                                                      NULL             /* mbs_serv_info */,
-                                                     NULL             /* mbs_session_subsc */,
+                                                     mbs_session_subsc /* mbs_session_subsc */,
                                                      mbs_sess->activity_status /* activity_status */,
                                                      false            /* is_any_ue_ind */, 0 /* any_ue_ind */,
                                                      smf_mbs_sess_build_fsa_id_list(mbs_sess) /* mbs_fsa_id_list */,
@@ -415,6 +448,28 @@ uint8_t smf_n4mb_handle_session_modification_response(
     } else {
         ogs_error("N4mb Session Modification Response: No Cause");
         cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+    }
+
+    /* A Local Ingress Tunnel the MB-UPF allocated for the modification (TS 29.244 V18.10.0 tables 7.5.3.2 and 7.5.3.5)
+     * that is not the session's is a new ingress tunnel address: TS 29.532 V18.6.0 cl. 5.3.2.8.1 reports
+     * "new ingress tunnel address used over the N6mb/Nmb9 reference point" (INGRESS_TUNNEL_ADD_CHANGE). */
+    if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED) {
+        bool changed = false;
+        int i;
+
+        if (rsp->created_updated_traffic_endpoint.presence &&
+                rsp->created_updated_traffic_endpoint.local_ingress_tunnel.presence) {
+            changed = _set_ingress_tunnel(mbs_sess, rsp->created_updated_traffic_endpoint.local_ingress_tunnel.data);
+        } else {
+            for (i = 0; i < OGS_MAX_NUM_OF_PDR && rsp->created_pdr[i].presence; i++) {
+                if (rsp->created_pdr[i].local_ingress_tunnel.presence) {
+                    changed = _set_ingress_tunnel(mbs_sess, rsp->created_pdr[i].local_ingress_tunnel.data);
+                    break;
+                }
+            }
+        }
+        if (changed)
+            smf_mbs_sess_report_ingress_tunnel_change(mbs_sess);
     }
 
     return cause_value;

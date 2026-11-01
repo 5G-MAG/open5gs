@@ -532,6 +532,56 @@ static int client_notify_cb(
     return OGS_OK;
 }
 
+static int mbs_status_notify_cb(
+        int status, ogs_sbi_response_t *response, void *data)
+{
+    int rv;
+    ogs_sbi_message_t message;
+
+    if (status != OGS_OK) {
+        ogs_log_message(
+                status == OGS_DONE ? OGS_LOG_DEBUG : OGS_LOG_WARN, 0,
+                "mbs_status_notify_cb() failed [%d]", status);
+        return OGS_ERROR;
+    }
+
+    ogs_assert(response);
+
+    rv = ogs_sbi_parse_response(&message, response);
+    if (rv != OGS_OK) {
+        ogs_error("cannot parse HTTP response");
+        ogs_sbi_message_free(&message);
+        ogs_sbi_response_free(response);
+        return OGS_ERROR;
+    }
+
+    /* TS 29.532 V18.6.0 cl. 5.3.2.8.1 step 2a: "On success, the MB-SMF shall return a "204 No Content" response." */
+    if (message.res_status != OGS_SBI_HTTP_STATUS_NO_CONTENT)
+        ogs_error("MBS Session StatusNotify failed [%d]", message.res_status);
+
+    ogs_sbi_message_free(&message);
+    ogs_sbi_response_free(response);
+    return OGS_OK;
+}
+
+bool smf_sbi_send_mbs_status_notify(smf_mbs_subsc_t *subsc, ogs_sbi_request_t *request)
+{
+    bool rc;
+
+    ogs_assert(subsc);
+    ogs_assert(request);
+
+    if (!subsc->client) {
+        ogs_error("The subscription [%s] has no client to notify", subsc->id);
+        return false;
+    }
+
+    rc = ogs_sbi_send_request_to_client(subsc->client, mbs_status_notify_cb, request, NULL);
+    ogs_expect(rc == true);
+
+    return rc;
+}
+
 bool smf_sbi_send_sm_context_status_notify(smf_sess_t *sess)
 {
     bool rc;

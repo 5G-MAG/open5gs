@@ -118,6 +118,9 @@ int smf_sbi_send_mbs_broadcast_context_create(smf_mbs_sess_t *mbs_sess);
  * requests that could not be sent. */
 int smf_sbi_send_mbs_broadcast_context_delete_all(smf_mbs_sess_t *mbs_sess);
 
+/* A StatusNotify request to the notification URI of a status subscription */
+bool smf_sbi_send_mbs_status_notify(smf_mbs_subsc_t *subsc, ogs_sbi_request_t *request);
+
 /* Namf_MBSBroadcast ContextUpdate towards every AMF that has a context of the MBS session: with the updated MBS
  * service area if service_area, and telling whether the N2 information changed. Returns the number of requests that
  * could not be sent. */

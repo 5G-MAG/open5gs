@@ -24,6 +24,7 @@
 #include "pfcp-path.h"
 #include "nmbsmf-handler.h"
 #include "mbs-update.h"
+#include "mbs-subsc.h"
 
 static bool smf_nmbsmf_parse_tai(ogs_sbi_stream_t *stream, ogs_sbi_message_t *message, ogs_tai_t *tai, OpenAPI_tai_t *api_tai);
 static bool smf_nmbsmf_parse_ncgi(ogs_sbi_stream_t *stream, ogs_sbi_message_t *message, ogs_ncgi_t *ncgi, OpenAPI_ncgi_t *api_ncgi);
@@ -520,6 +521,27 @@ bool smf_nmbsmf_handle_mbs_session_create(
         }
     }
 
+    /* TS 29.532 V18.6.0 cl. 5.3.2.2.1 step 1: "an MBS session status subscription request, including the list of MBS
+     * session events requested to be subscribed, a Notify Correlation ID, the Notification URI where to receive MBS
+     * session status notifications and the NF instance ID of the subscribing NF". The Notification URI and the
+     * events are what the subscription cannot do without (TS 29.571 V18.12.0 table 5.9.4.7-1: eventList and notifyUri
+     * are "M"). */
+    if (CreateReqData->mbs_session->mbs_session_subsc) {
+        OpenAPI_mbs_session_subscription_t *subsc = CreateReqData->mbs_session->mbs_session_subsc;
+
+        if (!subsc->notify_uri || !smf_mbs_subsc_events_from_list(subsc->event_list, NULL) ||
+                (subsc->expiry_time && !smf_is_date_time(subsc->expiry_time))) {
+            ogs_error("MBS Session Create: the status subscription has no notifyUri, no event to report or an expiryTime "
+                    "that is not a date-time");
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                message, "Error input parameters",
+                "MBS Session Create failed, [mbsSessionSubsc] needs a [notifyUri], an event that can be reported and a date-time [expiryTime]",
+                NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
+            rv = OGS_ERROR;
+            goto cleanup;
+        }
+    }
+
     // Extract the SSM
     is_multicast_service = (ogs_strcasecmp(service_type, "MULTICAST") == 0);
     if (CreateReqData->mbs_session->mbs_session_id && CreateReqData->mbs_session->mbs_session_id->ssm && is_multicast_service) {
@@ -893,6 +915,23 @@ bool smf_nmbsmf_handle_mbs_session_create(
         goto cleanup;
     }
 
+    /* the status subscription of the request, for the session just made (its events are about this session) */
+    if (CreateReqData->mbs_session->mbs_session_subsc) {
+        OpenAPI_mbs_session_subscription_t *subsc = CreateReqData->mbs_session->mbs_session_subsc;
+
+        if (!smf_mbs_subsc_add(mbs_sess, smf_mbs_subsc_events_from_list(subsc->event_list, NULL),
+                    subsc->notify_uri, subsc->notify_correlation_id, subsc->expiry_time, subsc->nfc_instance_id)) {
+            ogs_error("MBS Session Create: the notifyUri of the status subscription cannot be used");
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                message, "Error input parameters",
+                "MBS Session Create failed, [mbsSessionSubsc.notifyUri] is not a URI to notify",
+                NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
+            smf_mbs_sess_release(mbs_sess);
+            rv = OGS_ERROR;
+            goto cleanup;
+        }
+    }
+
     smf_5gc_pfcp_n4mb_send_session_establishment_request(mbs_sess, 0, stream);
 
 cleanup:
@@ -967,6 +1006,11 @@ bool smf_nmbsmf_handle_mbs_session_release(
         return true;
     }
     mbs_sess->release_triggered = true;
+
+    /* TS 29.532 V18.6.0 cl. 5.3.2.8.1: the subscribers are told "the new broadcast delivery status (e.g. the MBS
+     * session has been STARTED or TERMINATED)" */
+    if (ogs_strcasecmp(mbs_sess->service_type, "BROADCAST") == 0)
+        smf_mbs_sess_report_broadcast_delivery_status(mbs_sess, OpenAPI_broadcast_delivery_status_TERMINATED);
 
         // Fires both real release triggers, to the AMF and the UPF, while mbs_sess is still valid; releasing
         // the local smf_mbs_sess_t here instead would make the release chain local bookkeeping only and fill

@@ -31,6 +31,7 @@
 #include "nsmf-handler.h"
 #include "npcf-handler.h"
 #include "nmbsmf-handler.h"
+#include "mbs-subsc.h"
 
 void smf_state_initial(ogs_fsm_t *s, smf_event_t *e)
 {
@@ -59,6 +60,7 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
     smf_gtp_node_t *smf_gnode = NULL;
     smf_mbs_sess_t *mbs_sess = NULL;
     smf_mbs_amf_t *mbs_amf = NULL;
+    smf_mbs_subsc_t *mbs_subsc = NULL;
 
     ogs_gtp_xact_t *gtp_xact = NULL;
     ogs_gtp2_message_t gtp2_message;
@@ -724,6 +726,47 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
                             ogs_sbi_server_send_error(stream,
                                     OGS_SBI_HTTP_STATUS_METHOD_NOT_ALLOWED, &sbi_message,
                                     "Invalid HTTP method", sbi_message.h.method, NULL));
+                    END
+                    break;
+                CASE(OGS_SBI_RESOURCE_NAME_SUBSCRIPTIONS)
+                    /* the status subscriptions of MBS sessions (TS 29.532 V18.6.0 cl. 6.2.3.4 and 6.2.3.5):
+                     * /mbs-sessions/subscriptions and /mbs-sessions/subscriptions/{subscriptionId} */
+                    SWITCH(sbi_message.h.resource.component[2])
+                    CASE("OGS_SWITCH_NULL")
+                        SWITCH(sbi_message.h.method)
+                        CASE(OGS_SBI_HTTP_METHOD_POST)
+                            smf_nmbsmf_handle_status_subscribe(stream, &sbi_message);
+                            break;
+                        DEFAULT
+                            ogs_error("Invalid HTTP method [%s]", sbi_message.h.method);
+                            ogs_assert(true ==
+                                ogs_sbi_server_send_error(stream,
+                                        OGS_SBI_HTTP_STATUS_METHOD_NOT_ALLOWED, &sbi_message,
+                                        "Invalid HTTP method", sbi_message.h.method, NULL));
+                        END
+                        break;
+                    DEFAULT
+                        mbs_subsc = smf_mbs_subsc_find_by_id(sbi_message.h.resource.component[2]);
+                        if (!mbs_subsc) {
+                            ogs_warn("Not found [%s]", sbi_message.h.uri);
+                            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_NOT_FOUND,
+                                    &sbi_message, "Not Found", "Unknown MBS session subscription", NULL);
+                            break;
+                        }
+                        SWITCH(sbi_message.h.method)
+                        CASE(OGS_SBI_HTTP_METHOD_PATCH)
+                            smf_nmbsmf_handle_status_subscribe_patch(mbs_subsc, stream, &sbi_message);
+                            break;
+                        CASE(OGS_SBI_HTTP_METHOD_DELETE)
+                            smf_nmbsmf_handle_status_unsubscribe(mbs_subsc, stream, &sbi_message);
+                            break;
+                        DEFAULT
+                            ogs_error("Invalid HTTP method [%s]", sbi_message.h.method);
+                            ogs_assert(true ==
+                                ogs_sbi_server_send_error(stream,
+                                        OGS_SBI_HTTP_STATUS_METHOD_NOT_ALLOWED, &sbi_message,
+                                        "Invalid HTTP method", sbi_message.h.method, NULL));
+                        END
                     END
                     break;
                 DEFAULT

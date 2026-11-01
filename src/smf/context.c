@@ -3859,6 +3859,9 @@ static void smf_mbs_sess_free(smf_mbs_sess_t *smf_mbs_sess)
 {
     if (!smf_mbs_sess) return;
 
+    /* the subscriptions of the session end with it */
+    smf_mbs_subsc_remove_all(smf_mbs_sess);
+
     if (smf_mbs_sess->mbs_session_ref)
         ogs_free(smf_mbs_sess->mbs_session_ref);
 
@@ -4859,4 +4862,130 @@ static bool smf_ncgi_equal(const ogs_ncgi_t *a, const ogs_ncgi_t *b)
         }
     }
     return false;
+}
+
+/* ---- the status subscriptions of MBS sessions ---- */
+
+bool smf_mbs_subsc_set_notify_uri(smf_mbs_subsc_t *subsc, const char *notify_uri)
+{
+    OpenAPI_uri_scheme_e scheme = OpenAPI_uri_scheme_NULL;
+    char *fqdn = NULL;
+    uint16_t fqdn_port = 0;
+    ogs_sockaddr_t *addr = NULL, *addr6 = NULL;
+    ogs_sbi_client_t *client = NULL;
+    bool rc;
+
+    ogs_assert(subsc);
+    ogs_assert(notify_uri);
+
+    rc = ogs_sbi_getaddr_from_uri(&scheme, &fqdn, &fqdn_port, &addr, &addr6, (char *)notify_uri);
+    if (rc == false || scheme == OpenAPI_uri_scheme_NULL) {
+        ogs_error("Invalid notification URI [%s]", notify_uri);
+        rc = false;
+    } else {
+        client = ogs_sbi_client_find(scheme, fqdn, fqdn_port, addr, addr6);
+        if (!client)
+            client = ogs_sbi_client_add(scheme, fqdn, fqdn_port, addr, addr6);
+        if (!client) {
+            ogs_error("ogs_sbi_client_add() failed for the notification URI [%s]", notify_uri);
+            rc = false;
+        } else {
+            /* the client holds the address only; the target of a notification is the whole URI */
+            if (subsc->notify_uri)
+                ogs_free(subsc->notify_uri);
+            subsc->notify_uri = ogs_strdup(notify_uri);
+            subsc->client = client;
+            rc = true;
+        }
+    }
+    if (fqdn)
+        ogs_free(fqdn);
+    ogs_freeaddrinfo(addr);
+    ogs_freeaddrinfo(addr6);
+
+    return rc;
+}
+
+smf_mbs_subsc_t *smf_mbs_subsc_add(smf_mbs_sess_t *mbs_sess, uint32_t events, const char *notify_uri,
+        const char *notify_correlation_id, const char *expiry_time, const char *nf_instance_id)
+{
+    smf_mbs_subsc_t *subsc = NULL;
+
+    ogs_assert(mbs_sess);
+    ogs_assert(notify_uri);
+
+    subsc = ogs_calloc(1, sizeof(*subsc));
+    ogs_assert(subsc);
+    subsc->id = ogs_msprintf("%u", ++self.next_mbs_subsc_id);
+    subsc->mbs_sess_id = mbs_sess->id;
+    subsc->events = events;
+    if (!smf_mbs_subsc_set_notify_uri(subsc, notify_uri)) {
+        ogs_free(subsc->id);
+        ogs_free(subsc);
+        return NULL;
+    }
+    if (notify_correlation_id)
+        subsc->notify_correlation_id = ogs_strdup(notify_correlation_id);
+    if (expiry_time)
+        subsc->expiry_time = ogs_strdup(expiry_time);
+    if (nf_instance_id)
+        subsc->nf_instance_id = ogs_strdup(nf_instance_id);
+    ogs_list_add(&self.smf_mbs_subsc_list, subsc);
+
+    return subsc;
+}
+
+smf_mbs_subsc_t *smf_mbs_subsc_find_by_id(const char *id)
+{
+    smf_mbs_subsc_t *subsc = NULL;
+
+    if (!id)
+        return NULL;
+    ogs_list_for_each(&self.smf_mbs_subsc_list, subsc)
+        if (strcmp(subsc->id, id) == 0)
+            return subsc;
+
+    return NULL;
+}
+
+void smf_mbs_subsc_remove(smf_mbs_subsc_t *subsc)
+{
+    ogs_assert(subsc);
+
+    ogs_list_remove(&self.smf_mbs_subsc_list, subsc);
+    ogs_free(subsc->id);
+    if (subsc->notify_uri)
+        ogs_free(subsc->notify_uri);
+    if (subsc->notify_correlation_id)
+        ogs_free(subsc->notify_correlation_id);
+    if (subsc->expiry_time)
+        ogs_free(subsc->expiry_time);
+    if (subsc->nf_instance_id)
+        ogs_free(subsc->nf_instance_id);
+    ogs_free(subsc);
+}
+
+void smf_mbs_subsc_remove_all(smf_mbs_sess_t *mbs_sess)
+{
+    smf_mbs_subsc_t *subsc = NULL, *next = NULL;
+
+    ogs_assert(mbs_sess);
+
+    ogs_list_for_each_safe(&self.smf_mbs_subsc_list, next, subsc)
+        if (subsc->mbs_sess_id == mbs_sess->id)
+            smf_mbs_subsc_remove(subsc);
+}
+
+bool smf_mbs_subsc_is_expired(const smf_mbs_subsc_t *subsc)
+{
+    ogs_time_t expiry;
+
+    ogs_assert(subsc);
+
+    if (!subsc->expiry_time)
+        return false;
+    if (ogs_sbi_time_from_string(&expiry, subsc->expiry_time) == false)
+        return false;
+
+    return expiry <= ogs_time_now();
 }

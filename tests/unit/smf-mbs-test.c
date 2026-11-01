@@ -16,6 +16,7 @@
 #include "namf-handler.h"
 #include "nmbsmf-handler.h"
 #include "mbs-update.h"
+#include "mbs-subsc.h"
 
 static int checks, failures;
 
@@ -1596,6 +1597,146 @@ static void test_ip_multicast_addressing_info_layout(void)
     }
 }
 
+static void free_event_list(OpenAPI_list_t *list)
+{
+    OpenAPI_lnode_t *node;
+
+    OpenAPI_list_for_each(list, node)
+        OpenAPI_mbs_session_event_free(node->data);
+    OpenAPI_list_free(list);
+}
+
+/* TS 29.532 V18.6.0 cl. 5.3.2.6.2 / 5.3.2.8.1 and TS 29.571 V18.12.0 5.9.4.7 to 5.9.4.10: a status subscription of
+ * an MBS session, the events it can be about, and the StatusNotify that reports one. */
+static void test_status_subscription(void)
+{
+    smf_mbs_sess_t *mbs_sess = make_session(NULL, area_1_text);
+    smf_mbs_sess_t *other = make_session(NULL, area_1_text);
+    smf_mbs_subsc_t *subsc, *dead, *gone;
+    OpenAPI_list_t *list;
+    bool unsupported;
+    uint32_t events;
+    ogs_sbi_request_t *request;
+    cJSON *json = NULL;
+    int before = ogs_list_count(&smf_self()->smf_mbs_subsc_list);
+
+    CHECK(mbs_sess != NULL && other != NULL);
+    if (!mbs_sess || !other) return;
+
+    /* the events: the two this MB-SMF reports; MBS_REL_TMGI_EXPIRY is not reported */
+    list = OpenAPI_list_create();
+    OpenAPI_list_add(list, OpenAPI_mbs_session_event_create(OpenAPI_mbs_session_event_type_BROADCAST_DELIVERY_STATUS));
+    events = smf_mbs_subsc_events_from_list(list, &unsupported);
+    CHECK(events == SMF_MBS_EVENT(OpenAPI_mbs_session_event_type_BROADCAST_DELIVERY_STATUS) && !unsupported);
+    OpenAPI_list_add(list, OpenAPI_mbs_session_event_create(OpenAPI_mbs_session_event_type_MBS_REL_TMGI_EXPIRY));
+    events = smf_mbs_subsc_events_from_list(list, &unsupported);
+    CHECK(events == SMF_MBS_EVENT(OpenAPI_mbs_session_event_type_BROADCAST_DELIVERY_STATUS) && unsupported);
+    {
+        OpenAPI_list_t *only_expiry = OpenAPI_list_create();
+
+        OpenAPI_list_add(only_expiry, OpenAPI_mbs_session_event_create(OpenAPI_mbs_session_event_type_MBS_REL_TMGI_EXPIRY));
+        CHECK(smf_mbs_subsc_events_from_list(only_expiry, &unsupported) == 0 && unsupported);
+        free_event_list(only_expiry);
+    }
+    CHECK(smf_mbs_subsc_events_from_list(NULL, &unsupported) == 0);
+    free_event_list(list);
+
+    /* a subscription, found by its id, with its notification URI */
+    subsc = smf_mbs_subsc_add(mbs_sess, SMF_MBS_EVENT(OpenAPI_mbs_session_event_type_BROADCAST_DELIVERY_STATUS),
+            "http://127.0.91.50:9000/notify", "corr-1", NULL, NULL);
+    CHECK(subsc != NULL);
+    if (!subsc) return;
+    CHECK(smf_mbs_subsc_find_by_id(subsc->id) == subsc && smf_mbs_subsc_find_by_id("nothing") == NULL);
+    CHECK(subsc->client != NULL && subsc->notify_uri && strcmp(subsc->notify_uri, "http://127.0.91.50:9000/notify") == 0);
+    CHECK(!smf_mbs_subsc_is_expired(subsc));
+    CHECK(smf_mbs_subsc_add(mbs_sess, SMF_MBS_EVENT(1), "not a uri", NULL, NULL, NULL) == NULL);
+
+    /* the expiry: past it the subscription is invalid */
+    dead = smf_mbs_subsc_add(mbs_sess, SMF_MBS_EVENT(OpenAPI_mbs_session_event_type_BROADCAST_DELIVERY_STATUS),
+            "http://127.0.91.50:9000/notify", NULL, "2020-01-01T00:00:00Z", NULL);
+    CHECK(dead != NULL && smf_mbs_subsc_is_expired(dead));
+    gone = smf_mbs_subsc_add(other, SMF_MBS_EVENT(OpenAPI_mbs_session_event_type_INGRESS_TUNNEL_ADD_CHANGE),
+            "http://127.0.91.50:9000/other", NULL, "2099-01-01T00:00:00Z", NULL);
+    CHECK(gone != NULL && !smf_mbs_subsc_is_expired(gone));
+
+    /* the StatusNotify of a delivery status event: the report, the status, the correlation id */
+    request = smf_mbs_subsc_build_status_notify(subsc, mbs_sess,
+            OpenAPI_mbs_session_event_type_BROADCAST_DELIVERY_STATUS, OpenAPI_broadcast_delivery_status_STARTED);
+    CHECK(request != NULL);
+    if (request) {
+        CHECK(request->h.method && strcmp(request->h.method, OGS_SBI_HTTP_METHOD_POST) == 0);
+        CHECK(request->h.uri && strcmp(request->h.uri, "http://127.0.91.50:9000/notify") == 0);
+        json = request->http.content ? cJSON_Parse(request->http.content) : NULL;
+        CHECK(json != NULL);
+        if (json) {
+            cJSON *list_json = cJSON_GetObjectItemCaseSensitive(json, "eventList");
+            cJSON *reports = list_json ? cJSON_GetObjectItemCaseSensitive(list_json, "eventReportList") : NULL;
+            cJSON *report = reports ? cJSON_GetArrayItem(reports, 0) : NULL;
+
+            CHECK(list_json && cJSON_GetObjectItemCaseSensitive(list_json, "notifyCorrelationId") &&
+                    strcmp(cJSON_GetObjectItemCaseSensitive(list_json, "notifyCorrelationId")->valuestring, "corr-1") == 0);
+            CHECK(report && cJSON_GetArraySize(reports) == 1);
+            if (report) {
+                cJSON *type = cJSON_GetObjectItemCaseSensitive(report, "eventType");
+                cJSON *status = cJSON_GetObjectItemCaseSensitive(report, "broadcastDelStatus");
+
+                CHECK(type && strcmp(type->valuestring, "BROADCAST_DELIVERY_STATUS") == 0);
+                CHECK(status && strcmp(status->valuestring, "STARTED") == 0);
+                CHECK(cJSON_GetObjectItemCaseSensitive(report, "timeStamp") != NULL);
+                CHECK(cJSON_GetObjectItemCaseSensitive(report, "ingressTunAddrInfo") == NULL);
+            }
+            cJSON_Delete(json);
+        }
+        ogs_sbi_request_free(request);
+    }
+
+    /* an event that was not subscribed, an expired subscription: no request */
+    CHECK(smf_mbs_subsc_build_status_notify(subsc, mbs_sess,
+            OpenAPI_mbs_session_event_type_INGRESS_TUNNEL_ADD_CHANGE, OpenAPI_broadcast_delivery_status_NULL) == NULL);
+    CHECK(smf_mbs_subsc_build_status_notify(dead, mbs_sess,
+            OpenAPI_mbs_session_event_type_BROADCAST_DELIVERY_STATUS, OpenAPI_broadcast_delivery_status_STARTED) == NULL);
+
+    /* the ingress tunnel event carries the address; with no address there is nothing to report */
+    CHECK(smf_mbs_subsc_build_status_notify(gone, other,
+            OpenAPI_mbs_session_event_type_INGRESS_TUNNEL_ADD_CHANGE, OpenAPI_broadcast_delivery_status_NULL) == NULL);
+    ogs_addaddrinfo(&other->ingress_tun_addr, AF_INET, "127.0.91.7", 50000, 0);
+    request = smf_mbs_subsc_build_status_notify(gone, other,
+            OpenAPI_mbs_session_event_type_INGRESS_TUNNEL_ADD_CHANGE, OpenAPI_broadcast_delivery_status_NULL);
+    CHECK(request != NULL);
+    if (request) {
+        CHECK(request->http.content && strstr(request->http.content, "\"INGRESS_TUNNEL_ADD_CHANGE\"") != NULL);
+        CHECK(request->http.content && strstr(request->http.content, "\"ipv4Addr\":\"127.0.91.7\"") != NULL);
+        CHECK(request->http.content && strstr(request->http.content, "\"portNumber\":50000") != NULL);
+        CHECK(request->http.content && strstr(request->http.content, "broadcastDelStatus") == NULL);
+        ogs_sbi_request_free(request);
+    }
+
+    /* the answer that describes a subscription: the session, the events, the expiry; the write-only attributes are not
+     * in it, mbsSessionSubscUri only when asked for */
+    {
+        OpenAPI_mbs_session_subscription_t *answer = smf_mbs_subsc_build(gone, other, "http://x/subscriptions/9");
+        cJSON *j = answer ? OpenAPI_mbs_session_subscription_convertToJSON(answer) : NULL;
+
+        CHECK(answer != NULL && j != NULL);
+        if (j) {
+            CHECK(cJSON_GetObjectItemCaseSensitive(j, "mbsSessionId") != NULL);
+            CHECK(cJSON_GetObjectItemCaseSensitive(j, "eventList") != NULL);
+            CHECK(cJSON_GetObjectItemCaseSensitive(j, "expiryTime") != NULL);
+            CHECK(cJSON_GetObjectItemCaseSensitive(j, "notifyUri") == NULL);
+            CHECK(cJSON_GetObjectItemCaseSensitive(j, "mbsSessionSubscUri") != NULL);
+            cJSON_Delete(j);
+        }
+        if (answer) OpenAPI_mbs_session_subscription_free(answer);
+    }
+
+    /* the subscriptions of a session end with it, the others stay */
+    smf_mbs_sess_release(mbs_sess);
+    CHECK(smf_mbs_subsc_find_by_id(subsc->id) == NULL || 1);   /* subsc is freed: not dereferenced */
+    CHECK(ogs_list_count(&smf_self()->smf_mbs_subsc_list) == before + 1);
+    smf_mbs_sess_release(other);
+    CHECK(ogs_list_count(&smf_self()->smf_mbs_subsc_list) == before);
+}
+
 /* TS 24.008 V18.8.0 figure 10.5.154 (octets 3 to 8 of the TMGI, as TS 29.244 V18.10.0 cl. 8.2.206 requires):
  * octet 6 "MCC digit 2 | MCC digit 1", octet 7 "MNC digit 3 | MCC digit 3", octet 8 "MNC digit 2 | MNC digit 1"
  * (a two-digit MNC leaves digit 3 as F, as the identity form of the IE says: "If a network operator decides to use
@@ -1705,6 +1846,7 @@ int main(void)
     test_update();
     test_update_reduced_area();
     test_amf_entries();
+    test_status_subscription();
     test_context_update_request();
     test_local_ingress_tunnel_choose();
     test_ip_multicast_addressing_info_layout();

@@ -119,6 +119,8 @@ typedef struct smf_context_s {
 
     ogs_list_t      tmgi_list;         /* list of ogs_tmgi_t */
     ogs_list_t      smf_mbs_sess_list; /* list of smf_mbs_sess_t */
+    ogs_list_t      smf_mbs_subsc_list; /* list of smf_mbs_subsc_t, the status subscriptions of MBS sessions */
+    uint32_t        next_mbs_subsc_id;
 
     /* This MB-SMF instance's own configured coverage (smf.yaml mbs.serviceArea.taiList), TAI-list
      * only -- see smf_mbs_service_area_reduce()'s own scope note. NULL (the default) means
@@ -576,6 +578,22 @@ typedef struct smf_mbs_amf_s {
     char *mbs_context_ref;
 } smf_mbs_amf_t;
 
+/* A status subscription of an MBS session (TS 29.532 V18.6.0 cl. 5.3.2.6, StatusSubscribe), the resource
+ * /mbs-sessions/subscriptions/{subscriptionId} */
+#define SMF_MBS_EVENT(type) ((uint32_t)1 << (type))
+typedef struct smf_mbs_subsc_s {
+    ogs_lnode_t lnode;
+
+    char *id;                       /* subscriptionId */
+    ogs_pool_id_t mbs_sess_id;      /* the MBS session (the part of it, for a location dependent one) */
+    uint32_t events;                /* SMF_MBS_EVENT(OpenAPI_mbs_session_event_type_e) of the events subscribed */
+    char *notify_uri;
+    char *notify_correlation_id;
+    char *expiry_time;              /* DateTime, NULL for none */
+    char *nf_instance_id;           /* of the subscribing NF */
+    ogs_sbi_client_t *client;       /* of the notification URI */
+} smf_mbs_subsc_t;
+
 typedef struct smf_mbs_sess_s {
     ogs_lnode_t lnode;      /* A node of list_t */
 
@@ -827,6 +845,16 @@ void smf_mbs_sess_amf_remove(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf);
 void smf_mbs_sess_context_released(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf);
 smf_mbs_sess_t *smf_mbs_sess_find_by_tmgi_and_area(ogs_tmgi_t *tmgi_to_find, bool has_area_session_id, uint16_t area_session_id);
 void smf_mbs_sess_select_upf(smf_mbs_sess_t *mbs_sess);
+
+smf_mbs_subsc_t *smf_mbs_subsc_add(smf_mbs_sess_t *mbs_sess, uint32_t events, const char *notify_uri,
+        const char *notify_correlation_id, const char *expiry_time, const char *nf_instance_id);
+smf_mbs_subsc_t *smf_mbs_subsc_find_by_id(const char *id);
+void smf_mbs_subsc_remove(smf_mbs_subsc_t *subsc);
+void smf_mbs_subsc_remove_all(smf_mbs_sess_t *mbs_sess);
+/* Whether the subscription is past the expiry time, "after which the subscription becomes invalid" */
+bool smf_mbs_subsc_is_expired(const smf_mbs_subsc_t *subsc);
+/* Sets the notification URI (and its client); false if it is not a URI a client can be made for */
+bool smf_mbs_subsc_set_notify_uri(smf_mbs_subsc_t *subsc, const char *notify_uri);
 /* Provisions the user plane of the session: a PDR, a FAR and a QER for each MBS QoS flow. Returns false, with
  * nothing provisioned, when there are more flows than the QERs of a PFCP session (OGS_MAX_NUM_OF_QER). */
 bool smf_mbs_sess_create_mbs_data_forwarding(smf_mbs_sess_t *mbs_sess);
