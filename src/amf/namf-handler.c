@@ -2586,6 +2586,20 @@ int amf_namf_handle_mbs_broadcast_context_update(
         goto cleanup;
     }
 
+        // One deferred response per context: the stream, the request count and the response count are shared by
+        // ContextCreate, ContextUpdate and ContextRelease. An update that arrived now would take the stream of the
+        // operation in progress and leave it unanswered. No clause names the status; UNSPECIFIED_NF_FAILURE is
+        // TS 29.500 Table 5.2.7.2-1's generic 500 cause.
+    if (ogs_sbi_stream_find_by_id(mbs_context->stream_id)) {
+        ogs_error("MBS Broadcast ContextUpdate: mbsContextRef[%s] has an operation in progress", mbs_context_ref);
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+            recvmsg, "Internal Server Error",
+            "Requested MBS Broadcast ContextUpdate failed, another operation on the context is in progress",
+            "UNSPECIFIED_NF_FAILURE");
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
     ContextUpdateReqData = recvmsg->ContextUpdateReqData;
     if (!ContextUpdateReqData) {
         ogs_error("MBS Broadcast ContextUpdate: No ContextUpdateReqData");
@@ -3255,6 +3269,18 @@ int amf_namf_handle_mbs_broadcast_context_delete(
             recvmsg, "Internal Server Error",
             "Requested MBS Broadcast ContextDelete failed, the release is already in progress", "UNSPECIFIED_NF_FAILURE");
         return OGS_ERROR;
+    }
+
+    // A ContextCreate or ContextUpdate still waiting for its NG-RAN responses is ended by the release: its stream is
+    // answered here, since the Delete takes the stream over below. No clause names the status (as for a failed Setup).
+    {
+        ogs_sbi_stream_t *pending = ogs_sbi_stream_find_by_id(mbs_context->stream_id);
+
+        mbs_context->stream_id = OGS_INVALID_POOL_ID;
+        if (pending)
+            ogs_sbi_server_send_error(pending, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR, NULL,
+                    "MBS Broadcast context released",
+                    "The Broadcast MBS session context has been released before the NG-RANs answered", NULL);
     }
 
     ogs_timer_stop(mbs_context->t_response);
