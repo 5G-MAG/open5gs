@@ -2366,6 +2366,143 @@ static void test_transport_requests(void)
     smf_mbs_sess_release(mbs_sess);
 }
 
+/* An MBS Session Release Response Transfer (TS 38.413 V18.8.0 clause 9.3.5.14: "MBS Session TNL Information NG-RAN | O")
+ * naming a shared unicast tunnel, or none. */
+static ogs_pkbuf_t *encode_release_response_transfer(bool with_tunnel, const char *addr, uint32_t teid)
+{
+    NGAP_MBSSessionReleaseResponseTransfer_t transfer;
+
+    memset(&transfer, 0, sizeof(transfer));
+    if (with_tunnel) {
+        NGAP_MBS_SessionTNLInfoNGRAN_t *tnl = CALLOC(1, sizeof(*tnl));
+        NGAP_UPTransportLayerInformation_t *up = CALLOC(1, sizeof(*up));
+        NGAP_GTPTunnel_t *gtp = CALLOC(1, sizeof(*gtp));
+        ogs_ip_t ip;
+        struct in_addr a4;
+
+        memset(&ip, 0, sizeof(ip));
+        inet_pton(AF_INET, addr, &a4);
+        ip.ipv4 = 1;
+        ip.addr = a4.s_addr;
+        ip.len = OGS_IPV4_LEN;
+        ogs_asn_ip_to_BIT_STRING(&ip, &gtp->transportLayerAddress);
+        ogs_asn_uint32_to_OCTET_STRING(teid, &gtp->gTP_TEID);
+        up->present = NGAP_UPTransportLayerInformation_PR_gTPTunnel;
+        up->choice.gTPTunnel = gtp;
+        tnl->present = NGAP_MBS_SessionTNLInfoNGRAN_PR_locationindependent;
+        tnl->choice.locationindependent = up;
+        transfer.mBS_SessionTNLInfoNGRAN = tnl;
+    }
+    return ogs_asn_encode(&asn_DEF_NGAP_MBSSessionReleaseResponseTransfer, &transfer);
+}
+
+static const char *const ran_b_text = "{\"plmnId\":{\"mcc\":\"001\",\"mnc\":\"01\"},\"gNbId\":{\"bitLength\":24,\"gNBValue\":\"000002\"}}";
+
+/* TS 29.518 V18.14.0 clause 6.5.6.4.2.2: "An MBS Session Release Response Transfer IE shall only be sent to the MB-SMF
+ * during a Broadcast MBS Session Release Require procedure (see clause 7.3.6 of TS 23.247 [55]), when unicast transport
+ * applies over N3mb, to transfer the DL F-TEID of the NG-RAN node in which the MBS session has been released and
+ * towards which the delivery of MBS data shall be stopped."; TS 23.247 V18.8.0 clause 7.3.6 step 4: "The MB-SMF
+ * performs N4mb Session Modification to let MB-UPF stop the broadcast data forwarding towards the indicated DL tunnel
+ * and release the DL tunnel". */
+static void test_release_response_transfer(void)
+{
+    smf_mbs_sess_t *mbs_sess = make_session(NULL, area_1_text);
+    smf_mbs_tunnel_changes_t changes;
+    ogs_sbi_message_t message;
+    ogs_pkbuf_t *a_transfer, *unknown, *garbage;
+    OpenAPI_list_t *list;
+    ogs_ip_t ip;
+    struct in_addr a4;
+    bool changed;
+    int n;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+    memset(&ip, 0, sizeof(ip));
+    inet_pton(AF_INET, "10.20.30.40", &a4);
+    ip.ipv4 = 1; ip.addr = a4.s_addr; ip.len = OGS_IPV4_LEN;
+
+    a_transfer = encode_release_response_transfer(true, "10.20.30.40", 0xabcd0001);
+    unknown = encode_release_response_transfer(true, "10.20.30.99", 0x00000009);
+    garbage = ogs_pkbuf_alloc(NULL, 3);
+    ogs_pkbuf_put_data(garbage, "\xff\xff\xff", 3);
+    CHECK(a_transfer && unknown && garbage);
+    if (!a_transfer || !unknown || !garbage) return;
+
+    memset(&message, 0, sizeof(message));
+    message.part[0].pkbuf = a_transfer;  message.part[0].content_id = (char *)"a";
+    message.part[1].pkbuf = unknown;     message.part[1].content_id = (char *)"unknown";
+    message.part[2].pkbuf = garbage;     message.part[2].content_id = (char *)"garbage";
+    message.num_of_part = 3;
+
+    /* the transfer names the tunnel held for the node: that one is stopped */
+    smf_mbs_sess_dl_tunnel_set(mbs_sess, ran_a_text, &ip, 0xabcd0001, &changed);
+    list = OpenAPI_list_create();
+    OpenAPI_list_add(list, n2_info(OpenAPI_ngap_ie_type_MBS_SES_REL_RSP, "a", ran_a_text));
+    n = smf_mbs_sess_take_amf_answer(mbs_sess, NULL, OpenAPI_operation_status_NULL, list, &message, &changes);
+    CHECK(n == 1 && changes.count == 1 && changes.change[0].has_remove && ogs_list_empty(&mbs_sess->dl_tunnel_list));
+
+    /* the transfer of node B names the tunnel of node A: both are stopped */
+    smf_mbs_sess_dl_tunnel_set(mbs_sess, ran_a_text, &ip, 0xabcd0001, &changed);
+    ip.addr = a4.s_addr;
+    smf_mbs_sess_dl_tunnel_set(mbs_sess, ran_b_text, &ip, 0xabcd0002, &changed);
+    CHECK(ogs_list_count(&mbs_sess->dl_tunnel_list) == 2);
+    OpenAPI_list_free(list);
+    list = OpenAPI_list_create();
+    OpenAPI_list_add(list, n2_info(OpenAPI_ngap_ie_type_MBS_SES_REL_RSP, "a", ran_b_text));
+    n = smf_mbs_sess_take_amf_answer(mbs_sess, NULL, OpenAPI_operation_status_NULL, list, &message, &changes);
+    CHECK(n == 2 && changes.count == 2 && ogs_list_empty(&mbs_sess->dl_tunnel_list));
+
+    /* a tunnel this MB-SMF does not hold: the one held for the node still goes */
+    smf_mbs_sess_dl_tunnel_set(mbs_sess, ran_a_text, &ip, 0xabcd0001, &changed);
+    OpenAPI_list_free(list);
+    list = OpenAPI_list_create();
+    OpenAPI_list_add(list, n2_info(OpenAPI_ngap_ie_type_MBS_SES_REL_RSP, "unknown", ran_a_text));
+    n = smf_mbs_sess_take_amf_answer(mbs_sess, NULL, OpenAPI_operation_status_NULL, list, &message, &changes);
+    CHECK(n == 1 && ogs_list_empty(&mbs_sess->dl_tunnel_list));
+
+    /* an undecodable transfer, and no transfer at all: by the node, as before */
+    smf_mbs_sess_dl_tunnel_set(mbs_sess, ran_a_text, &ip, 0xabcd0001, &changed);
+    OpenAPI_list_free(list);
+    list = OpenAPI_list_create();
+    OpenAPI_list_add(list, n2_info(OpenAPI_ngap_ie_type_MBS_SES_REL_RSP, "garbage", ran_a_text));
+    n = smf_mbs_sess_take_amf_answer(mbs_sess, NULL, OpenAPI_operation_status_NULL, list, &message, &changes);
+    CHECK(n == 1 && ogs_list_empty(&mbs_sess->dl_tunnel_list));
+    smf_mbs_sess_dl_tunnel_set(mbs_sess, ran_a_text, &ip, 0xabcd0001, &changed);
+    OpenAPI_list_free(list);
+    list = OpenAPI_list_create();
+    OpenAPI_list_add(list, n2_info(OpenAPI_ngap_ie_type_MBS_SES_REL_RSP, NULL, ran_a_text));
+    n = smf_mbs_sess_take_amf_answer(mbs_sess, NULL, OpenAPI_operation_status_NULL, list, &message, &changes);
+    CHECK(n == 1 && ogs_list_empty(&mbs_sess->dl_tunnel_list));
+
+    /* the decoder alone */
+    {
+        bool has_tunnel = false;
+        uint32_t teid = 0;
+        ogs_ip_t got;
+        ogs_pkbuf_t *none = encode_release_response_transfer(false, NULL, 0);
+
+        CHECK(smf_mbs_n3mb_parse_release_response_transfer(a_transfer, false, 0, &has_tunnel, &got, &teid) &&
+                has_tunnel && teid == 0xabcd0001 && got.ipv4);
+        has_tunnel = true;
+        CHECK(none && smf_mbs_n3mb_parse_release_response_transfer(none, false, 0, &has_tunnel, &got, &teid) &&
+                !has_tunnel);
+        CHECK(!smf_mbs_n3mb_parse_release_response_transfer(garbage, false, 0, &has_tunnel, &got, &teid));
+        if (none) ogs_pkbuf_free(none);
+    }
+
+    {
+        OpenAPI_lnode_t *node;
+        OpenAPI_list_for_each(list, node)
+            OpenAPI_n2_mbs_sm_info_free(node->data);
+        OpenAPI_list_free(list);
+    }
+    ogs_pkbuf_free(a_transfer);
+    ogs_pkbuf_free(unknown);
+    ogs_pkbuf_free(garbage);
+    smf_mbs_sess_release(mbs_sess);
+}
+
 static void test_unicast_tunnel_modification(void)
 {
     smf_mbs_sess_t *mbs_sess = make_session(serv_info_2_text, area_1_text);
@@ -2575,6 +2712,7 @@ int main(void)
     test_status_subscription();
     test_amf_answer();
     test_transport_requests();
+    test_release_response_transfer();
     test_unicast_tunnel_modification();
     test_context_update_request();
     test_local_ingress_tunnel_choose();

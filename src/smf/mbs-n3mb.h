@@ -37,6 +37,12 @@ extern "C" {
 bool smf_mbs_n3mb_parse_response_transfer(ogs_pkbuf_t *pkbuf, bool has_area_session_id, uint16_t area_session_id,
         bool *has_tunnel, ogs_ip_t *addr, uint32_t *teid);
 
+/* The MBS Session Release Response Transfer (clause 9.3.5.14): the DL tunnel of the NG-RAN node towards which the
+ * delivery is to stop ("MBS Session TNL Information NG-RAN | O"), same reading as the Response Transfer above.
+ * Returns false when the container cannot be decoded; *has_tunnel is false when it names none. */
+bool smf_mbs_n3mb_parse_release_response_transfer(ogs_pkbuf_t *pkbuf, bool has_area_session_id,
+        uint16_t area_session_id, bool *has_tunnel, ogs_ip_t *addr, uint32_t *teid);
+
 /* The MBS Session Setup or Modification Failure Transfer (clause 9.3.5.6): its Cause as group and value
  * ("Cause | M"). Returns false when the container cannot be decoded. */
 bool smf_mbs_n3mb_parse_failure_transfer(ogs_pkbuf_t *pkbuf, int *group, long *value);

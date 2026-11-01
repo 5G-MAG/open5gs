@@ -114,6 +114,34 @@ bool smf_mbs_n3mb_parse_response_transfer(ogs_pkbuf_t *pkbuf, bool has_area_sess
     return ok;
 }
 
+bool smf_mbs_n3mb_parse_release_response_transfer(ogs_pkbuf_t *pkbuf, bool has_area_session_id,
+        uint16_t area_session_id, bool *has_tunnel, ogs_ip_t *addr, uint32_t *teid)
+{
+    NGAP_MBSSessionReleaseResponseTransfer_t transfer;
+    bool ok = true;
+
+    ogs_assert(pkbuf);
+    ogs_assert(has_tunnel);
+    ogs_assert(addr);
+    ogs_assert(teid);
+
+    *has_tunnel = false;
+    memset(&transfer, 0, sizeof(transfer));
+    if (ogs_asn_decode(&asn_DEF_NGAP_MBSSessionReleaseResponseTransfer, &transfer, sizeof(transfer), pkbuf) !=
+            OGS_OK) {
+        ogs_error("MBS Session Release Response Transfer: cannot decode");
+        return false;
+    }
+
+    /* "MBS Session TNL Information NG-RAN | O" (TS 38.413 V18.8.0 clause 9.3.5.14) */
+    if (transfer.mBS_SessionTNLInfoNGRAN)
+        ok = tunnel_of_tnl_info(transfer.mBS_SessionTNLInfoNGRAN, has_area_session_id, area_session_id, has_tunnel,
+                addr, teid);
+
+    ogs_asn_free(&asn_DEF_NGAP_MBSSessionReleaseResponseTransfer, &transfer);
+    return ok;
+}
+
 bool smf_mbs_n3mb_parse_failure_transfer(ogs_pkbuf_t *pkbuf, int *group, long *value)
 {
     NGAP_MBSSessionSetupOrModFailureTransfer_t transfer;
@@ -174,6 +202,20 @@ static int set_dl_tunnel(smf_mbs_sess_t *mbs_sess, const char *ran_id, const ogs
             tc->remove_id = old_id;
         }
     }
+    return 1;
+}
+
+/* The DL tunnel \p tunnel is gone: removed from the session, and the change recorded for the MB-UPF. Returns 1. */
+static int remove_dl_tunnel(smf_mbs_sess_t *mbs_sess, smf_mbs_dl_tunnel_t *tunnel,
+        smf_mbs_tunnel_changes_t *tunnel_changes)
+{
+    if (tunnel_changes && tunnel_changes->count < SMF_MBS_MAX_TUNNEL_CHANGES) {
+        smf_mbs_tunnel_change_t *tc = &tunnel_changes->change[tunnel_changes->count++];
+
+        tc->has_remove = true;
+        tc->remove_id = tunnel->unicast_params_id;
+    }
+    smf_mbs_sess_dl_tunnel_remove(mbs_sess, tunnel);
     return 1;
 }
 
@@ -270,19 +312,45 @@ int smf_mbs_sess_take_amf_answer(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf,
             }
             break;
         }
-        case OpenAPI_ngap_ie_type_MBS_SES_REL_RSP:
-            /* the NG-RAN released the session: its tunnel is gone (TS 23.247 cl. 7.3.2 step 7) */
-            tunnel = smf_mbs_sess_dl_tunnel_find(mbs_sess, ran_id);
-            if (tunnel) {
-                if (tunnel_changes && tunnel_changes->count < SMF_MBS_MAX_TUNNEL_CHANGES) {
-                    tc = &tunnel_changes->change[tunnel_changes->count++];
-                    tc->has_remove = true;
-                    tc->remove_id = tunnel->unicast_params_id;
+        case OpenAPI_ngap_ie_type_MBS_SES_REL_RSP: {
+            bool has_tunnel = false;
+            ogs_ip_t addr;
+            uint32_t teid = 0;
+            smf_mbs_dl_tunnel_t *indicated = NULL;
+
+            /* The NG-RAN released the session: its tunnel is gone (TS 23.247 cl. 7.3.2 step 7). TS 29.518 V18.14.0
+             * clause 6.5.6.4.2.2, note of table 6.5.6.4.2.2-1: "An MBS Session Release Response Transfer IE shall
+             * only be sent to the MB-SMF during a Broadcast MBS Session Release Require procedure (see clause 7.3.6
+             * of TS 23.247 [55]), when unicast transport applies over N3mb, to transfer the DL F-TEID of the NG-RAN
+             * node in which the MBS session has been released and towards which the delivery of MBS data shall be
+             * stopped." So the tunnel the transfer names is stopped as well as the one held for that NG-RAN. */
+            memset(&addr, 0, sizeof(addr));
+            if (pkbuf && !smf_mbs_n3mb_parse_release_response_transfer(pkbuf, mbs_sess->location_dependent,
+                        mbs_sess->area_session_id, &has_tunnel, &addr, &teid))
+                ogs_warn("MBS Session Release Response Transfer of NG-RAN [%s] cannot be read", ran_id);
+            if (has_tunnel) {
+                ogs_list_for_each(&mbs_sess->dl_tunnel_list, tunnel) {
+                    if (tunnel->teid == teid && tunnel->addr.ipv4 == addr.ipv4 && tunnel->addr.ipv6 == addr.ipv6 &&
+                            (addr.ipv4 ? tunnel->addr.addr == addr.addr :
+                             memcmp(tunnel->addr.addr6, addr.addr6, sizeof(addr.addr6)) == 0)) {
+                        indicated = tunnel;
+                        break;
+                    }
                 }
-                smf_mbs_sess_dl_tunnel_remove(mbs_sess, tunnel);
-                changes++;
+                if (!indicated)
+                    ogs_warn("MBS Session Release Response Transfer of NG-RAN [%s] names a DL tunnel this MB-SMF "
+                            "does not hold (TEID 0x%x)", ran_id, teid);
             }
+            tunnel = smf_mbs_sess_dl_tunnel_find(mbs_sess, ran_id);
+            if (indicated) {
+                changes += remove_dl_tunnel(mbs_sess, indicated, tunnel_changes);
+                if (indicated == tunnel)
+                    tunnel = NULL;
+            }
+            if (tunnel)
+                changes += remove_dl_tunnel(mbs_sess, tunnel, tunnel_changes);
             break;
+        }
         default:
             ogs_warn("N2 MBS Session Management container of type [%s] from NG-RAN [%s] is not handled",
                     OpenAPI_ngap_ie_type_ToString(info->ngap_ie_type), ran_id);
