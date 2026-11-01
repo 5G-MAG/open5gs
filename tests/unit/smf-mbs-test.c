@@ -657,6 +657,34 @@ static void test_reduced_area_is_used(void)
 
 /* TS 29.532 V18.6.0 cl. 5.3.2.2.1, step 2a: the response contains "list of MBS FSA IDs, if any, for a broadcast
  * MBS session" (six hexadecimal digits, TS 23.003 V18.8.0 cl. 30.4). */
+/* TS 29.571 V18.12.0, type MbsSession, attribute nrRedCapUeInfo (NrRedCapUeInfo, O, 0..1): "Indicates whether the
+ * broadcast MBS session is intended only for NR (e)RedCap UEs, only for UEs that are neither NR RedCap UEs nor NR
+ * eRedCap UEs, or for any kind of UEs." The model carries it as a string and writes it back unchanged. */
+static void test_nr_red_cap_ue_info_model(void)
+{
+    cJSON *json = cJSON_Parse("{\"serviceType\":\"BROADCAST\",\"nrRedCapUeInfo\":\"NR_REDCAP_UE_ONLY\"}");
+    OpenAPI_ext_mbs_session_t *session = OpenAPI_ext_mbs_session_parseFromJSON(json);
+    cJSON *back = NULL, *member = NULL;
+
+    cJSON_Delete(json);
+    CHECK(session != NULL);
+    CHECK(session && session->nr_red_cap_ue_info && strcmp(session->nr_red_cap_ue_info, "NR_REDCAP_UE_ONLY") == 0);
+    back = session ? OpenAPI_ext_mbs_session_convertToJSON(session) : NULL;
+    member = back ? cJSON_GetObjectItemCaseSensitive(back, "nrRedCapUeInfo") : NULL;
+    CHECK(member && cJSON_IsString(member) && strcmp(member->valuestring, "NR_REDCAP_UE_ONLY") == 0);
+    if (back) cJSON_Delete(back);
+    if (session) OpenAPI_ext_mbs_session_free(session);
+
+    json = cJSON_Parse("{\"serviceType\":\"BROADCAST\"}");
+    session = OpenAPI_ext_mbs_session_parseFromJSON(json);
+    cJSON_Delete(json);
+    CHECK(session && session->nr_red_cap_ue_info == NULL);
+    back = session ? OpenAPI_ext_mbs_session_convertToJSON(session) : NULL;
+    CHECK(back && cJSON_GetObjectItemCaseSensitive(back, "nrRedCapUeInfo") == NULL);
+    if (back) cJSON_Delete(back);
+    if (session) OpenAPI_ext_mbs_session_free(session);
+}
+
 static void test_fsa_id_list(void)
 {
     smf_mbs_sess_t *mbs_sess = new_broadcast_session();
@@ -2233,6 +2261,7 @@ int main(void)
     test_tmgi_index_after_refresh();
     test_create_outcomes();
     test_reduced_area_is_used();
+    test_nr_red_cap_ue_info_model();
     test_fsa_id_list();
     test_context_create_optional_ids();
     test_date_time();

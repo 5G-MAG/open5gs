@@ -70,6 +70,7 @@ typedef struct OpenAPI_ext_mbs_session_s {
     struct OpenAPI_mbs_security_context_s *mbs_security_context;
     bool is_contact_pcf_ind;
     int contact_pcf_ind;
+    char *nr_red_cap_ue_info;
 } OpenAPI_ext_mbs_session_t;
 
 OpenAPI_ext_mbs_session_t *OpenAPI_ext_mbs_session_create(
@@ -103,7 +104,8 @@ OpenAPI_ext_mbs_session_t *OpenAPI_ext_mbs_session_create(
     OpenAPI_list_t *mbs_fsa_id_list,
     OpenAPI_mbs_security_context_t *mbs_security_context,
     bool is_contact_pcf_ind,
-    int contact_pcf_ind
+    int contact_pcf_ind,
+    char *nr_red_cap_ue_info
 );
 void OpenAPI_ext_mbs_session_free(OpenAPI_ext_mbs_session_t *ext_mbs_session);
 OpenAPI_ext_mbs_session_t *OpenAPI_ext_mbs_session_parseFromJSON(cJSON *ext_mbs_sessionJSON);

@@ -1539,7 +1539,8 @@ bool smf_nmbsmf_handle_mbs_session_patch(smf_mbs_sess_t *mbs_sess,
                 false, 0        /* any_ue_ind */,
                 smf_mbs_sess_build_fsa_id_list(mbs_sess) /* mbs_fsa_id_list */,
                 NULL            /* mbs_security_context */,
-                false, 0        /* contact_pcf_ind */);
+                false, 0        /* contact_pcf_ind */,
+                NULL            /* nr_red_cap_ue_info */);
 
         UpdateRspData = OpenAPI_update_rsp_data_create(Ext_mbs_session);
         sendmsg.UpdateRspData = UpdateRspData;

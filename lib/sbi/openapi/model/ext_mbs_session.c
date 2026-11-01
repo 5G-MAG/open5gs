@@ -35,7 +35,8 @@ OpenAPI_ext_mbs_session_t *OpenAPI_ext_mbs_session_create(
     OpenAPI_list_t *mbs_fsa_id_list,
     OpenAPI_mbs_security_context_t *mbs_security_context,
     bool is_contact_pcf_ind,
-    int contact_pcf_ind
+    int contact_pcf_ind,
+    char *nr_red_cap_ue_info
 )
 {
     OpenAPI_ext_mbs_session_t *ext_mbs_session_local_var = ogs_malloc(sizeof(OpenAPI_ext_mbs_session_t));
@@ -72,6 +73,7 @@ OpenAPI_ext_mbs_session_t *OpenAPI_ext_mbs_session_create(
     ext_mbs_session_local_var->mbs_security_context = mbs_security_context;
     ext_mbs_session_local_var->is_contact_pcf_ind = is_contact_pcf_ind;
     ext_mbs_session_local_var->contact_pcf_ind = contact_pcf_ind;
+    ext_mbs_session_local_var->nr_red_cap_ue_info = nr_red_cap_ue_info;
 
     return ext_mbs_session_local_var;
 }
@@ -137,6 +139,10 @@ void OpenAPI_ext_mbs_session_free(OpenAPI_ext_mbs_session_t *ext_mbs_session)
     if (ext_mbs_session->termination_time) {
         ogs_free(ext_mbs_session->termination_time);
         ext_mbs_session->termination_time = NULL;
+    }
+    if (ext_mbs_session->nr_red_cap_ue_info) {
+        ogs_free(ext_mbs_session->nr_red_cap_ue_info);
+        ext_mbs_session->nr_red_cap_ue_info = NULL;
     }
     if (ext_mbs_session->mbs_serv_info) {
         OpenAPI_mbs_service_info_free(ext_mbs_session->mbs_serv_info);
@@ -424,6 +430,13 @@ cJSON *OpenAPI_ext_mbs_session_convertToJSON(OpenAPI_ext_mbs_session_t *ext_mbs_
     }
     }
 
+    if (ext_mbs_session->nr_red_cap_ue_info) {
+    if (cJSON_AddStringToObject(item, "nrRedCapUeInfo", ext_mbs_session->nr_red_cap_ue_info) == NULL) {
+        ogs_error("OpenAPI_ext_mbs_session_convertToJSON() failed [nr_red_cap_ue_info]");
+        goto end;
+    }
+    }
+
 end:
     return item;
 }
@@ -471,6 +484,7 @@ OpenAPI_ext_mbs_session_t *OpenAPI_ext_mbs_session_parseFromJSON(cJSON *ext_mbs_
     cJSON *mbs_security_context = NULL;
     OpenAPI_mbs_security_context_t *mbs_security_context_local_nonprim = NULL;
     cJSON *contact_pcf_ind = NULL;
+    cJSON *nr_red_cap_ue_info = NULL;
     mbs_session_id = cJSON_GetObjectItemCaseSensitive(ext_mbs_sessionJSON, "mbsSessionId");
     if (mbs_session_id) {
     mbs_session_id_local_nonprim = OpenAPI_mbs_session_id_parseFromJSON(mbs_session_id);
@@ -714,6 +728,14 @@ OpenAPI_ext_mbs_session_t *OpenAPI_ext_mbs_session_parseFromJSON(cJSON *ext_mbs_
     }
     }
 
+    nr_red_cap_ue_info = cJSON_GetObjectItemCaseSensitive(ext_mbs_sessionJSON, "nrRedCapUeInfo");
+    if (nr_red_cap_ue_info) {
+    if (!cJSON_IsString(nr_red_cap_ue_info) && !cJSON_IsNull(nr_red_cap_ue_info)) {
+        ogs_error("OpenAPI_ext_mbs_session_parseFromJSON() failed [nr_red_cap_ue_info]");
+        goto end;
+    }
+    }
+
     ext_mbs_session_local_var = OpenAPI_ext_mbs_session_create (
         mbs_session_id ? mbs_session_id_local_nonprim : NULL,
         tmgi_alloc_req ? true : false,
@@ -745,7 +767,8 @@ OpenAPI_ext_mbs_session_t *OpenAPI_ext_mbs_session_parseFromJSON(cJSON *ext_mbs_
         mbs_fsa_id_list ? mbs_fsa_id_listList : NULL,
         mbs_security_context ? mbs_security_context_local_nonprim : NULL,
         contact_pcf_ind ? true : false,
-        contact_pcf_ind ? contact_pcf_ind->valueint : 0
+        contact_pcf_ind ? contact_pcf_ind->valueint : 0,
+        nr_red_cap_ue_info && !cJSON_IsNull(nr_red_cap_ue_info) ? ogs_strdup(nr_red_cap_ue_info->valuestring) : NULL
     );
 
     return ext_mbs_session_local_var;
