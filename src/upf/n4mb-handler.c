@@ -62,6 +62,14 @@ bool upf_n4mb_check_session_establishment_request(
         ogs_error("No Node ID in N4mb Session Establishment Request");
         cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
         offending_ie_value = OGS_PFCP_NODE_ID_TYPE;
+    } else if (req->create_pdr[0].presence == 0) {
+        ogs_error("No Create PDR in N4mb Session Establishment Request");
+        cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+        offending_ie_value = OGS_PFCP_CREATE_PDR_TYPE;
+    } else if (req->create_far[0].presence == 0) {
+        ogs_error("No Create FAR in N4mb Session Establishment Request");
+        cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+        offending_ie_value = OGS_PFCP_CREATE_FAR_TYPE;
     }
 
     if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED)

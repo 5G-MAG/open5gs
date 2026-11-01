@@ -314,6 +314,22 @@ def t_U01_1_pool_exhausted_is_not_a_missing_ie():
     accepted_and_deleted(U.establish(good(cp_seid=0x2200)), 'after the sessions were deleted')
 
 
+@test
+def t_U01_4_no_create_pdr():
+    r = U.establish(replace_ie(good(), T_CREATE_PDR, None))
+    assert r and cause(r) == CAUSE_MANDATORY_MISSING, 'cause %s' % (cause(r) if r else None)
+    assert offending(r) == T_CREATE_PDR, 'offending IE %s' % offending(r)
+    accepted_and_deleted(U.establish(good()), 'after the rejection')
+
+
+@test
+def t_U01_5_no_create_far():
+    r = U.establish(replace_ie(good(), T_CREATE_FAR, None))
+    assert r and cause(r) == CAUSE_MANDATORY_MISSING, 'cause %s' % (cause(r) if r else None)
+    assert offending(r) == T_CREATE_FAR, 'offending IE %s' % offending(r)
+    accepted_and_deleted(U.establish(good()), 'after the rejection')
+
+
 # E-TESTS-BELOW
 
 
