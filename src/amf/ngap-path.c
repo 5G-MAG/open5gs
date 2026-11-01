@@ -737,3 +737,46 @@ int ngap_send_ng_reset_ack(
 
     return rv;
 }
+
+/* The answers of the Broadcast Session Transport procedure (TS 38.413 V18.8.0 clause 8.17.5), non-UE associated
+ * signalling. */
+int ngap_send_broadcast_session_transport_response(
+        amf_gnb_t *gnb, const ogs_tmgi_t *tmgi, const uint8_t *transfer, size_t transfer_len)
+{
+    int rv;
+    ogs_pkbuf_t *ngapbuf = NULL;
+
+    ogs_assert(gnb);
+
+    ngapbuf = ngap_build_broadcast_session_transport_response(tmgi, transfer, transfer_len);
+    if (!ngapbuf) {
+        ogs_error("ngap_build_broadcast_session_transport_response() failed");
+        return OGS_ERROR;
+    }
+
+    rv = ngap_send_to_gnb(gnb, ngapbuf, NGAP_NON_UE_SIGNALLING);
+    ogs_expect(rv == OGS_OK);
+
+    return rv;
+}
+
+int ngap_send_broadcast_session_transport_failure(
+        amf_gnb_t *gnb, const ogs_tmgi_t *tmgi, const uint8_t *transfer, size_t transfer_len,
+        NGAP_Cause_PR group, long cause)
+{
+    int rv;
+    ogs_pkbuf_t *ngapbuf = NULL;
+
+    ogs_assert(gnb);
+
+    ngapbuf = ngap_build_broadcast_session_transport_failure(tmgi, transfer, transfer_len, group, cause);
+    if (!ngapbuf) {
+        ogs_error("ngap_build_broadcast_session_transport_failure() failed");
+        return OGS_ERROR;
+    }
+
+    rv = ngap_send_to_gnb(gnb, ngapbuf, NGAP_NON_UE_SIGNALLING);
+    ogs_expect(rv == OGS_OK);
+
+    return rv;
+}

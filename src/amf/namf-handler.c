@@ -3471,3 +3471,128 @@ int amf_namf_mbs_comm_handle_n2_message_transfer(
 
     return OGS_OK;
 }
+
+/* The Cause of a Broadcast Transport Failure Transfer (TS 38.413 clause 9.3.5.17: "Cause | M"). */
+static bool transport_failure_cause(ogs_pkbuf_t *pkbuf, NGAP_Cause_PR *group, long *cause)
+{
+    NGAP_BroadcastTransportFailureTransfer_t transfer;
+    bool ok = true;
+
+    memset(&transfer, 0, sizeof(transfer));
+    if (ogs_asn_decode(&asn_DEF_NGAP_BroadcastTransportFailureTransfer, &transfer, sizeof(transfer), pkbuf) !=
+            OGS_OK)
+        return false;
+
+    *group = transfer.cause.present;
+    switch (transfer.cause.present) {
+    case NGAP_Cause_PR_radioNetwork: *cause = transfer.cause.choice.radioNetwork; break;
+    case NGAP_Cause_PR_transport: *cause = transfer.cause.choice.transport; break;
+    case NGAP_Cause_PR_nas: *cause = transfer.cause.choice.nas; break;
+    case NGAP_Cause_PR_protocol: *cause = transfer.cause.choice.protocol; break;
+    case NGAP_Cause_PR_misc: *cause = transfer.cause.choice.misc; break;
+    default: ok = false; break;
+    }
+    ogs_asn_free(&asn_DEF_NGAP_BroadcastTransportFailureTransfer, &transfer);
+    return ok;
+}
+
+int amf_namf_mbs_transport_answers(const amf_gnb_t *gnb, const ogs_tmgi_t *tmgi, ogs_sbi_message_t *message,
+        ogs_pkbuf_t **out, int max)
+{
+    OpenAPI_context_status_notification_response_t *response = NULL;
+    OpenAPI_lnode_t *node = NULL;
+    int count = 0;
+
+    ogs_assert(gnb);
+    ogs_assert(tmgi);
+    ogs_assert(message);
+    ogs_assert(out);
+
+    response = message->ContextStatusNotificationResponse;
+    if (!response || !response->n2_mbs_sm_info_list)
+        return 0;
+
+    OpenAPI_list_for_each(response->n2_mbs_sm_info_list, node) {
+        OpenAPI_n2_mbs_sm_info_t *info = node->data;
+        ogs_pkbuf_t *transfer = NULL, *ngap = NULL;
+
+        if (!info || count >= max)
+            continue;
+        if (info->ngap_ie_type != OpenAPI_ngap_ie_type_BC_TRA_RSP &&
+                info->ngap_ie_type != OpenAPI_ngap_ie_type_BC_TRA_FAIL)
+            continue;
+        /* TS 29.518 V18.14.0 clause 5.6.2.5: "the MB-SMF shall insert the identifier of the NG-RAN node to which the
+         * information in the container relates"; an entry that names another node is not this node's answer. */
+        if (info->rand_id && !amf_namf_ran_id_is_gnb(gnb, info->rand_id)) {
+            ogs_warn("Broadcast Session Transport: a container of the MB-SMF names another NG-RAN node");
+            continue;
+        }
+        if (info->ngap_data && info->ngap_data->content_id)
+            transfer = ogs_sbi_find_part_by_content_id(message, info->ngap_data->content_id);
+        if (!transfer) {
+            ogs_warn("Broadcast Session Transport: a container of the MB-SMF is not in the message");
+            continue;
+        }
+
+        if (info->ngap_ie_type == OpenAPI_ngap_ie_type_BC_TRA_RSP) {
+            ngap = ngap_build_broadcast_session_transport_response(tmgi, transfer->data, transfer->len);
+        } else {
+            NGAP_Cause_PR group = NGAP_Cause_PR_NOTHING;
+            long cause = 0;
+
+            /* The message carries the Cause beside the transfer (clause 9.2.16.12); it is the one of the transfer. */
+            if (!transport_failure_cause(transfer, &group, &cause)) {
+                ogs_warn("Broadcast Session Transport: the Failure Transfer of the MB-SMF cannot be decoded");
+                continue;
+            }
+            ngap = ngap_build_broadcast_session_transport_failure(tmgi, transfer->data, transfer->len, group, cause);
+        }
+        if (ngap)
+            out[count++] = ngap;
+    }
+
+    return count;
+}
+
+void amf_namf_send_transport_failure(amf_gnb_t *gnb, const ogs_tmgi_t *tmgi, NGAP_Cause_PR group, long cause)
+{
+    ogs_pkbuf_t *transfer = NULL;
+
+    ogs_assert(gnb);
+    ogs_assert(tmgi);
+
+    transfer = ngap_build_broadcast_transport_failure_transfer(tmgi, group, cause);
+    if (!transfer) {
+        ogs_error("ngap_build_broadcast_transport_failure_transfer() failed");
+        return;
+    }
+    ngap_send_broadcast_session_transport_failure(gnb, tmgi, transfer->data, transfer->len, group, cause);
+    ogs_pkbuf_free(transfer);
+}
+
+void amf_namf_handle_mbs_broadcast_transport_request(amf_gnb_t *gnb, const ogs_tmgi_t *tmgi,
+        const uint8_t *transfer, size_t transfer_len)
+{
+    amf_mbs_context_t *mbs_context = NULL;
+
+    ogs_assert(gnb);
+    ogs_assert(tmgi);
+    ogs_assert(transfer);
+
+    mbs_context = amf_mbs_context_find_by_tmgi(tmgi);
+    if (!mbs_context) {
+        /* TS 38.413 V18.8.0 clause 8.17.5.3: "In case the shared NG-U transport cannot be setup successfully, the AMF
+         * shall respond with the BROADCAST SESSION TRANSPORT FAILURE message to the NG-RAN node with an appropriate
+         * cause value." and clause 9.3.1.2: "Unknown MBS Session ID | The action failed because the MBS Session ID is
+         * unknown." */
+        ogs_warn("BROADCAST SESSION TRANSPORT REQUEST: no MBS context found for the given TMGI");
+        amf_namf_send_transport_failure(gnb, tmgi, NGAP_Cause_PR_radioNetwork,
+                NGAP_CauseRadioNetwork_unknown_MBS_Session_ID);
+        return;
+    }
+
+    if (!amf_sbi_send_mbs_broadcast_transport_request(mbs_context, gnb, transfer, transfer_len))
+        amf_namf_send_transport_failure(gnb, tmgi, NGAP_Cause_PR_transport,
+                NGAP_CauseTransport_transport_resource_unavailable);
+}
+

@@ -3369,3 +3369,157 @@ ogs_pkbuf_t *ngap_build_multicast_session_update_request(
 
     return ogs_ngap_encode(&pdu);
 }
+
+/*
+ * Broadcast Transport Failure Transfer, TS 38.413 V18.8.0 clause 9.3.5.17: "MBS Session ID | M |  | 9.3.1.206",
+ * "Cause | M |  | 9.3.1.2". The MB-SMF builds it when it refuses the transport; the AMF builds it when the AMF is the one
+ * that cannot set up the shared NG-U transport (clause 8.17.5.3: "In case the shared NG-U transport cannot be setup
+ * successfully, the AMF shall respond with the BROADCAST SESSION TRANSPORT FAILURE message to the NG-RAN node with an
+ * appropriate cause value.").
+ */
+ogs_pkbuf_t *ngap_build_broadcast_transport_failure_transfer(const ogs_tmgi_t *tmgi, NGAP_Cause_PR group, long cause)
+{
+    NGAP_BroadcastTransportFailureTransfer_t message;
+
+    ogs_assert(tmgi);
+
+    memset(&message, 0, sizeof(message));
+    ogs_ngap_5gs_tmgi_to_ASN((ogs_tmgi_t *)tmgi, &message.mBS_SessionID.tMGI);
+    message.cause.present = group;
+    switch (group) {
+    case NGAP_Cause_PR_radioNetwork: message.cause.choice.radioNetwork = cause; break;
+    case NGAP_Cause_PR_transport: message.cause.choice.transport = cause; break;
+    case NGAP_Cause_PR_nas: message.cause.choice.nas = cause; break;
+    case NGAP_Cause_PR_protocol: message.cause.choice.protocol = cause; break;
+    default:
+        message.cause.present = NGAP_Cause_PR_misc;
+        message.cause.choice.misc = cause;
+        break;
+    }
+
+    return ogs_asn_encode(&asn_DEF_NGAP_BroadcastTransportFailureTransfer, &message);
+}
+
+/*
+ * BROADCAST SESSION TRANSPORT RESPONSE, TS 38.413 V18.8.0 clause 9.2.16.11: "MBS Session ID | M |  | 9.3.1.206 |  | YES
+ * | reject", "Broadcast Transport Response Transfer | M |  | OCTET STRING | Containing the Broadcast Transport Response
+ * Transfer IE specified in subclause 9.3.5.16 | YES | reject", "Criticality Diagnostics | O" (not sent). Successful
+ * outcome of the procedure of clause 8.17.5.
+ */
+ogs_pkbuf_t *ngap_build_broadcast_session_transport_response(
+        const ogs_tmgi_t *tmgi, const uint8_t *transfer, size_t transfer_len)
+{
+    NGAP_NGAP_PDU_t pdu;
+    NGAP_SuccessfulOutcome_t *successfulOutcome = NULL;
+    NGAP_BroadcastSessionTransportResponse_t *BroadcastSessionTransportResponse = NULL;
+    NGAP_BroadcastSessionTransportResponseIEs_t *ie = NULL;
+
+    ogs_assert(tmgi);
+    ogs_assert(transfer);
+
+    ogs_debug("BROADCAST SESSION TRANSPORT RESPONSE");
+
+    memset(&pdu, 0, sizeof(NGAP_NGAP_PDU_t));
+    pdu.present = NGAP_NGAP_PDU_PR_successfulOutcome;
+    pdu.choice.successfulOutcome = CALLOC(1, sizeof(NGAP_SuccessfulOutcome_t));
+    ogs_assert(pdu.choice.successfulOutcome);
+
+    successfulOutcome = pdu.choice.successfulOutcome;
+    successfulOutcome->procedureCode = NGAP_ProcedureCode_id_BroadcastSessionTransport;
+    successfulOutcome->criticality = NGAP_Criticality_reject;
+    successfulOutcome->value.present = NGAP_SuccessfulOutcome__value_PR_BroadcastSessionTransportResponse;
+
+    BroadcastSessionTransportResponse = &successfulOutcome->value.choice.BroadcastSessionTransportResponse;
+
+    ie = CALLOC(1, sizeof(NGAP_BroadcastSessionTransportResponseIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(&BroadcastSessionTransportResponse->protocolIEs, ie);
+    ie->id = NGAP_ProtocolIE_ID_id_MBS_SessionID;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present = NGAP_BroadcastSessionTransportResponseIEs__value_PR_MBS_SessionID;
+    ogs_ngap_5gs_tmgi_to_ASN((ogs_tmgi_t *)tmgi, &ie->value.choice.MBS_SessionID.tMGI);
+
+    ie = CALLOC(1, sizeof(NGAP_BroadcastSessionTransportResponseIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(&BroadcastSessionTransportResponse->protocolIEs, ie);
+    ie->id = NGAP_ProtocolIE_ID_id_BroadcastTransportResponseTransfer;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present =
+        NGAP_BroadcastSessionTransportResponseIEs__value_PR_OCTET_STRING_CONTAINING_BroadcastTransportResponseTransfer_;
+    ogs_asn_buffer_to_OCTET_STRING((void *)transfer, transfer_len,
+            &ie->value.choice.OCTET_STRING_CONTAINING_BroadcastTransportResponseTransfer_);
+
+    return ogs_ngap_encode(&pdu);
+}
+
+/*
+ * BROADCAST SESSION TRANSPORT FAILURE, TS 38.413 V18.8.0 clause 9.2.16.12: "MBS Session ID | M |  | 9.3.1.206 |  | YES
+ * | reject", "Broadcast Transport Failure Transfer | M |  | OCTET STRING | Containing the Broadcast Transport Failure
+ * Transfer IE specified in subclause 9.3.5.17 | YES | ignore", "Cause | M |  | 9.3.1.2 |  | YES | ignore",
+ * "Criticality Diagnostics | O" (not sent). Unsuccessful outcome of the procedure of clause 8.17.5.
+ */
+ogs_pkbuf_t *ngap_build_broadcast_session_transport_failure(
+        const ogs_tmgi_t *tmgi, const uint8_t *transfer, size_t transfer_len, NGAP_Cause_PR group, long cause)
+{
+    NGAP_NGAP_PDU_t pdu;
+    NGAP_UnsuccessfulOutcome_t *unsuccessfulOutcome = NULL;
+    NGAP_BroadcastSessionTransportFailure_t *BroadcastSessionTransportFailure = NULL;
+    NGAP_BroadcastSessionTransportFailureIEs_t *ie = NULL;
+    NGAP_Cause_t *Cause = NULL;
+
+    ogs_assert(tmgi);
+    ogs_assert(transfer);
+
+    ogs_debug("BROADCAST SESSION TRANSPORT FAILURE");
+
+    memset(&pdu, 0, sizeof(NGAP_NGAP_PDU_t));
+    pdu.present = NGAP_NGAP_PDU_PR_unsuccessfulOutcome;
+    pdu.choice.unsuccessfulOutcome = CALLOC(1, sizeof(NGAP_UnsuccessfulOutcome_t));
+    ogs_assert(pdu.choice.unsuccessfulOutcome);
+
+    unsuccessfulOutcome = pdu.choice.unsuccessfulOutcome;
+    unsuccessfulOutcome->procedureCode = NGAP_ProcedureCode_id_BroadcastSessionTransport;
+    unsuccessfulOutcome->criticality = NGAP_Criticality_reject;
+    unsuccessfulOutcome->value.present = NGAP_UnsuccessfulOutcome__value_PR_BroadcastSessionTransportFailure;
+
+    BroadcastSessionTransportFailure = &unsuccessfulOutcome->value.choice.BroadcastSessionTransportFailure;
+
+    ie = CALLOC(1, sizeof(NGAP_BroadcastSessionTransportFailureIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(&BroadcastSessionTransportFailure->protocolIEs, ie);
+    ie->id = NGAP_ProtocolIE_ID_id_MBS_SessionID;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present = NGAP_BroadcastSessionTransportFailureIEs__value_PR_MBS_SessionID;
+    ogs_ngap_5gs_tmgi_to_ASN((ogs_tmgi_t *)tmgi, &ie->value.choice.MBS_SessionID.tMGI);
+
+    ie = CALLOC(1, sizeof(NGAP_BroadcastSessionTransportFailureIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(&BroadcastSessionTransportFailure->protocolIEs, ie);
+    ie->id = NGAP_ProtocolIE_ID_id_BroadcastTransportFailureTransfer;
+    ie->criticality = NGAP_Criticality_ignore;
+    ie->value.present =
+        NGAP_BroadcastSessionTransportFailureIEs__value_PR_OCTET_STRING_CONTAINING_BroadcastTransportFailureTransfer_;
+    ogs_asn_buffer_to_OCTET_STRING((void *)transfer, transfer_len,
+            &ie->value.choice.OCTET_STRING_CONTAINING_BroadcastTransportFailureTransfer_);
+
+    ie = CALLOC(1, sizeof(NGAP_BroadcastSessionTransportFailureIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(&BroadcastSessionTransportFailure->protocolIEs, ie);
+    ie->id = NGAP_ProtocolIE_ID_id_Cause;
+    ie->criticality = NGAP_Criticality_ignore;
+    ie->value.present = NGAP_BroadcastSessionTransportFailureIEs__value_PR_Cause;
+    Cause = &ie->value.choice.Cause;
+    Cause->present = group;
+    switch (group) {
+    case NGAP_Cause_PR_radioNetwork: Cause->choice.radioNetwork = cause; break;
+    case NGAP_Cause_PR_transport: Cause->choice.transport = cause; break;
+    case NGAP_Cause_PR_nas: Cause->choice.nas = cause; break;
+    case NGAP_Cause_PR_protocol: Cause->choice.protocol = cause; break;
+    default:
+        Cause->present = NGAP_Cause_PR_misc;
+        Cause->choice.misc = cause;
+        break;
+    }
+
+    return ogs_ngap_encode(&pdu);
+}

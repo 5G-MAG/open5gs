@@ -69,6 +69,27 @@ int amf_namf_handle_mbs_broadcast_context_update(
  * response or sends a ContextStatusNotify request. See the function's own comment (namf-handler.c).
  */
 void amf_namf_handle_mbs_broadcast_release_required(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb);
+
+/*
+ * The Broadcast Session Transport procedure (TS 38.413 V18.8.0 clause 8.17.5) of NG-RAN node \p gnb for the MBS session
+ * \p tmgi: relays the Broadcast Transport Request Transfer \p transfer to the MB-SMF in a ContextStatusNotify, and
+ * answers the NG-RAN node with the BROADCAST SESSION TRANSPORT FAILURE when there is no such context or the notification
+ * cannot be sent. The answer of the MB-SMF is handled by amf_namf_mbs_transport_answers().
+ */
+void amf_namf_handle_mbs_broadcast_transport_request(amf_gnb_t *gnb, const ogs_tmgi_t *tmgi,
+        const uint8_t *transfer, size_t transfer_len);
+
+/* Answers the NG-RAN node with the BROADCAST SESSION TRANSPORT FAILURE, the Failure Transfer being the AMF's own */
+void amf_namf_send_transport_failure(amf_gnb_t *gnb, const ogs_tmgi_t *tmgi, NGAP_Cause_PR group, long cause);
+
+/*
+ * The NGAP messages that answer a ContextStatusNotify with a Broadcast Session Transport Request Transfer, from the
+ * ContextStatusNotificationResponse of \p message (TS 29.518 V18.14.0 clause 5.6.2.5 step 2a): one BROADCAST SESSION
+ * TRANSPORT RESPONSE or FAILURE for each container whose ranId names \p gnb (or has none). Returns how many were built
+ * into \p out (owned by the caller); 0 when the response carries no usable container.
+ */
+int amf_namf_mbs_transport_answers(const amf_gnb_t *gnb, const ogs_tmgi_t *tmgi, ogs_sbi_message_t *message,
+        ogs_pkbuf_t **out, int max);
 bool amf_namf_handle_mbs_broadcast_required_release_response(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb,
         const OCTET_STRING_t *transfer);
 void amf_namf_handle_mbs_broadcast_ran_response(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb,

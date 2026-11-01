@@ -101,6 +101,14 @@ bool amf_sbi_send_mbs_broadcast_context_status_notify(
         amf_mbs_context_t *mbs_context, ogs_list_t *n2_info_list, OpenAPI_operation_status_e operation_status,
         bool released_ind, const amf_gnb_t *required_release_gnb);
 
+/*
+ * A ContextStatusNotify that carries the Broadcast Session Transport Request Transfer \p transfer of NG-RAN node
+ * \p gnb (TS 29.518 V18.14.0 clause 5.6.2.5); the answer of the MB-SMF is turned into the NGAP answer to \p gnb when it
+ * arrives (or a failure when it does not). Returns false when the notification could not be sent.
+ */
+bool amf_sbi_send_mbs_broadcast_transport_request(
+        amf_mbs_context_t *mbs_context, amf_gnb_t *gnb, const uint8_t *transfer, size_t transfer_len);
+
 bool amf_ue_have_session_release_pending(amf_ue_t *amf_ue);
 bool amf_sess_have_session_release_pending(amf_sess_t *sess);
 

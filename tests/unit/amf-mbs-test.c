@@ -11,6 +11,8 @@
 #include "ogs-sbi.h"
 #include "context.h"
 #include "namf-build.h"
+#include "namf-handler.h"
+#include "ngap-build.h"
 
 static int checks, failures;
 
@@ -236,6 +238,229 @@ static void test_status_notify(void)
     ogs_free(gnb);
 }
 
+/* Decodes an NGAP PDU built by the AMF; returns false when it does not decode. */
+static bool decode_pdu(ogs_pkbuf_t *pkbuf, ogs_ngap_message_t *pdu)
+{
+    memset(pdu, 0, sizeof(*pdu));
+    return pkbuf && ogs_ngap_decode(pdu, pkbuf) == OGS_OK;
+}
+
+/* TS 38.413 V18.8.0 clauses 9.2.16.11 and 9.2.16.12: BROADCAST SESSION TRANSPORT RESPONSE (MBS Session ID M, Broadcast
+ * Transport Response Transfer M; successful outcome of the procedure of clause 8.17.5) and BROADCAST SESSION TRANSPORT
+ * FAILURE (MBS Session ID M, Broadcast Transport Failure Transfer M, Cause M; unsuccessful outcome). */
+static void test_transport_messages(void)
+{
+    static const uint8_t transfer[] = { 0x00, 0x01, 0x02 };
+    amf_mbs_context_t ctx = make_context();
+    ogs_ngap_message_t pdu;
+    ogs_pkbuf_t *buf;
+    int i, found;
+
+    buf = ngap_build_broadcast_session_transport_response(&ctx.tmgi, transfer, sizeof(transfer));
+    CHECK(decode_pdu(buf, &pdu));
+    if (buf && pdu.present == NGAP_NGAP_PDU_PR_successfulOutcome) {
+        NGAP_SuccessfulOutcome_t *outcome = pdu.choice.successfulOutcome;
+        NGAP_BroadcastSessionTransportResponse_t *rsp;
+
+        CHECK(outcome->procedureCode == NGAP_ProcedureCode_id_BroadcastSessionTransport);
+        CHECK(outcome->value.present == NGAP_SuccessfulOutcome__value_PR_BroadcastSessionTransportResponse);
+        rsp = &outcome->value.choice.BroadcastSessionTransportResponse;
+        found = 0;
+        for (i = 0; i < rsp->protocolIEs.list.count; i++) {
+            NGAP_BroadcastSessionTransportResponseIEs_t *ie = rsp->protocolIEs.list.array[i];
+
+            if (ie->id == NGAP_ProtocolIE_ID_id_MBS_SessionID && ie->criticality == NGAP_Criticality_reject)
+                found |= 1;
+            if (ie->id == NGAP_ProtocolIE_ID_id_BroadcastTransportResponseTransfer &&
+                    ie->criticality == NGAP_Criticality_reject &&
+                    ie->value.choice.OCTET_STRING_CONTAINING_BroadcastTransportResponseTransfer_.size ==
+                        sizeof(transfer))
+                found |= 2;
+        }
+        CHECK(found == 3 && rsp->protocolIEs.list.count == 2);
+    } else
+        CHECK(0);
+    if (buf) ogs_ngap_free(&pdu);
+    if (buf) ogs_pkbuf_free(buf);
+
+    buf = ngap_build_broadcast_session_transport_failure(&ctx.tmgi, transfer, sizeof(transfer),
+            NGAP_Cause_PR_radioNetwork, NGAP_CauseRadioNetwork_unknown_MBS_Session_ID);
+    CHECK(decode_pdu(buf, &pdu));
+    if (buf && pdu.present == NGAP_NGAP_PDU_PR_unsuccessfulOutcome) {
+        NGAP_UnsuccessfulOutcome_t *outcome = pdu.choice.unsuccessfulOutcome;
+        NGAP_BroadcastSessionTransportFailure_t *failure;
+
+        CHECK(outcome->procedureCode == NGAP_ProcedureCode_id_BroadcastSessionTransport);
+        CHECK(outcome->value.present == NGAP_UnsuccessfulOutcome__value_PR_BroadcastSessionTransportFailure);
+        failure = &outcome->value.choice.BroadcastSessionTransportFailure;
+        found = 0;
+        for (i = 0; i < failure->protocolIEs.list.count; i++) {
+            NGAP_BroadcastSessionTransportFailureIEs_t *ie = failure->protocolIEs.list.array[i];
+
+            if (ie->id == NGAP_ProtocolIE_ID_id_MBS_SessionID)
+                found |= 1;
+            if (ie->id == NGAP_ProtocolIE_ID_id_BroadcastTransportFailureTransfer &&
+                    ie->criticality == NGAP_Criticality_ignore)
+                found |= 2;
+            if (ie->id == NGAP_ProtocolIE_ID_id_Cause && ie->criticality == NGAP_Criticality_ignore &&
+                    ie->value.choice.Cause.present == NGAP_Cause_PR_radioNetwork &&
+                    ie->value.choice.Cause.choice.radioNetwork == NGAP_CauseRadioNetwork_unknown_MBS_Session_ID)
+                found |= 4;
+        }
+        CHECK(found == 7 && failure->protocolIEs.list.count == 3);
+    } else
+        CHECK(0);
+    if (buf) ogs_ngap_free(&pdu);
+    if (buf) ogs_pkbuf_free(buf);
+
+    /* the Failure Transfer the AMF builds itself decodes, with its Cause */
+    buf = ngap_build_broadcast_transport_failure_transfer(&ctx.tmgi, NGAP_Cause_PR_transport,
+            NGAP_CauseTransport_transport_resource_unavailable);
+    CHECK(buf != NULL);
+    if (buf) {
+        NGAP_BroadcastTransportFailureTransfer_t ft;
+
+        memset(&ft, 0, sizeof(ft));
+        CHECK(ogs_asn_decode(&asn_DEF_NGAP_BroadcastTransportFailureTransfer, &ft, sizeof(ft), buf) == OGS_OK);
+        CHECK(ft.cause.present == NGAP_Cause_PR_transport &&
+                ft.cause.choice.transport == NGAP_CauseTransport_transport_resource_unavailable);
+        ogs_asn_free(&asn_DEF_NGAP_BroadcastTransportFailureTransfer, &ft);
+        ogs_pkbuf_free(buf);
+    }
+}
+
+/* The Broadcast Session Transport Request Transfer goes to the MB-SMF as a container of the ContextStatusNotify of
+ * TS 29.518 V18.14.0 clause 5.6.2.5 with the identity of the NG-RAN node, and the answers of the MB-SMF come back as
+ * NGAP messages for that node: "the MB-SMF shall return a "200 OK" with the ContextStatusNotificationResponse
+ * containing one or more N2 MBS Session Management containers encapsulating a Broadcast Session Transport Response
+ * Transfer IE or a Broadcast Session Transport Failure Transfer IE." */
+static void test_transport_relay(void)
+{
+    static const uint8_t request_transfer[] = { 0x01, 0x02, 0x03, 0x04 };
+    amf_gnb_t *gnb = make_gnb(0x100, 22), *other = make_gnb(0x200, 22);
+    amf_mbs_context_t ctx = make_context();
+    ogs_list_t infos;
+    ogs_sbi_request_t *request;
+    ogs_sbi_message_t message;
+    ogs_pkbuf_t *rsp_transfer, *fail_transfer, *garbage, *out[8];
+    cJSON *json;
+    int n, i;
+    ogs_ngap_message_t pdu;
+
+    /* the notification */
+    ogs_list_init(&infos);
+    ogs_list_add(&infos, amf_mbs_n2_info_create(gnb, OpenAPI_ngap_ie_type_BC_TRA_REQ, request_transfer,
+                sizeof(request_transfer)));
+    request = amf_namf_build_mbs_broadcast_context_status_notify(&ctx, &infos, OpenAPI_operation_status_NULL, false,
+            NULL);
+    CHECK(request != NULL);
+    if (request) {
+        CHECK(strstr(body_of(request), "\"ngapIeType\":\"BC_TRA_REQ\"") != NULL);
+        CHECK(strstr(body_of(request), "\"gNBValue\":\"000400\"") != NULL);
+        ogs_sbi_request_free(request);
+    }
+    amf_mbs_n2_info_remove_all(&infos);
+
+    /* the answer */
+    rsp_transfer = ogs_pkbuf_alloc(NULL, 2);
+    ogs_pkbuf_put_data(rsp_transfer, "\x0a\x0b", 2);
+    fail_transfer = ngap_build_broadcast_transport_failure_transfer(&ctx.tmgi, NGAP_Cause_PR_radioNetwork,
+            NGAP_CauseRadioNetwork_unspecified);
+    garbage = ogs_pkbuf_alloc(NULL, 3);
+    ogs_pkbuf_put_data(garbage, "\xff\xff\xff", 3);
+
+    /* the entries are set up directly: they name the NG-RAN node by its GlobalRanNodeId, whichever member name the
+     * JSON of the model gives it */
+    memset(&message, 0, sizeof(message));
+    {
+        OpenAPI_context_status_notification_response_t *rsp = NULL;
+        OpenAPI_list_t *entries = OpenAPI_list_create();
+        static const struct { OpenAPI_ngap_ie_type_e type; const char *content_id; const char *gnb_value; } e[] = {
+            { OpenAPI_ngap_ie_type_BC_TRA_RSP, "rsp", "000400" },
+            { OpenAPI_ngap_ie_type_BC_TRA_FAIL, "fail", NULL },
+            { OpenAPI_ngap_ie_type_BC_TRA_RSP, "rsp", "000800" },
+            { OpenAPI_ngap_ie_type_BC_TRA_FAIL, "garbage", NULL },
+            { OpenAPI_ngap_ie_type_BC_TRA_RSP, "absent", NULL },
+            { OpenAPI_ngap_ie_type_MBS_SES_RSP, "rsp", NULL },
+        };
+
+        for (i = 0; i < (int)OGS_ARRAY_SIZE(e); i++) {
+            OpenAPI_global_ran_node_id_t *ran = NULL;
+
+            if (e[i].gnb_value) {
+                char text[200];
+
+                snprintf(text, sizeof(text), "{\"plmnId\":{\"mcc\":\"999\",\"mnc\":\"70\"},"
+                        "\"gNbId\":{\"bitLength\":22,\"gNBValue\":\"%s\"}}", e[i].gnb_value);
+                json = cJSON_Parse(text);
+                ran = OpenAPI_global_ran_node_id_parseFromJSON(json);
+                cJSON_Delete(json);
+            }
+            OpenAPI_list_add(entries, OpenAPI_n2_mbs_sm_info_create(e[i].type,
+                        OpenAPI_ref_to_binary_data_create(ogs_strdup((char *)e[i].content_id)), ran));
+        }
+        rsp = OpenAPI_context_status_notification_response_create(
+                amf_namf_build_mbs_session_id(&ctx.tmgi), false, 0, entries);
+        message.ContextStatusNotificationResponse = rsp;
+    }
+    CHECK(message.ContextStatusNotificationResponse != NULL);
+    message.part[0].pkbuf = rsp_transfer;
+    message.part[0].content_id = (char *)"rsp";
+    message.part[1].pkbuf = fail_transfer;
+    message.part[1].content_id = (char *)"fail";
+    message.part[2].pkbuf = garbage;
+    message.part[2].content_id = (char *)"garbage";
+    message.num_of_part = 3;
+
+    memset(out, 0, sizeof(out));
+    n = amf_namf_mbs_transport_answers(gnb, &ctx.tmgi, &message, out, 8);
+    /* the response of this node, and the failure that has no ranId: the entry of another node, the undecodable
+     * failure, the absent part and the container of another type give none */
+    CHECK(n == 2);
+    if (n == 2) {
+        CHECK(decode_pdu(out[0], &pdu) && pdu.present == NGAP_NGAP_PDU_PR_successfulOutcome);
+        ogs_ngap_free(&pdu);
+        CHECK(decode_pdu(out[1], &pdu) && pdu.present == NGAP_NGAP_PDU_PR_unsuccessfulOutcome);
+        if (pdu.present == NGAP_NGAP_PDU_PR_unsuccessfulOutcome) {
+            NGAP_BroadcastSessionTransportFailure_t *failure =
+                &pdu.choice.unsuccessfulOutcome->value.choice.BroadcastSessionTransportFailure;
+
+            /* the Cause is the one of the MB-SMF's Failure Transfer */
+            for (i = 0; i < failure->protocolIEs.list.count; i++) {
+                NGAP_BroadcastSessionTransportFailureIEs_t *ie = failure->protocolIEs.list.array[i];
+
+                if (ie->id == NGAP_ProtocolIE_ID_id_Cause)
+                    CHECK(ie->value.choice.Cause.present == NGAP_Cause_PR_radioNetwork &&
+                            ie->value.choice.Cause.choice.radioNetwork == NGAP_CauseRadioNetwork_unspecified);
+            }
+        }
+        ogs_ngap_free(&pdu);
+    }
+    for (i = 0; i < n; i++)
+        ogs_pkbuf_free(out[i]);
+
+    /* the other node gets its own entry; a bound that is too small leaves the rest out */
+    n = amf_namf_mbs_transport_answers(other, &ctx.tmgi, &message, out, 8);
+    CHECK(n == 2);
+    for (i = 0; i < n; i++)
+        ogs_pkbuf_free(out[i]);
+    n = amf_namf_mbs_transport_answers(gnb, &ctx.tmgi, &message, out, 1);
+    CHECK(n == 1);
+    for (i = 0; i < n; i++)
+        ogs_pkbuf_free(out[i]);
+
+    /* no response content: no answer (the caller then sends the failure) */
+    OpenAPI_context_status_notification_response_free(message.ContextStatusNotificationResponse);
+    message.ContextStatusNotificationResponse = NULL;
+    CHECK(amf_namf_mbs_transport_answers(gnb, &ctx.tmgi, &message, out, 8) == 0);
+
+    ogs_pkbuf_free(rsp_transfer);
+    ogs_pkbuf_free(fail_transfer);
+    ogs_pkbuf_free(garbage);
+    ogs_free(gnb);
+    ogs_free(other);
+}
+
 int main(int argc, const char *argv[])
 {
     ogs_pkbuf_config_t config;
@@ -245,6 +470,7 @@ int main(int argc, const char *argv[])
     ogs_pkbuf_default_create(&config);
     ogs_log_install_domain(&__ogs_sbi_domain, "sbi", OGS_LOG_ERROR);
     ogs_log_install_domain(&__amf_log_domain, "amf", OGS_LOG_ERROR);
+    ogs_log_install_domain(&__ogs_ngap_domain, "ngap", OGS_LOG_ERROR);
     ogs_sbi_message_init(32, 32);
     /* ogs_sbi_build_request() takes the maximum response time of a request from the configuration */
     ogs_local_conf()->time.message.duration = ogs_time_from_sec(10);
@@ -252,6 +478,8 @@ int main(int argc, const char *argv[])
     test_n2_info_list();
     test_n2_info_list_limit();
     test_status_notify();
+    test_transport_messages();
+    test_transport_relay();
 
     ogs_sbi_message_final();
     ogs_pkbuf_default_destroy();

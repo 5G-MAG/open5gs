@@ -4882,6 +4882,65 @@ void ngap_handle_broadcast_session_release_required(
 }
 
 /*
+ * BROADCAST SESSION TRANSPORT REQUEST (TS 38.413 V18.8.0 clause 8.17.5.2): "The NG-RAN node initiates the procedure by
+ * sending a BROADCAST SESSION TRANSPORT REQUEST message to the AMF." The MBS Session ID names the context; the
+ * Broadcast Transport Request Transfer is the MB-SMF's (clause 9.2.16.10: "Containing the Broadcast Transport Request
+ * Transfer IE specified in subclause 9.3.5.15") and goes to it in a ContextStatusNotify
+ * (amf_namf_handle_mbs_broadcast_transport_request()).
+ */
+void ngap_handle_broadcast_session_transport_request(
+        amf_gnb_t *gnb, ogs_ngap_message_t *message)
+{
+    int i;
+
+    NGAP_InitiatingMessage_t *initiatingMessage = NULL;
+    NGAP_BroadcastSessionTransportRequest_t *BroadcastSessionTransportRequest = NULL;
+    NGAP_BroadcastSessionTransportRequestIEs_t *ie = NULL;
+    NGAP_MBS_SessionID_t *MBS_SessionID = NULL;
+    OCTET_STRING_t *transfer = NULL;
+
+    ogs_tmgi_t tmgi;
+
+    ogs_assert(gnb);
+    ogs_assert(gnb->sctp.sock);
+
+    ogs_assert(message);
+    initiatingMessage = message->choice.initiatingMessage;
+    ogs_assert(initiatingMessage);
+
+    BroadcastSessionTransportRequest =
+        &initiatingMessage->value.choice.BroadcastSessionTransportRequest;
+
+    ogs_debug("BROADCAST SESSION TRANSPORT REQUEST");
+
+    for (i = 0; i < BroadcastSessionTransportRequest->protocolIEs.list.count; i++) {
+        ie = BroadcastSessionTransportRequest->protocolIEs.list.array[i];
+        switch (ie->value.present) {
+        case NGAP_BroadcastSessionTransportRequestIEs__value_PR_MBS_SessionID:
+            MBS_SessionID = &ie->value.choice.MBS_SessionID;
+            break;
+        case NGAP_BroadcastSessionTransportRequestIEs__value_PR_OCTET_STRING_CONTAINING_BroadcastTransportRequestTransfer_:
+            transfer = &ie->value.choice.OCTET_STRING_CONTAINING_BroadcastTransportRequestTransfer_;
+            break;
+        default:
+            break;
+        }
+    }
+
+    if (!MBS_SessionID || !transfer) {
+        ogs_error("BROADCAST SESSION TRANSPORT REQUEST: No MBS-SessionID or Broadcast Transport Request Transfer IE");
+        return;
+    }
+
+    memset(&tmgi, 0, sizeof(tmgi));
+    ogs_ngap_ASN_to_5gs_tmgi(&MBS_SessionID->tMGI, &tmgi);
+
+    amf_namf_handle_mbs_broadcast_transport_request(gnb, &tmgi, transfer->buf, transfer->size);
+
+    ogs_free(tmgi.mbs_service_id);
+}
+
+/*
  * BROADCAST SESSION RELEASE RESPONSE: the NG-RAN has released the session. The deferred ContextRelease response
  * is sent on the first one (TS 23.247 V18.8.0 cl. 7.3.2 step 7 then step 8); the answer of an NG-RAN to a release it
  * asked for (BROADCAST SESSION RELEASE REQUIRED) is reported to the MB-SMF instead.

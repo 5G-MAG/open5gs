@@ -212,6 +212,36 @@ static OpenAPI_global_ran_node_id_t *build_ran_id(amf_mbs_n2_info_t *n2_info)
             n2_info->ran_gnb_id_buf, sizeof(n2_info->ran_gnb_id_buf), n2_info->ran_gnb_id_bit_length);
 }
 
+bool amf_namf_ran_id_is_gnb(const amf_gnb_t *gnb, OpenAPI_global_ran_node_id_t *ran_id)
+{
+    OpenAPI_global_ran_node_id_t *mine = NULL;
+    cJSON *a = NULL, *b = NULL;
+    char *text_a = NULL, *text_b = NULL;
+    bool same = false;
+
+    ogs_assert(gnb);
+
+    if (!ran_id)
+        return false;
+    mine = build_global_ran_node_id(&gnb->plmn_id, gnb->gnb_id_buf, sizeof(gnb->gnb_id_buf), gnb->gnb_id_bit_length);
+    if (!mine)
+        return false;
+
+    a = OpenAPI_global_ran_node_id_convertToJSON(mine);
+    b = OpenAPI_global_ran_node_id_convertToJSON(ran_id);
+    if (a && b) {
+        text_a = cJSON_PrintUnformatted(a);
+        text_b = cJSON_PrintUnformatted(b);
+        same = text_a && text_b && strcmp(text_a, text_b) == 0;
+    }
+    if (text_a) ogs_free(text_a);
+    if (text_b) ogs_free(text_b);
+    if (a) cJSON_Delete(a);
+    if (b) cJSON_Delete(b);
+    OpenAPI_global_ran_node_id_free(mine);
+    return same;
+}
+
 /*
  * Builds the n2MbsSmInfoList of a ContextCreate or ContextUpdate response or of a ContextStatusNotify request from
  * \p n2_info_list (amf_mbs_n2_info_t items) and adds each transfer IE to \p message as a binary part. At most

@@ -39,6 +39,9 @@ ogs_sbi_request_t *amf_namf_build_mbs_broadcast_context_status_notify(
         amf_mbs_context_t *mbs_context, ogs_list_t *n2_info_list, OpenAPI_operation_status_e operation_status,
         bool released_ind, const amf_gnb_t *required_release_gnb);
 
+/* Whether the n2MbsSmInfo entry's ranId \p ran_id names \p gnb (the same GlobalRanNodeId the AMF builds for it) */
+bool amf_namf_ran_id_is_gnb(const amf_gnb_t *gnb, OpenAPI_global_ran_node_id_t *ran_id);
+
 /* n2MbsSmInfoList of a Namf_MBSBroadcast response or notification, with its binary parts added to \p message */
 OpenAPI_list_t *amf_namf_build_n2_mbs_sm_info_list(ogs_sbi_message_t *message, ogs_list_t *n2_info_list);
 void amf_namf_free_n2_mbs_sm_info_list(OpenAPI_list_t *list);
