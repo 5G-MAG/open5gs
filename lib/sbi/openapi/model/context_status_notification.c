@@ -152,7 +152,9 @@ cJSON *OpenAPI_context_status_notification_convertToJSON(OpenAPI_context_status_
     }
 
     if (context_status_notification->released_ind != OpenAPI_context_status_notification_RELEASEDIND_NULL) {
-    if (cJSON_AddStringToObject(item, "releasedInd", OpenAPI_released_indcontext_status_notification_ToString(context_status_notification->released_ind)) == NULL) {
+    /* TS 29.518 V18.14.0 TS29518_Namf_MBSBroadcast.yaml: releasedInd is "type: boolean", "enum: - true": the
+     * JSON boolean true, not the string "true" the generator produced for the enum. */
+    if (cJSON_AddBoolToObject(item, "releasedInd", 1) == NULL) {
         ogs_error("OpenAPI_context_status_notification_convertToJSON() failed [released_ind]");
         goto end;
     }
@@ -255,11 +257,12 @@ OpenAPI_context_status_notification_t *OpenAPI_context_status_notification_parse
 
     released_ind = cJSON_GetObjectItemCaseSensitive(context_status_notificationJSON, "releasedInd");
     if (released_ind) {
-    if (!cJSON_IsString(released_ind)) {
+    /* a JSON boolean, which can only be true (see convertToJSON) */
+    if (!cJSON_IsTrue(released_ind)) {
         ogs_error("OpenAPI_context_status_notification_parseFromJSON() failed [released_ind]");
         goto end;
     }
-    released_indVariable = OpenAPI_released_indcontext_status_notification_FromString(released_ind->valuestring);
+    released_indVariable = OpenAPI_context_status_notification_RELEASEDIND__true;
     }
 
     context_status_notification_local_var = OpenAPI_context_status_notification_create (

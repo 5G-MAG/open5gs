@@ -2810,6 +2810,27 @@ static int parse_json(ogs_sbi_message_t *message,
                 END
                 break;
 
+            CASE(OGS_SBI_RESOURCE_NAME_MBS_CONTEXT_STATUS_NOTIFY)
+                SWITCH(message->h.method)
+                CASE(OGS_SBI_HTTP_METHOD_POST)
+                    /* The notification of TS 29.518 V18.14.0 cl. 5.6.2.5 (ContextStatusNotify), sent by the AMF to
+                     * the notifyUri of the MB-SMF; a response carries no body to parse here. */
+                    if (message->res_status == 0) {
+                        message->ContextStatusNotification =
+                            OpenAPI_context_status_notification_parseFromJSON(item);
+                        if (!message->ContextStatusNotification) {
+                            rv = OGS_ERROR;
+                            ogs_error("JSON parse error");
+                        }
+                    }
+                    break;
+
+                DEFAULT
+                    rv = OGS_ERROR;
+                    ogs_error("Unknown method [%s]", message->h.method);
+                END
+                break;
+
             DEFAULT
                 rv = OGS_ERROR;
                 ogs_error("Unknown resource name [%s]",
