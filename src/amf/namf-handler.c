@@ -2576,6 +2576,19 @@ int amf_namf_handle_mbs_broadcast_context_update(
 
     n2msgreq = ngap_build_broadcast_session_modification_request(mbs_context, has_service_area, n2mbssmbuf);
 
+        // As in ContextCreate: a request that cannot be built, or that no gNB accepts, is answered here, since
+        // no NG-RAN response will ever complete the deferred one. No clause names the status for this;
+        // UNSPECIFIED_NF_FAILURE is TS 29.500 Table 5.2.7.2-1's generic 500 cause. The context itself stays: an
+        // update that failed does not end the session.
+    if (!n2msgreq) {
+        ogs_error("MBS Broadcast ContextUpdate: the Broadcast Session Modification Request could not be built");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+            recvmsg, "Internal Server Error",
+            "Requested MBS Broadcast ContextUpdate failed, no NG-RAN reachable", "UNSPECIFIED_NF_FAILURE");
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
         // Each gNB gets its own copy, for the ownership reason given in ContextCreate's send loop.
     ogs_list_for_each(&amf_self()->gnb_list, gnb) {
         ogs_pkbuf_t *n2msgreq_copy = ogs_pkbuf_copy(n2msgreq);
@@ -2593,6 +2606,15 @@ int amf_namf_handle_mbs_broadcast_context_update(
         }
     }
     ogs_pkbuf_free(n2msgreq);
+
+    if (mbs_context->gnb_request_count == 0) {
+        ogs_error("MBS Broadcast ContextUpdate: the Broadcast Session Modification Request reached no NG-RAN");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+            recvmsg, "Internal Server Error",
+            "Requested MBS Broadcast ContextUpdate failed, no NG-RAN reachable", "UNSPECIFIED_NF_FAILURE");
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
 
     // Defer the SBI response the same way ContextCreate does -- cl.5.6.2.3 step 2a/2b: "On success, '200
     // OK' shall be returned if additional information needs to be returned ... '204 No Content' shall be
