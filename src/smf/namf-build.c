@@ -475,8 +475,10 @@ ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_update_request(
     OpenAPI_list_t *mbs_service_area_info_list = NULL;
     OpenAPI_n2_mbs_sm_info_t *n2_mbs_sm_info = NULL;
     ogs_pkbuf_t *n2_pkbuf = NULL;
+    OpenAPI_list_t *ran_id_list = NULL;
     int max_response_time = 0;
     bool has_max_response_time;
+    int i;
 
     ogs_debug("Building MBS Broadcast ContextUpdate request");
 
@@ -497,7 +499,7 @@ ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_update_request(
         smf_namf_build_mbs_service_area(mbs_sess, "ContextUpdate", &mbs_service_area, &mbs_service_area_info_list);
 
     /* the N2 container: the information the NG-RANs are to use now */
-    n2_pkbuf = ngap_build_mbs_session_setup_or_modification_request_transfer(mbs_sess);
+    n2_pkbuf = ngap_build_mbs_session_modification_request_transfer(mbs_sess, param->n3mb_path_failure);
     if (n2_pkbuf) {
         n2_mbs_sm_info = OpenAPI_n2_mbs_sm_info_create(OpenAPI_ngap_ie_type_MBS_SES_REQ,
                 OpenAPI_ref_to_binary_data_create(ogs_strdup((char *) OGS_SBI_CONTENT_NGAP_SM_ID)), NULL);
@@ -507,10 +509,27 @@ ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_update_request(
         message.num_of_part++;
     }
 
+    /* ranIdList (table 6.5.6.2.5-1): "This IE may be included when the MBS session update is to be performed only in
+     * a list of specific NG-RAN(s) as specified in clause 8.3.2.3 of TS 23.527." */
+    for (i = 0; i < param->num_ran_ids; i++) {
+        cJSON *json = cJSON_Parse(param->ran_ids[i]);
+        OpenAPI_global_ran_node_id_t *ran = json ? OpenAPI_global_ran_node_id_parseFromJSON(json) : NULL;
+
+        if (json)
+            cJSON_Delete(json);
+        if (!ran) {
+            ogs_error("MBS Broadcast ContextUpdate: NG-RAN ID [%s] cannot be read", param->ran_ids[i]);
+            continue;
+        }
+        if (!ran_id_list)
+            ran_id_list = OpenAPI_list_create();
+        OpenAPI_list_add(ran_id_list, ran);
+    }
+
     has_max_response_time = smf_mbs_max_response_time(&max_response_time);
 
     ContextUpdateReqData = OpenAPI_context_update_req_data_create(mbs_service_area, mbs_service_area_info_list,
-            n2_mbs_sm_info, NULL, OpenAPI_context_update_req_data_NONGAPSIGNALLINGIND_NULL, NULL,
+            n2_mbs_sm_info, ran_id_list, OpenAPI_context_update_req_data_NONGAPSIGNALLINGIND_NULL, NULL,
             has_max_response_time, max_response_time, true, param->n2_info_changed);
     message.ContextUpdateReqData = ContextUpdateReqData;
 

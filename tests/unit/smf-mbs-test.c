@@ -1691,6 +1691,46 @@ static void test_context_update_request(void)
         ogs_sbi_request_free(request);
     }
 
+    /* TS 29.518 V18.14.0 table 6.5.6.2.5-1, ranIdList: "This IE may be included when the MBS session update is to be
+     * performed only in a list of specific NG-RAN(s) as specified in clause 8.3.2.3 of TS 23.527." */
+    {
+        const char *ran_ids[2] = { ran_a_text, ran_b_text };
+
+        param.service_area = false;
+        param.n2_info_changed = true;
+        request = smf_namf_build_mbs_broadcast_context_update_request(mbs_sess, &param);
+        CHECK(request && request->http.content && strstr(request->http.content, "ranIdList") == NULL);
+        if (request) ogs_sbi_request_free(request);
+
+        param.ran_ids = ran_ids;
+        param.num_ran_ids = 2;
+        request = smf_namf_build_mbs_broadcast_context_update_request(mbs_sess, &param);
+        CHECK(request != NULL);
+        if (request && request->http.content) {
+            const char *list = strstr(request->http.content, "\"ranIdList\"");
+
+            CHECK(list != NULL);
+            CHECK(strstr(request->http.content, "\"gNbId\"") != NULL);
+            /* both entries, in order */
+            if (list) {
+                const char *first = strstr(list, "gNbId");
+                const char *second = first ? strstr(first + 5, "gNbId") : NULL;
+
+                CHECK(first && second);
+            }
+        }
+        if (request) ogs_sbi_request_free(request);
+        param.ran_ids = NULL;
+        param.num_ran_ids = 0;
+    }
+
+    /* TS 23.527 V18.6.0 clause 8.5 step 3: the container carries the N3mb path failure indication */
+    param.n3mb_path_failure = true;
+    request = smf_namf_build_mbs_broadcast_context_update_request(mbs_sess, &param);
+    CHECK(request != NULL);
+    if (request) ogs_sbi_request_free(request);
+    param.n3mb_path_failure = false;
+
     /* TS 29.518 cl. 5.6.2.3 steps 2a and 2b: "200 OK" and "204 No Content" are both success */
     {
         ogs_sbi_message_t answer;
