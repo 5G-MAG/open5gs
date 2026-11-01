@@ -1207,7 +1207,7 @@ void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess)
     }
     if (upf_mbs_sess->udp_tunnel) {
         // Add tunnel port back into the free pool
-        if (!self.mbs_udp_tun_ephemeral_port) {
+        if (upf_mbs_sess->udp_tunnel_port_pooled) {
             uint16_t port = ntohs(upf_mbs_sess->udp_tunnel->local_addr.ogs_sin_port);
             size_t i;
             for (i=0; i < self.mbs_udp_tun_num_of_ports && self.mbs_udp_tun_ports[i] != port; i++);

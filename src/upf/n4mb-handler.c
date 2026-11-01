@@ -37,8 +37,83 @@
 
 static void _mbs_tunnel_poll_handler(short when, ogs_socket_t fd, void *data);
 static uint16_t _get_next_udp_tunnel_port(upf_context_t *ctx);
+static int _open_udp_tunnel(upf_mbs_sess_t *mbs_sess, ogs_sockaddr_t *bind_address,
+        uint8_t *cause_value, uint16_t *offending_ie_value);
 static ogs_pkbuf_config_t *_udp_tunnel_make_pool_config(size_t max_buf_size, size_t max_buffers);
 static int get_mtu_for_address(const struct sockaddr *addr, socklen_t addr_len);
+
+/*
+ * Opens the UDP socket that receives the N6mb / Nmb9 tunnel of the session at bind_address (freed here) and
+ * registers it for input. On failure the cause and the Offending IE are set and nothing stays open.
+ */
+static int _open_udp_tunnel(upf_mbs_sess_t *mbs_sess, ogs_sockaddr_t *bind_address,
+        uint8_t *cause_value, uint16_t *offending_ie_value)
+{
+    int mtu;
+    socklen_t name_len;
+    ogs_pkbuf_config_t *config;
+    int family = bind_address->ogs_sa_family;
+
+    *offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
+
+    mbs_sess->udp_tunnel = ogs_sock_socket(family, SOCK_DGRAM, IPPROTO_UDP);
+    // ogs_sock_socket() and ogs_sock_bind() are checked, and a failure fails the whole
+    // session establishment (rule 12). Unchecked, a socket() failure feeds a NULL
+    // mbs_sess->udp_tunnel into ogs_sock_bind() and getsockname(), and a bind() failure
+    // leaves the session apparently established on a tunnel never bound to the address and
+    // port reported to the SMF and CU-UP.
+    if (!mbs_sess->udp_tunnel) {
+        ogs_error("ogs_sock_socket() failed for MBS UDP tunnel");
+        *cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+        ogs_freeaddrinfo(bind_address);
+        return OGS_ERROR;
+    }
+    if (ogs_sock_bind(mbs_sess->udp_tunnel, bind_address) != OGS_OK) {
+        ogs_error("ogs_sock_bind() failed for MBS UDP tunnel");
+        *cause_value = OGS_PFCP_CAUSE_SYSTEM_FAILURE;
+        ogs_freeaddrinfo(bind_address);
+        ogs_sock_destroy(mbs_sess->udp_tunnel);
+        mbs_sess->udp_tunnel = NULL;
+        return OGS_ERROR;
+    }
+    // get the true local address to fill in ephemeral ports.
+    name_len = sizeof(mbs_sess->udp_tunnel->local_addr.ss);
+    getsockname(mbs_sess->udp_tunnel->fd, (struct sockaddr*)&mbs_sess->udp_tunnel->local_addr.ss, &name_len);
+    ogs_freeaddrinfo(bind_address);
+    /* find the MTU of the interface the UDP tunnel is bound to */
+    mtu = get_mtu_for_address((const struct sockaddr*)&mbs_sess->udp_tunnel->local_addr.ss, name_len);
+    mbs_sess->udp_tunnel_mtu = mtu - sizeof(struct ether_header) -
+        (family == AF_INET ? sizeof(struct iphdr) : sizeof(struct ip6_hdr)) - sizeof(struct udphdr);
+    ogs_debug("UDP tunnel using MTU of %i (%i after overheads)", mtu, mbs_sess->udp_tunnel_mtu);
+    config = _udp_tunnel_make_pool_config(mbs_sess->udp_tunnel_mtu, 32); /* 32 buffers */
+    if (!config) {
+        ogs_error("Failed to allocate packet buffers configuration for UDP tunnel");
+        *cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+        return OGS_ERROR;
+    }
+    mbs_sess->udp_tunnel_pkbuf_pool = ogs_pkbuf_pool_create(config);
+    ogs_free(config);
+#if OGS_USE_TALLOC == 0
+    // ogs_pkbuf_pool_create() is checked: a failure would leave udp_tunnel_pkbuf_pool NULL
+    // while the tunnel socket is already bound and about to be registered for POLLIN, so the
+    // first packet received would dereference it.
+    if (!mbs_sess->udp_tunnel_pkbuf_pool) {
+        ogs_error("ogs_pkbuf_pool_create() failed for MBS UDP tunnel");
+        *cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+        ogs_sock_destroy(mbs_sess->udp_tunnel);
+        mbs_sess->udp_tunnel = NULL;
+        return OGS_ERROR;
+    }
+#endif
+    mbs_sess->udp_tunnel_poll = ogs_pollset_add(ogs_app()->pollset, OGS_POLLIN, mbs_sess->udp_tunnel->fd, _mbs_tunnel_poll_handler, mbs_sess);
+    if (!mbs_sess->udp_tunnel_poll) {
+        ogs_error("Failed to add UDP tunnel to pollset");
+        *cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+        return OGS_ERROR;
+    }
+
+    return OGS_OK;
+}
 
 /*
  * Checks that the mandatory IEs of an N4mb Session Establishment Request are present. On a failure the
@@ -83,6 +158,32 @@ bool upf_n4mb_check_session_establishment_request(
                 break;
             }
         }
+    }
+
+    if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED &&
+            req->create_traffic_endpoint.local_ingress_tunnel.presence) {
+        ogs_pfcp_local_ingress_tunnel_t *lit = req->create_traffic_endpoint.local_ingress_tunnel.data;
+        uint16_t len = req->create_traffic_endpoint.local_ingress_tunnel.len;
+        uint16_t want = 0;
+
+        if (lit == NULL || len < 1) {
+            cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
+        } else if (lit->ipv4 == lit->ipv6) {
+            /* TS 29.244 cl. 8.2.209: "Only one of the V4 and V6 flags shall be set to "1"." */
+            ogs_error("Local Ingress Tunnel with V4=%d and V6=%d", lit->ipv4, lit->ipv6);
+            cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+        } else {
+            /* With CH set the port and address fields are not present, else the field of the set flag is. */
+            want = 1;
+            if (!lit->choose)
+                want += 2 + (lit->ipv4 ? OGS_IPV4_LEN : OGS_IPV6_LEN);
+            if (len != want) {
+                ogs_error("Local Ingress Tunnel length %u, expected %u", len, want);
+                cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
+            }
+        }
+        if (cause_value != OGS_PFCP_CAUSE_REQUEST_ACCEPTED)
+            offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
     }
 
     if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED &&
@@ -200,159 +301,63 @@ void upf_n4mb_handle_session_establishment_request(
         goto cleanup;
 
     if (req->create_traffic_endpoint.presence) {
+        if (req->create_traffic_endpoint.traffic_endpoint_id.presence &&
+                req->create_traffic_endpoint.traffic_endpoint_id.len >= 1) {
+            mbs_sess->traffic_endpoint_id_presence = true;
+            mbs_sess->traffic_endpoint_id = *(uint8_t *)req->create_traffic_endpoint.traffic_endpoint_id.data;
+        }
+
         if (req->create_traffic_endpoint.local_ingress_tunnel.presence) {
             ogs_pfcp_local_ingress_tunnel_t *lit = (ogs_pfcp_local_ingress_tunnel_t*)req->create_traffic_endpoint.local_ingress_tunnel.data;
+            ogs_sockaddr_t *bind_address = NULL;
+            upf_context_t *ctx = upf_self();
+
             if (lit->choose) {
-                int mtu = 1500;
-                if (lit->ipv4) {
-                    // Create IPv4 UDP tunnel endpoint and return the address & port in the session response
-                    ogs_sockaddr_t *bind_address = NULL;
-                    upf_context_t *ctx = upf_self();
-                    ogs_copyaddrinfo(&bind_address, ctx->mbs_udp_tun_base_addr);
-                                        // _get_next_udp_tunnel_port() returns a host-byte-order port, straight from the parsed
-                                        // YAML config, while ogs_sin_port is read by the kernel in network byte order; assigning
-                                        // it unconverted binds the byte-swapped port on a little-endian host.
-                    bind_address->ogs_sin_port = htons(_get_next_udp_tunnel_port(ctx));
-                    if (bind_address->ogs_sin_port == 0xffff) {
-                        // Error already reported, abort MBS Session
-                        cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
-                        offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
+                /* The UP function assigns the address and the UDP port: the configured base address, and the
+                 * next port of the configured pool (or an ephemeral one). */
+                ogs_copyaddrinfo(&bind_address, ctx->mbs_udp_tun_base_addr);
+                if (!bind_address ||
+                        bind_address->ogs_sa_family != (lit->ipv4 ? AF_INET : AF_INET6)) {
+                    ogs_error("The MBS UDP tunnel base address is not of the requested address family");
+                    cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+                    offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
+                    if (bind_address)
                         ogs_freeaddrinfo(bind_address);
-                        goto cleanup;
-                    }
-                    mbs_sess->udp_tunnel = ogs_sock_socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-                                        // ogs_sock_socket() and ogs_sock_bind() are checked, and a failure fails the whole
-                                        // session establishment (rule 12). Unchecked, a socket() failure feeds a NULL
-                                        // mbs_sess->udp_tunnel into ogs_sock_bind() and getsockname(), and a bind() failure
-                                        // leaves the session apparently established on a tunnel never bound to the address and
-                                        // port reported to the SMF and CU-UP.
-                    if (!mbs_sess->udp_tunnel) {
-                        ogs_error("ogs_sock_socket() failed for MBS UDP tunnel (IPv4)");
-                        cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
-                        offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
-                        ogs_freeaddrinfo(bind_address);
-                        goto cleanup;
-                    }
-                    if (ogs_sock_bind(mbs_sess->udp_tunnel, bind_address) != OGS_OK) {
-                        ogs_error("ogs_sock_bind() failed for MBS UDP tunnel (IPv4)");
-                        cause_value = OGS_PFCP_CAUSE_SYSTEM_FAILURE;
-                        offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
-                        ogs_freeaddrinfo(bind_address);
-                        ogs_sock_destroy(mbs_sess->udp_tunnel);
-                        mbs_sess->udp_tunnel = NULL;
-                        goto cleanup;
-                    }
-                    // get the true local address to fill in ephemeral ports.
-                    socklen_t name_len = sizeof(mbs_sess->udp_tunnel->local_addr.ss);
-                    getsockname(mbs_sess->udp_tunnel->fd, (struct sockaddr*)&mbs_sess->udp_tunnel->local_addr.ss, &name_len);
-                    ogs_freeaddrinfo(bind_address);
-                    /* find the MTU of the interface the UDP tunnel is bound to */
-                    mtu = get_mtu_for_address((const struct sockaddr*)&mbs_sess->udp_tunnel->local_addr.ss, name_len);
-                    mbs_sess->udp_tunnel_mtu = mtu - sizeof(struct ether_header) - sizeof(struct iphdr) - sizeof(struct udphdr);
-                    ogs_debug("UDP tunnel using MTU of %i (%i after overheads)", mtu, mbs_sess->udp_tunnel_mtu);
-                    ogs_pkbuf_config_t *config = _udp_tunnel_make_pool_config(mbs_sess->udp_tunnel_mtu, 32); /* 32 buffers */
-                    if (!config) {
-                        ogs_error("Failed to allocate packet buffers configuration for UDP tunnel");
-                        cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
-                        offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
-                        goto cleanup;
-                    }
-                    mbs_sess->udp_tunnel_pkbuf_pool = ogs_pkbuf_pool_create(config);
-                    ogs_free(config);
-#if OGS_USE_TALLOC == 0
-                                        // ogs_pkbuf_pool_create() is checked: a failure would leave udp_tunnel_pkbuf_pool NULL
-                                        // while the tunnel socket is already bound and about to be registered for POLLIN, so the
-                                        // first packet received would dereference it.
-                    if (!mbs_sess->udp_tunnel_pkbuf_pool) {
-                        ogs_error("ogs_pkbuf_pool_create() failed for MBS UDP tunnel (IPv4)");
-                        cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
-                        offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
-                        ogs_sock_destroy(mbs_sess->udp_tunnel);
-                        mbs_sess->udp_tunnel = NULL;
-                        goto cleanup;
-                    }
-#endif
-                    mbs_sess->udp_tunnel_poll = ogs_pollset_add(ogs_app()->pollset, OGS_POLLIN, mbs_sess->udp_tunnel->fd, _mbs_tunnel_poll_handler, mbs_sess);
-                    if (!mbs_sess->udp_tunnel_poll) {
-                        ogs_error("Failed to add UDP tunnel to pollset");
-                        cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
-                        offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
-                        goto cleanup;
-                    }
-                } else if (lit->ipv6) {
-                    // Create IPv6 UDP tunnel endpoint and return the address & port in the session response
-                    ogs_sockaddr_t *bind_address = NULL;
-                    upf_context_t *ctx = upf_self();
-                    ogs_copyaddrinfo(&bind_address, ctx->mbs_udp_tun_base_addr);
-                                        // Host to network byte order, for the reason given in the ipv4 branch above.
+                    goto cleanup;
+                }
+                // _get_next_udp_tunnel_port() returns a host-byte-order port, straight from the parsed
+                // YAML config, while ogs_sin_port is read by the kernel in network byte order; assigning
+                // it unconverted binds the byte-swapped port on a little-endian host.
+                if (lit->ipv4)
+                    bind_address->sin.sin_port = htons(_get_next_udp_tunnel_port(ctx));
+                else
                     bind_address->sin6.sin6_port = htons(_get_next_udp_tunnel_port(ctx));
-                    if (bind_address->sin6.sin6_port == 0xffff) {
-                        // Error already reported, abort MBS Session
-                        cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
-                        offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
-                        ogs_freeaddrinfo(bind_address);
-                        goto cleanup;
-                    }
-                    mbs_sess->udp_tunnel = ogs_sock_socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
-                                        // socket() and bind() are checked, for the reason given in the ipv4 branch above.
-                    if (!mbs_sess->udp_tunnel) {
-                        ogs_error("ogs_sock_socket() failed for MBS UDP tunnel (IPv6)");
-                        cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
-                        offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
-                        ogs_freeaddrinfo(bind_address);
-                        goto cleanup;
-                    }
-                    if (ogs_sock_bind(mbs_sess->udp_tunnel, bind_address) != OGS_OK) {
-                        ogs_error("ogs_sock_bind() failed for MBS UDP tunnel (IPv6)");
-                        cause_value = OGS_PFCP_CAUSE_SYSTEM_FAILURE;
-                        offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
-                        ogs_freeaddrinfo(bind_address);
-                        ogs_sock_destroy(mbs_sess->udp_tunnel);
-                        mbs_sess->udp_tunnel = NULL;
-                        goto cleanup;
-                    }
-                    // get the true local address to fill in ephemeral ports.
-                    socklen_t name_len = sizeof(mbs_sess->udp_tunnel->local_addr.ss);
-                    getsockname(mbs_sess->udp_tunnel->fd, (struct sockaddr*)&mbs_sess->udp_tunnel->local_addr.ss, &name_len);
+                if (bind_address->ogs_sin_port == 0xffff) {
+                    // Error already reported, abort MBS Session
+                    cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+                    offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
                     ogs_freeaddrinfo(bind_address);
-                    /* find the MTU of the interface the UDP tunnel is bound to */
-                    mtu = get_mtu_for_address((const struct sockaddr*)&mbs_sess->udp_tunnel->local_addr.ss, name_len);
-                    mbs_sess->udp_tunnel_mtu = mtu - sizeof(struct ether_header) - sizeof(struct ip6_hdr) - sizeof(struct udphdr);
-                    ogs_debug("UDP tunnel using MTU of %i (%i after overheads)", mtu, mbs_sess->udp_tunnel_mtu);
-                    ogs_pkbuf_config_t *config = _udp_tunnel_make_pool_config(mbs_sess->udp_tunnel_mtu, 32); /* 32 buffers */
-                    if (!config) {
-                        ogs_error("Failed to allocate packet buffers configuration for UDP tunnel");
-                        cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
-                        offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
-                        goto cleanup;
-                    }
-                    mbs_sess->udp_tunnel_pkbuf_pool = ogs_pkbuf_pool_create(config);
-                    ogs_free(config);
-                                        // The pool creation is checked, for the reason given in the ipv4 branch above.
-                    if (!mbs_sess->udp_tunnel_pkbuf_pool) {
-                        ogs_error("ogs_pkbuf_pool_create() failed for MBS UDP tunnel (IPv6)");
-                        cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
-                        offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
-                        ogs_sock_destroy(mbs_sess->udp_tunnel);
-                        mbs_sess->udp_tunnel = NULL;
-                        goto cleanup;
-                    }
-                    mbs_sess->udp_tunnel_poll = ogs_pollset_add(ogs_app()->pollset, OGS_POLLIN, mbs_sess->udp_tunnel->fd, _mbs_tunnel_poll_handler, mbs_sess);
-                    if (!mbs_sess->udp_tunnel_poll) {
-                        ogs_error("Failed to add UDP tunnel to pollset");
-                        cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
-                        offending_ie_value = OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE;
-                        goto cleanup;
-                    }
+                    goto cleanup;
                 }
+                mbs_sess->udp_tunnel_port_pooled = !ctx->mbs_udp_tun_ephemeral_port;
             } else {
+                /* The CP function gave the address and the UDP port of the tunnel (TS 29.244 cl. 8.2.209: with the
+                 * CH bit clear the address field of the V4 or V6 flag is present): the tunnel is opened there. */
+                bind_address = ogs_calloc(1, sizeof(*bind_address));
+                ogs_assert(bind_address);
                 if (lit->ipv4) {
-                    // TODO: Open IPv4 UDP tunnel endpoint at the address and port requested
-                }
-                if (lit->ipv6) {
-                    // TODO: Open IPv6 UDP tunnel endpoint at the address and port requested
+                    bind_address->sin.sin_family = AF_INET;
+                    bind_address->sin.sin_port = lit->port;     /* already network order */
+                    bind_address->sin.sin_addr.s_addr = lit->addr;
+                } else {
+                    bind_address->sin6.sin6_family = AF_INET6;
+                    bind_address->sin6.sin6_port = lit->port;
+                    memcpy(&bind_address->sin6.sin6_addr, lit->addr6, OGS_IPV6_LEN);
                 }
             }
+
+            if (_open_udp_tunnel(mbs_sess, bind_address, &cause_value, &offending_ie_value) != OGS_OK)
+                goto cleanup;
         }
     }
 

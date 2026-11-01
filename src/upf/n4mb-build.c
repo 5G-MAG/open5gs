@@ -78,6 +78,12 @@ ogs_pkbuf_t *upf_n4mb_build_session_establishment_response(uint8_t type,
     if (mbs_sess->udp_tunnel) {
 	if (ogs_pfcp_sockaddr_to_local_ingress_tunnel(&mbs_sess->udp_tunnel->local_addr, &local_ingress_tunnel, &len) == OGS_OK) {
             rsp->created_traffic_endpoint.presence = 1;
+            if (mbs_sess->traffic_endpoint_id_presence) {
+                /* Traffic Endpoint ID (M in the Created Traffic Endpoint): the one the CP function gave. */
+                rsp->created_traffic_endpoint.traffic_endpoint_id.presence = 1;
+                rsp->created_traffic_endpoint.traffic_endpoint_id.data = &mbs_sess->traffic_endpoint_id;
+                rsp->created_traffic_endpoint.traffic_endpoint_id.len = sizeof(mbs_sess->traffic_endpoint_id);
+            }
             rsp->created_traffic_endpoint.local_ingress_tunnel.presence = 1;
 	    rsp->created_traffic_endpoint.local_ingress_tunnel.data = &local_ingress_tunnel;
             rsp->created_traffic_endpoint.local_ingress_tunnel.len = len;

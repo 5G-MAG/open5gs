@@ -60,6 +60,13 @@ class Upf:
         self.dir = tempfile.mkdtemp(prefix='mbupf-test-')
         self.cfg = os.path.join(self.dir, 'upf.yaml')
         self.log = os.path.join(self.dir, 'upf.log')
+        self.write_config('0')
+        self.proc = None
+        self.sock = None
+        self.seq = 100
+        self.start()
+
+    def write_config(self, port_yaml, extra_upf=''):
         open(self.cfg, 'w').write("""logger:
   level: debug
   file:
@@ -79,11 +86,12 @@ upf:
   mbs:
     udptunnel:
       address: 127.0.0.31
-      port: 0
-""" % self.log)
-        self.proc = None
-        self.sock = None
-        self.seq = 100
+      port: %s
+%s""" % (self.log, port_yaml, extra_upf))
+
+    def restart(self, port_yaml='0', extra_upf=''):
+        self.stop()
+        self.write_config(port_yaml, extra_upf)
         self.start()
 
     def start(self):
@@ -383,6 +391,105 @@ def t_U03_2_pdr_without_precedence():
     assert r and cause(r) == CAUSE_MANDATORY_MISSING, 'cause %s' % (cause(r) if r else None)
     assert offending(r) == T_PRECEDENCE, 'offending IE %s' % offending(r)
     accepted_and_deleted(U.establish(good(cp_seid=0x4002)), 'after the rejection')
+
+
+def with_te(ies, *te_ies):
+    return replace_ie(ies, T_CREATE_TE, ie(T_CREATE_TE, list(te_ies)))
+
+
+def created_te(r):
+    v = find(r, T_CREATED_TE)
+    return dict(parse_ies(v)) if v is not None else None
+
+
+@test
+def t_U10_4_V4_and_V6_together():
+    r = U.establish(with_te(good(cp_seid=0x5001), ie(T_LIT, b'\x07')))
+    assert r and cause(r) == CAUSE_MANDATORY_INCORRECT, 'cause %s' % (cause(r) if r else None)
+    assert offending(r) == T_LIT, 'offending IE %s' % offending(r)
+    r = U.establish(with_te(good(cp_seid=0x5002), ie(T_LIT, b'\x03' + struct.pack('>H', 4000) + bytes(4) + bytes(16))))
+    assert r and cause(r) == CAUSE_MANDATORY_INCORRECT, 'CH clear: cause %s' % (cause(r) if r else None)
+    accepted_and_deleted(U.establish(good(cp_seid=0x5003)), 'after the rejections')
+
+
+@test
+def t_U10_5_neither_V4_nor_V6():
+    for name, val in (('CH only', b'\x04'), ('nothing', b'\x00')):
+        r = U.establish(with_te(good(cp_seid=0x5011), ie(T_LIT, val)))
+        assert r and cause(r) == CAUSE_MANDATORY_INCORRECT, '%s: cause %s' % (name, cause(r) if r else None)
+        assert offending(r) == T_LIT, '%s: offending IE %s' % (name, offending(r))
+    r = U.establish(with_te(good(cp_seid=0x5012), ie(T_LIT, b'\x05\x00\x00')))
+    assert r and cause(r) == CAUSE_INVALID_LENGTH, 'CH with an address field: cause %s' % (cause(r) if r else None)
+    r = U.establish(with_te(good(cp_seid=0x5013), ie(T_LIT, b'\x01\x0f\xa0\x7f')))
+    assert r and cause(r) == CAUSE_INVALID_LENGTH, 'short address: cause %s' % (cause(r) if r else None)
+    r = U.establish(with_te(good(cp_seid=0x5014), ie(T_LIT, b'')))
+    assert r and cause(r) == CAUSE_INVALID_LENGTH, 'empty: cause %s' % (cause(r) if r else None)
+    accepted_and_deleted(U.establish(good(cp_seid=0x5015)), 'after the rejections')
+
+
+@test
+def t_U10_6_cp_gives_address_and_port():
+    lit = ie(T_LIT, b'\x01' + struct.pack('>H', 39123) + socket.inet_aton('127.0.0.31'))
+    r = U.establish(with_te(good(cp_seid=0x5021), ie(T_TE_ID, b'\x01'), lit))
+    s = accepted(r, 'CH=0 IPv4')
+    te = created_te(r)
+    assert te and T_LIT in te, 'no Created Traffic Endpoint with a Local Ingress Tunnel'
+    assert te[T_LIT] == b'\x01' + struct.pack('>H', 39123) + socket.inet_aton('127.0.0.31'), te[T_LIT].hex()
+    # the second session asking for the same address and port cannot be given it
+    r2 = U.establish(with_te(good(cp_seid=0x5022), ie(T_TE_ID, b'\x01'), lit))
+    assert r2 and cause(r2) != CAUSE_ACCEPTED, 'the same address and port was given twice'
+    assert offending(r2) == T_LIT, 'offending IE %s' % offending(r2)
+    d = U.delete(s)
+    assert cause(d) == CAUSE_ACCEPTED
+    # released with the session: it can be asked for again
+    accepted_and_deleted(U.establish(with_te(good(cp_seid=0x5023), ie(T_TE_ID, b'\x01'), lit)), 'after the delete')
+    lit6 = ie(T_LIT, b'\x02' + struct.pack('>H', 39124) + socket.inet_pton(socket.AF_INET6, '::1'))
+    r = U.establish(with_te(good(cp_seid=0x5024), ie(T_TE_ID, b'\x01'), lit6))
+    s = accepted(r, 'CH=0 IPv6')
+    assert created_te(r)[T_LIT] == lit6[4:], created_te(r)[T_LIT].hex()
+    U.delete(s)
+
+
+@test
+def t_U10_6_choose_still_works_and_family_is_checked():
+    r = U.establish(with_te(good(cp_seid=0x5031), ie(T_TE_ID, b'\x02'), lit_choose()))
+    s = accepted(r, 'CH=1 IPv4')
+    v = created_te(r)[T_LIT]
+    assert v[0] == 0x01 and v[3:7] == socket.inet_aton('127.0.0.31') and len(v) == 7, v.hex()
+    U.delete(s)
+    r = U.establish(with_te(good(cp_seid=0x5032), ie(T_TE_ID, b'\x02'), lit_choose(False, True)))
+    assert r and cause(r) == CAUSE_NO_RESOURCES, 'IPv6 asked from an IPv4 base address: cause %s' % (cause(r) if r else None)
+    assert offending(r) == T_LIT
+
+
+@test
+def t_U10_10_traffic_endpoint_id_in_created_te():
+    r = U.establish(with_te(good(cp_seid=0x5041), ie(T_TE_ID, b'\x2a'), lit_choose()))
+    s = accepted(r, 'with a Traffic Endpoint ID')
+    te = created_te(r)
+    assert te and te.get(T_TE_ID) == b'\x2a', 'Traffic Endpoint ID in Created Traffic Endpoint: %s' % (te.get(T_TE_ID) if te else None)
+    U.delete(s)
+
+
+@test
+def t_U10_6_pool_port_is_returned_once():
+    U.restart('{start: 39200, end: 39201}')
+    try:
+        lit0 = ie(T_LIT, b'\x01' + struct.pack('>H', 39200) + socket.inet_aton('127.0.0.31'))
+        # a port the CP function chose never enters the pool, even when it is a pool port
+        accepted_and_deleted(U.establish(with_te(good(cp_seid=0x5051), lit0)), 'CH=0 on a pool port')
+        a = accepted(U.establish(with_te(good(cp_seid=0x5052), lit_choose())), 'first pool port')
+        b = accepted(U.establish(with_te(good(cp_seid=0x5053), lit_choose())), 'second pool port')
+        r = U.establish(with_te(good(cp_seid=0x5054), lit_choose()))
+        assert r and cause(r) == CAUSE_NO_RESOURCES, 'third: cause %s (pool of two)' % (cause(r) if r else None)
+        U.delete(a)
+        c = accepted(U.establish(with_te(good(cp_seid=0x5055), lit_choose())), 'port after a delete')
+        r = U.establish(with_te(good(cp_seid=0x5056), lit_choose()))
+        assert r and cause(r) == CAUSE_NO_RESOURCES, 'fourth: cause %s' % (cause(r) if r else None)
+        U.delete(b)
+        U.delete(c)
+    finally:
+        U.restart()
 
 
 # E-TESTS-BELOW

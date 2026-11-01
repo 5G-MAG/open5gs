@@ -169,6 +169,9 @@ typedef struct upf_mbs_sess_s {
 
     ogs_sock_t *udp_tunnel;  /* IP encapsulating UDP listening socket (TS 23.247 Figure 8.2-1) */
     ogs_poll_t *udp_tunnel_poll;
+    bool udp_tunnel_port_pooled;  /* the tunnel port came from the configured pool and goes back to it */
+    bool traffic_endpoint_id_presence;  /* the request's Create Traffic Endpoint carried an ID */
+    uint8_t traffic_endpoint_id;
     unsigned int udp_tunnel_mtu;
     ogs_pkbuf_pool_t *udp_tunnel_pkbuf_pool;
 } upf_mbs_sess_t;
