@@ -320,7 +320,7 @@ ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_create_request(
     // ContextCreateReqData schema)
     smf_namf_build_mbs_service_area(mbs_sess, "ContextCreate", &mbs_service_area, &mbs_service_area_info_list);
 
-    // n2MbsSmInfo. randId (added to OpenAPI_n2_mbs_sm_info_t by the schema-collision fix this session --
+    // n2MbsSmInfo. ranId (added to OpenAPI_n2_mbs_sm_info_t by the schema-collision fix this session --
     // see namf-build.c's own account in src/amf/) is NULL here deliberately, not a stopgap: TS 29.518
     // cl.5.6.2.5 only requires it to identify "the NG-RAN node that generated" a container, which only
     // applies to a container carried on a *response* coming from a gNB -- this is the SMF's own outgoing

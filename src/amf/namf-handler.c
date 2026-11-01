@@ -3523,7 +3523,7 @@ int amf_namf_mbs_transport_answers(const amf_gnb_t *gnb, const ogs_tmgi_t *tmgi,
             continue;
         /* TS 29.518 V18.14.0 clause 5.6.2.5: "the MB-SMF shall insert the identifier of the NG-RAN node to which the
          * information in the container relates"; an entry that names another node is not this node's answer. */
-        if (info->rand_id && !amf_namf_ran_id_is_gnb(gnb, info->rand_id)) {
+        if (info->ran_id && !amf_namf_ran_id_is_gnb(gnb, info->ran_id)) {
             ogs_warn("Broadcast Session Transport: a container of the MB-SMF names another NG-RAN node");
             continue;
         }

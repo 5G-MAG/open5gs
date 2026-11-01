@@ -91,16 +91,16 @@ static void test_n2_info_list(void)
         CHECK(message.part[1].pkbuf->len == 1 && message.part[1].pkbuf->data[0] == 0x0c);
 
         /* the identity of the node that generated it */
-        CHECK(e0->rand_id && e0->rand_id->g_nb_id);
-        if (e0->rand_id && e0->rand_id->g_nb_id) {
-            CHECK(e0->rand_id->g_nb_id->bit_length == 22);
-            CHECK_STR("000400", e0->rand_id->g_nb_id->g_nb_value);
-            CHECK_STR("999", e0->rand_id->plmn_id->mcc);
-            CHECK_STR("70", e0->rand_id->plmn_id->mnc);
+        CHECK(e0->ran_id && e0->ran_id->g_nb_id);
+        if (e0->ran_id && e0->ran_id->g_nb_id) {
+            CHECK(e0->ran_id->g_nb_id->bit_length == 22);
+            CHECK_STR("000400", e0->ran_id->g_nb_id->g_nb_value);
+            CHECK_STR("999", e0->ran_id->plmn_id->mcc);
+            CHECK_STR("70", e0->ran_id->plmn_id->mnc);
         }
-        CHECK(e1->rand_id && e1->rand_id->g_nb_id);
-        if (e1->rand_id && e1->rand_id->g_nb_id)
-            CHECK_STR("000800", e1->rand_id->g_nb_id->g_nb_value);
+        CHECK(e1->ran_id && e1->ran_id->g_nb_id);
+        if (e1->ran_id && e1->ran_id->g_nb_id)
+            CHECK_STR("000800", e1->ran_id->g_nb_id->g_nb_value);
     }
 
     amf_namf_free_n2_mbs_sm_info_list(list);
@@ -108,6 +108,66 @@ static void test_n2_info_list(void)
     CHECK(ogs_list_count(&infos) == 0);
     ogs_free(gnb1);
     ogs_free(gnb2);
+}
+
+/* TS 29.518 V18.14.0 table 6.5.6.2.7-1 (N2MbsSmInfo): "ranId | GlobalRanNodeId | M | 1 | This IE shall indicate the Global
+ * RAN ID of the gNB that generated the N2 MBS Session Management related information, or of the gNB towards which the
+ * N2 MBS Session Management related information is to be sent.", and TS29518_Namf_MBSBroadcast.yaml of that version:
+ * "ranId:" under N2MbsSmInfo, "$ref: 'TS29571_CommonData.yaml#/components/schemas/GlobalRanNodeId'". The member name in
+ * the JSON is ranId (not the randId of the Release 17 schema). */
+static void test_n2_mbs_sm_info_ran_id_key(void)
+{
+    static const uint8_t t1[] = { 0x0a };
+    amf_gnb_t *gnb = make_gnb(0x100, 22);
+    ogs_list_t infos;
+    ogs_sbi_message_t message;
+    OpenAPI_list_t *list;
+    OpenAPI_n2_mbs_sm_info_t *info = NULL;
+    cJSON *json, *back;
+    OpenAPI_n2_mbs_sm_info_t *parsed;
+
+    ogs_list_init(&infos);
+    ogs_list_add(&infos, amf_mbs_n2_info_create(gnb, OpenAPI_ngap_ie_type_MBS_SES_RSP, t1, sizeof(t1)));
+    memset(&message, 0, sizeof(message));
+    list = amf_namf_build_n2_mbs_sm_info_list(&message, &infos);
+    CHECK(list && list->count == 1);
+    if (list && list->count == 1) {
+        info = list->first->data;
+        json = OpenAPI_n2_mbs_sm_info_convertToJSON(info);
+        CHECK(json != NULL);
+        if (json) {
+            back = cJSON_GetObjectItemCaseSensitive(json, "ranId");
+            CHECK(back != NULL);
+            CHECK(cJSON_GetObjectItemCaseSensitive(json, "randId") == NULL);
+            CHECK(back && cJSON_GetObjectItemCaseSensitive(back, "gNbId") != NULL);
+            cJSON_Delete(json);
+        }
+    }
+
+    /* a body with ranId gives the identity; one with the old name gives none */
+    json = cJSON_Parse("{\"ngapIeType\":\"MBS_SES_RSP\",\"ngapData\":{\"contentId\":\"c\"},"
+            "\"ranId\":{\"plmnId\":{\"mcc\":\"999\",\"mnc\":\"70\"},"
+            "\"gNbId\":{\"bitLength\":22,\"gNBValue\":\"000400\"}}}");
+    parsed = OpenAPI_n2_mbs_sm_info_parseFromJSON(json);
+    cJSON_Delete(json);
+    CHECK(parsed && parsed->ran_id && parsed->ran_id->g_nb_id);
+    if (parsed && parsed->ran_id && parsed->ran_id->g_nb_id) {
+        CHECK_STR("000400", parsed->ran_id->g_nb_id->g_nb_value);
+        CHECK(amf_namf_ran_id_is_gnb(gnb, parsed->ran_id));
+    }
+    if (parsed) OpenAPI_n2_mbs_sm_info_free(parsed);
+
+    json = cJSON_Parse("{\"ngapIeType\":\"MBS_SES_RSP\",\"ngapData\":{\"contentId\":\"c\"},"
+            "\"randId\":{\"plmnId\":{\"mcc\":\"999\",\"mnc\":\"70\"},"
+            "\"gNbId\":{\"bitLength\":22,\"gNBValue\":\"000400\"}}}");
+    parsed = OpenAPI_n2_mbs_sm_info_parseFromJSON(json);
+    cJSON_Delete(json);
+    CHECK(parsed && parsed->ran_id == NULL);
+    if (parsed) OpenAPI_n2_mbs_sm_info_free(parsed);
+
+    amf_namf_free_n2_mbs_sm_info_list(list);
+    amf_mbs_n2_info_remove_all(&infos);
+    ogs_free(gnb);
 }
 
 /* A message has at most OGS_SBI_MAX_NUM_OF_PART binary parts: the rest of the containers are not carried. */
@@ -476,6 +536,7 @@ int main(int argc, const char *argv[])
     ogs_local_conf()->time.message.duration = ogs_time_from_sec(10);
 
     test_n2_info_list();
+    test_n2_mbs_sm_info_ran_id_key();
     test_n2_info_list_limit();
     test_status_notify();
     test_transport_messages();

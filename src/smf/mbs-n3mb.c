@@ -266,7 +266,7 @@ int smf_mbs_sess_take_amf_answer(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf,
 
         if (!info)
             continue;
-        ran_id = smf_mbs_ran_id_text(info->rand_id);
+        ran_id = smf_mbs_ran_id_text(info->ran_id);
         if (info->ngap_data && info->ngap_data->content_id)
             pkbuf = ogs_sbi_find_part_by_content_id(recvmsg, info->ngap_data->content_id);
 
@@ -411,7 +411,7 @@ int smf_mbs_sess_answer_transport_requests(smf_mbs_sess_t *mbs_sess, OpenAPI_lis
         if (!info || info->ngap_ie_type != OpenAPI_ngap_ie_type_BC_TRA_REQ)
             continue;
 
-        ran_id = smf_mbs_ran_id_text(info->rand_id);
+        ran_id = smf_mbs_ran_id_text(info->ran_id);
         memset(&transfer, 0, sizeof(transfer));
         memset(&transfer_tmgi, 0, sizeof(transfer_tmgi));
         if (info->ngap_data && info->ngap_data->content_id)
@@ -454,10 +454,10 @@ int smf_mbs_sess_answer_transport_requests(smf_mbs_sess_t *mbs_sess, OpenAPI_lis
             else
                 ogs_debug("NG-RAN [%s] offers no N3mb unicast tunnel in its Broadcast Session Transport Request",
                         ran_id);
-            transport_answer_add(answers, &count, max_answers, info->rand_id,
+            transport_answer_add(answers, &count, max_answers, info->ran_id,
                     ngap_build_broadcast_transport_response_transfer(mbs_sess->tmgi), false);
         } else {
-            transport_answer_add(answers, &count, max_answers, info->rand_id,
+            transport_answer_add(answers, &count, max_answers, info->ran_id,
                     ngap_build_broadcast_transport_failure_transfer(mbs_sess->tmgi, group, cause), true);
         }
 
