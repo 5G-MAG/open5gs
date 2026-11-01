@@ -4224,7 +4224,8 @@ void smf_mbs_sess_select_upf(smf_mbs_sess_t *mbs_sess)
     OGS_SETUP_PFCP_NODE(mbs_sess, ogs_pfcp_self()->pfcp_node);
 }
 
-/* The downlink PDR, FAR and QER of one MBS QoS flow (see below). precedence is the ordinal of the flow. */
+/* The downlink PDR, FAR and QER of one MBS QoS flow (see below). precedence is the ordinal of the flow, from 1: a
+ * Precedence of 0 is not sent (ogs_pfcp_build_create_pdr() leaves it out) and the MB-UPF requires the IE. */
 static void smf_mbs_sess_add_flow_forwarding(smf_mbs_sess_t *mbs_sess, uint8_t qfi, uint32_t precedence)
 {
     ogs_pfcp_pdr_t *dl_pdr = NULL;
@@ -4319,7 +4320,7 @@ static void smf_mbs_sess_add_flow_forwarding(smf_mbs_sess_t *mbs_sess, uint8_t q
 bool smf_mbs_sess_create_mbs_data_forwarding(smf_mbs_sess_t *mbs_sess)
 {
     smf_mbs_qos_flow_t *flow = NULL;
-    uint32_t ordinal = 0;
+    uint32_t ordinal = 1;
 
     ogs_assert(mbs_sess);
 
@@ -4352,7 +4353,7 @@ bool smf_mbs_sess_create_mbs_data_forwarding(smf_mbs_sess_t *mbs_sess)
     // TS 29.244 V18.10.0 cl. 5.34.2.2: "for each MBS QoS flow: a Create PDR ... a Create QER ... a Create FAR".
     // A session whose request carried no QoS requirement (the handler always adds one) has the one flow QFI 1.
     if (ogs_list_empty(&mbs_sess->mbs_qos_flow_list)) {
-        smf_mbs_sess_add_flow_forwarding(mbs_sess, 1, 0);
+        smf_mbs_sess_add_flow_forwarding(mbs_sess, 1, 1);
         return true;
     }
 

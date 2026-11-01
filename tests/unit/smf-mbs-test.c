@@ -854,6 +854,8 @@ static void test_per_flow_user_plane(void)
         /* distinct ids */
         CHECK(req->create_qer[0].qer_id.u32 != req->create_qer[1].qer_id.u32);
         CHECK(req->create_pdr[0].pdr_id.u16 != req->create_pdr[1].pdr_id.u16);
+        /* TS 29.244 Create PDR: Precedence is mandatory, and the MB-UPF refuses a Create PDR without it */
+        CHECK(req->create_pdr[0].precedence.presence && req->create_pdr[1].precedence.presence);
     }
     smf_mbs_sess_release(mbs_sess);
 
