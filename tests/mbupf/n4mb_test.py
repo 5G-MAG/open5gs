@@ -102,8 +102,19 @@ upf:
             self.sock.close()
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(CP)
-        self.sock.settimeout(0.6)
+        self.sock.settimeout(2.0)
         self.associate()
+        self.setup_net()
+
+    def setup_net(self):
+        """Routes for the data path: multicast sent to the UPF's TUN device, N3mb multicast looped on lo."""
+        for cmd in (['ip', 'addr', 'add', '10.46.0.1/16', 'dev', 'ogstunt'],
+                    ['ip', 'addr', 'add', '10.46.0.2/16', 'dev', 'ogstunt'],
+                    ['ip', 'link', 'set', 'ogstunt', 'up'],
+                    ['ip', 'route', 'add', '232.0.0.0/8', 'dev', 'ogstunt'],
+                    ['ip', 'route', 'add', '239.0.0.0/8', 'dev', 'lo'],
+                    ['ip', 'link', 'set', 'lo', 'multicast', 'on']):
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def log_text(self):
         return open(self.log, errors='replace').read()
@@ -133,6 +144,7 @@ upf:
                     self.sock.sendto(msg(2, int.from_bytes(d[4:7], 'big'), ie(96, struct.pack('>I', 3900000000))), addr)
                     continue
                 out.append(d)
+                break  # one response per request
         except socket.timeout:
             pass
         return out
@@ -632,6 +644,121 @@ def t_U10_8_ingress_tunnel_in_the_pdr():
     accepted_and_deleted(U.establish(good(cp_seid=0x8005)), 'after the rejection')
 
 
+def mc_group_of(r):
+    """The N3mb low layer SSM group and the source of the response's Multicast Transport Information."""
+    info = dict(parse_ies(find(r, T_N4MB_INFO)))[T_MC_TRANSPORT]
+    assert info[5] == 0x04, 'distribution address type/length %02x' % info[5]
+    return socket.inet_ntoa(info[6:10])
+
+
+class N3mbListener:
+    """Receives what the UPF sends to the N3mb group."""
+    def __init__(self, group):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind((group, 2152))
+        self.sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
+                             socket.inet_aton(group) + socket.inet_aton('127.0.0.1'))
+        self.sock.settimeout(0.7)
+
+    def packets(self):
+        out = []
+        try:
+            while True:
+                out.append(self.sock.recv(65535))
+        except socket.timeout:
+            pass
+        return out
+
+    def close(self):
+        self.sock.close()
+
+
+def send_multicast(src, dst, port=5000, payload=b'mbs-data'):
+    """Sends a UDP packet to a group through the UPF's TUN device, from the given local source address."""
+    sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sk.bind((src, 0))
+    sk.sendto(payload, (dst, port))
+    sk.close()
+
+
+def inner_payload_seen(packets, payload=b'mbs-data'):
+    return any(payload in p for p in packets)
+
+
+def data_session(cp_seid, dest, src, flags=0x01):
+    r = U.establish(mc_request(cp_seid, dest, src, flags=flags))
+    s = accepted(r, 'session for the data path')
+    return s, mc_group_of(r)
+
+
+@test
+def t_U11_2_source_is_part_of_the_channel():
+    s, group = data_session(0x9001, b'\x02' + V4G, b'\x02' + socket.inet_aton('10.46.0.1'))
+    lst = N3mbListener(group)
+    try:
+        send_multicast('10.46.0.1', '232.1.1.1')
+        assert inner_payload_seen(lst.packets()), 'data from the session source was not forwarded on N3mb'
+        send_multicast('10.46.0.2', '232.1.1.1')
+        assert not inner_payload_seen(lst.packets()), 'data from another source was forwarded on N3mb'
+    finally:
+        lst.close()
+        U.delete(s)
+
+
+@test
+def t_U03_15_absent_source_means_any_source():
+    s, group = data_session(0x9011, b'\x02' + V4G, None)
+    lst = N3mbListener(group)
+    try:
+        send_multicast('10.46.0.1', '232.1.1.1')
+        assert inner_payload_seen(lst.packets()), 'data from the first source was not forwarded'
+        send_multicast('10.46.0.2', '232.1.1.1')
+        assert inner_payload_seen(lst.packets()), 'data from the second source was not forwarded'
+    finally:
+        lst.close()
+        U.delete(s)
+
+
+@test
+def t_U03_14_range_and_any_flags():
+    # R: the group range 232.1.1.1 to 232.1.1.9
+    s, group = data_session(0x9021, b'\x06' + socket.inet_aton('232.1.1.1') + socket.inet_aton('232.1.1.9'), None)
+    lst = N3mbListener(group)
+    try:
+        send_multicast('10.46.0.1', '232.1.1.5')
+        assert inner_payload_seen(lst.packets()), 'group inside the range not forwarded'
+        send_multicast('10.46.0.1', '232.1.1.10')
+        assert not inner_payload_seen(lst.packets()), 'group outside the range forwarded'
+        send_multicast('10.46.0.1', '232.1.1.1')
+        assert inner_payload_seen(lst.packets()), 'first group of the range not forwarded'
+        send_multicast('10.46.0.1', '232.1.1.9')
+        assert inner_payload_seen(lst.packets()), 'last group of the range not forwarded'
+    finally:
+        lst.close()
+        U.delete(s)
+    # A: any group, from one source
+    s, group = data_session(0x9022, b'\x08', b'\x02' + socket.inet_aton('10.46.0.1'))
+    lst = N3mbListener(group)
+    try:
+        send_multicast('10.46.0.1', '232.7.7.7')
+        assert inner_payload_seen(lst.packets()), 'any group, right source: not forwarded'
+        send_multicast('10.46.0.2', '232.7.7.7')
+        assert not inner_payload_seen(lst.packets()), 'any group, other source: forwarded'
+    finally:
+        lst.close()
+        U.delete(s)
+    # a source subnet (mask/prefix length)
+    s, group = data_session(0x9023, b'\x02' + V4G, b'\x06' + socket.inet_aton('10.46.0.0') + b'\x1e')
+    lst = N3mbListener(group)
+    try:
+        send_multicast('10.46.0.2', '232.1.1.1')
+        assert inner_payload_seen(lst.packets()), 'source inside the /30 not forwarded'
+    finally:
+        lst.close()
+        U.delete(s)
+
+
 # E-TESTS-BELOW
 
 
@@ -654,6 +781,8 @@ def main():
                 failed += 1
                 print('FAIL', f.__name__, '-', e)
                 if not U.alive():
+                    print('upfd exited with status %s; end of its log:' % U.proc.returncode)
+                    print('\n'.join(U.log_text().splitlines()[-12:]))
                     U.start()
     finally:
         U.stop()

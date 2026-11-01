@@ -504,10 +504,18 @@ void upf_n4mb_handle_session_establishment_request(
             continue;
 
         // TODO (borieher): Modify this to work with IP ranges
-        if (has_src)
+        if (has_src) {
             mbs_sess->ssm.src_ip_addr = src.addr;
-        if (has_dest && !dest.any)
-            mbs_sess->ssm.dest_ip_addr = dest.start;
+            mbs_sess->ssm_src_has_prefix = src.has_mask_prefix_len;
+            mbs_sess->ssm_src_prefix_len = src.mask_prefix_len;
+        }
+        if (has_dest) {
+            mbs_sess->ssm_dest_any = dest.any;
+            mbs_sess->ssm_dest_range = dest.range;
+            mbs_sess->ssm_dest_end = dest.end;
+            if (!dest.any)
+                mbs_sess->ssm.dest_ip_addr = dest.start;
+        }
         {
             char dst_s[OGS_ADDRSTRLEN] = "-", src_s[OGS_ADDRSTRLEN] = "-";
 

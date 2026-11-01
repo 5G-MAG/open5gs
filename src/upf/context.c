@@ -74,6 +74,10 @@ void upf_context_init(void)
     ogs_assert(self.ipv4_hash);
     self.ipv6_hash = ogs_hash_make();
     ogs_assert(self.ipv6_hash);
+    self.mbs_ipv4_hash = ogs_hash_make();
+    ogs_assert(self.mbs_ipv4_hash);
+    self.mbs_ipv6_hash = ogs_hash_make();
+    ogs_assert(self.mbs_ipv6_hash);
 
     memset(self.mbs_multicastrouter_input_interface, 0, sizeof self.mbs_multicastrouter_input_interface);
     memset(self.mbs_multicastrouter_output_interface, 0, sizeof self.mbs_multicastrouter_output_interface);
@@ -108,6 +112,10 @@ void upf_context_final(void)
     ogs_hash_destroy(self.ipv4_hash);
     ogs_assert(self.ipv6_hash);
     ogs_hash_destroy(self.ipv6_hash);
+    ogs_assert(self.mbs_ipv4_hash);
+    ogs_hash_destroy(self.mbs_ipv4_hash);
+    ogs_assert(self.mbs_ipv6_hash);
+    ogs_hash_destroy(self.mbs_ipv6_hash);
 
     free_upf_route_trie_node(self.ipv4_framed_routes);
     free_upf_route_trie_node(self.ipv6_framed_routes);
@@ -1185,6 +1193,17 @@ void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess)
     ogs_assert(upf_mbs_sess);
 
     ogs_list_remove(&self.upf_mbs_sess_list, upf_mbs_sess);
+
+    // The session's entry in the destination hashes, unless a later session took the same destination over.
+    if (upf_mbs_sess->ssm.dest_ip_addr.ipv4 && !upf_mbs_sess->ssm_dest_any && !upf_mbs_sess->ssm_dest_range &&
+            ogs_hash_get(self.mbs_ipv4_hash, &upf_mbs_sess->ssm.dest_ip_addr.addr, OGS_IPV4_LEN) == upf_mbs_sess)
+        ogs_hash_set(self.mbs_ipv4_hash, &upf_mbs_sess->ssm.dest_ip_addr.addr, OGS_IPV4_LEN, NULL);
+    if (upf_mbs_sess->ssm.dest_ip_addr.ipv6 && !upf_mbs_sess->ssm_dest_any && !upf_mbs_sess->ssm_dest_range &&
+            ogs_hash_get(self.mbs_ipv6_hash, upf_mbs_sess->ssm.dest_ip_addr.addr6,
+                OGS_IPV6_DEFAULT_PREFIX_LEN >> 3) == upf_mbs_sess)
+        ogs_hash_set(self.mbs_ipv6_hash, upf_mbs_sess->ssm.dest_ip_addr.addr6,
+                OGS_IPV6_DEFAULT_PREFIX_LEN >> 3, NULL);
+
     // A session has a low-layer SSM only if the MB-SMF asked for one (PLLSSM).
     if (upf_mbs_sess->ll_ssm) {
         ogs_pfcp_llssm_remove(upf_mbs_sess->ll_ssm);
@@ -1317,33 +1336,38 @@ upf_mbs_sess_t *upf_mbs_sess_add_by_message(ogs_pfcp_message_t *message)
 
 upf_mbs_sess_t *upf_mbs_sess_find_by_ipv4(uint32_t addr)
 {
-    ogs_assert(self.ipv4_hash);
+    ogs_assert(self.mbs_ipv4_hash);
 
-    return ogs_hash_get(self.ipv4_hash, &addr, OGS_IPV4_LEN);
+    return ogs_hash_get(self.mbs_ipv4_hash, &addr, OGS_IPV4_LEN);
 }
 
 upf_mbs_sess_t *upf_mbs_sess_find_by_ipv6(uint32_t *addr6)
 {
-    ogs_assert(self.ipv6_hash);
+    ogs_assert(self.mbs_ipv6_hash);
     ogs_assert(addr6);
 
     return ogs_hash_get(
-            self.ipv6_hash, addr6, OGS_IPV6_DEFAULT_PREFIX_LEN >> 3);
+            self.mbs_ipv6_hash, addr6, OGS_IPV6_DEFAULT_PREFIX_LEN >> 3);
 }
 
 void upf_mbs_sess_set_ssm(upf_mbs_sess_t *mbs_sess)
 {
     ogs_assert(mbs_sess);
 
+    /* A session for a range of groups or for any group has no single address to key the lookup on:
+     * upf_mbs_sess_find_by_ssm() scans for it. */
+    if (mbs_sess->ssm_dest_any || mbs_sess->ssm_dest_range)
+        return;
+
     if (mbs_sess->ssm.dest_ip_addr.ipv4) {
-        ogs_hash_set(self.ipv4_hash, &mbs_sess->ssm.dest_ip_addr.addr, OGS_IPV4_LEN, NULL);
-        ogs_hash_set(self.ipv4_hash, &mbs_sess->ssm.dest_ip_addr.addr, OGS_IPV4_LEN, mbs_sess);
+        ogs_hash_set(self.mbs_ipv4_hash, &mbs_sess->ssm.dest_ip_addr.addr, OGS_IPV4_LEN, NULL);
+        ogs_hash_set(self.mbs_ipv4_hash, &mbs_sess->ssm.dest_ip_addr.addr, OGS_IPV4_LEN, mbs_sess);
     }
 
     if (mbs_sess->ssm.dest_ip_addr.ipv6) {
-        ogs_hash_set(self.ipv6_hash,
+        ogs_hash_set(self.mbs_ipv6_hash,
                 &mbs_sess->ssm.dest_ip_addr.addr6, OGS_IPV6_DEFAULT_PREFIX_LEN >> 3, NULL);
-        ogs_hash_set(self.ipv6_hash,
+        ogs_hash_set(self.mbs_ipv6_hash,
                 &mbs_sess->ssm.dest_ip_addr.addr6, OGS_IPV6_DEFAULT_PREFIX_LEN >> 3, mbs_sess);
     }
 }

@@ -53,6 +53,8 @@ typedef struct upf_context_s {
     ogs_hash_t *smf_n4_f_seid_hash; /* hash table (SMF-N4-F-SEID) */
     ogs_hash_t *ipv4_hash;  /* hash table (IPv4 Address) */
     ogs_hash_t *ipv6_hash;  /* hash table (IPv6 Address) */
+    ogs_hash_t *mbs_ipv4_hash;  /* hash table (IPv4 destination of an MBS session's AF multicast), upf_mbs_sess_t */
+    ogs_hash_t *mbs_ipv6_hash;  /* hash table (IPv6 destination of an MBS session's AF multicast), upf_mbs_sess_t */
 
     /* IPv4 framed routes trie */
     struct upf_route_trie_node *ipv4_framed_routes;
@@ -160,7 +162,12 @@ typedef struct upf_mbs_sess_s {
 
     uint32_t c_teid; /* C-TEID */
 
-    ogs_ssm_t ssm;        /* AF SSM N6mb IPv4/IPv6 */
+    ogs_ssm_t ssm;        /* AF SSM N6mb IPv4/IPv6; no source address set means any source */
+    bool ssm_dest_any;    /* IP Multicast Address with the A flag: any IP multicast address */
+    bool ssm_dest_range;  /* IP Multicast Address with the R flag: ssm.dest_ip_addr to ssm_dest_end */
+    ogs_ip_t ssm_dest_end;
+    bool ssm_src_has_prefix;  /* the source is a subnet: the Source IP Address carried a mask/prefix length */
+    uint8_t ssm_src_prefix_len;
     ogs_ssm_t *ll_ssm;     /* lower layer SSM N3mb IPv4/IPv6 */
 
     ogs_pfcp_node_t *pfcp_node;
