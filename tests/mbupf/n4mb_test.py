@@ -97,6 +97,9 @@ upf:
         self.sock.settimeout(0.6)
         self.associate()
 
+    def log_text(self):
+        return open(self.log, errors='replace').read()
+
     def alive(self):
         return self.proc.poll() is None
 
@@ -328,6 +331,50 @@ def t_U01_5_no_create_far():
     assert r and cause(r) == CAUSE_MANDATORY_MISSING, 'cause %s' % (cause(r) if r else None)
     assert offending(r) == T_CREATE_FAR, 'offending IE %s' % offending(r)
     accepted_and_deleted(U.establish(good()), 'after the rejection')
+
+
+def ssm_id(dst_flags, dst, src_flags, src, first=0x02, tail=b''):
+    return ie(T_MBS_ID, bytes([first, dst_flags]) + dst + bytes([src_flags]) + src + tail)
+
+
+V4G, V4S = socket.inet_aton('232.1.1.1'), socket.inet_aton('10.1.1.1')
+
+
+@test
+def t_U02_5_ssm_address_type_and_length():
+    # type 0 with length 4 and type 1 with length 16 are the only valid pairs (TS 29.244 cl. 8.2.207)
+    s = accepted(U.establish(good(cp_seid=0x3001)[:-1] + [n4mb_ctrl(ssm_id(0x04, V4G, 0x04, V4S))]), 'IPv4 SSM')
+    U.delete(s)
+    v6 = bytes(range(1, 17))
+    s = accepted(U.establish(good(cp_seid=0x3002)[:-1] + [n4mb_ctrl(ssm_id(0x50, v6, 0x50, v6))]), 'IPv6 SSM')
+    U.delete(s)
+    bad = {
+        'type 0 length 16': ssm_id(0x10, v6, 0x04, V4S),
+        'type 1 length 4': ssm_id(0x44, V4G, 0x04, V4S),
+        'length 0': ssm_id(0x00, b'', 0x04, V4S),
+        'length 63': ssm_id(0x3f, bytes(63), 0x04, V4S),
+        'source type 2': ssm_id(0x04, V4G, 0x84, V4S),
+        'truncated source': ie(T_MBS_ID, bytes([0x02, 0x04]) + V4G + bytes([0x04]) + V4S[:2]),
+        'trailing octet': ssm_id(0x04, V4G, 0x04, V4S, tail=b'\x00'),
+        'empty': ie(T_MBS_ID, b''),
+    }
+    for name, ident in bad.items():
+        r = U.establish(good(cp_seid=0x3010)[:-1] + [n4mb_ctrl(ident)])
+        assert r is not None, name + ': no answer (upfd alive: %s)' % U.alive()
+        assert cause(r) == CAUSE_MANDATORY_INCORRECT, '%s: cause %s' % (name, cause(r))
+        assert offending(r) == T_MBS_ID, '%s: offending IE %s' % (name, offending(r))
+    accepted_and_deleted(U.establish(good(cp_seid=0x3020)), 'after the rejections')
+
+
+@test
+def t_U02_6_nid_is_stored():
+    ident = ie(T_MBS_ID, b'\x05' + b'\x00\x00\x01\x00\xf1\x10' + bytes.fromhex('123456789ab0'))
+    s = accepted(U.establish(good(cp_seid=0x3030)[:-1] + [n4mb_ctrl(ident)]), 'TMGI with NID')
+    assert 'NID [123456789ab]' in U.log_text(), 'NID not stored'
+    U.delete(s)
+    ident = ie(T_MBS_ID, b'\x05' + b'\x00\x00\x01\x00\xf1\x10' + bytes.fromhex('123456'))
+    r = U.establish(good(cp_seid=0x3031)[:-1] + [n4mb_ctrl(ident)])
+    assert r and cause(r) == CAUSE_MANDATORY_INCORRECT, 'short NID: cause %s' % (cause(r) if r else None)
 
 
 # E-TESTS-BELOW

@@ -895,11 +895,39 @@ int16_t ogs_pfcp_build_mbs_session_identifier(ogs_tlv_octet_t *octet,
     return octet->len;
 }
 
-// TODO (borieher): Fix MBS Session Id parsing
+/*
+ * Decodes one Address Type / Address Length / Address field of the Source Specific IP Multicast
+ * Address (TS 29.244 cl. 8.2.206 and 8.2.207: type 0 with length 4, or type 1 with length 16; "Other
+ * combinations of values are not valid."). Returns the octets consumed, or -1 if the field is not valid
+ * or does not fit in the IE.
+ */
+static int parse_ssm_address(uint8_t *flags, void *addr, const uint8_t *data, uint32_t data_len)
+{
+    uint8_t type, length;
+
+    if (data_len < 1)
+        return -1;
+    *flags = data[0];
+    type = data[0] >> 6;
+    length = data[0] & 0x3f;
+
+    if (!((type == 0 && length == OGS_IPV4_LEN) || (type == 1 && length == OGS_IPV6_LEN))) {
+        ogs_error("Invalid address type %u / length %u in the MBS Session Identifier", type, length);
+        return -1;
+    }
+    if (data_len < 1u + length) {
+        ogs_error("MBS Session Identifier too short for its address");
+        return -1;
+    }
+    memcpy(addr, data + 1, length);
+    return 1 + length;
+}
+
 int16_t ogs_pfcp_parse_mbs_session_identifier(
         ogs_pfcp_mbs_session_identifier_t *mbs_session_identifier, ogs_tlv_octet_t *octet)
 {
-    int16_t size = 0;
+    uint32_t size = 0;
+    int rv;
 
     ogs_assert(mbs_session_identifier);
     ogs_assert(octet);
@@ -909,18 +937,23 @@ int16_t ogs_pfcp_parse_mbs_session_identifier(
 
     memset(mbs_session_identifier, 0, sizeof(ogs_pfcp_mbs_session_identifier_t));
 
-    ogs_assert(size + sizeof(mbs_session_identifier->octet5) <= data_len);
+    if (data == NULL || data_len < sizeof(mbs_session_identifier->octet5)) {
+        ogs_error("MBS Session Identifier without its flags octet");
+        return -1;
+    }
     mbs_session_identifier->octet5 = data[size];
     size += sizeof(mbs_session_identifier->octet5);
 
     if (mbs_session_identifier->tmgif) {
-        // TODO (borieher): Verify this is working as intended
-        ogs_assert(size + sizeof(mbs_session_identifier->tmgi.mbs_service_id) <= data_len);
+        if (size + sizeof(mbs_session_identifier->tmgi.mbs_service_id) +
+                sizeof(mbs_session_identifier->tmgi.plmn_id) > data_len) {
+            ogs_error("MBS Session Identifier too short for its TMGI");
+            return -1;
+        }
         memcpy(mbs_session_identifier->tmgi.mbs_service_id, data + size,
                 sizeof(mbs_session_identifier->tmgi.mbs_service_id));
         size += sizeof(mbs_session_identifier->tmgi.mbs_service_id);
 
-        ogs_assert(size + sizeof(mbs_session_identifier->tmgi.plmn_id) <= data_len);
         memcpy(&mbs_session_identifier->tmgi.plmn_id, data + size,
                 sizeof(mbs_session_identifier->tmgi.plmn_id));
         size += sizeof(mbs_session_identifier->tmgi.plmn_id);
@@ -932,27 +965,34 @@ int16_t ogs_pfcp_parse_mbs_session_identifier(
     }
 
     if (mbs_session_identifier->ssmif) {
-        // TODO (borieher): Add SSM
-        mbs_session_identifier->ssm.ip_multicast_distribution_address.flags = ((uint8_t*)octet->data)[size];
-        size += 1;
+        rv = parse_ssm_address(&mbs_session_identifier->ssm.ip_multicast_distribution_address.flags,
+                mbs_session_identifier->ssm.ip_multicast_distribution_address.ipv6_addr,
+                data + size, data_len - size);
+        if (rv < 0)
+            return -1;
+        size += rv;
 
-        memcpy(mbs_session_identifier->ssm.ip_multicast_distribution_address.ipv6_addr, (uint8_t*)octet->data + size, mbs_session_identifier->ssm.ip_multicast_distribution_address.address_length);
-        size += mbs_session_identifier->ssm.ip_multicast_distribution_address.address_length;
-
-        mbs_session_identifier->ssm.ip_source_address.flags = ((uint8_t*)octet->data)[size];
-        size += 1;
-
-        memcpy(mbs_session_identifier->ssm.ip_source_address.ipv6_addr, (uint8_t*)octet->data + size, mbs_session_identifier->ssm.ip_source_address.address_length);
-        size += mbs_session_identifier->ssm.ip_source_address.address_length;
+        rv = parse_ssm_address(&mbs_session_identifier->ssm.ip_source_address.flags,
+                mbs_session_identifier->ssm.ip_source_address.ipv6_addr,
+                data + size, data_len - size);
+        if (rv < 0)
+            return -1;
+        size += rv;
     }
 
     if (mbs_session_identifier->nidif) {
-        // TODO (borieher): Add NID
-        memcpy(mbs_session_identifier->nid, (uint8_t*)octet->data + size, sizeof(mbs_session_identifier->nid));
+        if (size + sizeof(mbs_session_identifier->nid) > data_len) {
+            ogs_error("MBS Session Identifier too short for its NID");
+            return -1;
+        }
+        memcpy(mbs_session_identifier->nid, data + size, sizeof(mbs_session_identifier->nid));
         size += sizeof(mbs_session_identifier->nid);
     }
 
-    ogs_assert(size == octet->len);
+    if (size != data_len) {
+        ogs_error("MBS Session Identifier length %u, fields decoded %u", data_len, size);
+        return -1;
+    }
 
     return size;
 }

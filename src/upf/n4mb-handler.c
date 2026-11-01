@@ -70,6 +70,14 @@ bool upf_n4mb_check_session_establishment_request(
         ogs_error("No Create FAR in N4mb Session Establishment Request");
         cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
         offending_ie_value = OGS_PFCP_CREATE_FAR_TYPE;
+    } else if (req->mbs_session_n4mb_control_information.mbs_session_identifier.presence) {
+        ogs_pfcp_mbs_session_identifier_t mbs_session_identifier;
+
+        if (ogs_pfcp_parse_mbs_session_identifier(&mbs_session_identifier,
+                &req->mbs_session_n4mb_control_information.mbs_session_identifier) < 0) {
+            cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+            offending_ie_value = OGS_PFCP_MBS_SESSION_IDENTIFIER_TYPE;
+        }
     }
 
     if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED)
@@ -379,7 +387,11 @@ void upf_n4mb_handle_session_establishment_request(
         // MBS Session Identifier IE
         if (req->mbs_session_n4mb_control_information.mbs_session_identifier.presence) {
             // TODO (borieher): Continue parsing MBS Session Identifier, after fixing it
-            if (ogs_pfcp_parse_mbs_session_identifier(&mbs_session_identifier, &req->mbs_session_n4mb_control_information.mbs_session_identifier)) {
+            if (ogs_pfcp_parse_mbs_session_identifier(&mbs_session_identifier, &req->mbs_session_n4mb_control_information.mbs_session_identifier) < 0) {
+                cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+                offending_ie_value = OGS_PFCP_MBS_SESSION_IDENTIFIER_TYPE;
+                goto cleanup;
+            } else {
                 // Free old values
                 if (mbs_sess->mbs_session_id.is_tmgi && mbs_sess->mbs_session_id.tmgi) ogs_free(mbs_sess->mbs_session_id.tmgi);
                 if (mbs_sess->mbs_session_id.is_ssm && mbs_sess->mbs_session_id.ssm) ogs_free(mbs_sess->mbs_session_id.ssm);
@@ -445,7 +457,17 @@ void upf_n4mb_handle_session_establishment_request(
                     memcpy(&mbs_sess->ssm, mbs_sess->mbs_session_id.ssm, sizeof(mbs_sess->ssm));
                 }
                 if (mbs_session_identifier.nidif) {
-                    mbs_sess->mbs_session_id.nid = (char*)ogs_calloc(1, 12);
+                    /* TS 29.244 cl. 8.2.206: eleven hexadecimal digits, the first in bits 8 to 5 of the first octet
+                     * and the last in bits 8 to 5 of the sixth; bits 4 to 1 of the sixth octet are 0. */
+                    char *nid = (char*)ogs_calloc(1, 12);
+                    int d;
+
+                    ogs_assert(nid);
+                    for (d = 0; d < 11; d++)
+                        nid[d] = "0123456789abcdef"[(d % 2 == 0) ?
+                            (mbs_session_identifier.nid[d / 2] >> 4) : (mbs_session_identifier.nid[d / 2] & 0x0f)];
+                    mbs_sess->mbs_session_id.nid = nid;
+                    ogs_debug("MBS Session Identifier: NID [%s]", nid);
                 }
             }
         }
