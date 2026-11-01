@@ -876,6 +876,46 @@ static void test_per_flow_user_plane(void)
     smf_mbs_sess_release(mbs_sess);
 }
 
+/* TS 24.008 V18.8.0 figure 10.5.154 (octets 3 to 8 of the TMGI, as TS 29.244 V18.10.0 cl. 8.2.206 requires):
+ * octet 6 "MCC digit 2 | MCC digit 1", octet 7 "MNC digit 3 | MCC digit 3", octet 8 "MNC digit 2 | MNC digit 1"
+ * (a two-digit MNC leaves digit 3 as F, as the identity form of the IE says: "If a network operator decides to use
+ * only two digits in the MNC, bits 5 to 8 of octet 6b shall be coded as "1111"."). */
+static void test_tmgi_octets(void)
+{
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    ogs_pfcp_message_t *msg;
+    ogs_tlv_octet_t *id;
+    uint8_t *d;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+
+    /* PLMN 001/01: MCC digits 0 0 1, MNC digits 0 1 and F */
+    ogs_plmn_id_build(&mbs_sess->tmgi->plmn_id, 1, 1, 2);
+    msg = build_and_parse_establishment(mbs_sess);
+    CHECK(msg != NULL);
+    if (msg) {
+        id = &msg->pfcp_session_establishment_request.mbs_session_n4mb_control_information.mbs_session_identifier;
+        d = id->data;
+        CHECK(id->len == 7);
+        CHECK(d[4] == 0x00 && d[5] == 0xF1 && d[6] == 0x10);
+    }
+
+    /* PLMN 310/014: MCC digits 3 1 0, MNC digits 0 1 4 */
+    ogs_plmn_id_build(&mbs_sess->tmgi->plmn_id, 310, 14, 3);
+    msg = build_and_parse_establishment(mbs_sess);
+    CHECK(msg != NULL);
+    if (msg) {
+        id = &msg->pfcp_session_establishment_request.mbs_session_n4mb_control_information.mbs_session_identifier;
+        d = id->data;
+        CHECK(d[4] == 0x13 && d[5] == 0x40 && d[6] == 0x10);
+    }
+
+    /* the PLMN is part of the key of the index of sessions: put it back before the release */
+    ogs_plmn_id_build(&mbs_sess->tmgi->plmn_id, 1, 1, 2);
+    smf_mbs_sess_release(mbs_sess);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -896,6 +936,7 @@ int main(void)
     test_date_time();
     test_service_info_validity();
     test_per_flow_user_plane();
+    test_tmgi_octets();
 
     printf("smf-mbs: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;

@@ -205,13 +205,16 @@ ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
         ogs_uint24_t mbs_svc_id = ogs_htobe24(ogs_uint24_from_string(mbs_sess->mbs_session_id.tmgi->mbs_service_id));
         memcpy(mbs_session_identifier.tmgi.mbs_service_id, &mbs_svc_id, sizeof(mbs_session_identifier.tmgi.mbs_service_id));
 
-        // TODO (borieher): Check if I can copy plmn_id[3] directly
-        mbs_session_identifier.tmgi.mcc3 = mbs_sess->mbs_session_id.tmgi->plmn_id.mcc3;
-        mbs_session_identifier.tmgi.mcc2 = mbs_sess->mbs_session_id.tmgi->plmn_id.mcc2;
-        mbs_session_identifier.tmgi.mcc1 = mbs_sess->mbs_session_id.tmgi->plmn_id.mcc1;
-        mbs_session_identifier.tmgi.mnc3 = mbs_sess->mbs_session_id.tmgi->plmn_id.mnc3;
-        mbs_session_identifier.tmgi.mnc2 = mbs_sess->mbs_session_id.tmgi->plmn_id.mnc2;
-        mbs_session_identifier.tmgi.mnc1 = mbs_sess->mbs_session_id.tmgi->plmn_id.mnc1;
+        /* TS 24.008 V18.8.0 figure 10.5.154: octet 6 "MCC digit 2 | MCC digit 1", octet 7 "MNC digit 3 | MCC
+         * digit 3", octet 8 "MNC digit 2 | MNC digit 1" (TS 29.244 V18.10.0 cl. 8.2.206: "The TMGI field shall
+         * be encoded as octets 3 to octet 8 in the figure 10.5.154 of 3GPP TS 24.008"). The PLMN of the TMGI is an
+         * ogs_plmn_id_t, whose digit fields are not named as in that figure: it is converted to the NAS layout,
+         * which is the figure's, instead of being copied field by field. */
+        {
+            ogs_nas_plmn_id_t nas_plmn_id;
+            ogs_nas_from_plmn_id(&nas_plmn_id, &mbs_sess->mbs_session_id.tmgi->plmn_id);
+            memcpy(mbs_session_identifier.tmgi.plmn_id, &nas_plmn_id, sizeof(nas_plmn_id));
+        }
     }
     if (mbs_sess->mbs_session_id.is_ssm || mbs_sess->ssm) {
 	ogs_ssm_t *ssm = mbs_sess->mbs_session_id.is_ssm?mbs_sess->mbs_session_id.ssm:mbs_sess->ssm;
