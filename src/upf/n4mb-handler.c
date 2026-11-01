@@ -206,6 +206,7 @@ static int _allocate_ingress_tunnel(upf_mbs_sess_t *mbs_sess, const ogs_pfcp_loc
             return OGS_ERROR;
         }
         mbs_sess->udp_tunnel_port_pooled = !ctx->mbs_udp_tun_ephemeral_port;
+        mbs_sess->udp_tunnel_pooled_port = ntohs(lit->ipv4 ? bind_address->sin.sin_port : bind_address->sin6.sin6_port);
     } else {
         /* The CP function gave the address and the UDP port of the tunnel (TS 29.244 cl. 8.2.209: with the
          * CH bit clear the address field of the V4 or V6 flag is present): the tunnel is opened there. */

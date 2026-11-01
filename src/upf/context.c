@@ -1257,16 +1257,17 @@ void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess)
         ogs_pollset_remove(upf_mbs_sess->udp_tunnel_poll);
         upf_mbs_sess->udp_tunnel_poll = NULL;
     }
-    if (upf_mbs_sess->udp_tunnel) {
-        // Add tunnel port back into the free pool
-        if (upf_mbs_sess->udp_tunnel_port_pooled) {
-            uint16_t port = ntohs(upf_mbs_sess->udp_tunnel->local_addr.ogs_sin_port);
-            size_t i;
-            for (i=0; i < self.mbs_udp_tun_num_of_ports && self.mbs_udp_tun_ports[i] != port; i++);
-            if (i < self.mbs_udp_tun_num_of_ports) {
-                self.mbs_udp_tun_ports_free[self.mbs_udp_tun_ports_next_free++] = self.mbs_udp_tun_ports + i;
-            }
+    // The tunnel port goes back into the free pool whether or not the socket was opened: it is taken before the bind
+    if (upf_mbs_sess->udp_tunnel_port_pooled) {
+        uint16_t port = upf_mbs_sess->udp_tunnel_pooled_port;
+        size_t i;
+        for (i=0; i < self.mbs_udp_tun_num_of_ports && self.mbs_udp_tun_ports[i] != port; i++);
+        if (i < self.mbs_udp_tun_num_of_ports) {
+            self.mbs_udp_tun_ports_free[self.mbs_udp_tun_ports_next_free++] = self.mbs_udp_tun_ports + i;
         }
+        upf_mbs_sess->udp_tunnel_port_pooled = false;
+    }
+    if (upf_mbs_sess->udp_tunnel) {
         ogs_sock_destroy(upf_mbs_sess->udp_tunnel);
         upf_mbs_sess->udp_tunnel = NULL;
     }

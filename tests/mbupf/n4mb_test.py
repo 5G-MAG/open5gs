@@ -1611,6 +1611,24 @@ def t_memory_of_a_deleted_session_is_released():
     assert 'full talloc report' not in report, 'blocks still allocated at exit:\n' + report[report.index('full talloc report'):][:1500]
 
 
+@test
+def t_pool_port_is_returned_when_the_bind_fails():
+    U.restart('{start: 39210, end: 39210}')
+    try:
+        # the one pool port is in use by another process: the bind fails after the port was taken from the pool
+        occ = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        occ.bind(('127.0.0.31', 39210))
+        try:
+            r = U.establish(with_te(good(cp_seid=0x5061), lit_choose()))
+            assert r and cause(r) == CAUSE_SYSTEM_FAILURE and offending(r) == T_LIT, 'bind failure: cause %s offending %s' % (
+                cause(r) if r else None, offending(r) if r else None)
+        finally:
+            occ.close()
+        accepted_and_deleted(U.establish(with_te(good(cp_seid=0x5062), lit_choose())), 'the pool port after the failed bind')
+    finally:
+        U.restart()
+
+
 # E-TESTS-BELOW
 
 
