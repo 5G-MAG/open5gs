@@ -243,8 +243,9 @@ ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_create_request(
 
     tmgi = OpenAPI_tmgi_create(ogs_strdup(mbs_sess->tmgi->mbs_service_id), plmn_id);
 
-    // TODO (borieher): Fill NID when present
-    mbs_session_id = OpenAPI_mbs_session_id_create(tmgi, NULL, NULL);
+    // TS 29.518 V18.14.0 table 6.5.6.2.2-1 (mbsSessionId): the TMGI together with the NID of an SNPN
+    mbs_session_id = OpenAPI_mbs_session_id_create(tmgi, NULL,
+            mbs_sess->mbs_session_id.nid ? ogs_strdup(mbs_sess->mbs_session_id.nid) : NULL);
 
     // mbsServiceArea / mbsServiceAreaInfoList (mutually exclusive, TS29518_Namf_MBSBroadcast.yaml's own
     // ContextCreateReqData schema)

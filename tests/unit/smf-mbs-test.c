@@ -11,6 +11,8 @@
 #include "ogs-gtp.h"
 #include "ogs-sbi.h"
 #include "context.h"
+#include "n4mb-build.h"
+#include "namf-build.h"
 
 static int checks, failures;
 
@@ -180,6 +182,13 @@ static int smf_context_setup(void)
     if (ogs_pfcp_context_parse_config("smf", "upf") != OGS_OK) return OGS_ERROR;
     if (ogs_sbi_context_parse_config("smf", "nrf", "scp") != OGS_OK) return OGS_ERROR;
     if (smf_context_parse_config() != OGS_OK) return OGS_ERROR;
+
+    /* the local PFCP address is learned when the socket is opened; here it is taken from the configuration */
+    {
+        ogs_socknode_t *node = ogs_list_first(&ogs_pfcp_self()->pfcp_list);
+        if (!node) return OGS_ERROR;
+        ogs_pfcp_self()->pfcp_addr = node->addr;
+    }
     return OGS_OK;
 }
 
@@ -233,6 +242,137 @@ static void test_tmgi_plmn(void)
     ogs_free(expiration);
 }
 
+/* An MBS session of the SMF context for the builders: a broadcast session with a freshly allocated TMGI,
+ * bound to the PFCP peer of the configuration. */
+static smf_mbs_sess_t *new_broadcast_session(void)
+{
+    char *expiration = smf_tmgi_gen_expiration_time(60);
+    ogs_tmgi_t *tmgi = smf_tmgi_allocate(expiration);
+    smf_mbs_sess_t *mbs_sess;
+
+    ogs_free(expiration);
+    if (!tmgi) return NULL;
+    mbs_sess = smf_mbs_sess_create(tmgi, true, NULL, "BROADCAST", NULL, NULL);
+    if (!mbs_sess) return NULL;
+    ogs_list_init(&mbs_sess->mbs_qos_flow_list);
+    ogs_list_init(&mbs_sess->mbs_fsa_id_list);
+    {
+        /* the peer's address is learned at association; here it is taken from the configuration */
+        ogs_pfcp_node_t *node = NULL;
+        ogs_list_for_each(&ogs_pfcp_self()->pfcp_peer_list, node)
+            memcpy(&node->addr, node->sa_list, sizeof(node->addr));
+    }
+    smf_mbs_sess_create_mbs_data_forwarding(mbs_sess);
+    return mbs_sess;
+}
+
+/* Parses the N4mb Session Establishment Request built for mbs_sess. The parsed IEs point into the packet,
+ * so both are kept until the next call. */
+static ogs_pfcp_message_t *build_and_parse_establishment(smf_mbs_sess_t *mbs_sess)
+{
+    static ogs_pfcp_message_t *message;
+    static ogs_pkbuf_t *pkbuf;
+
+    if (message) { ogs_pfcp_message_free(message); message = NULL; }
+    if (pkbuf) { ogs_pkbuf_free(pkbuf); pkbuf = NULL; }
+
+    pkbuf = smf_n4mb_build_session_establishment_request(mbs_sess, (ogs_pfcp_xact_t *)&message);
+    if (!pkbuf) return NULL;
+    {
+        /* the builder returns the body; the transaction layer adds the header, so it is added here */
+        ogs_pfcp_header_t h;
+        memset(&h, 0, sizeof(h));
+        h.version = 1;
+        h.seid_presence = 1;
+        h.type = OGS_PFCP_SESSION_ESTABLISHMENT_REQUEST_TYPE;
+        h.length = htobe16(pkbuf->len + OGS_PFCP_HEADER_LEN - 4);
+        ogs_pkbuf_push(pkbuf, OGS_PFCP_HEADER_LEN);
+        memcpy(pkbuf->data, &h, OGS_PFCP_HEADER_LEN);
+    }
+    message = ogs_pfcp_parse_msg(pkbuf);
+    return message;
+}
+
+/* TS 23.003 V18.8.0 clause 12.7.1: "The NID shall consist of 11 hexadecimal digits"; TS 29.244 V18.10.0
+ * clause 8.2.206: the NID field of the MBS Session Identifier. */
+static void test_nid(void)
+{
+    uint8_t octets[6];
+    smf_mbs_sess_t *mbs_sess;
+    ogs_pfcp_message_t *msg;
+    ogs_tlv_octet_t *id;
+    static const uint8_t expected[6] = { 0x01, 0x23, 0x45, 0x67, 0x89, 0xA0 };
+
+    CHECK(smf_nid_is_valid("0123456789A"));
+    CHECK(smf_nid_is_valid("abcdefABCDE"));
+    CHECK(!smf_nid_is_valid(NULL));
+    CHECK(!smf_nid_is_valid(""));
+    CHECK(!smf_nid_is_valid("0123456789"));
+    CHECK(!smf_nid_is_valid("0123456789AB"));
+    CHECK(!smf_nid_is_valid("0123456789G"));
+
+    CHECK(smf_n4mb_nid_to_octets("0123456789A", octets));
+    CHECK(memcmp(octets, expected, 6) == 0);
+    CHECK(smf_n4mb_nid_to_octets("fFfFfFfFfFf", octets));
+    {
+        static const uint8_t ff[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xF0 };
+        CHECK(memcmp(octets, ff, 6) == 0);
+    }
+    CHECK(!smf_n4mb_nid_to_octets("xyz", octets));
+
+    /* without a NID the identifier carries the TMGI only */
+    mbs_sess = new_broadcast_session();
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+    msg = build_and_parse_establishment(mbs_sess);
+    CHECK(msg != NULL);
+    if (msg) {
+        id = &msg->pfcp_session_establishment_request.mbs_session_n4mb_control_information.mbs_session_identifier;
+        CHECK(id->presence);
+        CHECK(id->len == 7);
+        CHECK(((uint8_t *)id->data)[0] == 0x01);
+    }
+
+    /* with a NID: NIDI set (bit 3) and the six octets after the TMGI */
+    mbs_sess->mbs_session_id.nid = ogs_strdup("0123456789A");
+    msg = build_and_parse_establishment(mbs_sess);
+    CHECK(msg != NULL);
+    if (msg) {
+        id = &msg->pfcp_session_establishment_request.mbs_session_n4mb_control_information.mbs_session_identifier;
+        CHECK(id->presence);
+        CHECK(id->len == 13);
+        CHECK(((uint8_t *)id->data)[0] == 0x05);
+        CHECK(memcmp((uint8_t *)id->data + 7, expected, 6) == 0);
+    }
+
+    /* a NID that is not 11 hexadecimal digits is not sent */
+    ogs_free(mbs_sess->mbs_session_id.nid);
+    mbs_sess->mbs_session_id.nid = ogs_strdup("12345");
+    CHECK(build_and_parse_establishment(mbs_sess) == NULL);
+
+    /* the Namf_MBSBroadcast ContextCreate request carries the same NID in mbsSessionId (TS 29.518 V18.14.0
+     * table 6.5.6.2.2-1) */
+    ogs_free(mbs_sess->mbs_session_id.nid);
+    mbs_sess->mbs_session_id.nid = NULL;
+    {
+        ogs_sbi_request_t *request = smf_namf_build_mbs_broadcast_context_create_request(mbs_sess, NULL);
+        CHECK(request != NULL);
+        if (request) {
+            CHECK(request->http.content && strstr(request->http.content, "\"nid\"") == NULL);
+            ogs_sbi_request_free(request);
+        }
+        mbs_sess->mbs_session_id.nid = ogs_strdup("0123456789A");
+        request = smf_namf_build_mbs_broadcast_context_create_request(mbs_sess, NULL);
+        CHECK(request != NULL);
+        if (request) {
+            CHECK(request->http.content && strstr(request->http.content, "\"nid\":\"0123456789A\"") != NULL);
+            ogs_sbi_request_free(request);
+        }
+    }
+
+    smf_mbs_sess_release(mbs_sess);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -243,6 +383,7 @@ int main(void)
 
     test_pick_mbs_service_id();
     test_tmgi_plmn();
+    test_nid();
 
     printf("smf-mbs: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;

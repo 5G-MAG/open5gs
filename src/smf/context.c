@@ -17,6 +17,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 #include <inttypes.h>
+#include <ctype.h>
 
 #include "context.h"
 #include "gtp-path.h"
@@ -162,6 +163,11 @@ void smf_context_final(void)
     smf_ue_remove_all();
     smf_mbs_sess_remove_all();
     smf_tmgi_remove_all();
+
+    if (self.nid) {
+        ogs_free(self.nid);
+        self.nid = NULL;
+    }
 
     ogs_assert(self.supi_hash);
     ogs_hash_destroy(self.supi_hash);
@@ -1052,6 +1058,19 @@ int smf_context_parse_config(void)
                     /* handle config in sbi library */
                 } else if (!strcmp(smf_key, "metrics")) {
                     /* handle config in metrics library */
+                } else if (!strcmp(smf_key, "nid")) {
+                    /* The NID of the SNPN this MB-SMF belongs to; TS 23.003 V18.8.0 cl. 12.7.1:
+                     * "The NID shall consist of 11 hexadecimal digits". Absent for a PLMN. */
+                    const char *nid = ogs_yaml_iter_value(&smf_iter);
+                    if (!smf_nid_is_valid(nid)) {
+                        ogs_error("`smf.nid` [%s] is not 11 hexadecimal digits",
+                                nid ? nid : "");
+                        return OGS_ERROR;
+                    }
+                    if (self.nid)
+                        ogs_free(self.nid);
+                    self.nid = ogs_strdup(nid);
+                    ogs_assert(self.nid);
                 } else if (!strcmp(smf_key, "mbsServiceArea")) {
                     /* TS 29.532 V18.6.0 cl.5.3.2.2.1/5.3.2.3.1 step 2b: this MB-SMF instance's own
                      * configured coverage, used by smf_mbs_service_area_reduce(). No clause,
@@ -3450,6 +3469,26 @@ char *smf_tmgi_gen_expiration_time(int validity_seconds)
         ogs_time_now() + ogs_time_from_sec(validity_seconds));
 
     return expiration_time;
+}
+
+/* TS 23.003 V18.8.0 clause 12.7.1: "The NID shall consist of 11 hexadecimal digits"; TS 29.571 V18.12.0
+ * Nid, pattern '^[A-Fa-f0-9]{11}$'. */
+bool smf_nid_is_valid(const char *nid)
+{
+    int i;
+
+    if (!nid || strlen(nid) != 11)
+        return false;
+    for (i = 0; i < 11; i++)
+        if (!isxdigit((unsigned char)nid[i]))
+            return false;
+    return true;
+}
+
+/* The NID of this MB-SMF's SNPN, or NULL when it belongs to a PLMN. */
+const char *smf_own_nid(void)
+{
+    return self.nid;
 }
 
 /* TS 23.003 V18.8.0 clause 30.2, item 3: "The MNC identifies the PLMN which the MB-SMF belongs to". That

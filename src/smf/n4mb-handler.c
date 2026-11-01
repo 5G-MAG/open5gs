@@ -242,7 +242,8 @@ uint8_t smf_n4mb_handle_session_establishment_response(
     Tmgi = ogs_sbi_build_tmgi(mbs_sess->tmgi);
     if (mbs_sess->mbs_session_id.is_tmgi) {
         Tmgi_copy = OpenAPI_tmgi_copy(Tmgi_copy, Tmgi);
-        Mbs_session_id = OpenAPI_mbs_session_id_create(Tmgi_copy, NULL, mbs_sess->mbs_session_id.nid);
+        Mbs_session_id = OpenAPI_mbs_session_id_create(Tmgi_copy, NULL,
+                mbs_sess->mbs_session_id.nid ? ogs_strdup(mbs_sess->mbs_session_id.nid) : NULL);
     }
 
     if (mbs_sess->mbs_session_id.is_ssm) {

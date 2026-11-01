@@ -21,6 +21,28 @@
 #include "context.h"
 #include "n4mb-build.h"
 
+/* TS 29.244 V18.10.0 clause 8.2.206: "The NID field shall be encoded with 11 hexadecimal digits, bit 8 to bit 5
+ * of the octet "o" is the most significant digit and bit 8 to bit 5 of the octet "o+5" is the least significant
+ * digit, and bits 4 to 1 of octets (o+5) shall all be encoded as 0." */
+bool smf_n4mb_nid_to_octets(const char *nid, uint8_t octets[6])
+{
+    int i;
+
+    ogs_assert(octets);
+
+    if (!smf_nid_is_valid(nid))
+        return false;
+
+    memset(octets, 0, 6);
+    for (i = 0; i < 11; i++) {
+        char c = nid[i];
+        uint8_t digit = (c >= '0' && c <= '9') ? (uint8_t)(c - '0') :
+                (uint8_t)((c | 0x20) - 'a' + 10);
+        octets[i / 2] |= (i % 2 == 0) ? (digit << 4) : digit;
+    }
+    return true;
+}
+
 ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
         smf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact)
 {
@@ -198,8 +220,14 @@ ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
     }
 
     if (mbs_sess->mbs_session_id.nid) {
+        if (!smf_n4mb_nid_to_octets(mbs_sess->mbs_session_id.nid, mbs_session_identifier.nid)) {
+            ogs_error("N4mb Session Establishment Request: NID [%s] is not 11 hexadecimal digits",
+                    mbs_sess->mbs_session_id.nid);
+            ogs_pfcp_pdrbuf_clear();
+            ogs_free(pfcp_message);
+            return NULL;
+        }
         mbs_session_identifier.nidif = 1;
-        // TODO (borieher): Build NID with MBS Session ID
     }
 
     req->mbs_session_n4mb_control_information.mbs_session_identifier.presence = 1;

@@ -126,6 +126,11 @@ typedef struct smf_context_s {
      * clause, config option or documented default exists for what an unconfigured MB-SMF's own
      * coverage should be (rule 12), so none is invented here. */
     ogs_mbs_service_area_t *mbs_service_area;
+
+    /* NID of the SNPN this MB-SMF belongs to (smf.yaml `nid`, 11 hexadecimal digits); NULL for a PLMN,
+     * which has none. TS 23.003 V18.8.0 cl. 30.2: "In a SNPN (Stand-alone Non-Public Network), TMGI is
+     * used together with NID (Network Identifier) to identify an MBS Session." */
+    char *nid;
 } smf_context_t;
 
 typedef struct smf_gtp_node_s {
@@ -742,6 +747,8 @@ int smf_instance_get_load(void);
 int smf_tmgi_count(void);
 char *smf_tmgi_gen_expiration_time(int validity_seconds);
 bool smf_tmgi_own_plmn(ogs_plmn_id_t *plmn_id);
+bool smf_nid_is_valid(const char *nid);
+const char *smf_own_nid(void);
 ogs_tmgi_t *smf_tmgi_allocate(char *expiration_time);
 char *smf_tmgi_pick_mbs_service_id(
         ogs_list_t *tmgi_list, const ogs_plmn_id_t *plmn_id, uint32_t start);

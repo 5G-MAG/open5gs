@@ -63,8 +63,6 @@ bool smf_nmbsmf_handle_tmgi_allocate(
     ogs_assert(message);
 
     char *expiration_time = NULL;
-    // TODO (borieher): How to get NID?
-    char *nid = NULL;
 
     memset(&sendmsg, 0, sizeof(sendmsg));
 
@@ -214,7 +212,11 @@ bool smf_nmbsmf_handle_tmgi_allocate(
         }
     }
 
-    TmgiAllocated = OpenAPI_tmgi_allocated_create(tmgi_list, ogs_strdup(expiration_time), nid);
+    /* TS 29.532 V18.6.0 table 6.1.6.2.3-1, row nid: "When present, this IE shall contain the NID, which together
+     * with the PLMN ID included in the TMGIs, identifies the SNPN which allocated the TMGIs." Present when the
+     * MB-SMF belongs to an SNPN (smf.nid), absent for a PLMN. */
+    TmgiAllocated = OpenAPI_tmgi_allocated_create(tmgi_list, ogs_strdup(expiration_time),
+            smf_own_nid() ? ogs_strdup(smf_own_nid()) : NULL);
 
     /*********************************************************************
      * Send HTTP_STATUS_OK (/nmbsmf-tmgi/v1/tmgi) to the consumer NF
@@ -231,9 +233,6 @@ bool smf_nmbsmf_handle_tmgi_allocate(
 cleanup:
     if (expiration_time)
         ogs_free(expiration_time);
-
-    if (nid)
-        ogs_free(nid);
 
     if (TmgiAllocated) {
         OpenAPI_tmgi_allocated_free(TmgiAllocated);
@@ -388,8 +387,6 @@ bool smf_nmbsmf_handle_mbs_session_create(
     ogs_assert(message);
 
     char *expiration_time = NULL;
-    // TODO (borieher): How to get NID?
-    char *nid = NULL;
     char *service_type = NULL;
 
     bool is_multicast_service = false;
@@ -440,6 +437,20 @@ bool smf_nmbsmf_handle_mbs_session_create(
         // mbs_session_id or tmgi_alloc_req should be present, send error (400 + ERROR_INPUT_PARAMETERS)
         ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
             message, "Error input parameters", "MBS Session Create failed, no [mbsSessionId] nor [tmgiAllocReq] present",
+            NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    /* TS 29.571 V18.12.0 Nid, pattern '^[A-Fa-f0-9]{11}$': a NID that is not 11 hexadecimal digits is an
+     * erroneous input (TS 29.532 V18.6.0 table 6.2.7.3-1, ERROR_INPUT_PARAMETERS: "the provided set of input
+     * parameters are incomplete, erroneous or missing necessary information"). */
+    if (CreateReqData->mbs_session->mbs_session_id &&
+            CreateReqData->mbs_session->mbs_session_id->nid &&
+            !smf_nid_is_valid(CreateReqData->mbs_session->mbs_session_id->nid)) {
+        ogs_error("MBS Session Create: mbsSessionId.nid is not 11 hexadecimal digits");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            message, "Error input parameters", "MBS Session Create failed, [mbsSessionId.nid] is not 11 hexadecimal digits",
             NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
         rv = OGS_ERROR;
         goto cleanup;
@@ -686,6 +697,21 @@ bool smf_nmbsmf_handle_mbs_session_create(
         goto cleanup;
     }
 
+    /* TMGI and NID together identify the MBS session of an SNPN (TS 23.003 V18.8.0 cl. 30.2: "In a SNPN
+     * (Stand-alone Non-Public Network), TMGI is used together with NID (Network Identifier) to identify an
+     * MBS Session."): the NID of the request, else the one of this MB-SMF; none for a PLMN. */
+    if (mbs_sess->mbs_session_id.is_tmgi) {
+        const char *session_nid =
+                (CreateReqData->mbs_session->mbs_session_id &&
+                 CreateReqData->mbs_session->mbs_session_id->nid) ?
+            CreateReqData->mbs_session->mbs_session_id->nid : smf_own_nid();
+
+        if (session_nid) {
+            mbs_sess->mbs_session_id.nid = ogs_strdup(session_nid);
+            ogs_assert(mbs_sess->mbs_session_id.nid);
+        }
+    }
+
     mbs_sess->ingress_tun_addr_req = (CreateReqData->mbs_session->is_ingress_tun_addr_req &&
                                       CreateReqData->mbs_session->ingress_tun_addr_req != 0);
 
@@ -796,9 +822,6 @@ cleanup:
 
     if (expiration_time)
         ogs_free(expiration_time);
-
-    if (nid)
-        ogs_free(nid);
 
     if (ssm)
         ogs_free(ssm);
@@ -1114,7 +1137,8 @@ bool smf_nmbsmf_handle_mbs_session_patch(smf_mbs_sess_t *mbs_sess,
         Tmgi = ogs_sbi_build_tmgi(mbs_sess->tmgi);
         if (mbs_sess->mbs_session_id.is_tmgi) {
             Tmgi_copy = OpenAPI_tmgi_copy(Tmgi_copy, Tmgi);
-            Mbs_session_id = OpenAPI_mbs_session_id_create(Tmgi_copy, NULL, mbs_sess->mbs_session_id.nid);
+            Mbs_session_id = OpenAPI_mbs_session_id_create(Tmgi_copy, NULL,
+                    mbs_sess->mbs_session_id.nid ? ogs_strdup(mbs_sess->mbs_session_id.nid) : NULL);
         }
         if (mbs_sess->mbs_session_id.is_ssm) {
             Ssm = ogs_sbi_build_ssm(mbs_sess->mbs_session_id.ssm);

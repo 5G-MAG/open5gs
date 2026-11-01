@@ -25,6 +25,10 @@
 extern "C" {
 #endif
 
+/* The NID field of the MBS Session Identifier IE (TS 29.244 V18.10.0 cl. 8.2.206) from 11 hexadecimal
+ * digits. Returns false for anything else. */
+bool smf_n4mb_nid_to_octets(const char *nid, uint8_t octets[6]);
+
 ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
         smf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact);
 
