@@ -70,6 +70,7 @@ libsmf_sources = files('''
     nmbsmf-handler.h
     mbs-update.h
     mbs-subsc.h
+    mbs-n3mb.h
     n4mb-build.h
     n4mb-handler.h
 
@@ -114,6 +115,7 @@ libsmf_sources = files('''
     nmbsmf-handler.c
     mbs-update.c
     mbs-subsc.c
+    mbs-n3mb.c
     n4mb-build.c
     n4mb-handler.c
 '''.split())

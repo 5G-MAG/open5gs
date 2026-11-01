@@ -21,6 +21,7 @@
 #include "ngap-path.h"
 #include "binding.h"
 #include "namf-handler.h"
+#include "mbs-n3mb.h"
 
 bool smf_namf_comm_handle_n1_n2_message_transfer(
         smf_sess_t *sess, int state, ogs_sbi_message_t *recvmsg)
@@ -296,6 +297,26 @@ bool smf_namf_handle_mbs_broadcast_context_create_response(
 
     ogs_info("MBS Broadcast ContextCreate: mbsContextRef[%s]", amf->mbs_context_ref);
 
+    /* TS 29.518 V18.14.0 cl. 5.6.2.2 step 2a: "The 201 Created response shall contain MBS session identifier and may
+     * contain one or more N2 MBS Session Management containers". The MBS session identifier names this session;
+     * the containers and the completion are taken in. */
+    if (recvmsg->ContextCreateRspData) {
+        OpenAPI_context_create_rsp_data_t *rsp = recvmsg->ContextCreateRspData;
+        ogs_tmgi_t tmgi;
+
+        memset(&tmgi, 0, sizeof(tmgi));
+        if (rsp->mbs_session_id && rsp->mbs_session_id->tmgi)
+            ogs_sbi_parse_tmgi(&tmgi, rsp->mbs_session_id->tmgi);
+        if (!tmgi.mbs_service_id || !mbs_sess->tmgi ||
+                smf_mbs_sess_find_by_tmgi_and_area(&tmgi, mbs_sess->location_dependent,
+                    mbs_sess->area_session_id) != mbs_sess)
+            ogs_error("MBS Broadcast ContextCreate: the mbsSessionId of the 201 does not name this MBS session");
+        else
+            smf_mbs_sess_take_amf_answer(mbs_sess, amf, rsp->operation_status, rsp->n2_mbs_sm_info_list, recvmsg);
+    } else {
+        ogs_error("MBS Broadcast ContextCreate: the 201 has no content (mbsSessionId is mandatory)");
+    }
+
     return true;
 }
 
@@ -323,6 +344,13 @@ bool smf_namf_handle_mbs_broadcast_context_update_response(
     }
 
     ogs_info("MBS Broadcast ContextUpdate: mbsContextRef[%s] updated, with content", amf->mbs_context_ref);
+
+    /* the 200 "may contain one or more N2 MBS Session Management containers", and "If the AMF received the NG-RAN
+     * responses from all involved NG-RAN(s), the AMF shall include an indication of completion of the operation in
+     * all NG-RANs." */
+    if (recvmsg->ContextUpdateRspData)
+        smf_mbs_sess_take_amf_answer(mbs_sess, amf, recvmsg->ContextUpdateRspData->operation_status,
+                recvmsg->ContextUpdateRspData->n2_mbs_sm_info_list, recvmsg);
 
     return true;
 }
@@ -435,6 +463,28 @@ bool smf_namf_handle_mbs_broadcast_context_status_notify(
     if (ContextStatusNotification->released_ind ==
             OpenAPI_context_status_notification_RELEASEDIND__true)
         smf_mbs_sess_context_released(mbs_sess, amf);
+    else
+        /* the containers of the NG-RANs that answered after the AMF's own answer, and the completion of the
+         * operation (TS 29.518 cl. 5.6.2.2: "the AMF shall transfer such information by sending one or more
+         * Namf_MBSBroadcast_ContextStatusNotify requests to the MB-SMF") */
+        smf_mbs_sess_take_amf_answer(mbs_sess, amf, ContextStatusNotification->operation_status,
+                ContextStatusNotification->n2_mbs_sm_info_list, recvmsg);
+
+    /* operationEvents: "failure to reach one or more NG-RANs" (cl. 5.6.2.3: "The AMF may send one or more
+     * Namf_MBSBroadcast_ContextStatusNotify request including an operationEvents attribute to report the MB-SMF
+     * about failure to reach one or more NG-RANs.") What the MB-SMF does about it is the restoration of TS 23.527,
+     * not held: the events are reported in the log. */
+    if (ContextStatusNotification->operation_events) {
+        OpenAPI_lnode_t *node;
+
+        OpenAPI_list_for_each(ContextStatusNotification->operation_events, node) {
+            OpenAPI_operation_event_t *event = node->data;
+
+            if (event)
+                ogs_warn("MBS Broadcast ContextStatusNotify: operation event [%s]",
+                        OpenAPI_op_event_type_ToString(event->op_event_type));
+        }
+    }
 
     response = ogs_sbi_build_response(recvmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
     ogs_assert(response);

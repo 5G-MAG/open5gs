@@ -576,7 +576,22 @@ typedef struct smf_mbs_amf_s {
      * cl. 5.6.2.2), so that the context can be addressed again (DELETE /namf-mbs-bc/v1/mbs-contexts/{ref}, POST
      * .../{ref}/update). NULL until the AMF answered. */
     char *mbs_context_ref;
+
+    /* The AMF reported that the start of the broadcast MBS session is complete (TS 29.518 V18.14.0 table 6.5.6.2.3-1
+     * operationStatus: MBS_SESSION_START_COMPLETE) */
+    bool start_complete;
 } smf_mbs_amf_t;
+
+/* An N3mb DL tunnel of an NG-RAN node that wants the session by unicast transport (TS 23.247 V18.8.0 cl. 7.3.1 step
+ * 7: "N3mb DL Tunnel Info and corresponding NG-RAN ID"), and the MBS Unicast Parameters ID it has at the MB-UPF. */
+typedef struct smf_mbs_dl_tunnel_s {
+    ogs_lnode_t lnode;
+
+    char *ran_id;               /* the NG-RAN node: its GlobalRanNodeId as the AMF sent it (JSON text) */
+    ogs_ip_t addr;              /* transport layer address of the tunnel */
+    uint32_t teid;
+    uint16_t unicast_params_id; /* MBS Unicast Parameters ID, from 1 */
+} smf_mbs_dl_tunnel_t;
 
 /* A status subscription of an MBS session (TS 29.532 V18.6.0 cl. 5.3.2.6, StatusSubscribe), the resource
  * /mbs-sessions/subscriptions/{subscriptionId} */
@@ -615,6 +630,13 @@ typedef struct smf_mbs_sess_s {
      * has an mbs_context_ref once its AMF answered the Namf_MBSBroadcast ContextCreate with "201 Created". */
     ogs_list_t amf_list;
     uint32_t next_amf_id;
+
+    /* every AMF that holds a context has reported the start complete: the session has started */
+    bool started;
+
+    /* the N3mb DL tunnels the NG-RANs gave (unicast transport between the MB-UPF and the NG-RAN) */
+    ogs_list_t dl_tunnel_list;
+    uint16_t next_dl_tunnel_id;
 
     // Multicast specific
     OpenAPI_mbs_session_activity_status_e activity_status;
@@ -841,6 +863,12 @@ smf_mbs_sess_t *smf_mbs_sess_find_by_tmgi(ogs_tmgi_t *tmgi_to_find);
 smf_mbs_amf_t *smf_mbs_sess_amf_add(smf_mbs_sess_t *mbs_sess);
 smf_mbs_amf_t *smf_mbs_sess_amf_find(smf_mbs_sess_t *mbs_sess, uint32_t id);
 void smf_mbs_sess_amf_remove(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf);
+/* The N3mb DL tunnel of an NG-RAN node: made, or replaced when the node gave another one; *changed tells whether
+ * it is new or another one. */
+smf_mbs_dl_tunnel_t *smf_mbs_sess_dl_tunnel_set(smf_mbs_sess_t *mbs_sess, const char *ran_id,
+        const ogs_ip_t *addr, uint32_t teid, bool *changed);
+smf_mbs_dl_tunnel_t *smf_mbs_sess_dl_tunnel_find(smf_mbs_sess_t *mbs_sess, const char *ran_id);
+void smf_mbs_sess_dl_tunnel_remove(smf_mbs_sess_t *mbs_sess, smf_mbs_dl_tunnel_t *tunnel);
 /* The AMF reported its broadcast MBS session context released: the entry goes. */
 void smf_mbs_sess_context_released(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf);
 smf_mbs_sess_t *smf_mbs_sess_find_by_tmgi_and_area(ogs_tmgi_t *tmgi_to_find, bool has_area_session_id, uint16_t area_session_id);

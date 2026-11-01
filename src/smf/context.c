@@ -3781,6 +3781,59 @@ void smf_mbs_sess_amf_remove(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf)
     ogs_free(amf);
 }
 
+smf_mbs_dl_tunnel_t *smf_mbs_sess_dl_tunnel_find(smf_mbs_sess_t *mbs_sess, const char *ran_id)
+{
+    smf_mbs_dl_tunnel_t *tunnel = NULL;
+
+    ogs_assert(mbs_sess);
+    ogs_assert(ran_id);
+
+    ogs_list_for_each(&mbs_sess->dl_tunnel_list, tunnel)
+        if (strcmp(tunnel->ran_id, ran_id) == 0)
+            return tunnel;
+
+    return NULL;
+}
+
+smf_mbs_dl_tunnel_t *smf_mbs_sess_dl_tunnel_set(smf_mbs_sess_t *mbs_sess, const char *ran_id,
+        const ogs_ip_t *addr, uint32_t teid, bool *changed)
+{
+    smf_mbs_dl_tunnel_t *tunnel = NULL;
+
+    ogs_assert(mbs_sess);
+    ogs_assert(ran_id);
+    ogs_assert(addr);
+
+    tunnel = smf_mbs_sess_dl_tunnel_find(mbs_sess, ran_id);
+    if (tunnel) {
+        if (changed)
+            *changed = tunnel->teid != teid || tunnel->addr.ipv4 != addr->ipv4 || tunnel->addr.ipv6 != addr->ipv6 ||
+                tunnel->addr.addr != addr->addr || memcmp(tunnel->addr.addr6, addr->addr6, OGS_IPV6_LEN) != 0;
+    } else {
+        tunnel = ogs_calloc(1, sizeof(*tunnel));
+        ogs_assert(tunnel);
+        tunnel->ran_id = ogs_strdup(ran_id);
+        tunnel->unicast_params_id = ++mbs_sess->next_dl_tunnel_id;
+        ogs_list_add(&mbs_sess->dl_tunnel_list, tunnel);
+        if (changed)
+            *changed = true;
+    }
+    tunnel->addr = *addr;
+    tunnel->teid = teid;
+
+    return tunnel;
+}
+
+void smf_mbs_sess_dl_tunnel_remove(smf_mbs_sess_t *mbs_sess, smf_mbs_dl_tunnel_t *tunnel)
+{
+    ogs_assert(mbs_sess);
+    ogs_assert(tunnel);
+
+    ogs_list_remove(&mbs_sess->dl_tunnel_list, tunnel);
+    ogs_free(tunnel->ran_id);
+    ogs_free(tunnel);
+}
+
 /* The AMF reported its broadcast MBS session context released: there is no mbsContextRef to address any more, so
  * a later release of the MBS session sends nothing to that AMF. */
 void smf_mbs_sess_context_released(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf)
@@ -3870,6 +3923,13 @@ static void smf_mbs_sess_free(smf_mbs_sess_t *smf_mbs_sess)
 
         ogs_list_for_each_safe(&smf_mbs_sess->amf_list, next_amf, amf)
             smf_mbs_sess_amf_remove(smf_mbs_sess, amf);
+    }
+
+    {
+        smf_mbs_dl_tunnel_t *tunnel = NULL, *next_tunnel = NULL;
+
+        ogs_list_for_each_safe(&smf_mbs_sess->dl_tunnel_list, next_tunnel, tunnel)
+            smf_mbs_sess_dl_tunnel_remove(smf_mbs_sess, tunnel);
     }
 
     if (smf_mbs_sess->service_type)

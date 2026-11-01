@@ -17,6 +17,8 @@
 #include "nmbsmf-handler.h"
 #include "mbs-update.h"
 #include "mbs-subsc.h"
+#include "mbs-n3mb.h"
+#include "asn_internal.h"
 
 static int checks, failures;
 
@@ -1737,6 +1739,190 @@ static void test_status_subscription(void)
     CHECK(ogs_list_count(&smf_self()->smf_mbs_subsc_list) == before);
 }
 
+/* The container of an NG-RAN: MBS Session Setup or Modification Response Transfer with a shared unicast tunnel
+ * (TS 38.413 V18.8.0 clause 9.3.5.5, "MBS Session TNL Information NG-RAN | O"), or without; and the Failure
+ * Transfer (clause 9.3.5.6, "Cause | M"). */
+static ogs_pkbuf_t *encode_response_transfer(bool with_tunnel, const char *addr, uint32_t teid)
+{
+    NGAP_MBSSessionSetupOrModResponseTransfer_t transfer;
+    ogs_pkbuf_t *pkbuf;
+
+    memset(&transfer, 0, sizeof(transfer));
+    if (with_tunnel) {
+        NGAP_MBS_SessionTNLInfoNGRAN_t *tnl = CALLOC(1, sizeof(*tnl));
+        NGAP_UPTransportLayerInformation_t *up = CALLOC(1, sizeof(*up));
+        NGAP_GTPTunnel_t *gtp = CALLOC(1, sizeof(*gtp));
+        ogs_ip_t ip;
+        struct in_addr a4;
+
+        memset(&ip, 0, sizeof(ip));
+        inet_pton(AF_INET, addr, &a4);
+        ip.ipv4 = 1;
+        ip.addr = a4.s_addr;
+        ip.len = OGS_IPV4_LEN;
+        ogs_asn_ip_to_BIT_STRING(&ip, &gtp->transportLayerAddress);
+        ogs_asn_uint32_to_OCTET_STRING(teid, &gtp->gTP_TEID);
+        up->present = NGAP_UPTransportLayerInformation_PR_gTPTunnel;
+        up->choice.gTPTunnel = gtp;
+        tnl->present = NGAP_MBS_SessionTNLInfoNGRAN_PR_locationindependent;
+        tnl->choice.locationindependent = up;
+        transfer.mBS_SessionTNLInfoNGRAN = tnl;
+    }
+    /* the encoder frees what it encoded */
+    pkbuf = ogs_asn_encode(&asn_DEF_NGAP_MBSSessionSetupOrModResponseTransfer, &transfer);
+    return pkbuf;
+}
+
+static ogs_pkbuf_t *encode_failure_transfer(long radio_network_cause)
+{
+    NGAP_MBSSessionSetupOrModFailureTransfer_t transfer;
+    ogs_pkbuf_t *pkbuf;
+
+    memset(&transfer, 0, sizeof(transfer));
+    transfer.cause.present = NGAP_Cause_PR_radioNetwork;
+    transfer.cause.choice.radioNetwork = radio_network_cause;
+    pkbuf = ogs_asn_encode(&asn_DEF_NGAP_MBSSessionSetupOrModFailureTransfer, &transfer);
+    return pkbuf;
+}
+
+static const char *const ran_a_text = "{\"plmnId\":{\"mcc\":\"001\",\"mnc\":\"01\"},\"gNbId\":{\"bitLength\":24,\"gNBValue\":\"000001\"}}";
+
+static OpenAPI_n2_mbs_sm_info_t *n2_info(OpenAPI_ngap_ie_type_e type, const char *content_id, const char *ran_text)
+{
+    cJSON *json = ran_text ? cJSON_Parse(ran_text) : NULL;
+    OpenAPI_global_ran_node_id_t *ran = json ? OpenAPI_global_ran_node_id_parseFromJSON(json) : NULL;
+
+    if (json) cJSON_Delete(json);
+    return OpenAPI_n2_mbs_sm_info_create(type,
+            content_id ? OpenAPI_ref_to_binary_data_create(ogs_strdup((char *)content_id)) : NULL, ran);
+}
+
+/* TS 29.518 V18.14.0 cl. 5.6.2.2 and table 6.5.6.2.3-1; TS 23.247 V18.8.0 cl. 7.3.1 step 7: "The MB-SMF stores the
+ * AMF(s) which responds success in the MBS Session Context as the downstream nodes." and, for unicast N3mb transport,
+ * the DL tunnel with its NG-RAN ID; cl. 7.3.5: the session has started once every AMF completed the operation. */
+static void test_amf_answer(void)
+{
+    smf_mbs_sess_t *mbs_sess = make_session(NULL, area_1_text);
+    smf_mbs_amf_t *amf1, *amf2;
+    ogs_sbi_message_t answer;
+    OpenAPI_list_t *list;
+    OpenAPI_lnode_t *node;
+    smf_mbs_dl_tunnel_t *tunnel;
+    ogs_pkbuf_t *rsp_a, *rsp_none, *fail;
+    int changes;
+    char *ran_a;
+    OpenAPI_global_ran_node_id_t *ran;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+    amf1 = smf_mbs_sess_amf_add(mbs_sess);
+    amf2 = smf_mbs_sess_amf_add(mbs_sess);
+    amf1->mbs_context_ref = ogs_strdup("1");
+    amf2->mbs_context_ref = ogs_strdup("2");
+
+    /* completion: the session has started when every AMF with a context completed the start */
+    memset(&answer, 0, sizeof(answer));
+    CHECK(smf_mbs_sess_take_amf_answer(mbs_sess, amf1, OpenAPI_operation_status_MBS_SESSION_START_INCOMPLETE, NULL,
+            &answer) == 0);
+    CHECK(!amf1->start_complete && !mbs_sess->started);
+    smf_mbs_sess_take_amf_answer(mbs_sess, amf1, OpenAPI_operation_status_MBS_SESSION_START_COMPLETE, NULL, &answer);
+    CHECK(amf1->start_complete && !amf2->start_complete && !mbs_sess->started);
+    smf_mbs_sess_take_amf_answer(mbs_sess, NULL, OpenAPI_operation_status_MBS_SESSION_START_COMPLETE, NULL, &answer);
+    CHECK(!mbs_sess->started);      /* a notification of an unknown AMF completes nothing */
+    smf_mbs_sess_take_amf_answer(mbs_sess, amf2, OpenAPI_operation_status_MBS_SESSION_START_COMPLETE, NULL, &answer);
+    CHECK(amf2->start_complete && mbs_sess->started);
+
+    /* an NG-RAN's unicast tunnel, from the container of its response */
+    rsp_a = encode_response_transfer(true, "10.20.30.40", 0xabcd0001);
+    rsp_none = encode_response_transfer(false, NULL, 0);
+    fail = encode_failure_transfer(NGAP_CauseRadioNetwork_unspecified);
+    CHECK(rsp_a && rsp_none && fail);
+    if (!rsp_a || !rsp_none || !fail) return;
+    {
+        bool has_tunnel = false;
+        ogs_ip_t addr;
+        uint32_t teid = 0;
+        int group = 0;
+        long value = 0;
+
+        CHECK(smf_mbs_n3mb_parse_response_transfer(rsp_a, false, 0, &has_tunnel, &addr, &teid) && has_tunnel &&
+                addr.ipv4 && teid == 0xabcd0001);
+        CHECK(smf_mbs_n3mb_parse_response_transfer(rsp_none, false, 0, &has_tunnel, &addr, &teid) && !has_tunnel);
+        CHECK(smf_mbs_n3mb_parse_failure_transfer(fail, &group, &value) && group == NGAP_Cause_PR_radioNetwork &&
+                value == NGAP_CauseRadioNetwork_unspecified);
+    }
+
+    memset(&answer, 0, sizeof(answer));
+    answer.part[0].pkbuf = rsp_a;
+    answer.part[0].content_id = (char *)"n2-a";
+    answer.part[1].pkbuf = rsp_none;
+    answer.part[1].content_id = (char *)"n2-none";
+    answer.part[2].pkbuf = fail;
+    answer.part[2].content_id = (char *)"n2-fail";
+    answer.num_of_part = 3;
+
+    ran = OpenAPI_global_ran_node_id_parseFromJSON(cJSON_Parse(ran_a_text));
+    ran_a = smf_mbs_ran_id_text(ran);
+    OpenAPI_global_ran_node_id_free(ran);
+
+    list = OpenAPI_list_create();
+    OpenAPI_list_add(list, n2_info(OpenAPI_ngap_ie_type_MBS_SES_RSP, "n2-a", ran_a_text));
+    changes = smf_mbs_sess_take_amf_answer(mbs_sess, amf1, OpenAPI_operation_status_NULL, list, &answer);
+    CHECK(changes == 1);
+    tunnel = smf_mbs_sess_dl_tunnel_find(mbs_sess, ran_a);
+    CHECK(tunnel != NULL && tunnel->teid == 0xabcd0001 && tunnel->addr.ipv4 && tunnel->unicast_params_id == 1);
+    /* the same tunnel again is no change; a container without a tunnel changes nothing */
+    changes = smf_mbs_sess_take_amf_answer(mbs_sess, amf1, OpenAPI_operation_status_NULL, list, &answer);
+    CHECK(changes == 0 && ogs_list_count(&mbs_sess->dl_tunnel_list) == 1);
+    OpenAPI_list_for_each(list, node)
+        OpenAPI_n2_mbs_sm_info_free(node->data);
+    OpenAPI_list_free(list);
+    list = OpenAPI_list_create();
+    OpenAPI_list_add(list, n2_info(OpenAPI_ngap_ie_type_MBS_SES_RSP, "n2-none", ran_a_text));
+    changes = smf_mbs_sess_take_amf_answer(mbs_sess, amf1, OpenAPI_operation_status_NULL, list, &answer);
+    CHECK(changes == 0 && ogs_list_count(&mbs_sess->dl_tunnel_list) == 1);
+    /* a container that is not in the message is left alone */
+    OpenAPI_list_for_each(list, node)
+        OpenAPI_n2_mbs_sm_info_free(node->data);
+    OpenAPI_list_free(list);
+    list = OpenAPI_list_create();
+    OpenAPI_list_add(list, n2_info(OpenAPI_ngap_ie_type_MBS_SES_RSP, "n2-missing", ran_a_text));
+    changes = smf_mbs_sess_take_amf_answer(mbs_sess, amf1, OpenAPI_operation_status_NULL, list, &answer);
+    CHECK(changes == 0 && ogs_list_count(&mbs_sess->dl_tunnel_list) == 1);
+    OpenAPI_list_for_each(list, node)
+        OpenAPI_n2_mbs_sm_info_free(node->data);
+    OpenAPI_list_free(list);
+
+    /* a failure of the NG-RAN takes its tunnel away; its release too */
+    list = OpenAPI_list_create();
+    OpenAPI_list_add(list, n2_info(OpenAPI_ngap_ie_type_MBS_SES_FAIL, "n2-fail", ran_a_text));
+    changes = smf_mbs_sess_take_amf_answer(mbs_sess, amf1, OpenAPI_operation_status_NULL, list, &answer);
+    CHECK(changes == 1 && ogs_list_empty(&mbs_sess->dl_tunnel_list));
+    OpenAPI_list_for_each(list, node)
+        OpenAPI_n2_mbs_sm_info_free(node->data);
+    OpenAPI_list_free(list);
+    list = OpenAPI_list_create();
+    OpenAPI_list_add(list, n2_info(OpenAPI_ngap_ie_type_MBS_SES_RSP, "n2-a", ran_a_text));
+    smf_mbs_sess_take_amf_answer(mbs_sess, amf1, OpenAPI_operation_status_NULL, list, &answer);
+    CHECK(ogs_list_count(&mbs_sess->dl_tunnel_list) == 1);
+    OpenAPI_list_for_each(list, node)
+        OpenAPI_n2_mbs_sm_info_free(node->data);
+    OpenAPI_list_free(list);
+    list = OpenAPI_list_create();
+    OpenAPI_list_add(list, n2_info(OpenAPI_ngap_ie_type_MBS_SES_REL_RSP, NULL, ran_a_text));
+    changes = smf_mbs_sess_take_amf_answer(mbs_sess, amf1, OpenAPI_operation_status_NULL, list, &answer);
+    CHECK(changes == 1 && ogs_list_empty(&mbs_sess->dl_tunnel_list));
+    OpenAPI_list_for_each(list, node)
+        OpenAPI_n2_mbs_sm_info_free(node->data);
+    OpenAPI_list_free(list);
+
+    ogs_free(ran_a);
+    ogs_pkbuf_free(rsp_a);
+    ogs_pkbuf_free(rsp_none);
+    ogs_pkbuf_free(fail);
+    smf_mbs_sess_release(mbs_sess);
+}
+
 /* TS 24.008 V18.8.0 figure 10.5.154 (octets 3 to 8 of the TMGI, as TS 29.244 V18.10.0 cl. 8.2.206 requires):
  * octet 6 "MCC digit 2 | MCC digit 1", octet 7 "MNC digit 3 | MCC digit 3", octet 8 "MNC digit 2 | MNC digit 1"
  * (a two-digit MNC leaves digit 3 as F, as the identity form of the IE says: "If a network operator decides to use
@@ -1847,6 +2033,7 @@ int main(void)
     test_update_reduced_area();
     test_amf_entries();
     test_status_subscription();
+    test_amf_answer();
     test_context_update_request();
     test_local_ingress_tunnel_choose();
     test_ip_multicast_addressing_info_layout();

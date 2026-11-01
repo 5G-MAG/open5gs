@@ -535,9 +535,6 @@ static int client_notify_cb(
 static int mbs_status_notify_cb(
         int status, ogs_sbi_response_t *response, void *data)
 {
-    int rv;
-    ogs_sbi_message_t message;
-
     if (status != OGS_OK) {
         ogs_log_message(
                 status == OGS_DONE ? OGS_LOG_DEBUG : OGS_LOG_WARN, 0,
@@ -547,19 +544,12 @@ static int mbs_status_notify_cb(
 
     ogs_assert(response);
 
-    rv = ogs_sbi_parse_response(&message, response);
-    if (rv != OGS_OK) {
-        ogs_error("cannot parse HTTP response");
-        ogs_sbi_message_free(&message);
-        ogs_sbi_response_free(response);
-        return OGS_ERROR;
-    }
+    /* TS 29.532 V18.6.0 cl. 5.3.2.8.1 step 2a: "On success, the MB-SMF shall return a "204 No Content" response."
+     * The target is the subscriber's own URI, which does not follow the 3GPP path of the SBI parser: the status is
+     * all there is to read. */
+    if (response->status != OGS_SBI_HTTP_STATUS_NO_CONTENT)
+        ogs_error("MBS Session StatusNotify failed [%d]", response->status);
 
-    /* TS 29.532 V18.6.0 cl. 5.3.2.8.1 step 2a: "On success, the MB-SMF shall return a "204 No Content" response." */
-    if (message.res_status != OGS_SBI_HTTP_STATUS_NO_CONTENT)
-        ogs_error("MBS Session StatusNotify failed [%d]", message.res_status);
-
-    ogs_sbi_message_free(&message);
     ogs_sbi_response_free(response);
     return OGS_OK;
 }
