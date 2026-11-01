@@ -32,6 +32,7 @@ T_N4MB_CTRL, T_MBS_MC_PARAMS, T_N4MB_INFO, T_MBS_ID, T_MC_TRANSPORT, T_N4MB_FLAG
 CAUSE_ACCEPTED, CAUSE_PARTIAL, CAUSE_REJECTED, CAUSE_CONTEXT_NOT_FOUND = 1, 3, 64, 65
 CAUSE_MANDATORY_MISSING, CAUSE_CONDITIONAL_MISSING, CAUSE_INVALID_LENGTH, CAUSE_MANDATORY_INCORRECT = 66, 67, 68, 69
 CAUSE_RULE_FAILURE, CAUSE_NO_RESOURCES, CAUSE_SERVICE_NOT_SUPPORTED, CAUSE_SYSTEM_FAILURE = 73, 75, 76, 77
+CAUSE_RESTORATION_FAILURE = 86
 
 
 
@@ -1720,6 +1721,96 @@ def t_U04_4_data_from_ipv6_joins_reaches_n3mb():
             U.delete(s)
     finally:
         U.restart()
+
+
+def mti(c_teid, dest, src, dest_tl=0x04, src_tl=0x04):
+    """Multicast Transport Information (Figure 8.2.207-1) for the MBS Session N4mb Control Information."""
+    return ie(T_MC_TRANSPORT, b'\x00' + struct.pack('>I', c_teid) + bytes([dest_tl]) + dest + bytes([src_tl]) + src)
+
+
+def resti_request(cp_seid, info, flags=0x04, extra_ctrl=()):
+    """PFCP session restoration: the RESTI flag and, instead of PLLSSM, the low layer SSM and the C-TEID of the session
+    before the MB-UPF restarted (TS 29.244 cl. 5.34.2.1A NOTE 1, Table 7.5.2.1-4)."""
+    ies = mc_request(cp_seid, b'\x02' + V4G, None, flags=None)
+    ctrl = n4mb_ctrl(flags=flags, extra=([info] if info is not None else []) + list(extra_ctrl))
+    return replace_ie(ies, T_N4MB_CTRL, ctrl)
+
+
+UPF_ADDR = socket.inet_aton('127.0.0.31')
+
+
+@test
+def t_U02_9_restoration_with_the_requested_llssm_and_c_teid():
+    group = socket.inet_aton('239.77.0.1')
+    r = U.establish(resti_request(0xe601, mti(0x00abcdef, group, UPF_ADDR)))
+    s = accepted(r, 'restoration')
+    assert find(r, T_N4MB_INFO) is None, 'a low layer SSM was returned though PLLSSM was not set'
+    lst = N3mbListener('239.77.0.1')
+    try:
+        send_multicast('10.46.0.1', '232.1.1.1')
+        pk = lst.packets()
+        assert pk, 'nothing on the requested group'
+        assert gtpu_parse(pk[0])['teid'] == 0x00abcdef, 'TEID %08x, requested 00abcdef' % gtpu_parse(pk[0])['teid']
+        # the group is held: another restoration for it is refused, whatever its C-TEID
+        r2 = U.establish(resti_request(0xe602, mti(0x1234, group, UPF_ADDR)))
+        assert r2 and cause(r2) == CAUSE_RESTORATION_FAILURE and offending(r2) == T_MC_TRANSPORT, 'same group: %s/%s' % (
+            cause(r2) if r2 else None, offending(r2) if r2 else None)
+    finally:
+        lst.close()
+    # and what the allocation gives to a session without RESTI is never a held group: sessions asking for the
+    # addresses the allocator would hand out next
+    held = [accepted(U.establish(resti_request(0xe610 + i, mti(0x100 + i, socket.inet_aton('239.0.0.%d' % (4 + 3 + i)), UPF_ADDR))), 'held group %d' % i) for i in range(5)]
+    got = []
+    for i in range(6):
+        r = U.establish(good(cp_seid=0xe620 + i))
+        held.append(accepted(r, 'allocated session %d' % i))
+        got.append(mc_group_of(r))
+    taken = ['239.0.0.%d' % (4 + 3 + i) for i in range(5)]
+    assert len(set(got)) == len(got) and not set(got) & set(taken), 'allocated groups %s, held by restoration %s' % (got, taken)
+    for h in held:
+        U.delete(h)
+    # after the restoration session ends, the group is free again
+    U.delete(s)
+    accepted_and_deleted(U.establish(resti_request(0xe603, mti(0x1234, group, UPF_ADDR))), 'the group after the session ended')
+
+
+@test
+def t_U02_9_restoration_that_cannot_be_served():
+    ok_group = socket.inet_aton('239.77.0.2')
+    # a source that is not an address of the MB-UPF
+    r = U.establish(resti_request(0xe631, mti(7, ok_group, socket.inet_aton('10.9.9.9'))))
+    assert r and cause(r) == CAUSE_RESTORATION_FAILURE and offending(r) == T_MC_TRANSPORT, 'foreign source: %s/%s' % (cause(r) if r else None, offending(r) if r else None)
+    # IPv6 low layer SSM with no IPv6 GTP-U socket on the MB-UPF
+    r = U.establish(resti_request(0xe632, mti(7, G6, S6, dest_tl=0x50, src_tl=0x50)))
+    assert r and cause(r) == CAUSE_RESTORATION_FAILURE, 'IPv6 without socket: %s' % (cause(r) if r else None)
+    # content that is not valid: not a multicast group, truncated, bad address type/length combination
+    r = U.establish(resti_request(0xe633, mti(7, socket.inet_aton('10.1.1.1'), UPF_ADDR)))
+    assert r and cause(r) == CAUSE_MANDATORY_INCORRECT and offending(r) == T_MC_TRANSPORT, 'unicast group: %s/%s' % (cause(r) if r else None, offending(r) if r else None)
+    r = U.establish(resti_request(0xe634, ie(T_MC_TRANSPORT, b'\x00\x00\x00\x00\x07\x04' + ok_group[:2])))
+    assert r and cause(r) == CAUSE_INVALID_LENGTH and offending(r) == T_MC_TRANSPORT, 'truncated: %s/%s' % (cause(r) if r else None, offending(r) if r else None)
+    r = U.establish(resti_request(0xe635, mti(7, ok_group, UPF_ADDR, dest_tl=0x10)))
+    assert r and cause(r) == CAUSE_MANDATORY_INCORRECT, 'type 0 length 16: %s' % (cause(r) if r else None)
+    r = U.establish(resti_request(0xe636, mti(7, ok_group, UPF_ADDR) + b'\x00'))
+    assert r is None or cause(r) != CAUSE_ACCEPTED, 'trailing octet accepted'
+    # the Local Ingress Tunnel the MB-SMF chose is not available (port held by another process): restoration failure
+    occ = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    occ.bind(('127.0.0.31', 39300))
+    try:
+        lit = ie(T_LIT, b'\x01' + struct.pack('>H', 39300) + socket.inet_aton('127.0.0.31'))
+        r = U.establish(resti_request(0xe637, mti(7, ok_group, UPF_ADDR)) + [ie(T_CREATE_TE, [lit])])
+        assert r and cause(r) == CAUSE_RESTORATION_FAILURE and offending(r) == T_LIT, 'ingress tunnel in use: %s/%s' % (cause(r) if r else None, offending(r) if r else None)
+        # without RESTI the same bind failure is a system failure as before
+        r = U.establish(with_te(good(cp_seid=0xe638), lit))
+        assert r and cause(r) == CAUSE_SYSTEM_FAILURE, 'no RESTI: %s' % (cause(r) if r else None)
+    finally:
+        occ.close()
+    # the failures left nothing: the group is free
+    accepted_and_deleted(U.establish(resti_request(0xe639, mti(7, ok_group, UPF_ADDR))), 'after the failures')
+    # the Multicast Transport Information without RESTI is not a request for those addresses
+    r = U.establish(replace_ie(good(cp_seid=0xe63a), T_N4MB_CTRL, n4mb_ctrl(flags=0x01, extra=[mti(9, ok_group, UPF_ADDR)])))
+    s = accepted(r, 'MTI without RESTI')
+    assert mc_group_of(r) != '239.77.0.2', 'the group of an IE sent without RESTI was used'
+    U.delete(s)
 
 
 # E-TESTS-BELOW

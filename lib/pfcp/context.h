@@ -553,6 +553,10 @@ void ogs_pfcp_pool_init(ogs_pfcp_sess_t *sess);
 void ogs_pfcp_pool_final(ogs_pfcp_sess_t *sess);
 
 ogs_ssm_t *ogs_pfcp_llssm_add(void);
+/* The low layer SSM the CP function asked for (MBS restoration): NULL if the pool is exhausted or the destination is
+ * in use by another low layer SSM. */
+ogs_ssm_t *ogs_pfcp_llssm_add_requested(const ogs_ip_t *dest_ip_addr, const ogs_ip_t *src_ip_addr);
+bool ogs_pfcp_llssm_dest_in_use(const ogs_ip_t *dest_ip_addr);
 void ogs_pfcp_llssm_remove(ogs_ssm_t *ll_ssm);
 void ogs_pfcp_llssm_remove_all(void);
 

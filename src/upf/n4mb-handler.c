@@ -335,6 +335,92 @@ static int _join_session_ssm(upf_mbs_sess_t *mbs_sess, uint8_t *cause_value, uin
 }
 
 /*
+ * The Multicast Transport Information IE of the request (TS 29.244 cl. 8.2.207, Figure 8.2.207-1): octet 5 spare,
+ * octets 6 to 9 the C-TEID, then the IP multicast distribution address and the IP source address, each behind an
+ * octet with the Address Type (bits 8 and 7) and the Address Length (bits 6 to 1). "Other combinations of values are
+ * not valid." Returns the cause for an IE that is not valid, else OGS_PFCP_CAUSE_REQUEST_ACCEPTED.
+ */
+static uint8_t _decode_multicast_transport_information(const ogs_tlv_octet_t *ie,
+        uint32_t *c_teid, ogs_ip_t *dest, ogs_ip_t *src)
+{
+    const uint8_t *d = ie->data;
+    size_t len = ie->len, pos = 5;
+    ogs_ip_t *out[2] = { dest, src };
+    int i;
+
+    if (len < 5 + 1)
+        return OGS_PFCP_CAUSE_INVALID_LENGTH;
+    *c_teid = (uint32_t)d[1] << 24 | (uint32_t)d[2] << 16 | (uint32_t)d[3] << 8 | d[4];
+
+    for (i = 0; i < 2; i++) {
+        unsigned int type, alen;
+
+        if (pos >= len)
+            return OGS_PFCP_CAUSE_INVALID_LENGTH;
+        type = d[pos] >> 6;
+        alen = d[pos] & 0x3f;
+        pos++;
+        if (!((type == 0 && alen == OGS_IPV4_LEN) || (type == 1 && alen == OGS_IPV6_LEN)))
+            return OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+        if (pos + alen > len)
+            return OGS_PFCP_CAUSE_INVALID_LENGTH;
+        memset(out[i], 0, sizeof(*out[i]));
+        if (type == 0) {
+            out[i]->ipv4 = 1;
+            out[i]->len = OGS_IPV4_LEN;
+            memcpy(&out[i]->addr, d + pos, OGS_IPV4_LEN);
+        } else {
+            out[i]->ipv6 = 1;
+            out[i]->len = OGS_IPV6_LEN;
+            memcpy(out[i]->addr6, d + pos, OGS_IPV6_LEN);
+        }
+        pos += alen;
+    }
+    if (pos != len)
+        return OGS_PFCP_CAUSE_INVALID_LENGTH;
+
+    /* the destination is an IP multicast address and the source a unicast address of its family */
+    if (dest->ipv4 != src->ipv4)
+        return OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+    if (dest->ipv4 ? !IN_MULTICAST(be32toh(dest->addr)) : dest->addr6[0] != 0xff)
+        return OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+    if (src->ipv4 ? (src->addr == 0 || IN_MULTICAST(be32toh(src->addr))) :
+            (src->addr6[0] == 0xff || memcmp(src->addr6, &in6addr_any, OGS_IPV6_LEN) == 0))
+        return OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+
+    return OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
+}
+
+/*
+ * Whether the MB-UPF can use the low layer SSM that the MB-SMF asks for in an MBS restoration (TS 29.244 Table 7.5.2.1-4
+ * NOTE: "If one requested address is not available at the MB-UPF, the MB-UPF shall reject the PFCP Session
+ * Establishment Request with the cause "PFCP session restoration failure due to requested resource not available""):
+ * the group is not held by another session, and the source is an address the MB-UPF sends GTP-U from (a configured
+ * upf.gtpu address; for IPv6 there has to be an IPv6 GTP-U socket).
+ */
+static bool _requested_llssm_available(const ogs_ip_t *dest, const ogs_ip_t *src)
+{
+    ogs_socknode_t *node = NULL;
+    ogs_sockaddr_t *addr = NULL;
+
+    if (ogs_pfcp_llssm_dest_in_use(dest))
+        return false;
+    if (!src->ipv4 && !ogs_gtp_self()->gtpu_sock6)
+        return false;
+
+    ogs_list_for_each(&ogs_gtp_self()->gtpu_list, node) {
+        for (addr = node->addr; addr; addr = addr->next) {
+            if (src->ipv4 && addr->ogs_sa_family == AF_INET && addr->sin.sin_addr.s_addr == src->addr)
+                return true;
+            if (!src->ipv4 && addr->ogs_sa_family == AF_INET6 &&
+                    memcmp(&addr->sin6.sin6_addr, src->addr6, OGS_IPV6_LEN) == 0)
+                return true;
+        }
+    }
+    return false;
+}
+
+/*
  * Checks that the mandatory IEs of an N4mb Session Establishment Request are present. On a failure the
  * response has been sent and false is returned, and no session has been allocated.
  */
@@ -449,6 +535,29 @@ bool upf_n4mb_check_session_establishment_request(
         offending_ie_value = OGS_PFCP_AREA_SESSION_ID_TYPE;
     }
 
+    /* MBS restoration: the low layer SSM and the C-TEID that the MB-SMF asks for */
+    if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED &&
+            req->mbs_session_n4mb_control_information.mbsn4mbreq_flags.presence &&
+            req->mbs_session_n4mb_control_information.mbsn4mbreq_flags.len >= 1 &&
+            ((ogs_pfcp_mbsn4mbreq_flags_t *)req->mbs_session_n4mb_control_information.mbsn4mbreq_flags.data)->
+                restoration_indication &&
+            req->mbs_session_n4mb_control_information.multicast_transport_information_for_n3mb_and_or_n19mb.presence) {
+        uint32_t c_teid;
+        ogs_ip_t dest, src;
+
+        cause_value = _decode_multicast_transport_information(
+                &req->mbs_session_n4mb_control_information.multicast_transport_information_for_n3mb_and_or_n19mb,
+                &c_teid, &dest, &src);
+        if (cause_value != OGS_PFCP_CAUSE_REQUEST_ACCEPTED) {
+            ogs_error("Multicast Transport Information of the restoration is not valid (cause %u)", cause_value);
+            offending_ie_value = OGS_PFCP_MULTICAST_TRANSPORT_INFORMATION_TYPE;
+        } else if (!_requested_llssm_available(&dest, &src)) {
+            ogs_error("The low layer SSM of the restoration is not available");
+            cause_value = OGS_PFCP_CAUSE_RESTORATION_FAILURE_RESOURCE_NOT_AVAILABLE;
+            offending_ie_value = OGS_PFCP_MULTICAST_TRANSPORT_INFORMATION_TYPE;
+        }
+    }
+
     if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED &&
             req->mbs_session_n4mb_control_information.mbs_session_identifier.presence) {
         ogs_pfcp_mbs_session_identifier_t mbs_session_identifier;
@@ -489,11 +598,28 @@ void upf_n4mb_handle_session_establishment_request(
     ogs_pfcp_pdr_t *created_pdr[OGS_MAX_NUM_OF_PDR];
     ogs_pfcp_mbs_session_identifier_t mbs_session_identifier;
     int num_of_created_pdr = 0;
+    bool resti = false, requested_llssm = false;
+    uint32_t requested_c_teid = 0;
+    ogs_ip_t requested_dest, requested_src;
 
     ogs_assert(xact);
     ogs_assert(req);
 
     ogs_debug("N4mb Session Establishment Request");
+
+    /* MBS RESTI: the PFCP session restores an existing one, with the low layer SSM and the C-TEID the MB-SMF gives
+     * (already decoded and checked by upf_n4mb_check_session_establishment_request()) */
+    if (req->mbs_session_n4mb_control_information.mbsn4mbreq_flags.presence &&
+            req->mbs_session_n4mb_control_information.mbsn4mbreq_flags.len >= 1)
+        resti = ((ogs_pfcp_mbsn4mbreq_flags_t *)
+                req->mbs_session_n4mb_control_information.mbsn4mbreq_flags.data)->restoration_indication;
+    if (resti &&
+            req->mbs_session_n4mb_control_information.multicast_transport_information_for_n3mb_and_or_n19mb.presence) {
+        ogs_assert(OGS_PFCP_CAUSE_REQUEST_ACCEPTED == _decode_multicast_transport_information(
+                &req->mbs_session_n4mb_control_information.multicast_transport_information_for_n3mb_and_or_n19mb,
+                &requested_c_teid, &requested_dest, &requested_src));
+        requested_llssm = true;
+    }
 
     cause_value = OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
 
@@ -576,8 +702,15 @@ void upf_n4mb_handle_session_establishment_request(
                 lit_ie = &req->create_pdr[i].pdi.local_ingress_tunnel;
         }
         if (lit_ie &&
-                _allocate_ingress_tunnel(mbs_sess, lit_ie->data, &cause_value, &offending_ie_value) != OGS_OK)
+                _allocate_ingress_tunnel(mbs_sess, lit_ie->data, &cause_value, &offending_ie_value) != OGS_OK) {
+            /* MBS restoration: the address and port are the ones the MB-SMF gave (CH=0), and the MB-UPF "shall reject
+             * the PFCP Session Establishment Request with the cause "PFCP session restoration failure due to
+             * requested resource not available"" if it cannot bind them (Table 7.5.2.1-4 NOTE) */
+            if (resti && !((const ogs_pfcp_local_ingress_tunnel_t *)lit_ie->data)->choose &&
+                    cause_value == OGS_PFCP_CAUSE_SYSTEM_FAILURE)
+                cause_value = OGS_PFCP_CAUSE_RESTORATION_FAILURE_RESOURCE_NOT_AVAILABLE;
             goto cleanup;
+        }
 
         for (i = 0; i < num_of_created_pdr; i++)
             mbs_sess->pdr_has_ingress_tunnel[i] = mbs_sess->udp_tunnel &&
@@ -744,7 +877,17 @@ void upf_n4mb_handle_session_establishment_request(
 
     // The MB-SMF asks for a low-layer SSM with PLLSSM (MBSN4mbReq-Flags). Without it the session
     // has no N3mb multicast transport and the FARs are left as received.
-    if (mbs_sess->mbs_flags.provide_lower_layer_ssm) {
+    if (requested_llssm) {
+        /* The low layer SSM and the C-TEID of the session before the restart, not new ones (cl. 5.34.2.1A NOTE 1) */
+        mbs_sess->ll_ssm = ogs_pfcp_llssm_add_requested(&requested_dest, &requested_src);
+        if (!mbs_sess->ll_ssm) {
+            ogs_error("The requested low layer SSM is not available");
+            cause_value = OGS_PFCP_CAUSE_RESTORATION_FAILURE_RESOURCE_NOT_AVAILABLE;
+            offending_ie_value = OGS_PFCP_MULTICAST_TRANSPORT_INFORMATION_TYPE;
+            goto cleanup;
+        }
+        mbs_sess->c_teid = requested_c_teid;
+    } else if (mbs_sess->mbs_flags.provide_lower_layer_ssm) {
         upf_mbs_sess_set_llssm(mbs_sess);
         if (!mbs_sess->ll_ssm) {
             ogs_error("No low-layer SSM available for the MBS session");
@@ -765,6 +908,11 @@ void upf_n4mb_handle_session_establishment_request(
             memcpy(&far->outer_header_creation.addr6, mbs_sess->ll_ssm->dest_ip_addr.addr6, OGS_IPV6_LEN);
             far->outer_header_creation_len += OGS_IPV6_LEN;
         }
+
+        /* The C-TEID is the TEID of the G-PDUs a FSSM FAR sends; a restoration gives it in the request, so it is
+         * set here and not when the response is built */
+        if (far->mbs_multicast_parameters)
+            far->outer_header_creation.teid = mbs_sess->c_teid;
 
         if (OGS_ERROR == ogs_pfcp_setup_far_gtpu_node(far)) {
             ogs_fatal("CHECK CONFIGURATION: upf.gtpu");

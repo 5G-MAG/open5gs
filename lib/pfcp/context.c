@@ -2411,19 +2411,81 @@ void ogs_pfcp_pool_final(ogs_pfcp_sess_t *sess)
     ogs_pool_destroy(&sess->bar_id_pool);
 }
 
-// TODO (borieher): Add support for IPv6 too
-ogs_ssm_t *ogs_pfcp_llssm_add(void)
+bool ogs_pfcp_llssm_dest_in_use(const ogs_ip_t *dest_ip_addr)
+{
+    ogs_ssm_t *it = NULL;
+
+    ogs_assert(dest_ip_addr);
+
+    ogs_list_for_each(&self.llssm_list, it) {
+        if (dest_ip_addr->ipv4 && it->dest_ip_addr.ipv4 && dest_ip_addr->addr == it->dest_ip_addr.addr)
+            return true;
+        if (dest_ip_addr->ipv6 && it->dest_ip_addr.ipv6 &&
+                memcmp(dest_ip_addr->addr6, it->dest_ip_addr.addr6, OGS_IPV6_LEN) == 0)
+            return true;
+    }
+    return false;
+}
+
+ogs_ssm_t *ogs_pfcp_llssm_add_requested(const ogs_ip_t *dest_ip_addr, const ogs_ip_t *src_ip_addr)
 {
     ogs_ssm_t *ll_ssm = NULL;
-    int offset = 0;
+
+    ogs_assert(dest_ip_addr);
+    ogs_assert(src_ip_addr);
+
+    if (ogs_pfcp_llssm_dest_in_use(dest_ip_addr))
+        return NULL;
 
     ogs_pool_alloc(&ogs_pfcp_llssm_pool, &ll_ssm);
     if (!ll_ssm) {
         ogs_error("LL-SSM: No resources available");
         return NULL;
     }
-
     memset(ll_ssm, 0, sizeof *ll_ssm);
+    ll_ssm->dest_ip_addr = *dest_ip_addr;
+    ll_ssm->src_ip_addr = *src_ip_addr;
+    ogs_list_add(&self.llssm_list, ll_ssm);
+
+    return ll_ssm;
+}
+
+// TODO (borieher): Add support for IPv6 too
+ogs_ssm_t *ogs_pfcp_llssm_add(void)
+{
+    ogs_ssm_t *ll_ssm = NULL;
+    int offset = 0;
+
+    OGS_LIST(skipped);
+
+    /* A slot whose address a requested low layer SSM (MBS restoration) holds is skipped; the skipped slots go back to
+     * the pool once a free address is found. */
+    for (;;) {
+        ogs_pool_alloc(&ogs_pfcp_llssm_pool, &ll_ssm);
+        if (!ll_ssm) {
+            ogs_error("LL-SSM: No resources available");
+            break;
+        }
+        memset(ll_ssm, 0, sizeof *ll_ssm);
+        ll_ssm->dest_ip_addr.ipv4 = 1;
+        ll_ssm->dest_ip_addr.len = OGS_IPV4_LEN;
+        ogs_ipv4_from_string(&ll_ssm->dest_ip_addr.addr, "239.0.0.4");
+        ll_ssm->dest_ip_addr.addr += htobe32(ogs_pool_index(&ogs_pfcp_llssm_pool, ll_ssm) - 1);
+        if (!ogs_pfcp_llssm_dest_in_use(&ll_ssm->dest_ip_addr))
+            break;
+        ogs_list_add(&skipped, ll_ssm);
+        ll_ssm = NULL;
+    }
+    {
+        ogs_ssm_t *sk, *sk_next;
+
+        ogs_list_for_each_safe(&skipped, sk_next, sk) {
+            ogs_list_remove(&skipped, sk);
+            ogs_pool_free(&ogs_pfcp_llssm_pool, sk);
+        }
+    }
+    if (!ll_ssm)
+        return NULL;
 
     /*
      * BUG FIX: this used to derive the offset from ogs_list_count(&self.llssm_list), i.e. the

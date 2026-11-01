@@ -54,6 +54,7 @@ typedef uint8_t  ogs_pfcp_bar_id_t;
 #define OGS_PFCP_CAUSE_SYSTEM_FAILURE                       77
 #define OGS_PFCP_CAUSE_REDIRECTION_REQUESTED                78
 #define OGS_PFCP_CAUSE_ALL_DYNAMIC_ADDRESS_ARE_OCCUPIED     79
+#define OGS_PFCP_CAUSE_RESTORATION_FAILURE_RESOURCE_NOT_AVAILABLE 86
 
 const char *ogs_pfcp_cause_get_name(uint8_t cause);
 
