@@ -20,6 +20,8 @@
 #include "context.h"
 #include "mbs-n3mb.h"
 #include "mbs-subsc.h"
+#include "n4mb-build.h"
+#include "pfcp-path.h"
 
 char *smf_mbs_ran_id_text(OpenAPI_global_ran_node_id_t *ran_id)
 {
@@ -131,10 +133,15 @@ bool smf_mbs_n3mb_parse_failure_transfer(ogs_pkbuf_t *pkbuf, int *group, long *v
 }
 
 int smf_mbs_sess_take_amf_answer(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf,
-        OpenAPI_operation_status_e operation_status, OpenAPI_list_t *n2_mbs_sm_info_list, ogs_sbi_message_t *recvmsg)
+        OpenAPI_operation_status_e operation_status, OpenAPI_list_t *n2_mbs_sm_info_list, ogs_sbi_message_t *recvmsg,
+        smf_mbs_tunnel_changes_t *tunnel_changes)
 {
     OpenAPI_lnode_t *node;
     int changes = 0;
+    smf_mbs_tunnel_change_t *tc = NULL;
+
+    if (tunnel_changes)
+        memset(tunnel_changes, 0, sizeof(*tunnel_changes));
 
     ogs_assert(mbs_sess);
     ogs_assert(recvmsg);
@@ -194,10 +201,31 @@ int smf_mbs_sess_take_amf_answer(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf,
                 ogs_debug("NG-RAN [%s] offers no N3mb unicast tunnel", ran_id);
                 break;
             }
-            tunnel = smf_mbs_sess_dl_tunnel_set(mbs_sess, ran_id, &addr, teid, &changed);
-            ogs_info("NG-RAN [%s] N3mb DL tunnel TEID[0x%x]%s", ran_id, teid, changed ? "" : " (unchanged)");
-            if (changed)
-                changes++;
+            {
+                smf_mbs_dl_tunnel_t *old = smf_mbs_sess_dl_tunnel_find(mbs_sess, ran_id);
+                uint16_t old_id = old ? old->unicast_params_id : 0;
+
+                tunnel = smf_mbs_sess_dl_tunnel_set(mbs_sess, ran_id, &addr, teid, &changed);
+                ogs_info("NG-RAN [%s] N3mb DL tunnel TEID[0x%x]%s", ran_id, teid, changed ? "" : " (unchanged)");
+                if (changed) {
+                    /* another tunnel of a node that had one is a new one for the MB-UPF: it gets a new ID, and the
+                     * old one is removed with it */
+                    if (old)
+                        tunnel->unicast_params_id = ++mbs_sess->next_dl_tunnel_id;
+                    changes++;
+                    if (tunnel_changes && tunnel_changes->count < SMF_MBS_MAX_TUNNEL_CHANGES) {
+                        tc = &tunnel_changes->change[tunnel_changes->count++];
+                        tc->has_add = true;
+                        tc->add_addr = tunnel->addr;
+                        tc->add_teid = tunnel->teid;
+                        tc->add_id = tunnel->unicast_params_id;
+                        if (old_id) {
+                            tc->has_remove = true;
+                            tc->remove_id = old_id;
+                        }
+                    }
+                }
+            }
             break;
         }
         case OpenAPI_ngap_ie_type_MBS_SES_FAIL: {
@@ -211,6 +239,11 @@ int smf_mbs_sess_take_amf_answer(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf,
                 ogs_error("NG-RAN [%s] could not set up or modify the MBS session", ran_id);
             tunnel = smf_mbs_sess_dl_tunnel_find(mbs_sess, ran_id);
             if (tunnel) {
+                if (tunnel_changes && tunnel_changes->count < SMF_MBS_MAX_TUNNEL_CHANGES) {
+                    tc = &tunnel_changes->change[tunnel_changes->count++];
+                    tc->has_remove = true;
+                    tc->remove_id = tunnel->unicast_params_id;
+                }
                 smf_mbs_sess_dl_tunnel_remove(mbs_sess, tunnel);
                 changes++;
             }
@@ -220,6 +253,11 @@ int smf_mbs_sess_take_amf_answer(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf,
             /* the NG-RAN released the session: its tunnel is gone (TS 23.247 cl. 7.3.2 step 7) */
             tunnel = smf_mbs_sess_dl_tunnel_find(mbs_sess, ran_id);
             if (tunnel) {
+                if (tunnel_changes && tunnel_changes->count < SMF_MBS_MAX_TUNNEL_CHANGES) {
+                    tc = &tunnel_changes->change[tunnel_changes->count++];
+                    tc->has_remove = true;
+                    tc->remove_id = tunnel->unicast_params_id;
+                }
                 smf_mbs_sess_dl_tunnel_remove(mbs_sess, tunnel);
                 changes++;
             }
@@ -233,4 +271,44 @@ int smf_mbs_sess_take_amf_answer(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf,
     }
 
     return changes;
+}
+
+int smf_mbs_sess_send_tunnel_changes(smf_mbs_sess_t *mbs_sess, const smf_mbs_tunnel_changes_t *changes)
+{
+    int i, failures = 0;
+
+    ogs_assert(mbs_sess);
+    ogs_assert(changes);
+
+    for (i = 0; i < changes->count; i++) {
+        const smf_mbs_tunnel_change_t *change = &changes->change[i];
+        smf_n4mb_modification_t mod;
+        ogs_pfcp_far_t *far = NULL;
+        bool unicast = !ogs_list_empty(&mbs_sess->dl_tunnel_list);
+
+        memset(&mod, 0, sizeof(mod));
+        mod.tunnel = change;
+
+        /* TS 29.244 V18.10.0 cl. 5.34.2.2: "the MB-SMF shall send a PFCP Session Modification Request to change the
+         * FAR by setting the Apply Action to "MBSU", together with one or more Add MBS Unicast Parameters". The flag
+         * is set with the first tunnel given and cleared with the last one taken away. */
+        ogs_list_for_each(&mbs_sess->pfcp.far_list, far) {
+            if (change->has_add && !(far->apply_action & OGS_PFCP_APPLY_ACTION_MBSU)) {
+                far->apply_action |= OGS_PFCP_APPLY_ACTION_MBSU;
+                mod.update_apply_action = true;
+            } else if (!change->has_add && !unicast && i == changes->count - 1 &&
+                    (far->apply_action & OGS_PFCP_APPLY_ACTION_MBSU)) {
+                far->apply_action &= ~OGS_PFCP_APPLY_ACTION_MBSU;
+                mod.update_apply_action = true;
+            }
+        }
+
+        if (smf_5gc_pfcp_n4mb_send_session_modification_request(mbs_sess, &mod) != OGS_OK) {
+            ogs_error("The MB-UPF could not be told of the N3mb DL tunnel change [%d] of mbsSessionRef[%s]", i,
+                    mbs_sess->mbs_session_ref);
+            failures++;
+        }
+    }
+
+    return failures;
 }

@@ -328,8 +328,14 @@ ogs_pkbuf_t *smf_n4mb_build_session_deletion_request(
  * are built by the same functions); a flow that went is identified by the identifiers of its three rules.
  */
 ogs_pkbuf_t *smf_n4mb_build_session_modification_request(
-        smf_mbs_sess_t *mbs_sess, const smf_mbs_flow_change_t *flows)
+        smf_mbs_sess_t *mbs_sess, const smf_n4mb_modification_t *mod)
 {
+    const smf_mbs_flow_change_t *flows = mod->flows;
+    ogs_pfcp_far_t *far = NULL;
+    ogs_pfcp_outer_header_creation_t outer_header_creation;
+    uint8_t unicast_params_id[2], remove_params[sizeof(uint16_t) * 2 + 2];
+    uint8_t destination_interface;
+
     ogs_pfcp_message_t *pfcp_message = NULL;
     ogs_pfcp_session_modification_request_t *req = NULL;
     ogs_pkbuf_t *pkbuf = NULL;
@@ -340,7 +346,7 @@ ogs_pkbuf_t *smf_n4mb_build_session_modification_request(
     ogs_debug("N4mb Session Modification Request");
 
     ogs_assert(mbs_sess);
-    ogs_assert(flows);
+    ogs_assert(mod);
 
     pfcp_message = ogs_calloc(1, sizeof(*pfcp_message));
     if (!pfcp_message) {
@@ -352,7 +358,63 @@ ogs_pkbuf_t *smf_n4mb_build_session_modification_request(
 
     ogs_pfcp_pdrbuf_init();
 
-    for (i = 0; i < flows->num_removed; i++) {
+    /* Update FAR of every flow: the tunnel of an NG-RAN node that wants the session by unicast transport. Table
+     * 7.5.2.3-6 (Add MBS Unicast Parameters): Destination Interface "M", MBS Unicast Parameters ID "M", Outer Header
+     * Creation "M ... It shall contain the F-TEID of the remote GTP-U peer when adding a GTP-U/UDP/IP header." Table
+     * 7.5.4.3-4 (Remove MBS Unicast Parameters): MBS Unicast Parameters ID "M". */
+    if (mod->tunnel) {
+        i = 0;
+        ogs_list_for_each(&mbs_sess->pfcp.far_list, far) {
+            if (i >= OGS_MAX_NUM_OF_FAR)
+                break;
+            req->update_far[i].presence = 1;
+            req->update_far[i].far_id.presence = 1;
+            req->update_far[i].far_id.u32 = far->id;
+            if (mod->update_apply_action) {
+                req->update_far[i].apply_action.presence = 1;
+                req->update_far[i].apply_action.u16 = far->apply_action;
+            }
+            if (mod->tunnel->has_add) {
+                memset(&outer_header_creation, 0, sizeof(outer_header_creation));
+                outer_header_creation.teid = htobe32(mod->tunnel->add_teid);
+                destination_interface = OGS_PFCP_INTERFACE_ACCESS;
+                unicast_params_id[0] = (mod->tunnel->add_id >> 8) & 0xff;
+                unicast_params_id[1] = mod->tunnel->add_id & 0xff;
+                if (mod->tunnel->add_addr.ipv4) {
+                    outer_header_creation.gtpu4 = 1;
+                    outer_header_creation.addr = mod->tunnel->add_addr.addr;
+                    req->update_far[i].add_mbs_unicast_parameters.outer_header_creation.len = 2 + 4 + OGS_IPV4_LEN;
+                } else {
+                    outer_header_creation.gtpu6 = 1;
+                    memcpy(outer_header_creation.addr6, mod->tunnel->add_addr.addr6, OGS_IPV6_LEN);
+                    req->update_far[i].add_mbs_unicast_parameters.outer_header_creation.len = 2 + 4 + OGS_IPV6_LEN;
+                }
+                req->update_far[i].add_mbs_unicast_parameters.presence = 1;
+                req->update_far[i].add_mbs_unicast_parameters.destination_interface.presence = 1;
+                req->update_far[i].add_mbs_unicast_parameters.destination_interface.u8 = destination_interface;
+                req->update_far[i].add_mbs_unicast_parameters.mbs_unicast_parameters_id.presence = 1;
+                req->update_far[i].add_mbs_unicast_parameters.mbs_unicast_parameters_id.data = unicast_params_id;
+                req->update_far[i].add_mbs_unicast_parameters.mbs_unicast_parameters_id.len = sizeof(unicast_params_id);
+                req->update_far[i].add_mbs_unicast_parameters.outer_header_creation.presence = 1;
+                req->update_far[i].add_mbs_unicast_parameters.outer_header_creation.data = &outer_header_creation;
+            }
+            if (mod->tunnel->has_remove) {
+                /* the IE is the MBS Unicast Parameters ID IE (type 309, length 2) */
+                remove_params[0] = (OGS_PFCP_MBS_UNICAST_PARAMETERS_ID_TYPE >> 8) & 0xff;
+                remove_params[1] = OGS_PFCP_MBS_UNICAST_PARAMETERS_ID_TYPE & 0xff;
+                remove_params[2] = 0;
+                remove_params[3] = 2;
+                remove_params[4] = (mod->tunnel->remove_id >> 8) & 0xff;
+                remove_params[5] = mod->tunnel->remove_id & 0xff;
+                req->update_far[i].remove_mbs_unicast_parameters.presence = 1;
+                req->update_far[i].remove_mbs_unicast_parameters.data = remove_params;
+                req->update_far[i].remove_mbs_unicast_parameters.len = sizeof(remove_params);
+            }
+            i++;
+        }
+    }
+
+    for (i = 0; flows && i < flows->num_removed; i++) {
         req->remove_pdr[i].presence = 1;
         req->remove_pdr[i].pdr_id.presence = 1;
         req->remove_pdr[i].pdr_id.u16 = flows->removed[i].pdr_id;
@@ -364,7 +426,7 @@ ogs_pkbuf_t *smf_n4mb_build_session_modification_request(
         req->remove_qer[i].qer_id.u32 = flows->removed[i].qer_id;
     }
 
-    for (i = 0; i < flows->num_added; i++) {
+    for (i = 0; flows && i < flows->num_added; i++) {
         ogs_pfcp_pdr_t *pdr = flows->added[i];
 
         ogs_assert(pdr && pdr->far && pdr->qer);

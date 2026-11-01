@@ -1088,7 +1088,7 @@ int smf_5gc_pfcp_n4mb_send_session_deletion_request(smf_mbs_sess_t *mbs_sess)
  * smf_n4mb_build_session_modification_request()). The answer is handled by
  * smf_n4mb_handle_session_modification_response(). */
 int smf_5gc_pfcp_n4mb_send_session_modification_request(
-        smf_mbs_sess_t *mbs_sess, const smf_mbs_flow_change_t *flows)
+        smf_mbs_sess_t *mbs_sess, const smf_n4mb_modification_t *mod)
 {
     int rv;
     ogs_pkbuf_t *n4mbbuf = NULL;
@@ -1096,7 +1096,7 @@ int smf_5gc_pfcp_n4mb_send_session_modification_request(
     ogs_pfcp_xact_t *xact = NULL;
 
     ogs_assert(mbs_sess);
-    ogs_assert(flows);
+    ogs_assert(mod);
 
     if (!mbs_sess->pfcp_node || !mbs_sess->upf_n4mb_seid) {
         ogs_error("The MBS session has no N4mb session at the MB-UPF to modify");
@@ -1116,7 +1116,7 @@ int smf_5gc_pfcp_n4mb_send_session_modification_request(
     h.type = OGS_PFCP_SESSION_MODIFICATION_REQUEST_TYPE;
     h.seid = mbs_sess->upf_n4mb_seid;
 
-    n4mbbuf = smf_n4mb_build_session_modification_request(mbs_sess, flows);
+    n4mbbuf = smf_n4mb_build_session_modification_request(mbs_sess, mod);
     if (!n4mbbuf) {
         ogs_error("smf_n4mb_build_session_modification_request() failed");
         ogs_pfcp_xact_delete(xact);

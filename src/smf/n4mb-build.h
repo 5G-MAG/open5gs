@@ -34,9 +34,16 @@ ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
 
 /* The N4mb Session Modification Request that tells the MB-UPF about the change of the QoS flows of an MBS session
  * (TS 29.244 V18.10.0 table 7.5.4.1-1: Create PDR, Create FAR, Create QER for a flow that came; Remove PDR, Remove
- * FAR, Remove QER for one that went). */
+ * FAR, Remove QER for one that went) and of its N3mb DL tunnels (table 7.5.4.3-1: Update FAR with Apply Action,
+ * Add MBS Unicast Parameters and Remove MBS Unicast Parameters). */
+typedef struct smf_n4mb_modification_s {
+    const smf_mbs_flow_change_t *flows;         /* Create/Remove PDR, FAR, QER of the flows that came and went */
+    const smf_mbs_tunnel_change_t *tunnel;      /* Update FAR: Add and Remove MBS Unicast Parameters */
+    bool update_apply_action;                   /* with a tunnel change: the Update FARs carry the Apply Action */
+} smf_n4mb_modification_t;
+
 ogs_pkbuf_t *smf_n4mb_build_session_modification_request(
-        smf_mbs_sess_t *mbs_sess, const smf_mbs_flow_change_t *flows);
+        smf_mbs_sess_t *mbs_sess, const smf_n4mb_modification_t *mod);
 
 ogs_pkbuf_t *smf_n4mb_build_session_deletion_request(
         uint8_t type, smf_mbs_sess_t *mbs_sess);

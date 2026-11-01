@@ -609,6 +609,23 @@ typedef struct smf_mbs_subsc_s {
     ogs_sbi_client_t *client;       /* of the notification URI */
 } smf_mbs_subsc_t;
 
+/* What the N3mb DL tunnels of an MBS session changed by, for the MB-UPF to be told (one entry for each NG-RAN node
+ * whose tunnel came, went or changed). */
+typedef struct smf_mbs_tunnel_change_s {
+    bool has_add;               /* a tunnel to give the MB-UPF */
+    ogs_ip_t add_addr;
+    uint32_t add_teid;
+    uint16_t add_id;            /* its MBS Unicast Parameters ID */
+    bool has_remove;            /* a tunnel to take from the MB-UPF */
+    uint16_t remove_id;
+} smf_mbs_tunnel_change_t;
+
+#define SMF_MBS_MAX_TUNNEL_CHANGES 16   /* more than the n2MbsSmInfoList of one answer holds (1..10) */
+typedef struct smf_mbs_tunnel_changes_s {
+    int count;
+    smf_mbs_tunnel_change_t change[SMF_MBS_MAX_TUNNEL_CHANGES];
+} smf_mbs_tunnel_changes_t;
+
 typedef struct smf_mbs_sess_s {
     ogs_lnode_t lnode;      /* A node of list_t */
 

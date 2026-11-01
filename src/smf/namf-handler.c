@@ -250,6 +250,20 @@ bool smf_namf_comm_handle_n1_n2_message_transfer_failure_notify(
 
 /* Namf_MBSBroadcast Service API */
 
+/* The content of an AMF's answer is taken in, and the MB-UPF is told of the N3mb DL tunnels that came, went or changed
+ * (TS 23.247 V18.8.0 cl. 7.3.1 step 8: "To establish the shared tunnel towards the DL GTP tunnel endpoint, the MB-SMF
+ * sends an N4mb Session Modification Request to the MB-UPF to allocate the N3mb unicast transport tunnel", cl. 7.3.6
+ * step 4: "The MB-SMF performs N4mb Session Modification to let MB-UPF stop the broadcast data forwarding towards the
+ * indicated DL tunnel and release the DL tunnel"). */
+static void take_amf_answer(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf,
+        OpenAPI_operation_status_e operation_status, OpenAPI_list_t *n2_mbs_sm_info_list, ogs_sbi_message_t *recvmsg)
+{
+    smf_mbs_tunnel_changes_t changes;
+
+    if (smf_mbs_sess_take_amf_answer(mbs_sess, amf, operation_status, n2_mbs_sm_info_list, recvmsg, &changes) > 0)
+        smf_mbs_sess_send_tunnel_changes(mbs_sess, &changes);
+}
+
 bool smf_namf_handle_mbs_broadcast_context_create_response(
         smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf, ogs_sbi_message_t *recvmsg)
 {
@@ -312,7 +326,7 @@ bool smf_namf_handle_mbs_broadcast_context_create_response(
                     mbs_sess->area_session_id) != mbs_sess)
             ogs_error("MBS Broadcast ContextCreate: the mbsSessionId of the 201 does not name this MBS session");
         else
-            smf_mbs_sess_take_amf_answer(mbs_sess, amf, rsp->operation_status, rsp->n2_mbs_sm_info_list, recvmsg);
+            take_amf_answer(mbs_sess, amf, rsp->operation_status, rsp->n2_mbs_sm_info_list, recvmsg);
     } else {
         ogs_error("MBS Broadcast ContextCreate: the 201 has no content (mbsSessionId is mandatory)");
     }
@@ -349,7 +363,7 @@ bool smf_namf_handle_mbs_broadcast_context_update_response(
      * responses from all involved NG-RAN(s), the AMF shall include an indication of completion of the operation in
      * all NG-RANs." */
     if (recvmsg->ContextUpdateRspData)
-        smf_mbs_sess_take_amf_answer(mbs_sess, amf, recvmsg->ContextUpdateRspData->operation_status,
+        take_amf_answer(mbs_sess, amf, recvmsg->ContextUpdateRspData->operation_status,
                 recvmsg->ContextUpdateRspData->n2_mbs_sm_info_list, recvmsg);
 
     return true;
@@ -467,7 +481,7 @@ bool smf_namf_handle_mbs_broadcast_context_status_notify(
         /* the containers of the NG-RANs that answered after the AMF's own answer, and the completion of the
          * operation (TS 29.518 cl. 5.6.2.2: "the AMF shall transfer such information by sending one or more
          * Namf_MBSBroadcast_ContextStatusNotify requests to the MB-SMF") */
-        smf_mbs_sess_take_amf_answer(mbs_sess, amf, ContextStatusNotification->operation_status,
+        take_amf_answer(mbs_sess, amf, ContextStatusNotification->operation_status,
                 ContextStatusNotification->n2_mbs_sm_info_list, recvmsg);
 
     /* operationEvents: "failure to reach one or more NG-RANs" (cl. 5.6.2.3: "The AMF may send one or more

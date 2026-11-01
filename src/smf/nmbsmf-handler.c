@@ -1345,7 +1345,11 @@ bool smf_nmbsmf_handle_mbs_session_patch(smf_mbs_sess_t *mbs_sess,
     /* TS 23.247 V18.8.0 cl. 7.1.1.6 steps 5-6: "MB-SMF may need to update MB-UPF, e.g. if new MBS QoS Flow is to be
      * created, or existing MBS QoS Flow is to be deleted." */
     if (update.flow_change.num_added || update.flow_change.num_removed) {
-        if (smf_5gc_pfcp_n4mb_send_session_modification_request(mbs_sess, &update.flow_change) != OGS_OK)
+        smf_n4mb_modification_t mod;
+
+        memset(&mod, 0, sizeof(mod));
+        mod.flows = &update.flow_change;
+        if (smf_5gc_pfcp_n4mb_send_session_modification_request(mbs_sess, &mod) != OGS_OK)
             ogs_error("MBS Session Update: the MB-UPF could not be told of the change of the QoS flows "
                     "(mbsSessionRef[%s])", mbs_sess->mbs_session_ref);
     }

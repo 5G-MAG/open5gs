@@ -1077,7 +1077,7 @@ static int count_tais(smf_mbs_sess_t *mbs_sess)
 }
 
 /* Parses the N4mb Session Modification Request built for the change of the flows of mbs_sess. */
-static ogs_pfcp_message_t *build_and_parse_modification(smf_mbs_sess_t *mbs_sess, const smf_mbs_flow_change_t *flows)
+static ogs_pfcp_message_t *build_and_parse_modification_of(smf_mbs_sess_t *mbs_sess, const smf_n4mb_modification_t *mod)
 {
     static ogs_pfcp_message_t *message;
     static ogs_pkbuf_t *pkbuf;
@@ -1086,7 +1086,7 @@ static ogs_pfcp_message_t *build_and_parse_modification(smf_mbs_sess_t *mbs_sess
     if (message) { ogs_pfcp_message_free(message); message = NULL; }
     if (pkbuf) { ogs_pkbuf_free(pkbuf); pkbuf = NULL; }
 
-    pkbuf = smf_n4mb_build_session_modification_request(mbs_sess, flows);
+    pkbuf = smf_n4mb_build_session_modification_request(mbs_sess, mod);
     if (!pkbuf) return NULL;
     memset(&h, 0, sizeof(h));
     h.version = 1;
@@ -1097,6 +1097,15 @@ static ogs_pfcp_message_t *build_and_parse_modification(smf_mbs_sess_t *mbs_sess
     memcpy(pkbuf->data, &h, OGS_PFCP_HEADER_LEN);
     message = ogs_pfcp_parse_msg(pkbuf);
     return message;
+}
+
+static ogs_pfcp_message_t *build_and_parse_modification(smf_mbs_sess_t *mbs_sess, const smf_mbs_flow_change_t *flows)
+{
+    smf_n4mb_modification_t mod;
+
+    memset(&mod, 0, sizeof(mod));
+    mod.flows = flows;
+    return build_and_parse_modification_of(mbs_sess, &mod);
 }
 
 /* TS 29.532 V18.6.0 cl. 5.3.2.3.1: "The following parameters may be modified: ... MBS Service Area and/or; MBS
@@ -1812,6 +1821,7 @@ static void test_amf_answer(void)
     int changes;
     char *ran_a;
     OpenAPI_global_ran_node_id_t *ran;
+    smf_mbs_tunnel_changes_t ch;
 
     CHECK(mbs_sess != NULL);
     if (!mbs_sess) return;
@@ -1823,13 +1833,13 @@ static void test_amf_answer(void)
     /* completion: the session has started when every AMF with a context completed the start */
     memset(&answer, 0, sizeof(answer));
     CHECK(smf_mbs_sess_take_amf_answer(mbs_sess, amf1, OpenAPI_operation_status_MBS_SESSION_START_INCOMPLETE, NULL,
-            &answer) == 0);
+            &answer, NULL) == 0);
     CHECK(!amf1->start_complete && !mbs_sess->started);
-    smf_mbs_sess_take_amf_answer(mbs_sess, amf1, OpenAPI_operation_status_MBS_SESSION_START_COMPLETE, NULL, &answer);
+    smf_mbs_sess_take_amf_answer(mbs_sess, amf1, OpenAPI_operation_status_MBS_SESSION_START_COMPLETE, NULL, &answer, NULL);
     CHECK(amf1->start_complete && !amf2->start_complete && !mbs_sess->started);
-    smf_mbs_sess_take_amf_answer(mbs_sess, NULL, OpenAPI_operation_status_MBS_SESSION_START_COMPLETE, NULL, &answer);
+    smf_mbs_sess_take_amf_answer(mbs_sess, NULL, OpenAPI_operation_status_MBS_SESSION_START_COMPLETE, NULL, &answer, NULL);
     CHECK(!mbs_sess->started);      /* a notification of an unknown AMF completes nothing */
-    smf_mbs_sess_take_amf_answer(mbs_sess, amf2, OpenAPI_operation_status_MBS_SESSION_START_COMPLETE, NULL, &answer);
+    smf_mbs_sess_take_amf_answer(mbs_sess, amf2, OpenAPI_operation_status_MBS_SESSION_START_COMPLETE, NULL, &answer, NULL);
     CHECK(amf2->start_complete && mbs_sess->started);
 
     /* an NG-RAN's unicast tunnel, from the container of its response */
@@ -1867,19 +1877,22 @@ static void test_amf_answer(void)
 
     list = OpenAPI_list_create();
     OpenAPI_list_add(list, n2_info(OpenAPI_ngap_ie_type_MBS_SES_RSP, "n2-a", ran_a_text));
-    changes = smf_mbs_sess_take_amf_answer(mbs_sess, amf1, OpenAPI_operation_status_NULL, list, &answer);
+    changes = smf_mbs_sess_take_amf_answer(mbs_sess, amf1, OpenAPI_operation_status_NULL, list, &answer, &ch);
     CHECK(changes == 1);
     tunnel = smf_mbs_sess_dl_tunnel_find(mbs_sess, ran_a);
     CHECK(tunnel != NULL && tunnel->teid == 0xabcd0001 && tunnel->addr.ipv4 && tunnel->unicast_params_id == 1);
+    /* the MB-UPF is to be given it, under the tunnel's ID */
+    CHECK(ch.count == 1 && ch.change[0].has_add && !ch.change[0].has_remove && ch.change[0].add_id == 1 &&
+            ch.change[0].add_teid == 0xabcd0001 && ch.change[0].add_addr.ipv4);
     /* the same tunnel again is no change; a container without a tunnel changes nothing */
-    changes = smf_mbs_sess_take_amf_answer(mbs_sess, amf1, OpenAPI_operation_status_NULL, list, &answer);
-    CHECK(changes == 0 && ogs_list_count(&mbs_sess->dl_tunnel_list) == 1);
+    changes = smf_mbs_sess_take_amf_answer(mbs_sess, amf1, OpenAPI_operation_status_NULL, list, &answer, &ch);
+    CHECK(changes == 0 && ch.count == 0 && ogs_list_count(&mbs_sess->dl_tunnel_list) == 1);
     OpenAPI_list_for_each(list, node)
         OpenAPI_n2_mbs_sm_info_free(node->data);
     OpenAPI_list_free(list);
     list = OpenAPI_list_create();
     OpenAPI_list_add(list, n2_info(OpenAPI_ngap_ie_type_MBS_SES_RSP, "n2-none", ran_a_text));
-    changes = smf_mbs_sess_take_amf_answer(mbs_sess, amf1, OpenAPI_operation_status_NULL, list, &answer);
+    changes = smf_mbs_sess_take_amf_answer(mbs_sess, amf1, OpenAPI_operation_status_NULL, list, &answer, NULL);
     CHECK(changes == 0 && ogs_list_count(&mbs_sess->dl_tunnel_list) == 1);
     /* a container that is not in the message is left alone */
     OpenAPI_list_for_each(list, node)
@@ -1887,7 +1900,7 @@ static void test_amf_answer(void)
     OpenAPI_list_free(list);
     list = OpenAPI_list_create();
     OpenAPI_list_add(list, n2_info(OpenAPI_ngap_ie_type_MBS_SES_RSP, "n2-missing", ran_a_text));
-    changes = smf_mbs_sess_take_amf_answer(mbs_sess, amf1, OpenAPI_operation_status_NULL, list, &answer);
+    changes = smf_mbs_sess_take_amf_answer(mbs_sess, amf1, OpenAPI_operation_status_NULL, list, &answer, NULL);
     CHECK(changes == 0 && ogs_list_count(&mbs_sess->dl_tunnel_list) == 1);
     OpenAPI_list_for_each(list, node)
         OpenAPI_n2_mbs_sm_info_free(node->data);
@@ -1896,21 +1909,37 @@ static void test_amf_answer(void)
     /* a failure of the NG-RAN takes its tunnel away; its release too */
     list = OpenAPI_list_create();
     OpenAPI_list_add(list, n2_info(OpenAPI_ngap_ie_type_MBS_SES_FAIL, "n2-fail", ran_a_text));
-    changes = smf_mbs_sess_take_amf_answer(mbs_sess, amf1, OpenAPI_operation_status_NULL, list, &answer);
+    changes = smf_mbs_sess_take_amf_answer(mbs_sess, amf1, OpenAPI_operation_status_NULL, list, &answer, &ch);
     CHECK(changes == 1 && ogs_list_empty(&mbs_sess->dl_tunnel_list));
+    CHECK(ch.count == 1 && !ch.change[0].has_add && ch.change[0].has_remove && ch.change[0].remove_id == 1);
     OpenAPI_list_for_each(list, node)
         OpenAPI_n2_mbs_sm_info_free(node->data);
     OpenAPI_list_free(list);
     list = OpenAPI_list_create();
     OpenAPI_list_add(list, n2_info(OpenAPI_ngap_ie_type_MBS_SES_RSP, "n2-a", ran_a_text));
-    smf_mbs_sess_take_amf_answer(mbs_sess, amf1, OpenAPI_operation_status_NULL, list, &answer);
-    CHECK(ogs_list_count(&mbs_sess->dl_tunnel_list) == 1);
+    smf_mbs_sess_take_amf_answer(mbs_sess, amf1, OpenAPI_operation_status_NULL, list, &answer, &ch);
+    CHECK(ogs_list_count(&mbs_sess->dl_tunnel_list) == 1 && ch.count == 1 && ch.change[0].add_id == 2);
+    {
+        /* the node gives another tunnel: a new ID, the old one removed with it */
+        ogs_pkbuf_t *other = encode_response_transfer(true, "10.20.30.41", 0x11110002);
+        ogs_sbi_message_t answer2;
+
+        memset(&answer2, 0, sizeof(answer2));
+        answer2.part[0].pkbuf = other;
+        answer2.part[0].content_id = (char *)"n2-a";
+        answer2.num_of_part = 1;
+        changes = smf_mbs_sess_take_amf_answer(mbs_sess, amf1, OpenAPI_operation_status_NULL, list, &answer2, &ch);
+        CHECK(changes == 1 && ch.count == 1 && ch.change[0].has_add && ch.change[0].add_id == 3 &&
+                ch.change[0].add_teid == 0x11110002 && ch.change[0].has_remove && ch.change[0].remove_id == 2);
+        CHECK(ogs_list_count(&mbs_sess->dl_tunnel_list) == 1);
+        ogs_pkbuf_free(other);
+    }
     OpenAPI_list_for_each(list, node)
         OpenAPI_n2_mbs_sm_info_free(node->data);
     OpenAPI_list_free(list);
     list = OpenAPI_list_create();
     OpenAPI_list_add(list, n2_info(OpenAPI_ngap_ie_type_MBS_SES_REL_RSP, NULL, ran_a_text));
-    changes = smf_mbs_sess_take_amf_answer(mbs_sess, amf1, OpenAPI_operation_status_NULL, list, &answer);
+    changes = smf_mbs_sess_take_amf_answer(mbs_sess, amf1, OpenAPI_operation_status_NULL, list, &answer, NULL);
     CHECK(changes == 1 && ogs_list_empty(&mbs_sess->dl_tunnel_list));
     OpenAPI_list_for_each(list, node)
         OpenAPI_n2_mbs_sm_info_free(node->data);
@@ -1920,6 +1949,101 @@ static void test_amf_answer(void)
     ogs_pkbuf_free(rsp_a);
     ogs_pkbuf_free(rsp_none);
     ogs_pkbuf_free(fail);
+    smf_mbs_sess_release(mbs_sess);
+}
+
+/* TS 29.244 V18.10.0 table 7.5.4.3-1 (Update FAR: FAR ID "M", Apply Action "C ... present if it is changed", Add MBS
+ * Unicast Parameters, Remove MBS Unicast Parameters), table 7.5.2.3-6 (Add MBS Unicast Parameters: Destination
+ * Interface "M", MBS Unicast Parameters ID "M", Outer Header Creation "M ... It shall contain the F-TEID of the remote
+ * GTP-U peer when adding a GTP-U/UDP/IP header.") and table 7.5.4.3-4 (Remove MBS Unicast Parameters: the ID). */
+static void test_unicast_tunnel_modification(void)
+{
+    smf_mbs_sess_t *mbs_sess = make_session(serv_info_2_text, area_1_text);
+    smf_n4mb_modification_t mod;
+    smf_mbs_tunnel_change_t change;
+    ogs_pfcp_message_t *msg;
+    ogs_pfcp_far_t *far;
+    int n;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+    memset(&mod, 0, sizeof(mod));
+    memset(&change, 0, sizeof(change));
+    change.has_add = true;
+    change.add_addr.ipv4 = 1;
+    change.add_addr.len = OGS_IPV4_LEN;
+    change.add_addr.addr = htonl(0x0a141e28);       /* 10.20.30.40 */
+    change.add_teid = 0xabcd0001;
+    change.add_id = 0x0102;
+    mod.tunnel = &change;
+    mod.update_apply_action = true;
+    ogs_list_for_each(&mbs_sess->pfcp.far_list, far)
+        far->apply_action |= OGS_PFCP_APPLY_ACTION_MBSU;
+
+    msg = build_and_parse_modification_of(mbs_sess, &mod);
+    CHECK(msg != NULL);
+    if (msg) {
+        ogs_pfcp_session_modification_request_t *req = &msg->pfcp_session_modification_request;
+        static const uint8_t expected_ohc[10] = { 0x01, 0x00, 0xab, 0xcd, 0x00, 0x01, 10, 20, 30, 40 };
+        static const uint8_t expected_id[2] = { 0x01, 0x02 };
+
+        /* one Update FAR for each of the two flows, none else */
+        for (n = 0; n < 2; n++) {
+            ogs_pfcp_tlv_update_far_t *u = &req->update_far[n];
+
+            CHECK(u->presence && u->far_id.presence);
+            CHECK(u->apply_action.presence && (u->apply_action.u16 & OGS_PFCP_APPLY_ACTION_MBSU) &&
+                    (u->apply_action.u16 & OGS_PFCP_APPLY_ACTION_FSSM));
+            CHECK(u->add_mbs_unicast_parameters.presence &&
+                    u->add_mbs_unicast_parameters.destination_interface.presence &&
+                    u->add_mbs_unicast_parameters.destination_interface.u8 == OGS_PFCP_INTERFACE_ACCESS);
+            CHECK(u->add_mbs_unicast_parameters.mbs_unicast_parameters_id.presence &&
+                    u->add_mbs_unicast_parameters.mbs_unicast_parameters_id.len == 2 &&
+                    memcmp(u->add_mbs_unicast_parameters.mbs_unicast_parameters_id.data, expected_id, 2) == 0);
+            CHECK(u->add_mbs_unicast_parameters.outer_header_creation.presence &&
+                    u->add_mbs_unicast_parameters.outer_header_creation.len == 10 &&
+                    memcmp(u->add_mbs_unicast_parameters.outer_header_creation.data, expected_ohc, 10) == 0);
+            CHECK(!u->remove_mbs_unicast_parameters.presence);
+        }
+        CHECK(!req->update_far[2].presence);
+        CHECK(req->update_far[0].far_id.u32 != req->update_far[1].far_id.u32);
+        CHECK(!req->create_pdr[0].presence && !req->remove_pdr[0].presence);
+    }
+
+    /* removal of a tunnel (and the Apply Action not changed): the ID of the tunnel */
+    memset(&change, 0, sizeof(change));
+    change.has_remove = true;
+    change.remove_id = 0x0304;
+    mod.update_apply_action = false;
+    msg = build_and_parse_modification_of(mbs_sess, &mod);
+    CHECK(msg != NULL);
+    if (msg) {
+        ogs_pfcp_tlv_update_far_t *u = &msg->pfcp_session_modification_request.update_far[0];
+        static const uint8_t expected_remove[6] = { 0x01, 0x35, 0x00, 0x02, 0x03, 0x04 };
+
+        CHECK(u->presence && !u->apply_action.presence && !u->add_mbs_unicast_parameters.presence);
+        CHECK(u->remove_mbs_unicast_parameters.presence && u->remove_mbs_unicast_parameters.len == 6 &&
+                memcmp(u->remove_mbs_unicast_parameters.data, expected_remove, 6) == 0);
+    }
+
+    /* an IPv6 tunnel: GTP-U/UDP/IPv6, 22 octets */
+    memset(&change, 0, sizeof(change));
+    change.has_add = true;
+    change.add_addr.ipv6 = 1;
+    change.add_addr.len = OGS_IPV6_LEN;
+    inet_pton(AF_INET6, "2001:db8::7", change.add_addr.addr6);
+    change.add_teid = 7;
+    change.add_id = 5;
+    msg = build_and_parse_modification_of(mbs_sess, &mod);
+    CHECK(msg != NULL);
+    if (msg) {
+        ogs_pfcp_tlv_update_far_t *u = &msg->pfcp_session_modification_request.update_far[0];
+        const uint8_t *d = u->add_mbs_unicast_parameters.outer_header_creation.data;
+
+        CHECK(u->add_mbs_unicast_parameters.outer_header_creation.len == 22 && d[0] == 0x02 && d[1] == 0 &&
+                d[5] == 7 && d[6] == 0x20 && d[7] == 0x01 && d[21] == 0x07);
+    }
+
     smf_mbs_sess_release(mbs_sess);
 }
 
@@ -2034,6 +2158,7 @@ int main(void)
     test_amf_entries();
     test_status_subscription();
     test_amf_answer();
+    test_unicast_tunnel_modification();
     test_context_update_request();
     test_local_ingress_tunnel_choose();
     test_ip_multicast_addressing_info_layout();

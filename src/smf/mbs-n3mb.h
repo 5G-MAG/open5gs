@@ -47,9 +47,15 @@ char *smf_mbs_ran_id_text(OpenAPI_global_ran_node_id_t *ran_id);
 /* What the answer of an AMF says, taken in: the completion of the start or of the update (and so the start of the
  * session, reported to the subscribers once every AMF has completed it), the N3mb DL tunnels, the failures. Used for
  * the 201 of a ContextCreate, the 200 of a ContextUpdate and a ContextStatusNotify. Returns the number of tunnels
- * that were added, changed or taken away (the user plane has to be told). */
+ * that were added, changed or taken away; changes (if not NULL) tells which, for the MB-UPF to be told. */
 int smf_mbs_sess_take_amf_answer(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf,
-        OpenAPI_operation_status_e operation_status, OpenAPI_list_t *n2_mbs_sm_info_list, ogs_sbi_message_t *recvmsg);
+        OpenAPI_operation_status_e operation_status, OpenAPI_list_t *n2_mbs_sm_info_list, ogs_sbi_message_t *recvmsg,
+        smf_mbs_tunnel_changes_t *changes);
+
+/* Tells the MB-UPF of the changes of the N3mb DL tunnels: one N4mb Session Modification Request for each, the first
+ * one that gives a tunnel setting the MBSU flag in the Apply Action of the FARs, the last one that takes the last
+ * tunnel away clearing it. Returns the number of requests that could not be sent. */
+int smf_mbs_sess_send_tunnel_changes(smf_mbs_sess_t *mbs_sess, const smf_mbs_tunnel_changes_t *changes);
 
 #ifdef __cplusplus
 }

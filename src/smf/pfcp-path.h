@@ -71,7 +71,7 @@ int smf_5gc_pfcp_n4mb_send_session_establishment_request(
 
 int smf_5gc_pfcp_n4mb_send_session_deletion_request(smf_mbs_sess_t *mbs_sess);
 int smf_5gc_pfcp_n4mb_send_session_modification_request(
-        smf_mbs_sess_t *mbs_sess, const smf_mbs_flow_change_t *flows);
+        smf_mbs_sess_t *mbs_sess, const smf_n4mb_modification_t *mod);
 
 #ifdef __cplusplus
 }
