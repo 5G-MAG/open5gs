@@ -1465,6 +1465,137 @@ static void test_local_ingress_tunnel_choose(void)
     CHECK(len == 1 && tunnel.flags == 0x06);
 }
 
+static smf_mbs_sess_t *session_with_ssm(const char *dest, const char *src)
+{
+    ogs_tmgi_t *tmgi = smf_tmgi_allocate(smf_tmgi_gen_expiration_time(60));
+    ogs_ssm_t *ssm = ogs_calloc(1, sizeof(*ssm));
+    smf_mbs_sess_t *mbs_sess;
+    struct in_addr a4;
+    struct in6_addr a6;
+
+    if (!tmgi) return NULL;
+    if (inet_pton(AF_INET, dest, &a4) == 1) {
+        ssm->dest_ip_addr.ipv4 = 1;
+        ssm->dest_ip_addr.len = OGS_IPV4_LEN;
+        ssm->dest_ip_addr.addr = a4.s_addr;
+    } else {
+        inet_pton(AF_INET6, dest, &a6);
+        ssm->dest_ip_addr.ipv6 = 1;
+        ssm->dest_ip_addr.len = OGS_IPV6_LEN;
+        memcpy(ssm->dest_ip_addr.addr6, &a6, OGS_IPV6_LEN);
+    }
+    if (inet_pton(AF_INET, src, &a4) == 1) {
+        ssm->src_ip_addr.ipv4 = 1;
+        ssm->src_ip_addr.len = OGS_IPV4_LEN;
+        ssm->src_ip_addr.addr = a4.s_addr;
+    } else {
+        inet_pton(AF_INET6, src, &a6);
+        ssm->src_ip_addr.ipv6 = 1;
+        ssm->src_ip_addr.len = OGS_IPV6_LEN;
+        memcpy(ssm->src_ip_addr.addr6, &a6, OGS_IPV6_LEN);
+    }
+    mbs_sess = smf_mbs_sess_create(tmgi, true, ssm, "BROADCAST", NULL, NULL, false, NULL);
+    if (!mbs_sess) return NULL;
+    ogs_list_init(&mbs_sess->mbs_qos_flow_list);
+    ogs_list_init(&mbs_sess->mbs_fsa_id_list);
+    {
+        ogs_pfcp_node_t *node = NULL;
+        ogs_list_for_each(&ogs_pfcp_self()->pfcp_peer_list, node)
+            memcpy(&node->addr, node->sa_list, sizeof(node->addr));
+    }
+    smf_mbs_sess_create_mbs_data_forwarding(mbs_sess);
+    return mbs_sess;
+}
+
+/* TS 29.244 V18.10.0 figures 8.2.137-1 (IP Multicast Address) and 8.2.138-1 (Source IP Address): octet 5 holds the
+ * flags (IP Multicast Address: V6 bit 1, V4 bit 2; Source IP Address: V6 bit 1, V4 bit 2, MPL bit 3), and the
+ * address fields follow it with no gap; an IPv6 address is 16 octets starting at octet 6. */
+static void test_ip_multicast_addressing_info_layout(void)
+{
+    static const uint8_t v6_group[16] = { 0xff, 0x3e, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x12, 0x34 };
+    static const uint8_t v6_source[16] = { 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01 };
+    smf_mbs_sess_t *mbs_sess;
+    ogs_pfcp_message_t *msg;
+    ogs_tlv_octet_t *group, *source;
+
+    /* IPv6 group, IPv6 source */
+    mbs_sess = session_with_ssm("ff3e::1234", "2001:db8::1");
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+    msg = build_and_parse_establishment(mbs_sess);
+    CHECK(msg != NULL);
+    if (msg) {
+        group = &msg->pfcp_session_establishment_request.create_pdr[0].pdi.ip_multicast_addressing_info.ip_multicast_address;
+        source = &msg->pfcp_session_establishment_request.create_pdr[0].pdi.ip_multicast_addressing_info.source_ip_address;
+        CHECK(group->presence && group->len == 17);
+        CHECK(group->len == 17 && ((uint8_t *)group->data)[0] == 0x01 && memcmp((uint8_t *)group->data + 1, v6_group, 16) == 0);
+        CHECK(source->presence && source->len == 17);
+        CHECK(source->len == 17 && ((uint8_t *)source->data)[0] == 0x01 && memcmp((uint8_t *)source->data + 1, v6_source, 16) == 0);
+    }
+    smf_mbs_sess_release(mbs_sess);
+
+    /* IPv4 group, IPv4 source */
+    mbs_sess = session_with_ssm("232.1.2.3", "10.0.0.9");
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+    msg = build_and_parse_establishment(mbs_sess);
+    CHECK(msg != NULL);
+    if (msg) {
+        static const uint8_t g4[4] = { 232, 1, 2, 3 }, s4[4] = { 10, 0, 0, 9 };
+
+        group = &msg->pfcp_session_establishment_request.create_pdr[0].pdi.ip_multicast_addressing_info.ip_multicast_address;
+        source = &msg->pfcp_session_establishment_request.create_pdr[0].pdi.ip_multicast_addressing_info.source_ip_address;
+        CHECK(group->len == 5 && ((uint8_t *)group->data)[0] == 0x02 && memcmp((uint8_t *)group->data + 1, g4, 4) == 0);
+        CHECK(source->len == 5 && ((uint8_t *)source->data)[0] == 0x02 && memcmp((uint8_t *)source->data + 1, s4, 4) == 0);
+    }
+    smf_mbs_sess_release(mbs_sess);
+
+    /* the encoders on their own: a range, any, a prefix length, and flags that are not valid */
+    {
+        ogs_pfcp_ip_multicast_address_t a;
+        ogs_pfcp_source_ip_address_t b;
+        uint8_t buf[OGS_PFCP_IP_MULTICAST_ADDRESS_MAX_LEN];
+        uint8_t sbuf[OGS_PFCP_SOURCE_IP_ADDRESS_MAX_LEN];
+
+        memset(&a, 0, sizeof(a));
+        a.a = 1;
+        CHECK(ogs_pfcp_build_ip_multicast_address(buf, &a) == 1 && buf[0] == 0x08);
+
+        memset(&a, 0, sizeof(a));
+        a.v4 = 1;
+        a.r = 1;
+        a.s_ipv4_addr = htonl(0xe8010203);
+        a.e_ipv4_addr = htonl(0xe80102ff);
+        CHECK(ogs_pfcp_build_ip_multicast_address(buf, &a) == 9 && buf[0] == 0x06 && buf[4] == 0x03 && buf[8] == 0xff);
+
+        memset(&a, 0, sizeof(a));
+        a.v6 = 1;
+        a.r = 1;
+        memcpy(a.s_ipv6_addr, v6_group, 16);
+        memcpy(a.e_ipv6_addr, v6_source, 16);
+        CHECK(ogs_pfcp_build_ip_multicast_address(buf, &a) == 33 && buf[0] == 0x05 &&
+                memcmp(buf + 1, v6_group, 16) == 0 && memcmp(buf + 17, v6_source, 16) == 0);
+
+        memset(&a, 0, sizeof(a));
+        CHECK(ogs_pfcp_build_ip_multicast_address(buf, &a) == -1);      /* no address kind */
+        a.v4 = 1;
+        a.v6 = 1;
+        CHECK(ogs_pfcp_build_ip_multicast_address(buf, &a) == -1);      /* two */
+
+        memset(&b, 0, sizeof(b));
+        b.v4 = 1;
+        b.v6 = 1;
+        b.mpl = 1;
+        b.ipv4_addr = htonl(0x0a000009);
+        memcpy(b.ipv6_addr, v6_source, 16);
+        b.mask_prefix_len = 64;
+        CHECK(ogs_pfcp_build_source_ip_address(sbuf, &b) == 22 && sbuf[0] == 0x07 && sbuf[4] == 0x09 &&
+                memcmp(sbuf + 5, v6_source, 16) == 0 && sbuf[21] == 64);
+        memset(&b, 0, sizeof(b));
+        CHECK(ogs_pfcp_build_source_ip_address(sbuf, &b) == -1);
+    }
+}
+
 /* TS 24.008 V18.8.0 figure 10.5.154 (octets 3 to 8 of the TMGI, as TS 29.244 V18.10.0 cl. 8.2.206 requires):
  * octet 6 "MCC digit 2 | MCC digit 1", octet 7 "MNC digit 3 | MCC digit 3", octet 8 "MNC digit 2 | MNC digit 1"
  * (a two-digit MNC leaves digit 3 as F, as the identity form of the IE says: "If a network operator decides to use
@@ -1576,6 +1707,7 @@ int main(void)
     test_amf_entries();
     test_context_update_request();
     test_local_ingress_tunnel_choose();
+    test_ip_multicast_addressing_info_layout();
     test_tmgi_octets();
     test_notification_routing();
 

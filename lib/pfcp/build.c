@@ -309,6 +309,8 @@ static struct {
     ogs_pfcp_f_teid_t f_teid;
     char dnn[OGS_MAX_DNN_LEN+1];
     char *sdf_filter[OGS_MAX_NUM_OF_FLOW_IN_PDR];
+    uint8_t ip_multicast_address[OGS_PFCP_IP_MULTICAST_ADDRESS_MAX_LEN];
+    uint8_t source_ip_address[OGS_PFCP_SOURCE_IP_ADDRESS_MAX_LEN];
 } pdrbuf[OGS_MAX_NUM_OF_PDR];
 
 void ogs_pfcp_pdrbuf_init(void)
@@ -445,24 +447,37 @@ void ogs_pfcp_build_create_pdr(
         message->qer_id.u32 = pdr->qer->id;
     }
 
-    // IP Multicast Addressing Info in PDI IE
+    // IP Multicast Addressing Info in PDI IE. The IEs are encoded as TS 29.244 V18.10.0 figures 8.2.137-1 and
+    // 8.2.138-1 draw them, not copied from the structure, which holds an IPv6 address after the IPv4 one.
     if (pdr->ip_multicast_addressing_info_len) {
+        int16_t len;
+
         message->pdi.ip_multicast_addressing_info.presence = 1;
 
         if (pdr->ip_multicast_addressing_info.ip_multicast_address_len) {
-            message->pdi.ip_multicast_addressing_info.ip_multicast_address.presence = 1;
-            message->pdi.ip_multicast_addressing_info.ip_multicast_address.data =
-                    &pdr->ip_multicast_addressing_info.ip_multicast_address;
-            message->pdi.ip_multicast_addressing_info.ip_multicast_address.len =
-                    pdr->ip_multicast_addressing_info.ip_multicast_address_len;
+            len = ogs_pfcp_build_ip_multicast_address(
+                    pdrbuf[i].ip_multicast_address, &pdr->ip_multicast_addressing_info.ip_multicast_address);
+            if (len > 0) {
+                message->pdi.ip_multicast_addressing_info.ip_multicast_address.presence = 1;
+                message->pdi.ip_multicast_addressing_info.ip_multicast_address.data =
+                        pdrbuf[i].ip_multicast_address;
+                message->pdi.ip_multicast_addressing_info.ip_multicast_address.len = len;
+            } else {
+                ogs_error("The IP Multicast Address of PDR [%d] cannot be encoded", pdr->id);
+            }
         }
 
         if (pdr->ip_multicast_addressing_info.source_ip_address_len) {
-            message->pdi.ip_multicast_addressing_info.source_ip_address.presence = 1;
-            message->pdi.ip_multicast_addressing_info.source_ip_address.data =
-                    &pdr->ip_multicast_addressing_info.source_ip_address;
-            message->pdi.ip_multicast_addressing_info.source_ip_address.len =
-                    pdr->ip_multicast_addressing_info.source_ip_address_len;
+            len = ogs_pfcp_build_source_ip_address(
+                    pdrbuf[i].source_ip_address, &pdr->ip_multicast_addressing_info.source_ip_address);
+            if (len > 0) {
+                message->pdi.ip_multicast_addressing_info.source_ip_address.presence = 1;
+                message->pdi.ip_multicast_addressing_info.source_ip_address.data =
+                        pdrbuf[i].source_ip_address;
+                message->pdi.ip_multicast_addressing_info.source_ip_address.len = len;
+            } else {
+                ogs_error("The Source IP Address of PDR [%d] cannot be encoded", pdr->id);
+            }
         }
     }
 }

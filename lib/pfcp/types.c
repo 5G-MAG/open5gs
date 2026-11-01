@@ -909,6 +909,79 @@ static void set_ip_from_octets(ogs_ip_t *ip, bool v6, const uint8_t *data)
     }
 }
 
+int16_t ogs_pfcp_build_ip_multicast_address(
+        void *buf, const ogs_pfcp_ip_multicast_address_t *address)
+{
+    uint8_t *p = buf;
+    int flags;
+
+    ogs_assert(buf);
+    ogs_assert(address);
+
+    /* "One and only one of the V6, V4 and A flags shall be set to "1". The R flag may be set if the V6 or the V4
+     * flag is set to "1"." (cl. 8.2.137) */
+    flags = (address->v6 ? 1 : 0) + (address->v4 ? 1 : 0) + (address->a ? 1 : 0);
+    if (flags != 1 || (address->r && address->a)) {
+        ogs_error("IP Multicast Address flags 0x%02x are not valid", address->octet5);
+        return -1;
+    }
+
+    /* octet 5: spare "0", A, R, V4, V6 */
+    *p++ = (address->octet5 & 0x0f);
+    if (address->a)
+        return 1;
+
+    if (address->v4) {
+        memcpy(p, &address->s_ipv4_addr, OGS_IPV4_LEN);
+        p += OGS_IPV4_LEN;
+    }
+    if (address->v6) {
+        memcpy(p, address->s_ipv6_addr, OGS_IPV6_LEN);
+        p += OGS_IPV6_LEN;
+    }
+    if (address->r) {
+        if (address->v4) {
+            memcpy(p, &address->e_ipv4_addr, OGS_IPV4_LEN);
+            p += OGS_IPV4_LEN;
+        }
+        if (address->v6) {
+            memcpy(p, address->e_ipv6_addr, OGS_IPV6_LEN);
+            p += OGS_IPV6_LEN;
+        }
+    }
+
+    return p - (uint8_t *)buf;
+}
+
+int16_t ogs_pfcp_build_source_ip_address(
+        void *buf, const ogs_pfcp_source_ip_address_t *address)
+{
+    uint8_t *p = buf;
+
+    ogs_assert(buf);
+    ogs_assert(address);
+
+    if (!address->v4 && !address->v6) {
+        ogs_error("Source IP Address flags 0x%02x carry no address", address->octet5);
+        return -1;
+    }
+
+    /* octet 5: spare "0", MPL, V4, V6; then the IPv4 address, the IPv6 address, the mask/prefix length */
+    *p++ = (address->octet5 & 0x07);
+    if (address->v4) {
+        memcpy(p, &address->ipv4_addr, OGS_IPV4_LEN);
+        p += OGS_IPV4_LEN;
+    }
+    if (address->v6) {
+        memcpy(p, address->ipv6_addr, OGS_IPV6_LEN);
+        p += OGS_IPV6_LEN;
+    }
+    if (address->mpl)
+        *p++ = address->mask_prefix_len;
+
+    return p - (uint8_t *)buf;
+}
+
 int16_t ogs_pfcp_parse_ip_multicast_address(
         ogs_pfcp_decoded_ip_multicast_address_t *decoded, const ogs_tlv_octet_t *octet)
 {

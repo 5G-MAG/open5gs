@@ -1754,6 +1754,17 @@ typedef struct ogs_pfcp_decoded_source_ip_address_s {
     uint8_t     mask_prefix_len;
 } ogs_pfcp_decoded_source_ip_address_t;
 
+/* The IEs as they go on the wire (TS 29.244 V18.10.0 figures 8.2.137-1 and 8.2.138-1: the octets follow the flags with
+ * no gap, so the packed structures above, which keep every field in a slot of its own, are not copied but encoded).
+ * Return the number of octets written to buf (at least OGS_PFCP_IP_MULTICAST_ADDRESS_MAX_LEN and
+ * OGS_PFCP_SOURCE_IP_ADDRESS_MAX_LEN), or -1 if the flags are not valid. */
+#define OGS_PFCP_IP_MULTICAST_ADDRESS_MAX_LEN   (1 + OGS_IPV6_LEN + OGS_IPV6_LEN)
+#define OGS_PFCP_SOURCE_IP_ADDRESS_MAX_LEN      (1 + OGS_IPV4_LEN + OGS_IPV6_LEN + 1)
+int16_t ogs_pfcp_build_ip_multicast_address(
+        void *buf, const ogs_pfcp_ip_multicast_address_t *address);
+int16_t ogs_pfcp_build_source_ip_address(
+        void *buf, const ogs_pfcp_source_ip_address_t *address);
+
 /* Return the number of octets consumed, or -1 if the IE is not valid. */
 int16_t ogs_pfcp_parse_ip_multicast_address(
         ogs_pfcp_decoded_ip_multicast_address_t *decoded, const ogs_tlv_octet_t *octet);
