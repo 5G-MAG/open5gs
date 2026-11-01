@@ -623,6 +623,56 @@ static void test_update_action_ran_id_list(void)
     ogs_free(down);
 }
 
+/* TS 29.518 V18.14.0 Table 6.5.6.2.5-1 (ContextUpdateReqData): "noNgapSignallingInd | boolean | O | 0..1", and
+ * TS29518_Namf_MBSBroadcast.yaml of that version: "noNgapSignallingInd:" "type: boolean" "enum: - true". The member is the
+ * JSON boolean true, not the string "true". */
+static void test_context_update_req_data_no_ngap_signalling_ind(void)
+{
+    cJSON *json = NULL;
+    OpenAPI_context_update_req_data_t *parsed = NULL;
+    cJSON *back = NULL;
+    char *text = NULL;
+
+    json = cJSON_Parse("{\"noNgapSignallingInd\":true}");
+    parsed = OpenAPI_context_update_req_data_parseFromJSON(json);
+    cJSON_Delete(json);
+    CHECK(parsed != NULL);
+    if (parsed) {
+        CHECK(parsed->no_ngap_signalling_ind == OpenAPI_context_update_req_data_NONGAPSIGNALLINGIND__true);
+
+        json = OpenAPI_context_update_req_data_convertToJSON(parsed);
+        CHECK(json != NULL);
+        if (json) {
+            back = cJSON_GetObjectItemCaseSensitive(json, "noNgapSignallingInd");
+            CHECK(back != NULL && cJSON_IsTrue(back));
+            cJSON_Delete(json);
+        }
+        OpenAPI_context_update_req_data_free(parsed);
+    }
+
+    /* absent: not set, and not written */
+    json = cJSON_Parse("{}");
+    parsed = OpenAPI_context_update_req_data_parseFromJSON(json);
+    cJSON_Delete(json);
+    CHECK(parsed != NULL);
+    if (parsed) {
+        CHECK(parsed->no_ngap_signalling_ind == OpenAPI_context_update_req_data_NONGAPSIGNALLINGIND_NULL);
+        json = OpenAPI_context_update_req_data_convertToJSON(parsed);
+        text = json ? cJSON_PrintUnformatted(json) : NULL;
+        CHECK(text != NULL && strstr(text, "noNgapSignallingInd") == NULL);
+        if (text) ogs_free(text);
+        if (json) cJSON_Delete(json);
+        OpenAPI_context_update_req_data_free(parsed);
+    }
+
+    /* the old, string, form is not a boolean */
+    json = cJSON_Parse("{\"noNgapSignallingInd\":\"true\"}");
+    parsed = OpenAPI_context_update_req_data_parseFromJSON(json);
+    cJSON_Delete(json);
+    CHECK(parsed == NULL);
+    if (parsed) OpenAPI_context_update_req_data_free(parsed);
+}
+
 int main(int argc, const char *argv[])
 {
     ogs_pkbuf_config_t config;
@@ -645,6 +695,7 @@ int main(int argc, const char *argv[])
     test_transport_relay();
     test_store_n2_container();
     test_update_action_ran_id_list();
+    test_context_update_req_data_no_ngap_signalling_ind();
 
     ogs_sbi_message_final();
     ogs_pkbuf_default_destroy();

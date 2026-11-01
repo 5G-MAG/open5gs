@@ -163,7 +163,9 @@ cJSON *OpenAPI_context_update_req_data_convertToJSON(OpenAPI_context_update_req_
     }
 
     if (context_update_req_data->no_ngap_signalling_ind != OpenAPI_context_update_req_data_NONGAPSIGNALLINGIND_NULL) {
-    if (cJSON_AddStringToObject(item, "noNgapSignallingInd", OpenAPI_no_ngap_signalling_indcontext_update_req_data_ToString(context_update_req_data->no_ngap_signalling_ind)) == NULL) {
+    /* TS 29.518 V18.14.0 TS29518_Namf_MBSBroadcast.yaml: noNgapSignallingInd is "type: boolean", "enum: - true": the
+     * JSON boolean true, not the string "true" the generator produced for the enum. */
+    if (cJSON_AddBoolToObject(item, "noNgapSignallingInd", 1) == NULL) {
         ogs_error("OpenAPI_context_update_req_data_convertToJSON() failed [no_ngap_signalling_ind]");
         goto end;
     }
@@ -279,11 +281,12 @@ OpenAPI_context_update_req_data_t *OpenAPI_context_update_req_data_parseFromJSON
 
     no_ngap_signalling_ind = cJSON_GetObjectItemCaseSensitive(context_update_req_dataJSON, "noNgapSignallingInd");
     if (no_ngap_signalling_ind) {
-    if (!cJSON_IsString(no_ngap_signalling_ind)) {
+    /* a JSON boolean, which can only be true (see convertToJSON) */
+    if (!cJSON_IsTrue(no_ngap_signalling_ind)) {
         ogs_error("OpenAPI_context_update_req_data_parseFromJSON() failed [no_ngap_signalling_ind]");
         goto end;
     }
-    no_ngap_signalling_indVariable = OpenAPI_no_ngap_signalling_indcontext_update_req_data_FromString(no_ngap_signalling_ind->valuestring);
+    no_ngap_signalling_indVariable = OpenAPI_context_update_req_data_NONGAPSIGNALLINGIND__true;
     }
 
     notify_uri = cJSON_GetObjectItemCaseSensitive(context_update_req_dataJSON, "notifyUri");
