@@ -895,6 +895,123 @@ int16_t ogs_pfcp_build_mbs_session_identifier(ogs_tlv_octet_t *octet,
     return octet->len;
 }
 
+/* Copies an IPv4 or IPv6 address of the given length into ip (kept in network byte order, as ogs_ip_t does). */
+static void set_ip_from_octets(ogs_ip_t *ip, bool v6, const uint8_t *data)
+{
+    if (v6) {
+        ip->ipv6 = 1;
+        ip->len = OGS_IPV6_LEN;
+        memcpy(ip->addr6, data, OGS_IPV6_LEN);
+    } else {
+        ip->ipv4 = 1;
+        ip->len = OGS_IPV4_LEN;
+        memcpy(&ip->addr, data, OGS_IPV4_LEN);
+    }
+}
+
+int16_t ogs_pfcp_parse_ip_multicast_address(
+        ogs_pfcp_decoded_ip_multicast_address_t *decoded, const ogs_tlv_octet_t *octet)
+{
+    const uint8_t *data;
+    uint32_t len, want, pos;
+    bool v6, v4, r, a;
+
+    ogs_assert(decoded);
+    ogs_assert(octet);
+
+    memset(decoded, 0, sizeof(*decoded));
+    data = octet->data;
+    len = octet->len;
+    if (data == NULL || len < 1) {
+        ogs_error("IP Multicast Address without its flags octet");
+        return -1;
+    }
+
+    v6 = data[0] & 0x01;    /* bit 1 */
+    v4 = data[0] & 0x02;    /* bit 2 */
+    r  = data[0] & 0x04;    /* bit 3 */
+    a  = data[0] & 0x08;    /* bit 4 */
+
+    /* TS 29.244 cl. 8.2.137: "One and only one of the V6, V4 and A flags shall be set to "1". The R flag may be
+     * set if the V6 or the V4 flag is set to "1"." */
+    if ((v6 + v4 + a) != 1 || (r && a)) {
+        ogs_error("IP Multicast Address flags 0x%02x are not valid", data[0]);
+        return -1;
+    }
+
+    want = 1;
+    if (v4) want += OGS_IPV4_LEN * (r ? 2 : 1);
+    if (v6) want += OGS_IPV6_LEN * (r ? 2 : 1);
+    if (len != want) {
+        ogs_error("IP Multicast Address length %u, flags 0x%02x need %u", len, data[0], want);
+        return -1;
+    }
+
+    decoded->any = a;
+    decoded->range = r;
+    pos = 1;
+    if (v4 || v6) {
+        set_ip_from_octets(&decoded->start, v6, data + pos);
+        pos += v6 ? OGS_IPV6_LEN : OGS_IPV4_LEN;
+        if (r)
+            set_ip_from_octets(&decoded->end, v6, data + pos);
+    }
+    return len;
+}
+
+int16_t ogs_pfcp_parse_source_ip_address(
+        ogs_pfcp_decoded_source_ip_address_t *decoded, const ogs_tlv_octet_t *octet)
+{
+    const uint8_t *data;
+    uint32_t len, want, pos;
+    bool v6, v4, mpl;
+
+    ogs_assert(decoded);
+    ogs_assert(octet);
+
+    memset(decoded, 0, sizeof(*decoded));
+    data = octet->data;
+    len = octet->len;
+    if (data == NULL || len < 1) {
+        ogs_error("Source IP Address without its flags octet");
+        return -1;
+    }
+
+    v6  = data[0] & 0x01;   /* bit 1 */
+    v4  = data[0] & 0x02;   /* bit 2 */
+    mpl = data[0] & 0x04;   /* bit 3 */
+
+    if (!v4 && !v6) {
+        ogs_error("Source IP Address flags 0x%02x carry no address", data[0]);
+        return -1;
+    }
+
+    want = 1 + (v4 ? OGS_IPV4_LEN : 0) + (v6 ? OGS_IPV6_LEN : 0) + (mpl ? 1 : 0);
+    if (len != want) {
+        ogs_error("Source IP Address length %u, flags 0x%02x need %u", len, data[0], want);
+        return -1;
+    }
+
+    /* Octets follow the flags in the order of figure 8.2.138-1: IPv4, IPv6, mask/prefix length. */
+    pos = 1;
+    if (v4) {
+        decoded->addr.ipv4 = 1;
+        memcpy(&decoded->addr.addr, data + pos, OGS_IPV4_LEN);
+        pos += OGS_IPV4_LEN;
+    }
+    if (v6) {
+        decoded->addr.ipv6 = 1;
+        memcpy(decoded->addr.addr6, data + pos, OGS_IPV6_LEN);
+        pos += OGS_IPV6_LEN;
+    }
+    decoded->addr.len = (v4 ? OGS_IPV4_LEN : 0) + (v6 ? OGS_IPV6_LEN : 0);
+    if (mpl) {
+        decoded->has_mask_prefix_len = true;
+        decoded->mask_prefix_len = data[pos];
+    }
+    return len;
+}
+
 /*
  * Decodes one Address Type / Address Length / Address field of the Source Specific IP Multicast
  * Address (TS 29.244 cl. 8.2.206 and 8.2.207: type 0 with length 4, or type 1 with length 16; "Other

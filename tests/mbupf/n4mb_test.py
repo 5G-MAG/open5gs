@@ -502,6 +502,95 @@ def t_U06_3_fssm_without_mbs_multicast_parameters():
     accepted_and_deleted(U.establish(good(cp_seid=0x6003)), 'FSSM with its parameters')
 
 
+def mc_info(dest=None, src=None):
+    parts = []
+    if dest is not None:
+        parts.append(ie(T_IPMC_ADDR, dest))
+    if src is not None:
+        parts.append(ie(T_SRC_IP, src))
+    return ie(T_IPMC_INFO, parts)
+
+
+def mc_request(cp_seid, dest=None, src=None, te_id=None, flags=0x01):
+    """A request with the multicast addressing in the PDI, or in the Create Traffic Endpoint when te_id is given."""
+    info = mc_info(dest, src)
+    if te_id is None:
+        ies = [node_id(), fseid(cp_seid), pdr(pdi_extra=(info,)), far(), qer(), n4mb_ctrl(flags=flags)]
+    else:
+        ies = [node_id(), fseid(cp_seid), pdr(pdi_extra=(ie(T_TE_ID, bytes([te_id])),)), far(), qer(),
+               ie(T_CREATE_TE, [ie(T_TE_ID, bytes([te_id])), info]), n4mb_ctrl(flags=flags)]
+    return ies
+
+
+G6 = bytes.fromhex('ff3e0000000000000000000000001234')
+S6 = bytes.fromhex('20010db8000000000000000000000001')
+
+
+@test
+def t_U03_12_U03_13_ipv6_addressing():
+    s = accepted(U.establish(mc_request(0x7001, b'\x01' + G6, b'\x01' + S6)), 'IPv6 group and source')
+    assert 'destination [ff3e::1234] source [2001:db8::1]' in U.log_text(), 'IPv6 addressing not read'
+    U.delete(s)
+    s = accepted(U.establish(mc_request(0x7002, b'\x02' + V4G, b'\x02' + V4S)), 'IPv4 group and source')
+    assert 'destination [232.1.1.1] source [10.1.1.1]' in U.log_text(), 'IPv4 addressing not read'
+    U.delete(s)
+    # source with a prefix length, and a source that is both IPv4 and IPv6
+    s = accepted(U.establish(mc_request(0x7003, b'\x02' + V4G, b'\x06' + V4S + b'\x18')), 'source with mask')
+    U.delete(s)
+    s = accepted(U.establish(mc_request(0x7004, b'\x02' + V4G, b'\x03' + V4S + S6)), 'source IPv4 and IPv6')
+    U.delete(s)
+
+
+@test
+def t_U03_12_U03_13_invalid_addressing():
+    bad = {
+        'multicast, no flag': (b'\x00' + V4G, None),
+        'multicast, V4 and V6': (b'\x03' + V4G + G6, None),
+        'multicast, A and V4': (b'\x0a' + V4G, None),
+        'multicast, A and R': (b'\x0c', None),
+        'multicast, V6 flag with an IPv4 address': (b'\x01' + V4G, None),
+        'multicast, V4 flag with an IPv6 address': (b'\x02' + G6, None),
+        'multicast, range without an end': (b'\x06' + V4G, None),
+        'multicast, empty': (b'', None),
+        'source, no address flag': (V4G[:0] + b'\x00', None),
+        'source, IPv6 flag with an IPv4 address': (None, b'\x01' + V4S),
+        'source, mask flag without the octet': (None, b'\x06' + V4S),
+        'source, empty': (None, b''),
+    }
+    for name, (d, sr) in bad.items():
+        if name == 'source, no address flag':
+            d, sr = b'\x02' + V4G, b'\x00'
+        if d is None:
+            d = b'\x02' + V4G
+        r = U.establish(mc_request(0x7010, d, sr))
+        assert r is not None, name + ': no answer (upfd alive: %s)' % U.alive()
+        assert cause(r) == CAUSE_MANDATORY_INCORRECT, '%s: cause %s' % (name, cause(r))
+        want = T_SRC_IP if name.startswith('source') else T_IPMC_ADDR
+        assert offending(r) == want, '%s: offending IE %s, want %d' % (name, offending(r), want)
+    accepted_and_deleted(U.establish(good(cp_seid=0x7020)), 'after the rejections')
+
+
+@test
+def t_U03_16_U03_17_traffic_endpoint_addressing():
+    s = accepted(U.establish(mc_request(0x7031, b'\x01' + G6, b'\x01' + S6, te_id=9)), 'addressing in the Create Traffic Endpoint')
+    assert 'destination [ff3e::1234] source [2001:db8::1]' in U.log_text(), 'Traffic Endpoint addressing not read'
+    U.delete(s)
+    # a PDR naming a Traffic Endpoint ID that is not in the request
+    ies = mc_request(0x7032, b'\x02' + V4G, b'\x02' + V4S, te_id=9)
+    ies = replace_ie(ies, T_CREATE_PDR, pdr(pdi_extra=(ie(T_TE_ID, b'\x0a'),)))
+    r = U.establish(ies)
+    assert r and cause(r) == CAUSE_MANDATORY_INCORRECT, 'cause %s' % (cause(r) if r else None)
+    assert offending(r) == T_TE_ID, 'offending IE %s' % offending(r)
+    # a PDR naming a Traffic Endpoint ID when the request has no Create Traffic Endpoint
+    ies = replace_ie(mc_request(0x7033, b'\x02' + V4G, None), T_CREATE_PDR, pdr(pdi_extra=(ie(T_TE_ID, b'\x09'),)))
+    r = U.establish(ies)
+    assert r and cause(r) == CAUSE_MANDATORY_INCORRECT, 'no Create Traffic Endpoint: cause %s' % (cause(r) if r else None)
+    # an invalid IE in the Create Traffic Endpoint is refused as well
+    r = U.establish(mc_request(0x7034, b'\x03' + V4G + G6, None, te_id=9))
+    assert r and cause(r) == CAUSE_MANDATORY_INCORRECT and offending(r) == T_IPMC_ADDR, 'invalid IE in the endpoint'
+    accepted_and_deleted(U.establish(good(cp_seid=0x7035)), 'after the rejections')
+
+
 # E-TESTS-BELOW
 
 

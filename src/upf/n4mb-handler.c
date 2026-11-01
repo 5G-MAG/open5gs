@@ -116,6 +116,55 @@ static int _open_udp_tunnel(upf_mbs_sess_t *mbs_sess, ogs_sockaddr_t *bind_addre
 }
 
 /*
+ * The IP Multicast Addressing Info of a downlink PDR: carried in the PDI, or, when the PDI names a
+ * Traffic Endpoint ID, in that Create Traffic Endpoint (TS 29.244 Table 7.5.2.2-2: "This IE shall be present over N4mb, if multicast transport is used over N6mb and if Traffic Endpoint ID is not present.";
+ * Table 7.5.2.7-1: "This IE shall be present over N4mb, if multicast transport is used over N6mb, if Traffic Endpoint ID is present in the DL PDR.").
+ * Returns OGS_ERROR with the Offending IE set if an IE is not valid or the Traffic Endpoint ID is unknown.
+ */
+static int _decode_pdr_addressing(const ogs_pfcp_session_establishment_request_t *req, int pdr_index,
+        bool *has_dest, ogs_pfcp_decoded_ip_multicast_address_t *dest,
+        bool *has_src, ogs_pfcp_decoded_source_ip_address_t *src, uint16_t *offending_ie_value)
+{
+    const ogs_pfcp_tlv_create_pdr_t *cpdr = &req->create_pdr[pdr_index];
+    const ogs_pfcp_tlv_create_traffic_endpoint_t *te = &req->create_traffic_endpoint;
+    const ogs_pfcp_tlv_ip_multicast_addressing_info_within_pfcp_session_establishment_request_t *info =
+        &cpdr->pdi.ip_multicast_addressing_info;
+
+    *has_dest = false;
+    *has_src = false;
+
+    if (cpdr->pdi.traffic_endpoint_id.presence) {
+        if (cpdr->pdi.traffic_endpoint_id.len < 1 || !te->presence || !te->traffic_endpoint_id.presence ||
+                te->traffic_endpoint_id.len < 1 ||
+                *(uint8_t *)cpdr->pdi.traffic_endpoint_id.data != *(uint8_t *)te->traffic_endpoint_id.data) {
+            ogs_error("The Traffic Endpoint ID of PDR[%d] names no Create Traffic Endpoint of the request", pdr_index);
+            *offending_ie_value = OGS_PFCP_TRAFFIC_ENDPOINT_ID_TYPE;
+            return OGS_ERROR;
+        }
+        info = &te->ip_multicast_addressing_info;
+    }
+
+    if (!info->presence)
+        return OGS_OK;
+
+    if (info->ip_multicast_address.presence) {
+        if (ogs_pfcp_parse_ip_multicast_address(dest, &info->ip_multicast_address) < 0) {
+            *offending_ie_value = OGS_PFCP_IP_MULTICAST_ADDRESS_TYPE;
+            return OGS_ERROR;
+        }
+        *has_dest = true;
+    }
+    if (info->source_ip_address.presence) {
+        if (ogs_pfcp_parse_source_ip_address(src, &info->source_ip_address) < 0) {
+            *offending_ie_value = OGS_PFCP_SOURCE_IP_ADDRESS_TYPE;
+            return OGS_ERROR;
+        }
+        *has_src = true;
+    }
+    return OGS_OK;
+}
+
+/*
  * Checks that the mandatory IEs of an N4mb Session Establishment Request are present. On a failure the
  * response has been sent and false is returned, and no session has been allocated.
  */
@@ -172,6 +221,21 @@ bool upf_n4mb_check_session_establishment_request(
                 ogs_error("Apply Action FSSM without MBS Multicast Parameters");
                 cause_value = OGS_PFCP_CAUSE_CONDITIONAL_IE_MISSING;
                 offending_ie_value = OGS_PFCP_MBS_MULTICAST_PARAMETERS_TYPE;
+                break;
+            }
+        }
+    }
+
+    if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED) {
+        int i;
+
+        for (i = 0; i < OGS_MAX_NUM_OF_PDR && req->create_pdr[i].presence; i++) {
+            bool has_dest, has_src;
+            ogs_pfcp_decoded_ip_multicast_address_t dest;
+            ogs_pfcp_decoded_source_ip_address_t src;
+
+            if (_decode_pdr_addressing(req, i, &has_dest, &dest, &has_src, &src, &offending_ie_value) != OGS_OK) {
+                cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
                 break;
             }
         }
@@ -378,35 +442,41 @@ void upf_n4mb_handle_session_establishment_request(
         }
     }
 
+    /* Setup AF SSM IP address */
+    for (i = 0; i < num_of_created_pdr; i++) {
+        bool has_dest, has_src;
+        ogs_pfcp_decoded_ip_multicast_address_t dest;
+        ogs_pfcp_decoded_source_ip_address_t src;
+
+        /* Already validated by the request check */
+        ogs_assert(OGS_OK == _decode_pdr_addressing(req, i, &has_dest, &dest, &has_src, &src, &offending_ie_value));
+        if (!has_dest && !has_src)
+            continue;
+
+        // TODO (borieher): Modify this to work with IP ranges
+        if (has_src)
+            mbs_sess->ssm.src_ip_addr = src.addr;
+        if (has_dest && !dest.any)
+            mbs_sess->ssm.dest_ip_addr = dest.start;
+        {
+            char dst_s[OGS_ADDRSTRLEN] = "-", src_s[OGS_ADDRSTRLEN] = "-";
+
+            if (mbs_sess->ssm.dest_ip_addr.ipv4)
+                OGS_INET_NTOP(&mbs_sess->ssm.dest_ip_addr.addr, dst_s);
+            else if (mbs_sess->ssm.dest_ip_addr.ipv6)
+                OGS_INET6_NTOP(mbs_sess->ssm.dest_ip_addr.addr6, dst_s);
+            if (mbs_sess->ssm.src_ip_addr.ipv4)
+                OGS_INET_NTOP(&mbs_sess->ssm.src_ip_addr.addr, src_s);
+            else if (mbs_sess->ssm.src_ip_addr.ipv6)
+                OGS_INET6_NTOP(mbs_sess->ssm.src_ip_addr.addr6, src_s);
+            ogs_debug("MBS session AF multicast: destination [%s] source [%s]", dst_s, src_s);
+        }
+        upf_mbs_sess_set_ssm(mbs_sess);
+    }
+
     for (i = 0; i < num_of_created_pdr; i++) {
         pdr = created_pdr[i];
         ogs_assert(pdr);
-
-        // TODO (borieher): Modify this to work with IP ranges
-        /* Setup AF SSM IP address */
-        if (pdr->ip_multicast_addressing_info_len) {
-            if (pdr->ip_multicast_addressing_info.source_ip_address.v4) {
-                mbs_sess->ssm.src_ip_addr.ipv4 = 1;
-                mbs_sess->ssm.src_ip_addr.len = OGS_IPV4_LEN;
-                mbs_sess->ssm.src_ip_addr.addr = pdr->ip_multicast_addressing_info.source_ip_address.ipv4_addr;
-            } else if (pdr->ip_multicast_addressing_info.source_ip_address.v6) {
-                mbs_sess->ssm.src_ip_addr.ipv6 = 1;
-                mbs_sess->ssm.src_ip_addr.len = OGS_IPV6_LEN;
-                memcpy(&mbs_sess->ssm.src_ip_addr.addr6, pdr->ip_multicast_addressing_info.source_ip_address.ipv6_addr, OGS_IPV6_LEN);
-            }
-
-            if (pdr->ip_multicast_addressing_info.ip_multicast_address.v4) {
-                mbs_sess->ssm.dest_ip_addr.ipv4 = 1;
-                mbs_sess->ssm.dest_ip_addr.len = OGS_IPV4_LEN;
-                mbs_sess->ssm.dest_ip_addr.addr = pdr->ip_multicast_addressing_info.ip_multicast_address.s_ipv4_addr;
-            } else if (pdr->ip_multicast_addressing_info.ip_multicast_address.v6) {
-                mbs_sess->ssm.dest_ip_addr.ipv6 = 1;
-                mbs_sess->ssm.dest_ip_addr.len = OGS_IPV6_LEN;
-                memcpy(&mbs_sess->ssm.dest_ip_addr.addr6, pdr->ip_multicast_addressing_info.ip_multicast_address.s_ipv6_addr, OGS_IPV6_LEN);
-            }
-
-            upf_mbs_sess_set_ssm(mbs_sess);
-        }
 
         /* Setup UPF-N3-TEID & QFI Hash */
         // NOTE (borieher): restoration_indication set to NULL

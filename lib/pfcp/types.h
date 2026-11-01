@@ -1735,6 +1735,31 @@ ED4(uint8_t         spare:5;,
 } __attribute__ ((packed)) ogs_pfcp_source_ip_address_t;
 
 /*
+ * Decoded form of the IP Multicast Address IE (8.2.137) and of the Source IP Address IE (8.2.138), as
+ * read from the wire by ogs_pfcp_parse_ip_multicast_address() and ogs_pfcp_parse_source_ip_address().
+ * The packed structures above are the layout the builders write (an IPv4-only encoding); they do not
+ * describe an IPv6 or a range encoding, whose octets follow the flags with no gap.
+ */
+typedef struct ogs_pfcp_decoded_ip_multicast_address_s {
+    bool        any;        /* A flag: any IP multicast address, no address field */
+    bool        range;      /* R flag: start and end address */
+    ogs_ip_t    start;      /* (start) address: ipv4 or ipv6 */
+    ogs_ip_t    end;        /* (end) address, valid when range */
+} ogs_pfcp_decoded_ip_multicast_address_t;
+
+typedef struct ogs_pfcp_decoded_source_ip_address_s {
+    ogs_ip_t    addr;       /* ipv4 and/or ipv6, as the V4 and V6 flags say */
+    bool        has_mask_prefix_len;
+    uint8_t     mask_prefix_len;
+} ogs_pfcp_decoded_source_ip_address_t;
+
+/* Return the number of octets consumed, or -1 if the IE is not valid. */
+int16_t ogs_pfcp_parse_ip_multicast_address(
+        ogs_pfcp_decoded_ip_multicast_address_t *decoded, const ogs_tlv_octet_t *octet);
+int16_t ogs_pfcp_parse_source_ip_address(
+        ogs_pfcp_decoded_source_ip_address_t *decoded, const ogs_tlv_octet_t *octet);
+
+/*
  * 8.2.206 MBS Session Identifier
  *
  * The following bits within Octet 5 shall indicate:
