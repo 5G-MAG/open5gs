@@ -251,7 +251,9 @@ bool ogs_pfcp_up_handle_pdr(
         return true;
     }
 
-    if (!far->gnode) {
+    /* MBSU: a remote GTP-U peer is a destination of the FAR as the low layer SSM node is */
+    if (!far->gnode && !((far->apply_action & OGS_PFCP_APPLY_ACTION_MBSU) &&
+                         !ogs_list_empty(&far->mbs_unicast_list))) {
         buffering = true;
 
     } else {
@@ -282,14 +284,15 @@ bool ogs_pfcp_up_handle_pdr(
 
             buffering = true;
 
-        } else if (far->apply_action & OGS_PFCP_APPLY_ACTION_FSSM) {
+        } else if (far->apply_action &
+                (OGS_PFCP_APPLY_ACTION_FSSM | OGS_PFCP_APPLY_ACTION_MBSU)) {
             ogs_gtp2_header_desc_t sendhdr;
 
-            /* Forward packet */
+            /* Forward packet: to the low layer SSM (FSSM) and to the remote GTP-U peers (MBSU) */
             memset(&sendhdr, 0, sizeof(sendhdr));
             sendhdr.type = type;
 
-            ogs_pfcp_send_g_pdu(pdr, &sendhdr, sendbuf);
+            ogs_pfcp_send_g_pdu_mbs(pdr, &sendhdr, sendbuf);
         } else {
             ogs_error("Not implemented = %d", far->apply_action);
             ogs_pkbuf_free(sendbuf);

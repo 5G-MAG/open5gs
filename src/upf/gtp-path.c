@@ -176,8 +176,9 @@ void upf_gtpv1_receive_buffer_for_mbs_sess(ogs_pkbuf_t *recvbuf, upf_mbs_sess_t 
     ogs_pfcp_user_plane_report_t report;
     int i;
 
-    // NOTE (borieher): Just a way to verify that is a real upf_sess_t. Temporary workaround
-    if (mbs_sess && (mbs_sess->ll_ssm) && (mbs_sess->ll_ssm->dest_ip_addr.ipv4 == 1 || mbs_sess->ll_ssm->dest_ip_addr.ipv6 == 1)) {
+    /* An MBS session is what upf_mbs_sess_find_by_ssm() and the ingress tunnel give: the lookups of MBS sessions
+     * have their own hashes. A session without a low layer SSM (unicast transport only, no PLLSSM) is one too. */
+    if (mbs_sess) {
         ogs_debug("MBS type sess");
     } else {
         sess = upf_sess_find_by_ue_ip_address(recvbuf);
@@ -203,6 +204,14 @@ void upf_gtpv1_receive_buffer_for_mbs_sess(ogs_pkbuf_t *recvbuf, upf_mbs_sess_t 
 
         /* Save the Fallback PDR : Lowest precedence downlink PDR */
         fallback_pdr = pdr;
+
+        /* MBSU: the destinations are the FAR's remote GTP-U peers, each with its own interface and outer header */
+        if ((far->apply_action & OGS_PFCP_APPLY_ACTION_MBSU) && !ogs_list_empty(&far->mbs_unicast_list)) {
+            if (ogs_list_first(&pdr->rule_list) &&
+                ogs_pfcp_pdr_rule_find_by_packet(pdr, recvbuf) == NULL)
+                continue;
+            break;
+        }
 
         /* Check if FAR is Downlink */
         if (far->dst_if != OGS_PFCP_INTERFACE_ACCESS)

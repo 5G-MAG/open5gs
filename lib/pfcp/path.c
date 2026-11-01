@@ -343,6 +343,62 @@ int ogs_pfcp_up_send_association_setup_response(ogs_pfcp_xact_t *xact,
     return rv;
 }
 
+/* The GTP-U header of a downlink packet of the PDR, but for the TEID, which is that of each destination. */
+static void fill_g_pdu_header(ogs_pfcp_pdr_t *pdr,
+        ogs_gtp2_header_desc_t *sendhdr, ogs_gtp2_header_desc_t *header_desc)
+{
+    memset(header_desc, 0, sizeof(*header_desc));
+
+    header_desc->type = sendhdr->type;
+
+    if (pdr->qer && pdr->qer->qfi) {
+        header_desc->pdu_type =
+            OGS_GTP2_EXTENSION_HEADER_PDU_TYPE_DL_PDU_SESSION_INFORMATION;
+        header_desc->qos_flow_identifier = pdr->qer->qfi;
+
+        /* IQFISN: "the MB-UPF shall insert the DL MBS QFI Sequence Number in the PDU Session Container";
+         * a number per MBS QoS flow (TS 23.247 cl. 6.8: "the MB-UPF transmits the MBS data with the sequence
+         * number for each MBS QoS Flow"), counting the packets of the flow */
+        if (pdr->qer->insert_mbs_qfi_sn) {
+            header_desc->mbs_sequence_number_presence = true;
+            header_desc->mbs_sequence_number = pdr->qer->mbs_qfi_sn++;
+        }
+    }
+
+    if (sendhdr->udp.presence == true) {
+        header_desc->udp.presence = sendhdr->udp.presence;
+        header_desc->udp.port = sendhdr->udp.port;
+    }
+
+    if (sendhdr->pdcp_number_presence == true) {
+        header_desc->pdcp_number_presence = sendhdr->pdcp_number_presence;
+        header_desc->pdcp_number = sendhdr->pdcp_number;
+    }
+}
+
+static void send_user_plane(ogs_gtp_node_t *gnode, ogs_gtp2_header_desc_t *header_desc,
+        bool transport_level_marking, uint8_t tos_value, uint8_t tos_mask, ogs_pkbuf_t *sendbuf)
+{
+    if (transport_level_marking) {
+        /* TS 29.244 cl. 5.4.13: "The UP function shall perform the transport level marking for the detected
+         * traffic and sends the marked packet to the peer entity." The socket is shared by the FARs of the node:
+         * the mark is set for this packet only. The ECN bits are left to the stack (cl. 8.2.12 NOTE). */
+        int tos = tos_value & tos_mask;
+        int family = gnode->sock->local_addr.ogs_sa_family;
+        int level = family == AF_INET6 ? IPPROTO_IPV6 : IPPROTO_IP;
+        int opt = family == AF_INET6 ? IPV6_TCLASS : IP_TOS;
+        int none = 0;
+
+        if (setsockopt(gnode->sock->fd, level, opt, &tos, sizeof tos) != 0)
+            ogs_warn("Transport Level Marking not applied: %s", strerror(errno));
+        ogs_gtp2_send_user_plane(gnode, header_desc, sendbuf);
+        setsockopt(gnode->sock->fd, level, opt, &none, sizeof none);
+        return;
+    }
+
+    ogs_gtp2_send_user_plane(gnode, header_desc, sendbuf);
+}
+
 void ogs_pfcp_send_g_pdu(
         ogs_pfcp_pdr_t *pdr,
         ogs_gtp2_header_desc_t *sendhdr, ogs_pkbuf_t *sendbuf)
@@ -373,53 +429,93 @@ void ogs_pfcp_send_g_pdu(
     ogs_assert(gnode);
     ogs_assert(gnode->sock);
 
-    memset(&header_desc, 0, sizeof(header_desc));
-
-    header_desc.type = sendhdr->type;
+    fill_g_pdu_header(pdr, sendhdr, &header_desc);
     header_desc.teid = far->outer_header_creation.teid;
 
-    if (pdr->qer && pdr->qer->qfi) {
-        header_desc.pdu_type =
-            OGS_GTP2_EXTENSION_HEADER_PDU_TYPE_DL_PDU_SESSION_INFORMATION;
-        header_desc.qos_flow_identifier = pdr->qer->qfi;
+    send_user_plane(gnode, &header_desc,
+            far->transport_level_marking, far->tos, far->tos_mask, sendbuf);
+}
 
-        /* IQFISN: "the MB-UPF shall insert the DL MBS QFI Sequence Number in the PDU Session Container";
-         * a number per MBS QoS flow (TS 23.247 cl. 6.8: "the MB-UPF transmits the MBS data with the sequence
-         * number for each MBS QoS Flow"), counting the packets of the flow */
-        if (pdr->qer->insert_mbs_qfi_sn) {
-            header_desc.mbs_sequence_number_presence = true;
-            header_desc.mbs_sequence_number = pdr->qer->mbs_qfi_sn++;
-        }
-    }
+void ogs_pfcp_send_g_pdu_mbs(
+        ogs_pfcp_pdr_t *pdr,
+        ogs_gtp2_header_desc_t *sendhdr, ogs_pkbuf_t *sendbuf)
+{
+    ogs_pfcp_far_t *far = NULL;
+    ogs_pfcp_mbs_unicast_t *mu = NULL;
+    ogs_gtp2_header_desc_t header_desc;
+    int num_of_destinations = 0, sent = 0;
+    bool multicast;
 
-    if (sendhdr->udp.presence == true) {
-        header_desc.udp.presence = sendhdr->udp.presence;
-        header_desc.udp.port = sendhdr->udp.port;
-    }
+    ogs_assert(pdr);
+    ogs_assert(sendhdr);
+    ogs_assert(sendbuf);
 
-    if (sendhdr->pdcp_number_presence == true) {
-        header_desc.pdcp_number_presence = sendhdr->pdcp_number_presence;
-        header_desc.pdcp_number = sendhdr->pdcp_number;
-    }
-
-    if (far->transport_level_marking) {
-        /* TS 29.244 cl. 5.4.13: "The UP function shall perform the transport level marking for the detected
-         * traffic and sends the marked packet to the peer entity." The socket is shared by the FARs of the node:
-         * the mark is set for this packet only. The ECN bits are left to the stack (cl. 8.2.12 NOTE). */
-        int tos = far->tos & far->tos_mask;
-        int family = gnode->sock->local_addr.ogs_sa_family;
-        int level = family == AF_INET6 ? IPPROTO_IPV6 : IPPROTO_IP;
-        int opt = family == AF_INET6 ? IPV6_TCLASS : IP_TOS;
-        int none = 0;
-
-        if (setsockopt(gnode->sock->fd, level, opt, &tos, sizeof tos) != 0)
-            ogs_warn("Transport Level Marking not applied: %s", strerror(errno));
-        ogs_gtp2_send_user_plane(gnode, &header_desc, sendbuf);
-        setsockopt(gnode->sock->fd, level, opt, &none, sizeof none);
+    far = pdr->far;
+    if (!far) {
+        ogs_error("No FAR");
+        ogs_pkbuf_free(sendbuf);
         return;
     }
 
-    ogs_gtp2_send_user_plane(gnode, &header_desc, sendbuf);
+    /* FSSM: the low layer SSM; MBSU: each remote GTP-U peer (TS 29.244 cl. 5.34.2.2: "Both the "FSSM" and "MBSU"
+     * flags shall be set in the Apply Action IE if the MB-UPF is requested to forward MBS data using both
+     * multicast and unicast transport") */
+    multicast = (far->apply_action & OGS_PFCP_APPLY_ACTION_FSSM) && far->gnode &&
+        far->dst_if != OGS_PFCP_INTERFACE_UNKNOWN;
+    if (multicast)
+        num_of_destinations++;
+    if (far->apply_action & OGS_PFCP_APPLY_ACTION_MBSU) {
+        ogs_list_for_each(&far->mbs_unicast_list, mu) {
+            if (mu->gnode)
+                num_of_destinations++;
+        }
+    }
+    if (num_of_destinations == 0) {
+        ogs_error("No destination for the MBS data of FAR %u", far->id);
+        ogs_pkbuf_free(sendbuf);
+        return;
+    }
+
+    /* One header for every copy: the DL MBS QFI Sequence Number identifies the packet of the flow, not the copy */
+    fill_g_pdu_header(pdr, sendhdr, &header_desc);
+
+    if (multicast) {
+        ogs_gtp2_header_desc_t hd = header_desc;
+        ogs_gtp_node_t *gnode = far->gnode;
+        ogs_pkbuf_t *buf;
+
+        ogs_assert(gnode->sock);
+        hd.teid = far->outer_header_creation.teid;
+        sent++;
+        buf = sent == num_of_destinations ? sendbuf : ogs_pkbuf_copy(sendbuf);
+        if (buf)
+            send_user_plane(gnode, &hd, far->transport_level_marking, far->tos, far->tos_mask, buf);
+        else
+            ogs_error("ogs_pkbuf_copy() failed");
+    }
+
+    if (far->apply_action & OGS_PFCP_APPLY_ACTION_MBSU) {
+        ogs_list_for_each(&far->mbs_unicast_list, mu) {
+            ogs_gtp2_header_desc_t hd = header_desc;
+            ogs_gtp_node_t *gnode = mu->gnode;
+            ogs_pkbuf_t *buf;
+
+            if (!gnode)
+                continue;
+            ogs_assert(gnode->sock);
+
+            /* The packet itself goes to the last destination, a copy to each of the others; the copies are taken
+             * before anything is pushed in front of the packet */
+            sent++;
+            buf = sent == num_of_destinations ? sendbuf : ogs_pkbuf_copy(sendbuf);
+            if (!buf) {
+                ogs_error("ogs_pkbuf_copy() failed");
+                continue;
+            }
+            hd.teid = mu->outer_header_creation.teid;
+            send_user_plane(gnode, &hd, mu->transport_level_marking, mu->tos, mu->tos_mask, buf);
+        }
+    }
 }
 
 int ogs_pfcp_send_end_marker(ogs_pfcp_pdr_t *pdr)

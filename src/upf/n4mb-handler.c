@@ -392,6 +392,15 @@ bool upf_n4mb_check_session_establishment_request(
                 offending_ie_value = OGS_PFCP_MBS_MULTICAST_PARAMETERS_TYPE;
                 break;
             }
+            /* Table 7.5.2.3-1, Add MBS Unicast Parameters: "This IE shall be present when the Apply Action is set to "MBSU"." */
+            if (req->create_far[i].apply_action.presence &&
+                    (req->create_far[i].apply_action.u16 & OGS_PFCP_APPLY_ACTION_MBSU) &&
+                    req->create_far[i].add_mbs_unicast_parameters[0].presence == 0) {
+                ogs_error("Apply Action MBSU without Add MBS Unicast Parameters");
+                cause_value = OGS_PFCP_CAUSE_CONDITIONAL_IE_MISSING;
+                offending_ie_value = OGS_PFCP_ADD_MBS_UNICAST_PARAMETERS_TYPE;
+                break;
+            }
         }
     }
 
@@ -892,6 +901,16 @@ static int _check_apply_action(upf_mbs_sess_t *mbs_sess, const ogs_pfcp_tlv_upda
             *offending_ie_value = OGS_PFCP_APPLY_ACTION_TYPE;
             return OGS_ERROR;
         }
+    }
+
+    if (uf->apply_action.presence && (uf->apply_action.u16 & OGS_PFCP_APPLY_ACTION_MBSU) &&
+            ogs_list_empty(&far->mbs_unicast_list)) {
+        /* Add MBS Unicast Parameters: "This IE shall be present when the Apply Action is set to "MBSU" ... if no
+         * remote GTP-U peers are provisioned yet in the MB-UPF" (Table 7.5.4.3-1) */
+        ogs_error("MBSU for FAR %u, no remote GTP-U peer is provisioned", far->id);
+        *cause_value = OGS_PFCP_CAUSE_CONDITIONAL_IE_MISSING;
+        *offending_ie_value = OGS_PFCP_ADD_MBS_UNICAST_PARAMETERS_TYPE;
+        return OGS_ERROR;
     }
 
     return OGS_OK;

@@ -81,6 +81,12 @@ int ogs_pfcp_up_send_association_setup_response(ogs_pfcp_xact_t *xact,
 void ogs_pfcp_send_g_pdu(
         ogs_pfcp_pdr_t *pdr,
         ogs_gtp2_header_desc_t *sendhdr, ogs_pkbuf_t *sendbuf);
+
+/* The downlink G-PDU of an MBS session's FAR: one copy to the low layer SSM for FSSM and one to each remote GTP-U
+ * peer for MBSU. Takes the packet. */
+void ogs_pfcp_send_g_pdu_mbs(
+        ogs_pfcp_pdr_t *pdr,
+        ogs_gtp2_header_desc_t *sendhdr, ogs_pkbuf_t *sendbuf);
 int ogs_pfcp_send_end_marker(ogs_pfcp_pdr_t *pdr);
 
 void ogs_pfcp_send_buffered_packet(ogs_pfcp_pdr_t *pdr);

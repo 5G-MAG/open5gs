@@ -1369,6 +1369,173 @@ def t_U08_3_add_mbs_unicast_parameters_in_the_create_far():
     accepted_and_deleted(U.establish(good(cp_seid=0xe213)), 'after the rejection')
 
 
+class GtpuPeer:
+    """A remote GTP-U peer (an NG-RAN node) of unicast N3mb transport: receives what the UPF sends to ip:2152."""
+    def __init__(self, ip):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setsockopt(socket.IPPROTO_IP, socket.IP_RECVTOS, 1)
+        self.sock.bind((ip, 2152))
+        self.sock.settimeout(0.7)
+        self.tos = []
+
+    packets = N3mbListener.packets
+
+    def close(self):
+        self.sock.close()
+
+
+def sent_to(r, *peers):
+    """Sends one packet to the session's group and returns, for each peer, the GTP-U packets it received, then the
+    ones of the N3mb group (when the session has one)."""
+    lst = N3mbListener(mc_group_of(r)) if find(r, T_N4MB_INFO) else None
+    try:
+        send_multicast('10.46.0.1', '232.1.1.1')
+        got = [p.packets() for p in peers]
+        return got, (lst.packets() if lst else [])
+    finally:
+        if lst:
+            lst.close()
+
+
+@test
+def t_U08_4_U08_5_U12_5_mbsu_forwards_to_every_peer():
+    r, s = drop_session(0xe301)
+    peers = [GtpuPeer('127.0.0.41'), GtpuPeer('127.0.0.42'), GtpuPeer('127.0.0.43')]
+    try:
+        got, grp = sent_to(r, *peers)
+        assert not any(got) and not grp, 'DROP forwarded'
+        m = modify(s, update_far(apply=APPLY_MBSU, extra=(add_unicast(1, 0x1111, '127.0.0.41'),)))
+        assert m and cause(m) == CAUSE_ACCEPTED, 'MBSU, one peer: %s/%s' % (cause(m) if m else None, offending(m) if m else None)
+        got, grp = sent_to(r, *peers)
+        assert len(got[0]) == 1 and not got[1] and not got[2], 'one peer: %s' % [len(x) for x in got]
+        assert not grp, 'MBSU without FSSM sent to the N3mb group'
+        g = gtpu_parse(got[0][0])
+        assert g['flags'] == 0x34 and g['type'] == 255, 'header %02x/%d' % (g['flags'], g['type'])
+        assert g['teid'] == 0x1111, 'TEID %08x, the peer gave 1111' % g['teid']
+        assert g['ext'] == [(0x85, b'\x00\x01')], 'extension headers %s' % g['ext']
+        assert b'mbs-data' in g['tpdu'] and g['tpdu'][0] >> 4 == 4, 'T-PDU is not the IPv4 packet'
+        # more peers: each gets its own copy, with its own TEID
+        m = modify(s, update_far(extra=(add_unicast(2, 0x2222, '127.0.0.42'), add_unicast(3, 0x3333, '127.0.0.43'))))
+        assert m and cause(m) == CAUSE_ACCEPTED
+        got, grp = sent_to(r, *peers)
+        assert [len(x) for x in got] == [1, 1, 1], 'copies per peer %s' % [len(x) for x in got]
+        assert [gtpu_parse(x[0])['teid'] for x in got] == [0x1111, 0x2222, 0x3333], 'TEIDs'
+        assert all(b'mbs-data' in gtpu_parse(x[0])['tpdu'] for x in got), 'payload differs between the copies'
+        # a removed peer gets nothing; the others still do
+        m = modify(s, update_far(extra=(remove_unicast(2),)))
+        assert m and cause(m) == CAUSE_ACCEPTED
+        got, grp = sent_to(r, *peers)
+        assert [len(x) for x in got] == [1, 0, 1], 'after Remove: %s' % [len(x) for x in got]
+        # back to DROP: nothing; the peers stay provisioned, so MBSU again needs no Add
+        assert modify(s, update_far(apply=APPLY_DROP)) and True
+        got, grp = sent_to(r, *peers)
+        assert not any(got), 'DROP forwarded to peers'
+        m = modify(s, update_far(apply=APPLY_MBSU))
+        assert m and cause(m) == CAUSE_ACCEPTED, 'MBSU with the peers kept: %s' % (cause(m) if m else None)
+        got, grp = sent_to(r, *peers)
+        assert [len(x) for x in got] == [1, 0, 1], 'reactivation: %s' % [len(x) for x in got]
+    finally:
+        for p in peers:
+            p.close()
+        U.delete(s)
+
+
+@test
+def t_U06_12_fssm_and_mbsu_together():
+    ies = replace_ie(mc_request(0xe311, b'\x02' + V4G, None), T_CREATE_QER, qer(indications=0x01))
+    r = U.establish(replace_ie(ies, T_CREATE_FAR, far(apply=APPLY_DROP)))
+    s = accepted(r, 'session')
+    peers = [GtpuPeer('127.0.0.41'), GtpuPeer('127.0.0.42')]
+    try:
+        m = modify(s, update_far(apply=APPLY_FSSM | APPLY_MBSU,
+                                 extra=(add_unicast(1, 0x1111, '127.0.0.41'), add_unicast(2, 0x2222, '127.0.0.42'))))
+        assert m and cause(m) == CAUSE_ACCEPTED, '%s/%s' % (cause(m) if m else None, offending(m) if m else None)
+        for n in range(2):
+            got, grp = sent_to(r, *peers)
+            assert [len(x) for x in got] == [1, 1] and len(grp) == 1, 'peers %s, group %d' % ([len(x) for x in got], len(grp))
+            allp = [gtpu_parse(grp[0])] + [gtpu_parse(x[0]) for x in got]
+            assert [g['teid'] for g in allp] == [c_teid_of(r), 0x1111, 0x2222], 'TEIDs %s' % [hex(g['teid']) for g in allp]
+            # the DL MBS QFI Sequence Number is that of the packet: the same in the group copy and the peers' copies
+            sns = [struct.unpack('>I', g['ext'][0][1][2:6])[0] for g in allp]
+            assert sns == [n] * 3, 'sequence numbers %s, expected %d in every copy' % (sns, n)
+        # FSSM alone: the group, no peer
+        assert modify(s, update_far(apply=APPLY_FSSM))
+        got, grp = sent_to(r, *peers)
+        assert not any(got) and len(grp) == 1, 'FSSM alone: peers %s group %d' % ([len(x) for x in got], len(grp))
+    finally:
+        for p in peers:
+            p.close()
+        U.delete(s)
+
+
+@test
+def t_U12_5_unicast_only_session():
+    # TS 29.244 cl. 5.34.2.2: no multicast transport over N3mb: no PLLSSM, a FAR that drops until the F-TEIDs are known
+    r, s = drop_session(0xe321, flags=0x00, params=False)
+    peer = GtpuPeer('127.0.0.41')
+    try:
+        assert find(r, T_N4MB_INFO) is None, 'a low layer SSM was returned'
+        assert not sent_to(r, peer)[0][0], 'DROP forwarded'
+        m = modify(s, update_far(apply=APPLY_MBSU, extra=(add_unicast(1, 0x4444, '127.0.0.41'),)))
+        assert m and cause(m) == CAUSE_ACCEPTED, '%s/%s' % (cause(m) if m else None, offending(m) if m else None)
+        got = sent_to(r, peer)[0][0]
+        assert len(got) == 1 and gtpu_parse(got[0])['teid'] == 0x4444, 'unicast-only session: %d packets' % len(got)
+    finally:
+        peer.close()
+        U.delete(s)
+    # MBSU and its peers in the Create FAR (the restoration of TS 23.527, TS 29.244 cl. 5.34.2.2 NOTE)
+    cfar = ie(T_CREATE_FAR, [ie(T_FAR_ID, struct.pack('>I', 1)), ie(T_APPLY, struct.pack('>H', APPLY_MBSU)),
+                             add_unicast(1, 0x5555, '127.0.0.41'), add_unicast(2, 0x6666, '127.0.0.42')])
+    r = U.establish(replace_ie(mc_request(0xe322, b'\x02' + V4G, None, flags=0x00), T_CREATE_FAR, cfar))
+    s = accepted(r, 'MBSU with Add MBS Unicast Parameters in the Create FAR')
+    peers = [GtpuPeer('127.0.0.41'), GtpuPeer('127.0.0.42')]
+    try:
+        got = sent_to(r, *peers)[0]
+        assert [len(x) for x in got] == [1, 1], 'copies %s' % [len(x) for x in got]
+        assert [gtpu_parse(x[0])['teid'] for x in got] == [0x5555, 0x6666]
+    finally:
+        for p in peers:
+            p.close()
+        U.delete(s)
+
+
+@test
+def t_U08_mbsu_requires_a_peer():
+    # Create FAR: MBSU without Add MBS Unicast Parameters
+    cfar = ie(T_CREATE_FAR, [ie(T_FAR_ID, struct.pack('>I', 1)), ie(T_APPLY, struct.pack('>H', APPLY_MBSU))])
+    r = U.establish(replace_ie(mc_request(0xe331, b'\x02' + V4G, None), T_CREATE_FAR, cfar))
+    assert r and cause(r) == CAUSE_CONDITIONAL_MISSING and offending(r) == T_ADD_UNICAST, '%s/%s' % (
+        cause(r) if r else None, offending(r) if r else None)
+    # Update FAR: MBSU with no peer provisioned
+    r, s = drop_session(0xe332)
+    try:
+        m = modify(s, update_far(apply=APPLY_MBSU))
+        assert m and cause(m) == CAUSE_CONDITIONAL_MISSING and offending(m) == T_ADD_UNICAST, '%s/%s' % (
+            cause(m) if m else None, offending(m) if m else None)
+        # the peer added by the same request is not kept when the request fails
+        m = modify(s, update_far(apply=APPLY_MBSU | APPLY_FSSM, extra=(add_unicast(1),)), update_far(far_id=99, apply=APPLY_DROP))
+        assert m and cause(m) == CAUSE_MANDATORY_INCORRECT
+        m = modify(s, update_far(apply=APPLY_MBSU))
+        assert m and cause(m) == CAUSE_CONDITIONAL_MISSING, 'the peer of the failed request was kept'
+    finally:
+        U.delete(s)
+
+
+@test
+def t_U08_8_transport_level_marking_of_a_peer():
+    r, s = drop_session(0xe341)
+    peer = GtpuPeer('127.0.0.41')
+    try:
+        m = modify(s, update_far(apply=APPLY_MBSU, extra=(add_unicast(1, 0x7777, '127.0.0.41', extra=(ie(T_TLM, b'\xb8\xfc'),)),)))
+        assert m and cause(m) == CAUSE_ACCEPTED
+        got = sent_to(r, peer)[0][0]
+        assert len(got) == 1, 'nothing at the peer'
+        assert peer.tos and peer.tos[0] >> 2 == 0x2e, 'DSCP of the peer %s' % [hex(t) for t in peer.tos]
+    finally:
+        peer.close()
+        U.delete(s)
+
+
 # E-TESTS-BELOW
 
 
