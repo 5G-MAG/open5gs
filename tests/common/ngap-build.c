@@ -1487,7 +1487,7 @@ ogs_pkbuf_t *testngap_build_uplink_ran_configuration_transfer(
     NGAP_GlobalRANNodeID_t *sourceGlobalRANNodeID;
     NGAP_GlobalGNB_ID_t *sourceGlobalGNB_ID;
     NGAP_TAI_t *sourceSelectedTAI;
-    NGAP_TargetRANNodeID_t *targetRANNodeID = NULL;
+    NGAP_TargetRANNodeID_SON_t *targetRANNodeID = NULL;
     NGAP_GlobalRANNodeID_t *targetGlobalRANNodeID;
     NGAP_GlobalGNB_ID_t *targetGlobalGNB_ID;
     NGAP_TAI_t *targetSelectedTAI;
@@ -1523,7 +1523,7 @@ ogs_pkbuf_t *testngap_build_uplink_ran_configuration_transfer(
 
     plmn_id = &test_self()->plmn_support[0].plmn_id;
 
-    targetRANNodeID = &SONConfigurationTransfer->targetRANNodeID;
+    targetRANNodeID = &SONConfigurationTransfer->targetRANNodeID_SON;
     targetGlobalRANNodeID = &targetRANNodeID->globalRANNodeID;
     targetSelectedTAI = &targetRANNodeID->selectedTAI;
 
