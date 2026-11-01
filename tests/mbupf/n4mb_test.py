@@ -1629,6 +1629,43 @@ def t_pool_port_is_returned_when_the_bind_fails():
         U.restart()
 
 
+@test
+def t_two_sessions_on_one_group_with_different_sources():
+    # an SSM channel is (source, group): two sessions may share the group and each gets its own source's packets
+    s1, g1 = data_session(0xe501, b'\x02' + V4G, b'\x02' + socket.inet_aton('10.46.0.1'))
+    s2, g2 = data_session(0xe502, b'\x02' + V4G, b'\x02' + socket.inet_aton('10.46.0.2'))
+    assert g1 != g2, 'the sessions share their N3mb group'
+    l1, l2 = N3mbListener(g1), N3mbListener(g2)
+    try:
+        send_multicast('10.46.0.1', '232.1.1.1')
+        assert inner_payload_seen(l1.packets()) and not inner_payload_seen(l2.packets()), 'source 1 not delivered to session 1 only'
+        send_multicast('10.46.0.2', '232.1.1.1')
+        assert inner_payload_seen(l2.packets()) and not inner_payload_seen(l1.packets()), 'source 2 not delivered to session 2 only'
+        # the session that owned the group's slot ends: the other one keeps its data
+        U.delete(s1)
+        send_multicast('10.46.0.2', '232.1.1.1')
+        assert inner_payload_seen(l2.packets()), 'session 2 lost its data when session 1 ended'
+        send_multicast('10.46.0.1', '232.1.1.1')
+        assert not inner_payload_seen(l1.packets()) and not inner_payload_seen(l2.packets()), 'data of the ended session delivered'
+        # the session set up while the first one is gone can share again, the older one is the other way round
+        s3, g3 = data_session(0xe503, b'\x02' + V4G, b'\x02' + socket.inet_aton('10.46.0.1'))
+        l3 = N3mbListener(g3)
+        try:
+            send_multicast('10.46.0.1', '232.1.1.1')
+            assert inner_payload_seen(l3.packets()), 'new session for source 1 got nothing'
+            U.delete(s2)
+            send_multicast('10.46.0.1', '232.1.1.1')
+            assert inner_payload_seen(l3.packets()), 'session 3 lost its data when session 2 ended'
+        finally:
+            l3.close()
+            U.delete(s3)
+    finally:
+        l1.close()
+        l2.close()
+        U.delete(s1)
+        U.delete(s2)
+
+
 # E-TESTS-BELOW
 
 

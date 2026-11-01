@@ -164,6 +164,16 @@ upf_mbs_sess_t *upf_mbs_sess_find_by_ssm(ogs_pkbuf_t *pkbuf)
     }
 
     if (!mbs_sess) {
+        /* Another session on the same group, for another source: the destination hash holds one session per group */
+        ogs_list_for_each(&upf_self()->upf_mbs_sess_list, it) {
+            if (upf_mbs_sess_same_group(it, ip_version, dst) && source_matches(it, ip_version, src)) {
+                mbs_sess = it;
+                break;
+            }
+        }
+    }
+
+    if (!mbs_sess) {
         /* Sessions for a range of groups, or for any group */
         ogs_list_for_each(&upf_self()->upf_mbs_sess_list, it) {
             if ((it->ssm_dest_any || it->ssm_dest_range) &&

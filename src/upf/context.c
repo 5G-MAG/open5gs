@@ -1220,15 +1220,34 @@ void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess)
 
     ogs_list_remove(&self.upf_mbs_sess_list, upf_mbs_sess);
 
-    // The session's entry in the destination hashes, unless a later session took the same destination over.
+    // The session's entry in the destination hashes, handed to another session on the same group if there is one.
     if (upf_mbs_sess->ssm.dest_ip_addr.ipv4 && !upf_mbs_sess->ssm_dest_any && !upf_mbs_sess->ssm_dest_range &&
-            ogs_hash_get(self.mbs_ipv4_hash, &upf_mbs_sess->ssm.dest_ip_addr.addr, OGS_IPV4_LEN) == upf_mbs_sess)
+            ogs_hash_get(self.mbs_ipv4_hash, &upf_mbs_sess->ssm.dest_ip_addr.addr, OGS_IPV4_LEN) == upf_mbs_sess) {
+        upf_mbs_sess_t *it;
+
         ogs_hash_set(self.mbs_ipv4_hash, &upf_mbs_sess->ssm.dest_ip_addr.addr, OGS_IPV4_LEN, NULL);
+        ogs_list_for_each(&self.upf_mbs_sess_list, it) {
+            if (upf_mbs_sess_same_group(it, 4, (const uint8_t *)&upf_mbs_sess->ssm.dest_ip_addr.addr)) {
+                ogs_hash_set(self.mbs_ipv4_hash, &it->ssm.dest_ip_addr.addr, OGS_IPV4_LEN, it);
+                break;
+            }
+        }
+    }
     if (upf_mbs_sess->ssm.dest_ip_addr.ipv6 && !upf_mbs_sess->ssm_dest_any && !upf_mbs_sess->ssm_dest_range &&
             ogs_hash_get(self.mbs_ipv6_hash, upf_mbs_sess->ssm.dest_ip_addr.addr6,
-                OGS_IPV6_DEFAULT_PREFIX_LEN >> 3) == upf_mbs_sess)
+                OGS_IPV6_DEFAULT_PREFIX_LEN >> 3) == upf_mbs_sess) {
+        upf_mbs_sess_t *it;
+
         ogs_hash_set(self.mbs_ipv6_hash, upf_mbs_sess->ssm.dest_ip_addr.addr6,
                 OGS_IPV6_DEFAULT_PREFIX_LEN >> 3, NULL);
+        ogs_list_for_each(&self.upf_mbs_sess_list, it) {
+            if (upf_mbs_sess_same_group(it, 6, upf_mbs_sess->ssm.dest_ip_addr.addr6)) {
+                ogs_hash_set(self.mbs_ipv6_hash, it->ssm.dest_ip_addr.addr6,
+                        OGS_IPV6_DEFAULT_PREFIX_LEN >> 3, it);
+                break;
+            }
+        }
+    }
 
     // The multicast channel joined for JMBSSM
     if (upf_mbs_sess->mc_joined) {
@@ -1377,6 +1396,16 @@ upf_mbs_sess_t *upf_mbs_sess_find_by_ipv6(uint32_t *addr6)
             self.mbs_ipv6_hash, addr6, OGS_IPV6_DEFAULT_PREFIX_LEN >> 3);
 }
 
+/* True if the session receives exactly the group dst of the IP version (not a range, not any group). */
+bool upf_mbs_sess_same_group(const upf_mbs_sess_t *mbs_sess, int ip_version, const uint8_t *dst)
+{
+    if (mbs_sess->ssm_dest_any || mbs_sess->ssm_dest_range)
+        return false;
+    if (ip_version == 4)
+        return mbs_sess->ssm.dest_ip_addr.ipv4 && memcmp(&mbs_sess->ssm.dest_ip_addr.addr, dst, OGS_IPV4_LEN) == 0;
+    return mbs_sess->ssm.dest_ip_addr.ipv6 && memcmp(mbs_sess->ssm.dest_ip_addr.addr6, dst, OGS_IPV6_LEN) == 0;
+}
+
 void upf_mbs_sess_set_ssm(upf_mbs_sess_t *mbs_sess)
 {
     ogs_assert(mbs_sess);
@@ -1386,15 +1415,21 @@ void upf_mbs_sess_set_ssm(upf_mbs_sess_t *mbs_sess)
     if (mbs_sess->ssm_dest_any || mbs_sess->ssm_dest_range)
         return;
 
+    /* The slot of a group holds one session. Another session on the same group (another source: the group is only
+     * half of an SSM channel) keeps the slot of the first; upf_mbs_sess_find_by_ssm() finds the others by scanning. */
     if (mbs_sess->ssm.dest_ip_addr.ipv4) {
-        ogs_hash_set(self.mbs_ipv4_hash, &mbs_sess->ssm.dest_ip_addr.addr, OGS_IPV4_LEN, NULL);
-        ogs_hash_set(self.mbs_ipv4_hash, &mbs_sess->ssm.dest_ip_addr.addr, OGS_IPV4_LEN, mbs_sess);
+        upf_mbs_sess_t *other = ogs_hash_get(self.mbs_ipv4_hash, &mbs_sess->ssm.dest_ip_addr.addr, OGS_IPV4_LEN);
+
+        if (!other || other == mbs_sess)
+            ogs_hash_set(self.mbs_ipv4_hash, &mbs_sess->ssm.dest_ip_addr.addr, OGS_IPV4_LEN, mbs_sess);
     }
 
     if (mbs_sess->ssm.dest_ip_addr.ipv6) {
-        ogs_hash_set(self.mbs_ipv6_hash,
-                &mbs_sess->ssm.dest_ip_addr.addr6, OGS_IPV6_DEFAULT_PREFIX_LEN >> 3, NULL);
-        ogs_hash_set(self.mbs_ipv6_hash,
+        upf_mbs_sess_t *other = ogs_hash_get(self.mbs_ipv6_hash,
+                &mbs_sess->ssm.dest_ip_addr.addr6, OGS_IPV6_DEFAULT_PREFIX_LEN >> 3);
+
+        if (!other || other == mbs_sess)
+            ogs_hash_set(self.mbs_ipv6_hash,
                 &mbs_sess->ssm.dest_ip_addr.addr6, OGS_IPV6_DEFAULT_PREFIX_LEN >> 3, mbs_sess);
     }
 }

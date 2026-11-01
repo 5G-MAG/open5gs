@@ -233,6 +233,7 @@ upf_mbs_sess_t *upf_mbs_sess_add_by_message(ogs_pfcp_message_t *message);
 upf_mbs_sess_t *upf_mbs_sess_find_by_ipv4(uint32_t addr);
 upf_mbs_sess_t *upf_mbs_sess_find_by_ipv6(uint32_t *addr6);
 void upf_mbs_sess_set_ssm(upf_mbs_sess_t *mbs_sess);
+bool upf_mbs_sess_same_group(const upf_mbs_sess_t *mbs_sess, int ip_version, const uint8_t *dst);
 void upf_mbs_sess_set_llssm(upf_mbs_sess_t *mbs_sess);
 void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess);
 
