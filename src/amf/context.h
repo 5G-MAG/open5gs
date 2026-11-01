@@ -858,6 +858,13 @@ typedef struct amf_mbs_n2_info_s {
     uint8_t ran_gnb_id_bit_length;
 } amf_mbs_n2_info_t;
 
+/* A gNB that a Broadcast Session Setup or Modification Request of a context has been sent to */
+typedef struct amf_mbs_gnb_s {
+    ogs_lnode_t lnode;
+
+    ogs_pool_id_t gnb_id;   /* amf_gnb_t.id; the gNB may have disconnected since */
+} amf_mbs_gnb_t;
+
 typedef struct amf_mbs_context_s {
     ogs_lnode_t lnode;      /* A node of list_t */
 
@@ -937,6 +944,13 @@ typedef struct amf_mbs_context_s {
      * amf_mbs_n2_info_t.
      */
     ogs_list_t pending_n2_info_list;
+
+    /*
+     * The gNBs that have been involved in the session: those a Broadcast Session Setup or Modification Request has
+     * been sent to. TS 23.247 V18.8.0 cl. 7.3.2 step 4: "The AMF sends an N2 message to all RAN nodes that have been
+     * involved to release MBS session." Items are amf_mbs_gnb_t.
+     */
+    ogs_list_t involved_gnb_list;
 
     /*
      * The maximum response time of the ContextCreate or ContextUpdate in progress (TS 29.518 V18.14.0 cl. 5.6.2.2:
@@ -1132,6 +1146,7 @@ void amf_mbs_context_remove(amf_mbs_context_t *amf_mbs_context);
 
 amf_mbs_n2_info_t *amf_mbs_n2_info_create(amf_gnb_t *gnb,
         OpenAPI_ngap_ie_type_e ngap_ie_type, const uint8_t *transfer, size_t transfer_len);
+void amf_mbs_context_involve_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *gnb);
 void amf_mbs_n2_info_free(amf_mbs_n2_info_t *n2_info);
 void amf_mbs_n2_info_remove_all(ogs_list_t *n2_info_list);
 

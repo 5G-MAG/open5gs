@@ -2403,6 +2403,7 @@ int amf_namf_handle_mbs_broadcast_context_create(
             // B-2: how many gNBs the request actually reached, so ngap_handle_broadcast_session_setup_response()
             // can tell when every one of them has responded (ContextStatusNotify's operationStatus).
             mbs_context->gnb_request_count++;
+            amf_mbs_context_involve_gnb(mbs_context, gnb);
         }
     }
     ogs_pkbuf_free(n2msgreq);
@@ -2731,6 +2732,7 @@ int amf_namf_handle_mbs_broadcast_context_update(
             break;
         } else {
             mbs_context->gnb_request_count++;
+            amf_mbs_context_involve_gnb(mbs_context, gnb);
         }
     }
     ogs_pkbuf_free(n2msgreq);
@@ -2921,12 +2923,15 @@ void amf_namf_handle_mbs_broadcast_ran_response(amf_mbs_context_t *mbs_context, 
 }
 
 /*
- * Sends the NGAP BROADCAST SESSION RELEASE REQUEST for \p mbs_context to every connected gNB and removes the
- * context. Used by ContextDelete and when a ContextCreate's consumer is gone before it could be answered.
+ * Sends the NGAP BROADCAST SESSION RELEASE REQUEST for \p mbs_context to the gNBs that have been involved in the
+ * session and are still connected (TS 23.247 V18.8.0 cl. 7.3.2 step 4: "The AMF sends an N2 message to all RAN nodes
+ * that have been involved to release MBS session."), and returns how many it reached. Used by ContextDelete and when
+ * a ContextCreate's consumer is gone before it could be answered.
  */
 static int amf_mbs_context_send_release(amf_mbs_context_t *mbs_context)
 {
     ogs_pkbuf_t *n2msgreq = NULL;
+    amf_mbs_gnb_t *involved = NULL;
     amf_gnb_t *gnb = NULL;
     int gnb_rv = OGS_OK;
     int reached = 0;
@@ -2940,8 +2945,16 @@ static int amf_mbs_context_send_release(amf_mbs_context_t *mbs_context)
 
         // Each gNB gets its own copy and the shared template is freed once after the loop, for the ownership
         // reason given in amf_namf_handle_mbs_broadcast_context_create()'s send loop above.
-    ogs_list_for_each(&amf_self()->gnb_list, gnb) {
-        ogs_pkbuf_t *n2msgreq_copy = ogs_pkbuf_copy(n2msgreq);
+    ogs_list_for_each(&mbs_context->involved_gnb_list, involved) {
+        ogs_pkbuf_t *n2msgreq_copy = NULL;
+
+        gnb = amf_gnb_find_by_id(involved->gnb_id);
+        if (!gnb) {
+            ogs_debug("A gNB involved in the MBS session has disconnected, no release sent to it");
+            continue;
+        }
+
+        n2msgreq_copy = ogs_pkbuf_copy(n2msgreq);
         if (!n2msgreq_copy) {
             ogs_error("ogs_pkbuf_copy() failed");
             break;

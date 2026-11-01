@@ -80,6 +80,28 @@ amf_mbs_n2_info_t *amf_mbs_n2_info_create(amf_gnb_t *gnb,
     return n2_info;
 }
 
+/* Records that \p gnb has been sent a Broadcast Session Setup or Modification Request of the context (once) */
+void amf_mbs_context_involve_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *gnb)
+{
+    amf_mbs_gnb_t *involved = NULL;
+
+    ogs_assert(amf_mbs_context);
+    ogs_assert(gnb);
+
+    ogs_list_for_each(&amf_mbs_context->involved_gnb_list, involved) {
+        if (involved->gnb_id == gnb->id)
+            return;
+    }
+
+    involved = ogs_calloc(1, sizeof(*involved));
+    if (!involved) {
+        ogs_error("ogs_calloc() failed");
+        return;
+    }
+    involved->gnb_id = gnb->id;
+    ogs_list_add(&amf_mbs_context->involved_gnb_list, involved);
+}
+
 /* \p n2_info must not be on a list */
 void amf_mbs_n2_info_free(amf_mbs_n2_info_t *n2_info)
 {
@@ -3173,6 +3195,14 @@ void amf_mbs_context_remove(amf_mbs_context_t *amf_mbs_context)
     if (amf_mbs_context->mbs_service_area)
         ogs_mbs_service_area_free(amf_mbs_context->mbs_service_area);
     amf_mbs_n2_info_remove_all(&amf_mbs_context->pending_n2_info_list);
+    {
+        amf_mbs_gnb_t *involved = NULL, *next = NULL;
+
+        ogs_list_for_each_safe(&amf_mbs_context->involved_gnb_list, next, involved) {
+            ogs_list_remove(&amf_mbs_context->involved_gnb_list, involved);
+            ogs_free(involved);
+        }
+    }
     if (amf_mbs_context->notify_uri)
         ogs_free(amf_mbs_context->notify_uri);
     if (amf_mbs_context->t_response)
