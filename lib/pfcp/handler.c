@@ -1043,6 +1043,7 @@ ogs_pfcp_far_t *ogs_pfcp_handle_create_far(ogs_pfcp_sess_t *sess,
 
     far->transport_level_marking = false;
     far->tos = far->tos_mask = 0;
+    far->mbs_multicast_parameters = message->mbs_multicast_parameters.presence;
 
     if (message->mbs_multicast_parameters.presence) {
         // TODO (borieher): Keep adding the optional and conditional IEs

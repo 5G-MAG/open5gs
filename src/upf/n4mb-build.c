@@ -191,3 +191,30 @@ ogs_pkbuf_t *upf_n4mb_build_session_deletion_response(uint8_t type, upf_mbs_sess
 
     return ogs_pfcp_build_session_deletion_response(type, OGS_PFCP_CAUSE_REQUEST_ACCEPTED, &report);
 }
+
+/* The response to an N4mb Session Modification Request that was accepted: the Cause only (TS 29.244 Table 7.5.5.1-1). */
+ogs_pkbuf_t *upf_n4mb_build_session_modification_response(uint8_t type, upf_mbs_sess_t *mbs_sess)
+{
+    ogs_pfcp_message_t *pfcp_message = NULL;
+    ogs_pkbuf_t *pkbuf = NULL;
+
+    ogs_debug("N4mb Session Modification Response");
+    ogs_assert(mbs_sess);
+
+    pfcp_message = ogs_calloc(1, sizeof(*pfcp_message));
+    if (!pfcp_message) {
+        ogs_error("ogs_calloc() failed");
+        return NULL;
+    }
+
+    pfcp_message->pfcp_session_modification_response.cause.presence = 1;
+    pfcp_message->pfcp_session_modification_response.cause.u8 = OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
+
+    pfcp_message->h.type = type;
+    pkbuf = ogs_pfcp_build_msg(pfcp_message);
+    ogs_expect(pkbuf);
+
+    ogs_free(pfcp_message);
+
+    return pkbuf;
+}

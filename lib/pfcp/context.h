@@ -252,6 +252,10 @@ typedef struct ogs_pfcp_far_s {
     ogs_pfcp_outer_header_creation_t outer_header_creation;
     int                     outer_header_creation_len;
 
+    /* The FAR was created with MBS Multicast Parameters (TS 29.244 Table 7.5.2.3-1): the destination interface,
+     * the outer header and the marking of the multicast transport, which an Update FAR cannot carry */
+    bool                    mbs_multicast_parameters;
+
     /* Transport Level Marking of the MBS Multicast Parameters: the DSCP octet and its mask (0xFC) */
     bool                    transport_level_marking;
     uint8_t                 tos;

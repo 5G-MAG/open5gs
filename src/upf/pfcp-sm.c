@@ -313,6 +313,12 @@ void upf_pfcp_state_associated(ogs_fsm_t *s, upf_event_t *e)
                 sess, xact, &message->pfcp_session_establishment_request);
             break;
         case OGS_PFCP_SESSION_MODIFICATION_REQUEST_TYPE:
+            /* A SEID of an MBS session is an N4mb Session Modification (TS 29.244 Table 7.5.4.1-1, N4mb column) */
+            if (mbs_sess) {
+                upf_n4mb_handle_session_modification_request(
+                    mbs_sess, xact, &message->pfcp_session_modification_request);
+                break;
+            }
             upf_n4_handle_session_modification_request(
                 sess, xact, &message->pfcp_session_modification_request);
             break;

@@ -19,6 +19,8 @@ CP = ('127.0.0.77', 8805)
 
 # IE types
 T_CREATE_PDR, T_PDI, T_CREATE_FAR, T_CREATE_QER = 1, 2, 3, 7
+T_UPDATE_FAR = 10
+MODIFICATION_REQUEST = 52
 T_CAUSE, T_SRC_IF, T_NET_INST, T_GATE, T_PRECEDENCE, T_OFFENDING, T_DST_IF, T_APPLY = 19, 20, 22, 25, 29, 40, 42, 44
 T_PDR_ID, T_F_SEID, T_NODE_ID, T_OHC, T_FAR_ID, T_QER_ID, T_QFI = 56, 57, 60, 84, 108, 109, 124
 T_CREATE_TE, T_CREATED_TE, T_TE_ID = 127, 128, 131
@@ -1162,6 +1164,112 @@ def t_create_qer_without_gate_status_reports_gate_status():
     assert r and cause(r) == CAUSE_MANDATORY_MISSING, 'cause %s' % (cause(r) if r else None)
     assert offending(r) == T_GATE, 'offending IE %s, expected %d' % (offending(r), T_GATE)
     accepted_and_deleted(U.establish(good(cp_seid=0xd002)), 'after the rejection')
+
+
+# ---- N4mb Session Modification (TS 29.244 cl. 7.5.4) ----------------------------------------------------------
+
+APPLY_DROP, APPLY_FSSM, APPLY_MBSU, APPLY_BUFF = 0x0100, 0x0008, 0x0010, 0x0004
+
+
+def update_far(far_id=1, apply=None, extra=(), drop=()):
+    parts = [ie(T_FAR_ID, struct.pack('>I', far_id))]
+    if apply is not None:
+        parts.append(ie(T_APPLY, struct.pack('>H', apply)))
+    parts += list(extra)
+    parts = [p for p in parts if struct.unpack('>H', p[:2])[0] not in drop]
+    return ie(T_UPDATE_FAR, parts)
+
+
+def modify(seid, *ies):
+    return U.request(MODIFICATION_REQUEST, list(ies), seid=seid)
+
+
+def drop_session(cp_seid, flags=0x01, params=True):
+    """A session whose FAR drops (the unicast-only start of TS 29.244 cl. 5.34.2.2), with the multicast parameters."""
+    r = U.establish(replace_ie(mc_request(cp_seid, b'\x02' + V4G, None, flags=flags), T_CREATE_FAR,
+                               far(apply=APPLY_DROP, params=params)))
+    return r, accepted(r, 'DROP session')
+
+
+def forwards(r, cp_seid_unused=None):
+    lst = N3mbListener(mc_group_of(r))
+    try:
+        send_multicast('10.46.0.1', '232.1.1.1')
+        return inner_payload_seen(lst.packets())
+    finally:
+        lst.close()
+
+
+@test
+def t_U08_1_modification_of_an_mbs_session_is_processed():
+    r, s = drop_session(0xe101)
+    try:
+        m = modify(s, update_far(apply=APPLY_DROP))
+        assert m and m['type'] == 53, 'no Session Modification Response'
+        assert cause(m) == CAUSE_ACCEPTED, 'cause %s offending %s' % (cause(m), offending(m))
+        assert m['seid'] == 0xe101, 'response header SEID %x, the CP SEID is e101' % (m['seid'] or 0)
+        # an unknown SEID is still answered "Session Context Not Found"
+        m = modify(s + 0x1000, update_far(apply=APPLY_DROP))
+        assert m and cause(m) == CAUSE_CONTEXT_NOT_FOUND, 'unknown SEID: cause %s' % (cause(m) if m else None)
+    finally:
+        U.delete(s)
+
+
+@test
+def t_U08_2_U06_13_update_far_changes_the_apply_action():
+    r, s = drop_session(0xe111)
+    try:
+        assert not forwards(r), 'DROP forwarded'
+        m = modify(s, update_far(apply=APPLY_FSSM))
+        assert m and cause(m) == CAUSE_ACCEPTED, 'FSSM: cause %s offending %s' % (cause(m) if m else None, offending(m) if m else None)
+        assert forwards(r), 'nothing on N3mb after the Update FAR with FSSM'
+        m = modify(s, update_far(apply=APPLY_DROP))
+        assert m and cause(m) == CAUSE_ACCEPTED
+        assert not forwards(r), 'forwarded after the Update FAR back to DROP'
+        m = modify(s, update_far(apply=APPLY_BUFF))
+        assert m and cause(m) == CAUSE_ACCEPTED
+        assert not forwards(r), 'forwarded while buffering'
+        m = modify(s, update_far(apply=APPLY_FSSM))
+        assert m and cause(m) == CAUSE_ACCEPTED
+        assert forwards(r), 'not forwarding after the reactivation'
+    finally:
+        U.delete(s)
+
+
+@test
+def t_U08_modification_that_is_not_valid_changes_nothing():
+    r, s = drop_session(0xe121)
+    try:
+        # FAR ID (M) missing
+        m = modify(s, update_far(apply=APPLY_FSSM, drop=(T_FAR_ID,)))
+        assert m and cause(m) == CAUSE_MANDATORY_MISSING and offending(m) == T_FAR_ID, 'no FAR ID: %s/%s' % (cause(m), offending(m))
+        # unknown FAR ID
+        m = modify(s, update_far(far_id=99, apply=APPLY_FSSM))
+        assert m and cause(m) == CAUSE_MANDATORY_INCORRECT and offending(m) == T_FAR_ID, 'FAR 99: %s/%s' % (cause(m), offending(m))
+        # a second Update FAR that fails: the first one is not applied either
+        m = modify(s, update_far(apply=APPLY_FSSM), update_far(far_id=99, apply=APPLY_FSSM))
+        assert m and cause(m) == CAUSE_MANDATORY_INCORRECT, 'cause %s' % (cause(m) if m else None)
+        assert not forwards(r), 'a rejected request changed the FAR'
+        # an IE of the N4mb request that the MB-UPF does not process is rejected, not skipped
+        m = modify(s, update_far(apply=APPLY_FSSM), ie(T_CREATE_QER, [ie(T_QER_ID, struct.pack('>I', 9))]))
+        assert m and cause(m) == CAUSE_SERVICE_NOT_SUPPORTED and offending(m) == T_CREATE_QER, 'Create QER: %s/%s' % (cause(m), offending(m))
+        assert not forwards(r), 'a rejected request changed the FAR'
+    finally:
+        U.delete(s)
+    # FSSM for a FAR created without MBS Multicast Parameters: the parameters are conditional in the Create FAR
+    r, s = drop_session(0xe122, params=False)
+    try:
+        m = modify(s, update_far(apply=APPLY_FSSM))
+        assert m and cause(m) == CAUSE_CONDITIONAL_MISSING and offending(m) == T_MBS_MC_PARAMS, '%s/%s' % (cause(m), offending(m))
+    finally:
+        U.delete(s)
+    # FSSM when the session has no low layer SSM (PLLSSM was not requested)
+    r, s = drop_session(0xe123, flags=0x00)
+    try:
+        m = modify(s, update_far(apply=APPLY_FSSM))
+        assert m and cause(m) == CAUSE_MANDATORY_INCORRECT and offending(m) == T_APPLY, '%s/%s' % (cause(m), offending(m))
+    finally:
+        U.delete(s)
 
 
 # E-TESTS-BELOW

@@ -307,6 +307,38 @@ int upf_pfcp_n4mb_send_session_deletion_response(
     return rv;
 }
 
+int upf_pfcp_n4mb_send_session_modification_response(
+        ogs_pfcp_xact_t *xact, upf_mbs_sess_t *mbs_sess)
+{
+    int rv;
+    ogs_pkbuf_t *n4mbbuf = NULL;
+    ogs_pfcp_header_t h;
+
+    ogs_assert(xact);
+    ogs_assert(mbs_sess);
+
+    memset(&h, 0, sizeof(ogs_pfcp_header_t));
+    h.type = OGS_PFCP_SESSION_MODIFICATION_RESPONSE_TYPE;
+    h.seid = mbs_sess->smf_n4mb_f_seid.seid;
+
+    n4mbbuf = upf_n4mb_build_session_modification_response(h.type, mbs_sess);
+    if (!n4mbbuf) {
+        ogs_error("upf_n4mb_build_session_modification_response() failed");
+        return OGS_ERROR;
+    }
+
+    rv = ogs_pfcp_xact_update_tx(xact, &h, n4mbbuf);
+    if (rv != OGS_OK) {
+        ogs_error("ogs_pfcp_xact_update_tx() failed");
+        return OGS_ERROR;
+    }
+
+    rv = ogs_pfcp_xact_commit(xact);
+    ogs_expect(rv == OGS_OK);
+
+    return rv;
+}
+
 static void sess_timeout(ogs_pfcp_xact_t *xact, void *data)
 {
     upf_sess_t *sess = NULL;

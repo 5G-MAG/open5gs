@@ -805,6 +805,145 @@ cleanup:
 }
 
 /*
+ * The IEs of a PFCP Session Modification Request that apply to N4mb (TS 29.244 Table 7.5.4.1-1, N4mb column) and that
+ * the MB-UPF does not process. They are rejected, not skipped: ignoring a rule the CP function believes installed
+ * would leave the two out of step. Returns true with the IE type of the first one found.
+ */
+static bool _modification_ie_not_supported(const ogs_pfcp_session_modification_request_t *req, uint16_t *type)
+{
+    static const struct { size_t offset; uint16_t type; } ies[] = {
+        { offsetof(ogs_pfcp_session_modification_request_t, cp_f_seid), OGS_PFCP_F_SEID_TYPE },
+        { offsetof(ogs_pfcp_session_modification_request_t, remove_pdr), OGS_PFCP_REMOVE_PDR_TYPE },
+        { offsetof(ogs_pfcp_session_modification_request_t, remove_far), OGS_PFCP_REMOVE_FAR_TYPE },
+        { offsetof(ogs_pfcp_session_modification_request_t, remove_urr), OGS_PFCP_REMOVE_URR_TYPE },
+        { offsetof(ogs_pfcp_session_modification_request_t, remove_qer), OGS_PFCP_REMOVE_QER_TYPE },
+        { offsetof(ogs_pfcp_session_modification_request_t, remove_traffic_endpoint),
+            OGS_PFCP_REMOVE_TRAFFIC_ENDPOINT_TYPE },
+        { offsetof(ogs_pfcp_session_modification_request_t, create_pdr), OGS_PFCP_CREATE_PDR_TYPE },
+        { offsetof(ogs_pfcp_session_modification_request_t, create_far), OGS_PFCP_CREATE_FAR_TYPE },
+        { offsetof(ogs_pfcp_session_modification_request_t, create_urr), OGS_PFCP_CREATE_URR_TYPE },
+        { offsetof(ogs_pfcp_session_modification_request_t, create_qer), OGS_PFCP_CREATE_QER_TYPE },
+        { offsetof(ogs_pfcp_session_modification_request_t, create_traffic_endpoint),
+            OGS_PFCP_CREATE_TRAFFIC_ENDPOINT_TYPE },
+        { offsetof(ogs_pfcp_session_modification_request_t, update_pdr), OGS_PFCP_UPDATE_PDR_TYPE },
+        { offsetof(ogs_pfcp_session_modification_request_t, update_urr), OGS_PFCP_UPDATE_URR_TYPE },
+        { offsetof(ogs_pfcp_session_modification_request_t, update_qer), OGS_PFCP_UPDATE_QER_TYPE },
+        { offsetof(ogs_pfcp_session_modification_request_t, update_traffic_endpoint),
+            OGS_PFCP_UPDATE_TRAFFIC_ENDPOINT_TYPE },
+        { offsetof(ogs_pfcp_session_modification_request_t, query_urr), OGS_PFCP_QUERY_URR_TYPE },
+        { offsetof(ogs_pfcp_session_modification_request_t, user_plane_inactivity_timer),
+            OGS_PFCP_USER_PLANE_INACTIVITY_TIMER_TYPE },
+    };
+    size_t i;
+
+    for (i = 0; i < OGS_ARRAY_SIZE(ies); i++) {
+        /* every one of these starts with the presence word (ogs_tlv_presence_t), the first of an array element too */
+        if (*(const ogs_tlv_presence_t *)((const char *)req + ies[i].offset)) {
+            *type = ies[i].type;
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * Checks one Update FAR of an N4mb Session Modification Request against the session, without changing it, so that a
+ * request that fails is rejected as a whole and leaves the session as it was.
+ */
+static int _check_update_far(upf_mbs_sess_t *mbs_sess, const ogs_pfcp_tlv_update_far_t *uf,
+        uint8_t *cause_value, uint16_t *offending_ie_value)
+{
+    ogs_pfcp_far_t *far;
+
+    if (uf->far_id.presence == 0) {
+        ogs_error("No FAR ID in an Update FAR");
+        *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+        *offending_ie_value = OGS_PFCP_FAR_ID_TYPE;
+        return OGS_ERROR;
+    }
+    far = ogs_pfcp_far_find(&mbs_sess->pfcp, uf->far_id.u32);
+    if (!far) {
+        ogs_error("Update FAR names the unknown FAR ID %u", uf->far_id.u32);
+        *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+        *offending_ie_value = OGS_PFCP_FAR_ID_TYPE;
+        return OGS_ERROR;
+    }
+
+    if (uf->apply_action.presence && (uf->apply_action.u16 & OGS_PFCP_APPLY_ACTION_FSSM)) {
+        /* TS 29.244 cl. 5.34.2.1A: FSSM makes the MB-UPF "forward the MBS session data using the LLSSM and the
+         * C-TEID, which the MB-UPF has earlier assigned to the MBS session"; the destination interface, the outer
+         * header and the marking are those of the MBS Multicast Parameters of the Create FAR, which an Update FAR
+         * has no IE for. */
+        if (!far->mbs_multicast_parameters) {
+            ogs_error("FSSM for FAR %u, created without MBS Multicast Parameters", far->id);
+            *cause_value = OGS_PFCP_CAUSE_CONDITIONAL_IE_MISSING;
+            *offending_ie_value = OGS_PFCP_MBS_MULTICAST_PARAMETERS_TYPE;
+            return OGS_ERROR;
+        }
+        if (!mbs_sess->ll_ssm || !far->gnode) {
+            ogs_error("FSSM for FAR %u, the session has no low layer SSM", far->id);
+            *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+            *offending_ie_value = OGS_PFCP_APPLY_ACTION_TYPE;
+            return OGS_ERROR;
+        }
+    }
+
+    return OGS_OK;
+}
+
+/*
+ * N4mb Session Modification Request (TS 29.244 cl. 7.5.4, N4mb column of Table 7.5.4.1-1): the Apply Action of the
+ * FARs of the MBS session. The request is checked as a whole first and applied only if every part is valid.
+ */
+void upf_n4mb_handle_session_modification_request(
+        upf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
+        ogs_pfcp_session_modification_request_t *req)
+{
+    int i;
+    uint8_t cause_value = OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
+    uint16_t offending_ie_value = 0;
+
+    ogs_assert(xact);
+    ogs_assert(req);
+
+    ogs_debug("N4mb Session Modification Request");
+
+    if (!mbs_sess) {
+        ogs_error("No MBS Session Context");
+        ogs_pfcp_send_error_message(xact, 0,
+                OGS_PFCP_SESSION_MODIFICATION_RESPONSE_TYPE,
+                OGS_PFCP_CAUSE_SESSION_CONTEXT_NOT_FOUND, 0);
+        return;
+    }
+
+    if (_modification_ie_not_supported(req, &offending_ie_value)) {
+        ogs_error("IE type %u of the N4mb Session Modification Request is not supported", offending_ie_value);
+        cause_value = OGS_PFCP_CAUSE_SERVICE_NOT_SUPPORTED;
+        goto reject;
+    }
+
+    for (i = 0; i < OGS_MAX_NUM_OF_FAR && req->update_far[i].presence; i++) {
+        if (_check_update_far(mbs_sess, &req->update_far[i], &cause_value, &offending_ie_value) != OGS_OK)
+            goto reject;
+    }
+
+    for (i = 0; i < OGS_MAX_NUM_OF_FAR && req->update_far[i].presence; i++) {
+        ogs_pfcp_far_t *far = ogs_pfcp_far_find(&mbs_sess->pfcp, req->update_far[i].far_id.u32);
+
+        ogs_assert(far);
+        if (req->update_far[i].apply_action.presence)
+            far->apply_action = req->update_far[i].apply_action.u16;
+    }
+
+    ogs_assert(OGS_OK == upf_pfcp_n4mb_send_session_modification_response(xact, mbs_sess));
+    return;
+
+reject:
+    ogs_pfcp_send_error_message(xact, mbs_sess->smf_n4mb_f_seid.seid,
+            OGS_PFCP_SESSION_MODIFICATION_RESPONSE_TYPE, cause_value, offending_ie_value);
+}
+
+/*
  * BUG FIX: this handler did not exist before -- pfcp-sm.c's Session Deletion Request dispatch had no
  * MBS-aware branch at all (see the matching fix there), so an MBS session's N4mb Session Deletion Request
  * was never routed anywhere sensible. Mirrors the non-MBS upf_n4_handle_session_deletion_request(): reply
