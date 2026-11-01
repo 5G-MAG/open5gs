@@ -879,6 +879,9 @@ typedef struct amf_mbs_gnb_s {
      * sent). */
     bool release_required;
     bool released;
+    /* The request outstanding is a Broadcast Session Setup Request sent as part of a ContextUpdate (TS 23.527
+     * V18.6.0 cl. 8.3.2.3 step 7), not of the ContextCreate: its response completes the update. */
+    bool update_setup;
 } amf_mbs_gnb_t;
 
 typedef struct amf_mbs_context_s {

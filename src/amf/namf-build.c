@@ -242,6 +242,21 @@ bool amf_namf_ran_id_is_gnb(const amf_gnb_t *gnb, OpenAPI_global_ran_node_id_t *
     return same;
 }
 
+bool amf_namf_ran_id_list_has_gnb(const OpenAPI_list_t *ran_id_list, const amf_gnb_t *gnb)
+{
+    OpenAPI_lnode_t *node = NULL;
+
+    if (!ran_id_list)
+        return false;
+
+    OpenAPI_list_for_each(ran_id_list, node) {
+        if (amf_namf_ran_id_is_gnb(gnb, node->data))
+            return true;
+    }
+
+    return false;
+}
+
 /*
  * Builds the n2MbsSmInfoList of a ContextCreate or ContextUpdate response or of a ContextStatusNotify request from
  * \p n2_info_list (amf_mbs_n2_info_t items) and adds each transfer IE to \p message as a binary part. At most

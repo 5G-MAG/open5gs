@@ -92,6 +92,7 @@ void amf_mbs_context_involve_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *
     ogs_list_for_each(&amf_mbs_context->involved_gnb_list, involved) {
         if (involved->gnb_id == gnb->id) {
             involved->awaiting = true;
+            involved->update_setup = false;
             return;
         }
     }

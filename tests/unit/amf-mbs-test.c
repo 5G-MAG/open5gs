@@ -548,6 +548,81 @@ static void test_store_n2_container(void)
     ogs_pkbuf_free(b);
 }
 
+/* The GlobalRanNodeId item of a gNB, as a ranIdList carries it */
+static OpenAPI_global_ran_node_id_t *ran_id_of(const char *gnb_value, int bit_length)
+{
+    ogs_plmn_id_t plmn;
+
+    ogs_plmn_id_build(&plmn, 999, 70, 2);
+    return OpenAPI_global_ran_node_id_create(ogs_sbi_build_plmn_id(&plmn), NULL,
+            OpenAPI_gnb_id_create(bit_length, ogs_strdup(gnb_value)), NULL, NULL, NULL, NULL, NULL);
+}
+
+static void free_ran_id_list(OpenAPI_list_t *list)
+{
+    OpenAPI_lnode_t *node = NULL;
+
+    OpenAPI_list_for_each(list, node)
+        OpenAPI_global_ran_node_id_free(node->data);
+    OpenAPI_list_free(list);
+}
+
+static void free_involved(amf_mbs_context_t *ctx)
+{
+    amf_mbs_gnb_t *involved = NULL, *next = NULL;
+
+    ogs_list_for_each_safe(&ctx->involved_gnb_list, next, involved) {
+        ogs_list_remove(&ctx->involved_gnb_list, involved);
+        ogs_free(involved);
+    }
+}
+
+/* TS 29.518 V18.14.0 cl. 5.6.2.3: "During a broadcast MBS session restoration procedure for an NG-RAN failure with
+ * restart, the MB-SMF may include one or more ranIds attibutes to request the AMF to setup the Broadcast MBS session in a
+ * list of NG-RANs as identified by the NG-RAN ID(s), as specified in clause 8.3.2.3 of TS 23.527" and TS 23.527 V18.6.0
+ * cl. 8.3.2.3 step 7: "The AMF sends the N2 MBS Session Setup Request message to the NG-RAN node(s) including the MBS
+ * Session Setup or Modification Request Transfer IE." */
+static void test_update_action_ran_id_list(void)
+{
+    amf_gnb_t *gnb1 = make_gnb(0x100, 22), *gnb2 = make_gnb(0x200, 22), *down = make_gnb(0x300, 22);
+    amf_mbs_context_t ctx = make_context();
+    amf_mbs_update_plan_t plan;
+    OpenAPI_list_t *list = OpenAPI_list_create();
+
+    ogs_list_init(&ctx.involved_gnb_list);
+    gnb1->id = 1; gnb2->id = 2; down->id = 3;
+    gnb1->state.ng_setup_success = true;
+    gnb2->state.ng_setup_success = true;
+
+    /* no ranIdList: every node that takes the session is modified; one that has not completed NG Setup is not reached */
+    memset(&plan, 0, sizeof(plan));
+    CHECK(amf_namf_mbs_update_action(&ctx, gnb1, &plan) == AMF_MBS_UPDATE_MODIFY);
+    CHECK(amf_namf_mbs_update_action(&ctx, gnb2, &plan) == AMF_MBS_UPDATE_MODIFY);
+    CHECK(amf_namf_mbs_update_action(&ctx, down, &plan) == AMF_MBS_UPDATE_SKIP);
+
+    /* a node that released the session at its own request has nothing to modify */
+    amf_mbs_context_involve_gnb(&ctx, gnb2);
+    amf_mbs_context_find_involved_gnb(&ctx, gnb2)->release_required = true;
+    CHECK(amf_namf_mbs_update_action(&ctx, gnb2, &plan) == AMF_MBS_UPDATE_SKIP);
+
+    /* ranIdList [gNB 0x200]: that node gets a Setup (whatever it released before), no other node gets anything */
+    OpenAPI_list_add(list, ran_id_of("000800", 22));
+    plan.ran_id_list = list;
+    CHECK(amf_namf_mbs_update_action(&ctx, gnb2, &plan) == AMF_MBS_UPDATE_SETUP);
+    CHECK(amf_namf_mbs_update_action(&ctx, gnb1, &plan) == AMF_MBS_UPDATE_SKIP);
+    CHECK(amf_namf_mbs_update_action(&ctx, down, &plan) == AMF_MBS_UPDATE_SKIP);
+
+    /* a listed node that is not connected is not reached */
+    gnb2->state.ng_setup_success = false;
+    CHECK(amf_namf_mbs_update_action(&ctx, gnb2, &plan) == AMF_MBS_UPDATE_SKIP);
+
+    free_ran_id_list(list);
+    free_involved(&ctx);
+    ogs_free(gnb1);
+    ogs_free(gnb2);
+    ogs_free(down);
+}
+
 int main(int argc, const char *argv[])
 {
     ogs_pkbuf_config_t config;
@@ -569,6 +644,7 @@ int main(int argc, const char *argv[])
     test_transport_messages();
     test_transport_relay();
     test_store_n2_container();
+    test_update_action_ran_id_list();
 
     ogs_sbi_message_final();
     ogs_pkbuf_default_destroy();

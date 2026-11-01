@@ -64,6 +64,25 @@ int amf_namf_handle_mbs_broadcast_context_update(
         ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg);
 
 /*
+ * What a ContextUpdate does at one NG-RAN node (amf_namf_mbs_update_action()).
+ */
+typedef enum {
+    AMF_MBS_UPDATE_SKIP,    /* nothing is sent to the node */
+    AMF_MBS_UPDATE_MODIFY,  /* a Broadcast Session Modification Request */
+    AMF_MBS_UPDATE_SETUP,   /* a Broadcast Session Setup Request */
+} amf_mbs_update_action_e;
+
+/* What a ContextUpdate carries that decides which NG-RAN nodes it goes to */
+typedef struct amf_mbs_update_plan_s {
+    /* ranIdList: the GlobalRanNodeId items of the request, NULL when it carries none */
+    OpenAPI_list_t *ran_id_list;
+} amf_mbs_update_plan_t;
+
+/* The action of a ContextUpdate of \p mbs_context (whose service area is already the updated one) at \p gnb */
+amf_mbs_update_action_e amf_namf_mbs_update_action(
+        amf_mbs_context_t *mbs_context, amf_gnb_t *gnb, const amf_mbs_update_plan_t *plan);
+
+/*
  * Handles an NG-RAN node's response to a Broadcast Session Setup or Modification Request (success or failure, with
  * the Response or Failure Transfer IE if it carried one): completes the deferred ContextCreate or ContextUpdate
  * response or sends a ContextStatusNotify request. See the function's own comment (namf-handler.c).
