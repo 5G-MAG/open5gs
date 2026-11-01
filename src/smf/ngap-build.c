@@ -593,38 +593,42 @@ ogs_pkbuf_t *ngap_build_mbs_session_setup_or_modification_request_transfer(smf_m
     ogs_debug("MBSSessionSetupOrModRequestTransfer");
     memset(&message, 0, sizeof(NGAP_MBSSessionSetupOrModRequestTransfer_t));
 
-    // MBS Session TNL Information 5GC - 9.3.2.15 (O)
-    ie = CALLOC(1, sizeof(NGAP_MBSSessionSetupOrModRequestTransferIEs_t));
-    ogs_assert(ie);
-    ASN_SEQUENCE_ADD(&message.protocolIEs, ie);
+    // The IE is optional (TS 38.413 V18.8.0 cl. 9.3.5.3, "MBS Session TNL Information 5GC | O"): it is left out when
+    // the MB-UPF returned no low-layer SSM, so there is no multicast address to carry.
+    if (mbs_sess->ll_ssm.dest_ip_addr.ipv4 || mbs_sess->ll_ssm.dest_ip_addr.ipv6) {
+        // MBS Session TNL Information 5GC - 9.3.2.15 (O)
+        ie = CALLOC(1, sizeof(NGAP_MBSSessionSetupOrModRequestTransferIEs_t));
+        ogs_assert(ie);
+        ASN_SEQUENCE_ADD(&message.protocolIEs, ie);
 
-    ie->id = NGAP_ProtocolIE_ID_id_MBS_SessionTNLInfo5GC;
-    ie->criticality = NGAP_Criticality_reject;
-    ie->value.present = NGAP_MBSSessionSetupOrModRequestTransferIEs__value_PR_MBS_SessionTNLInfo5GC;
+        ie->id = NGAP_ProtocolIE_ID_id_MBS_SessionTNLInfo5GC;
+        ie->criticality = NGAP_Criticality_reject;
+        ie->value.present = NGAP_MBSSessionSetupOrModRequestTransferIEs__value_PR_MBS_SessionTNLInfo5GC;
 
-    mBS_SessionTNLInfo5GC = &ie->value.choice.MBS_SessionTNLInfo5GC;
+        mBS_SessionTNLInfo5GC = &ie->value.choice.MBS_SessionTNLInfo5GC;
 
-        // The "locationindependent" CHOICE arm is the one that matches: this SMF models no per-area session
-        // concept in mbs_sess at all, carrying a single Shared NG-U Multicast TNL Information per session, and
-        // TS29571_CommonData.yaml's MbsServiceAreaInfo/areaSessionId is not represented here. The
-        // "locationdependent" arm (TS 38.413 cl.9.3.2.15) would require a real per-area MBS Area Session ID.
-    sharedNGU_MulticastTNLInformation = CALLOC(1, sizeof(NGAP_SharedNGU_MulticastTNLInformation_t));
-    ogs_assert(sharedNGU_MulticastTNLInformation);
+            // The "locationindependent" CHOICE arm is the one that matches: this SMF models no per-area session
+            // concept in mbs_sess at all, carrying a single Shared NG-U Multicast TNL Information per session, and
+            // TS29571_CommonData.yaml's MbsServiceAreaInfo/areaSessionId is not represented here. The
+            // "locationdependent" arm (TS 38.413 cl.9.3.2.15) would require a real per-area MBS Area Session ID.
+        sharedNGU_MulticastTNLInformation = CALLOC(1, sizeof(NGAP_SharedNGU_MulticastTNLInformation_t));
+        ogs_assert(sharedNGU_MulticastTNLInformation);
 
-    mBS_SessionTNLInfo5GC->present = NGAP_MBS_SessionTNLInfo5GC_PR_locationindependent;
-    mBS_SessionTNLInfo5GC->choice.locationindependent = sharedNGU_MulticastTNLInformation;
+        mBS_SessionTNLInfo5GC->present = NGAP_MBS_SessionTNLInfo5GC_PR_locationindependent;
+        mBS_SessionTNLInfo5GC->choice.locationindependent = sharedNGU_MulticastTNLInformation;
 
-    // Transport Layer Address - 9.3.2.4 (M)
-    iP_MulticastAddress = &sharedNGU_MulticastTNLInformation->iP_MulticastAddress;
-    ogs_asn_ip_to_BIT_STRING(&mbs_sess->ll_ssm.dest_ip_addr, iP_MulticastAddress);
+        // Transport Layer Address - 9.3.2.4 (M)
+        iP_MulticastAddress = &sharedNGU_MulticastTNLInformation->iP_MulticastAddress;
+        ogs_asn_ip_to_BIT_STRING(&mbs_sess->ll_ssm.dest_ip_addr, iP_MulticastAddress);
 
-    // Transport Layer Address - 9.3.2.4 (M)
-    iP_SourceAddress = &sharedNGU_MulticastTNLInformation->iP_SourceAddress;
-    ogs_asn_ip_to_BIT_STRING(&mbs_sess->ll_ssm.src_ip_addr, iP_SourceAddress);
+        // Transport Layer Address - 9.3.2.4 (M)
+        iP_SourceAddress = &sharedNGU_MulticastTNLInformation->iP_SourceAddress;
+        ogs_asn_ip_to_BIT_STRING(&mbs_sess->ll_ssm.src_ip_addr, iP_SourceAddress);
 
-    // GTP-TEID - 9.3.2.5 (M)
-    gTP_TEID = &sharedNGU_MulticastTNLInformation->gTP_TEID;
-    ogs_asn_uint32_to_OCTET_STRING(mbs_sess->c_teid, gTP_TEID);
+        // GTP-TEID - 9.3.2.5 (M)
+        gTP_TEID = &sharedNGU_MulticastTNLInformation->gTP_TEID;
+        ogs_asn_uint32_to_OCTET_STRING(mbs_sess->c_teid, gTP_TEID);
+    }
 
     // MBS QoS Flows To Be Setup List - 9.3.1.236 (M)
     ie = CALLOC(1, sizeof(NGAP_MBSSessionSetupOrModRequestTransferIEs_t));
