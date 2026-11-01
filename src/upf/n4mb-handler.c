@@ -100,9 +100,13 @@ void upf_n4mb_handle_session_establishment_request(
     if (req->apn_dnn.presence) {
         char apn_dnn[OGS_MAX_DNN_LEN+1];
 
-        ogs_assert(0 < ogs_fqdn_parse(apn_dnn, req->apn_dnn.data,
-                ogs_min(req->apn_dnn.len, OGS_MAX_DNN_LEN)));
-
+        if (ogs_fqdn_parse(apn_dnn, req->apn_dnn.data,
+                ogs_min(req->apn_dnn.len, OGS_MAX_DNN_LEN)) <= 0) {
+            ogs_error("Malformed APN/DNN in N4mb Session Establishment Request");
+            cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+            offending_ie_value = OGS_PFCP_APN_DNN_TYPE;
+            goto cleanup;
+        }
 
         if (mbs_sess->dnn)
             ogs_free(mbs_sess->dnn);
@@ -403,12 +407,22 @@ void upf_n4mb_handle_session_establishment_request(
                 sizeof(ogs_pfcp_mbsn4mbreq_flags_t));
     }
 
-    ogs_assert(OGS_OK ==
-            upf_pfcp_n4mb_send_session_establishment_response(
-                xact, mbs_sess, created_pdr, num_of_created_pdr));
+    // The MB-SMF asks for a low-layer SSM with PLLSSM (MBSN4mbReq-Flags). Without it the session
+    // has no N3mb multicast transport and the FARs are left as received.
+    if (mbs_sess->mbs_flags.provide_lower_layer_ssm) {
+        upf_mbs_sess_set_llssm(mbs_sess);
+        if (!mbs_sess->ll_ssm) {
+            ogs_error("No low-layer SSM available for the MBS session");
+            cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+            offending_ie_value = OGS_PFCP_MBS_SESSION_N4MB_CONTROL_INFORMATION_TYPE;
+            goto cleanup;
+        }
+    }
 
     /* Setup GTP Node */
     ogs_list_for_each(&mbs_sess->pfcp.far_list, far) {
+        if (!mbs_sess->ll_ssm)
+            break;
         if (mbs_sess->ll_ssm->dest_ip_addr.ipv4) {
             far->outer_header_creation.addr = mbs_sess->ll_ssm->dest_ip_addr.addr;
             far->outer_header_creation_len += OGS_IPV4_LEN;
@@ -427,6 +441,10 @@ void upf_n4mb_handle_session_establishment_request(
             ogs_pfcp_far_f_teid_hash_set(far);
         }
     }
+
+    ogs_assert(OGS_OK ==
+            upf_pfcp_n4mb_send_session_establishment_response(
+                xact, mbs_sess, created_pdr, num_of_created_pdr));
 
 
     if(upf_self()->mbs_multicastrouter_activate && !req->create_traffic_endpoint.presence){
@@ -461,21 +479,14 @@ void upf_n4mb_handle_session_establishment_request(
 
 cleanup:
     ogs_pfcp_sess_clear(&mbs_sess->pfcp);
-    if (mbs_sess->udp_tunnel) {
-        ogs_sock_destroy(mbs_sess->udp_tunnel);
-        mbs_sess->udp_tunnel = NULL;
-    }
-    if (mbs_sess->udp_tunnel_pkbuf_pool) {
-        ogs_pkbuf_pool_destroy(mbs_sess->udp_tunnel_pkbuf_pool);
-        mbs_sess->udp_tunnel_pkbuf_pool = NULL;
-    }
-    if (mbs_sess->udp_tunnel_poll) {
-        ogs_pollset_remove(mbs_sess->udp_tunnel_poll);
-        mbs_sess->udp_tunnel_poll = NULL;
-    }
     ogs_pfcp_send_error_message(xact, mbs_sess ? mbs_sess->smf_n4mb_f_seid.seid : 0,
             OGS_PFCP_SESSION_ESTABLISHMENT_RESPONSE_TYPE,
             cause_value, offending_ie_value);
+    // The establishment was rejected: the MB-SMF will not delete a session it was told was not established, so the
+    // session must not stay in the pool and the hashes. Removal also releases the UDP tunnel (poll, port, socket, buffer
+    // pool) in the order the poll must be removed before its socket is closed.
+    if (mbs_sess)
+        upf_mbs_sess_remove(mbs_sess);
 }
 
 /*

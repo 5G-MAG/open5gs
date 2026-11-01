@@ -88,9 +88,8 @@ ogs_pkbuf_t *upf_n4mb_build_session_establishment_response(uint8_t type,
 
     /* MBS Session N4mb Information */
     // TODO (borieher): Should I check the outer_header_creation_description low_layer_ssm_and_c_teid flag too?
-    if (mbs_sess->mbs_flags.provide_lower_layer_ssm) {
-        upf_mbs_sess_set_llssm(mbs_sess);
-
+    // The low-layer SSM was allocated by the handler when the MB-SMF asked for it (PLLSSM).
+    if (mbs_sess->mbs_flags.provide_lower_layer_ssm && mbs_sess->ll_ssm) {
         rsp->mbs_session_n4mb_information.presence = 1;
         rsp->mbs_session_n4mb_information.multicast_transport_information.presence = 1;
 

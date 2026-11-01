@@ -1185,7 +1185,11 @@ void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess)
     ogs_assert(upf_mbs_sess);
 
     ogs_list_remove(&self.upf_mbs_sess_list, upf_mbs_sess);
-    ogs_pfcp_llssm_remove(upf_mbs_sess->ll_ssm);
+    // A session has a low-layer SSM only if the MB-SMF asked for one (PLLSSM).
+    if (upf_mbs_sess->ll_ssm) {
+        ogs_pfcp_llssm_remove(upf_mbs_sess->ll_ssm);
+        upf_mbs_sess->ll_ssm = NULL;
+    }
     ogs_pfcp_sess_clear(&upf_mbs_sess->pfcp);
 
     ogs_hash_set(self.upf_n4_seid_hash, &upf_mbs_sess->upf_n4mb_seid,
@@ -1196,17 +1200,7 @@ void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess)
     ogs_hash_set(self.smf_n4_f_seid_hash, &upf_mbs_sess->smf_n4mb_f_seid,
             sizeof(upf_mbs_sess->smf_n4mb_f_seid), NULL);
 
-    // PFCP finalization
-    ogs_pfcp_pool_final(&upf_mbs_sess->pfcp);
-
-    ogs_pool_free(&upf_n4_seid_pool, upf_mbs_sess->upf_n4mb_seid_node);
-
-    ogs_pool_free(&upf_mbs_sess_pool, upf_mbs_sess);
-
-    ogs_info("[Removed] Number of MBS Sessions in UPF is now %d",
-            ogs_list_count(&self.upf_mbs_sess_list));
-
-    // MBS UDP Tunnels
+    // MBS UDP Tunnels. Released before the session goes back to its pool: the entry must not be read after that.
     if (upf_mbs_sess->udp_tunnel_poll) {
         ogs_pollset_remove(upf_mbs_sess->udp_tunnel_poll);
         upf_mbs_sess->udp_tunnel_poll = NULL;
@@ -1230,11 +1224,23 @@ void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess)
     }
 
     if (upf_mbs_sess->mbs_session_id.ssm) {
-	ogs_free(upf_mbs_sess->mbs_session_id.ssm);
+        ogs_free(upf_mbs_sess->mbs_session_id.ssm);
+        upf_mbs_sess->mbs_session_id.ssm = NULL;
     }
     if (upf_mbs_sess->mbs_session_id.nid) {
         ogs_free(upf_mbs_sess->mbs_session_id.nid);
+        upf_mbs_sess->mbs_session_id.nid = NULL;
     }
+
+    // PFCP finalization
+    ogs_pfcp_pool_final(&upf_mbs_sess->pfcp);
+
+    ogs_pool_free(&upf_n4_seid_pool, upf_mbs_sess->upf_n4mb_seid_node);
+
+    ogs_pool_free(&upf_mbs_sess_pool, upf_mbs_sess);
+
+    ogs_info("[Removed] Number of MBS Sessions in UPF is now %d",
+            ogs_list_count(&self.upf_mbs_sess_list));
 }
 
 static void upf_mbs_sess_remove_all(void)
