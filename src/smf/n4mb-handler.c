@@ -193,7 +193,9 @@ uint8_t smf_n4mb_handle_session_establishment_response(
             }
 
             if (multicast_transport_information.c_teid) {
-                mbs_sess->c_teid = multicast_transport_information.c_teid;
+                // The parser leaves the field as received (network order, like the addresses next to it); the
+                // session holds the TEID as a number, as the NGAP and PFCP builders expect.
+                mbs_sess->c_teid = be32toh(multicast_transport_information.c_teid);
             }
         }
     }
