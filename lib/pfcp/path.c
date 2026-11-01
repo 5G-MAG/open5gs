@@ -394,6 +394,23 @@ void ogs_pfcp_send_g_pdu(
         header_desc.pdcp_number = sendhdr->pdcp_number;
     }
 
+    if (far->transport_level_marking) {
+        /* TS 29.244 cl. 5.4.13: "The UP function shall perform the transport level marking for the detected
+         * traffic and sends the marked packet to the peer entity." The socket is shared by the FARs of the node:
+         * the mark is set for this packet only. The ECN bits are left to the stack (cl. 8.2.12 NOTE). */
+        int tos = far->tos & far->tos_mask;
+        int family = gnode->sock->local_addr.ogs_sa_family;
+        int level = family == AF_INET6 ? IPPROTO_IPV6 : IPPROTO_IP;
+        int opt = family == AF_INET6 ? IPV6_TCLASS : IP_TOS;
+        int none = 0;
+
+        if (setsockopt(gnode->sock->fd, level, opt, &tos, sizeof tos) != 0)
+            ogs_warn("Transport Level Marking not applied: %s", strerror(errno));
+        ogs_gtp2_send_user_plane(gnode, &header_desc, sendbuf);
+        setsockopt(gnode->sock->fd, level, opt, &none, sizeof none);
+        return;
+    }
+
     ogs_gtp2_send_user_plane(gnode, &header_desc, sendbuf);
 }
 

@@ -212,10 +212,10 @@ def pdr(pdr_id=1, precedence=100, far_id=1, qer_id=1, pdi_extra=(), pdi=None, dr
     return ie(T_CREATE_PDR, parts)
 
 
-def far(far_id=1, apply=0x0008, params=True, drop=()):
+def far(far_id=1, apply=0x0008, params=True, drop=(), mc_extra=()):
     parts = [ie(T_FAR_ID, struct.pack('>I', far_id)), ie(T_APPLY, struct.pack('>H', apply))]
     if params:
-        parts.append(ie(T_MBS_MC_PARAMS, [ie(T_DST_IF, b'\x00'), ie(T_OHC, b'\x00\x04')]))
+        parts.append(ie(T_MBS_MC_PARAMS, [ie(T_DST_IF, b'\x00'), ie(T_OHC, b'\x00\x04')] + list(mc_extra)))
     parts = [p for p in parts if struct.unpack('>H', p[:2])[0] not in drop]
     return ie(T_CREATE_FAR, parts)
 
@@ -674,13 +674,19 @@ class N3mbListener:
         self.sock.bind((group, 2152))
         self.sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
                              socket.inet_aton(group) + socket.inet_aton('127.0.0.1'))
+        self.sock.setsockopt(socket.IPPROTO_IP, socket.IP_RECVTOS, 1)
         self.sock.settimeout(0.7)
+        self.tos = []
 
     def packets(self):
         out = []
         try:
             while True:
-                out.append(self.sock.recv(65535))
+                data, anc, _, _ = self.sock.recvmsg(65535, 64)
+                out.append(data)
+                for level, typ, val in anc:
+                    if level == socket.IPPROTO_IP and typ == socket.IP_TOS:
+                        self.tos.append(val[0])
         except socket.timeout:
             pass
         return out
@@ -978,6 +984,38 @@ def t_U06_11_drop_drops():
     finally:
         lst.close()
         U.delete(s)
+
+
+@test
+def t_U06_5_transport_level_marking_and_network_instance():
+    tlm = ie(30, b'\xb8\xfc')
+    r = U.establish(replace_ie(mc_request(0xc011, b'\x02' + V4G, None), T_CREATE_FAR, far(mc_extra=(tlm,))))
+    s = accepted(r, 'with a Transport Level Marking')
+    lst = N3mbListener(mc_group_of(r))
+    try:
+        send_multicast('10.46.0.1', '232.1.1.1')
+        assert inner_payload_seen(lst.packets()), 'nothing forwarded'
+        assert lst.tos and all(t & 0xfc == 0xb8 for t in lst.tos), 'TOS of the N3mb packets: %s' % lst.tos
+    finally:
+        lst.close()
+        U.delete(s)
+    # a session without the IE is not marked, also after one that was (the socket is shared)
+    r = U.establish(mc_request(0xc012, b'\x02' + V4G, None))
+    s = accepted(r, 'without')
+    lst = N3mbListener(mc_group_of(r))
+    try:
+        send_multicast('10.46.0.1', '232.1.1.1')
+        assert inner_payload_seen(lst.packets())
+        assert lst.tos and all(t & 0xfc == 0 for t in lst.tos), 'TOS without a marking: %s' % lst.tos
+    finally:
+        lst.close()
+        U.delete(s)
+    # a Transport Level Marking of one octet
+    r = U.establish(replace_ie(mc_request(0xc013, b'\x02' + V4G, None), T_CREATE_FAR, far(mc_extra=(ie(30, b'\xb8'),))))
+    assert r and cause(r) == CAUSE_INVALID_LENGTH and offending(r) == 30, 'short IE: cause %s' % (cause(r) if r else None)
+    # a Network Instance is accepted
+    ni = ie(T_NET_INST, b'\x03mbs')
+    accepted_and_deleted(U.establish(replace_ie(mc_request(0xc014, b'\x02' + V4G, None), T_CREATE_FAR, far(mc_extra=(ni,)))), 'with a Network Instance')
 
 
 # E-TESTS-BELOW

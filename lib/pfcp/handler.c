@@ -1041,11 +1041,47 @@ ogs_pfcp_far_t *ogs_pfcp_handle_create_far(ogs_pfcp_sess_t *sess,
         }
     }
 
+    far->transport_level_marking = false;
+    far->tos = far->tos_mask = 0;
+
     if (message->mbs_multicast_parameters.presence) {
         // TODO (borieher): Keep adding the optional and conditional IEs
         if (message->mbs_multicast_parameters.destination_interface.presence) {
             far->dst_if =
                 message->mbs_multicast_parameters.destination_interface.u8;
+        }
+
+        /* TS 29.244 cl. 8.2.12: the DSCP in the first octet, the mask (0xFC) in the second */
+        if (message->mbs_multicast_parameters.transport_level_marking.presence) {
+            const uint8_t *tlm = message->mbs_multicast_parameters.transport_level_marking.data;
+
+            if (message->mbs_multicast_parameters.transport_level_marking.len != 2) {
+                ogs_error("Transport Level Marking length %u",
+                        message->mbs_multicast_parameters.transport_level_marking.len);
+                *cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
+                *offending_ie_value = OGS_PFCP_TRANSPORT_LEVEL_MARKING_TYPE;
+                return NULL;
+            }
+            far->transport_level_marking = true;
+            far->tos = tlm[0];
+            far->tos_mask = tlm[1];
+        }
+
+        /* The Network Instance towards which to send the packets, kept as the one of the forwarding parameters */
+        if (message->mbs_multicast_parameters.network_instance.presence) {
+            char dnn[OGS_MAX_DNN_LEN+1];
+
+            if (ogs_fqdn_parse(dnn,
+                message->mbs_multicast_parameters.network_instance.data,
+                ogs_min(message->mbs_multicast_parameters.network_instance.len,
+                    OGS_MAX_DNN_LEN)) > 0) {
+                if (far->dnn)
+                    ogs_free(far->dnn);
+                far->dnn = ogs_strdup(dnn);
+                ogs_assert(far->dnn);
+            } else {
+                ogs_error("Invalid mbs_multicast_parameters.network_instance");
+            }
         }
 
         if (message->mbs_multicast_parameters.outer_header_creation.presence) {
