@@ -347,7 +347,7 @@ void smf_pfcp_state_associated(ogs_fsm_t *s, smf_event_t *e)
                         // "if (!sess) { ... break; }" would break out of the switch on "No Session" before reaching it
                         // and stall every N4mb Session Establishment Response. Non-MBS responses fall through to the
                         // regular-session path below.
-            if (message->pfcp_session_establishment_response.mbs_session_n4mb_information.presence) {
+            if (mbs_sess) {
                 // mbs_sess was already resolved from the same SEID at the top of this function, by the
                 // same two-way lookup, and nothing reassigns it in between.
                 smf_n4mb_handle_session_establishment_response(mbs_sess, xact,
