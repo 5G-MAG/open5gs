@@ -2849,6 +2849,14 @@ void amf_namf_handle_mbs_broadcast_ran_response(amf_mbs_context_t *mbs_context, 
     {
         amf_mbs_gnb_t *involved = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
 
+        // Each gNB counts once per request: a response from a gNB that was not sent the request, or a second
+        // response to the same request, is not one of the responses the consumer waits for.
+        if (!involved || !involved->awaiting) {
+            ogs_warn("%s: response from gNB %i, which has no request outstanding, ignored", operation, gnb->gnb_id);
+            return;
+        }
+        involved->awaiting = false;
+
         // A failed Setup means the node does not serve the session (it is then not one of "all the NG-RANs serving
         // the Broadcast MBS session", TS 29.518 cl. 5.6.2.5); any success, or a failure of a Modification, leaves
         // it as it was.

@@ -80,7 +80,8 @@ amf_mbs_n2_info_t *amf_mbs_n2_info_create(amf_gnb_t *gnb,
     return n2_info;
 }
 
-/* Records that \p gnb has been sent a Broadcast Session Setup or Modification Request of the context (once) */
+/* Records that \p gnb has been sent a Broadcast Session Setup or Modification Request of the context, which it has not
+ * answered yet (the record is made once) */
 void amf_mbs_context_involve_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *gnb)
 {
     amf_mbs_gnb_t *involved = NULL;
@@ -89,8 +90,10 @@ void amf_mbs_context_involve_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *
     ogs_assert(gnb);
 
     ogs_list_for_each(&amf_mbs_context->involved_gnb_list, involved) {
-        if (involved->gnb_id == gnb->id)
+        if (involved->gnb_id == gnb->id) {
+            involved->awaiting = true;
             return;
+        }
     }
 
     involved = ogs_calloc(1, sizeof(*involved));
@@ -99,6 +102,7 @@ void amf_mbs_context_involve_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *
         return;
     }
     involved->gnb_id = gnb->id;
+    involved->awaiting = true;
     ogs_list_add(&amf_mbs_context->involved_gnb_list, involved);
 }
 

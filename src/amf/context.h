@@ -869,6 +869,8 @@ typedef struct amf_mbs_gnb_s {
 
     ogs_pool_id_t gnb_id;   /* amf_gnb_t.id; the gNB may have disconnected since */
 
+    /* A Setup or Modification Request has been sent to the gNB and it has not answered it yet. */
+    bool awaiting;
     /* The gNB answered the last Setup Request with a failure and no later request succeeded: it does not serve the
      * session. */
     bool setup_failed;
