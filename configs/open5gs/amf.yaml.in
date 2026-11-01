@@ -240,3 +240,8 @@ amf:
 #
 #  o Relative Capacity
 #  relative_capacity: 100
+#
+#  o Broadcast MBS sessions: when an NG-RAN asks for the release of a session (BROADCAST SESSION RELEASE REQUIRED),
+#    also report it to the MB-SMF as an operation event, NG_RAN_REQUIRED_RELEASE (default: false)
+#  mbs:
+#    report_required_release: true

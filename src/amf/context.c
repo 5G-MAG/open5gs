@@ -334,6 +334,17 @@ int amf_context_parse_config(void)
                 if (!strcmp(amf_key, "relative_capacity")) {
                     const char *v = ogs_yaml_iter_value(&amf_iter);
                     if (v) self.relative_capacity = atoi(v);
+                } else if (!strcmp(amf_key, "mbs")) {
+                    ogs_yaml_iter_t mbs_iter;
+                    ogs_yaml_iter_recurse(&amf_iter, &mbs_iter);
+                    while (ogs_yaml_iter_next(&mbs_iter)) {
+                        const char *mbs_key = ogs_yaml_iter_key(&mbs_iter);
+                        ogs_assert(mbs_key);
+                        if (!strcmp(mbs_key, "report_required_release"))
+                            self.mbs_report_required_release = ogs_yaml_iter_bool(&mbs_iter);
+                        else
+                            ogs_warn("unknown key `%s`", mbs_key);
+                    }
                 } else if (!strcmp(amf_key, "ngap")) {
                     ogs_yaml_iter_t ngap_iter;
                     ogs_yaml_iter_recurse(&amf_iter, &ngap_iter);

@@ -2187,7 +2187,7 @@ void amf_namf_handle_mbs_broadcast_response_timeout(uint32_t mbs_context_index)
     amf_sbi_send_mbs_broadcast_context_status_notify(mbs_context, &n2_info_list,
             mbs_context->response_window_is_update ?
                 OpenAPI_operation_status_MBS_SESSION_UPDATE_INCOMPLETE :
-                OpenAPI_operation_status_MBS_SESSION_START_INCOMPLETE, false);
+                OpenAPI_operation_status_MBS_SESSION_START_INCOMPLETE, false, NULL);
 }
 
 int amf_namf_handle_mbs_broadcast_context_create(
@@ -2882,7 +2882,7 @@ void amf_namf_handle_mbs_broadcast_ran_response(amf_mbs_context_t *mbs_context, 
         ogs_list_init(&n2_info_list);
         if (n2_info)
             ogs_list_add(&n2_info_list, n2_info);
-        amf_sbi_send_mbs_broadcast_context_status_notify(mbs_context, &n2_info_list, operation_status, false);
+        amf_sbi_send_mbs_broadcast_context_status_notify(mbs_context, &n2_info_list, operation_status, false, NULL);
         amf_mbs_n2_info_remove_all(&n2_info_list);
         return;
     }
@@ -3026,7 +3026,7 @@ void amf_namf_send_mbs_broadcast_context_release_response(amf_mbs_context_t *mbs
         ogs_list_init(&n2_info_list);
         ogs_list_add(&n2_info_list, n2_info);
         amf_sbi_send_mbs_broadcast_context_status_notify(
-                mbs_context, &n2_info_list, OpenAPI_operation_status_NULL, false);
+                mbs_context, &n2_info_list, OpenAPI_operation_status_NULL, false, NULL);
         amf_mbs_n2_info_remove_all(&n2_info_list);
     }
 
@@ -3054,18 +3054,21 @@ static void amf_mbs_context_notify_required_release(amf_mbs_context_t *mbs_conte
 {
     ogs_list_t n2_info_list;
     amf_mbs_n2_info_t *n2_info = NULL;
+    bool report;
 
     if (gnb && transfer && transfer->size > 0)
         n2_info = amf_mbs_n2_info_create(gnb, OpenAPI_ngap_ie_type_MBS_SES_REL_RSP, transfer->buf, transfer->size);
 
-    if (!n2_info && !released_ind)
+    report = amf_self()->mbs_report_required_release && gnb;
+
+    if (!n2_info && !released_ind && !report)
         return;
 
     ogs_list_init(&n2_info_list);
     if (n2_info)
         ogs_list_add(&n2_info_list, n2_info);
     amf_sbi_send_mbs_broadcast_context_status_notify(
-            mbs_context, &n2_info_list, OpenAPI_operation_status_NULL, released_ind);
+            mbs_context, &n2_info_list, OpenAPI_operation_status_NULL, released_ind, report ? gnb : NULL);
     amf_mbs_n2_info_remove_all(&n2_info_list);
 }
 

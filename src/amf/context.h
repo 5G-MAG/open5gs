@@ -107,6 +107,11 @@ typedef struct amf_context_s {
     /* NGSetupResponse */
     uint8_t         relative_capacity;
 
+    /* amf.mbs.report_required_release: report a release that an NG-RAN asked for to the MB-SMF in an operationEvents
+     * attribute (TS 29.518 V18.14.0 cl. 5.6.2.5: "based on operator's policy, the AMF may: report ..."); false
+     * unless configured. */
+    bool            mbs_report_required_release;
+
     /* Generator for unique identification */
     uint64_t        amf_ue_ngap_id; /* amf_ue_ngap_id generator */
 

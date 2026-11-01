@@ -162,7 +162,7 @@ static void test_status_notify(void)
     ogs_list_init(&infos);
 
     /* location independent, nothing to carry, no status: only the session ID */
-    request = amf_namf_build_mbs_broadcast_context_status_notify(&ctx, &infos, OpenAPI_operation_status_NULL, false);
+    request = amf_namf_build_mbs_broadcast_context_status_notify(&ctx, &infos, OpenAPI_operation_status_NULL, false, NULL);
     CHECK(request != NULL);
     if (request) {
         CHECK_STR("http://127.0.0.30:9999/notify", request->h.uri);
@@ -176,7 +176,7 @@ static void test_status_notify(void)
 
     /* TS 29.518 V18.14.0 Table 6.5.6.2.4-1 releasedInd: present and "true" only when asked */
     request = amf_namf_build_mbs_broadcast_context_status_notify(
-            &ctx, &infos, OpenAPI_operation_status_NULL, true);
+            &ctx, &infos, OpenAPI_operation_status_NULL, true, NULL);
     CHECK(request != NULL);
     if (request) {
         CHECK(strstr(body_of(request), "\"releasedInd\":true") != NULL);
@@ -184,12 +184,40 @@ static void test_status_notify(void)
         ogs_sbi_request_free(request);
     }
 
+    /* TS 29.518 V18.14.0 cl. 5.6.2.5: an NG-RAN that asked for the release is reported as an NG_RAN_EVENT with an
+     * ngranFailureEvent NG_RAN_REQUIRED_RELEASE, with the gNB ID (Table 6.5.6.2.9-1: ngranId M) */
+    request = amf_namf_build_mbs_broadcast_context_status_notify(
+            &ctx, &infos, OpenAPI_operation_status_NULL, false, gnb);
+    CHECK(request != NULL);
+    if (request) {
+        CHECK(strstr(body_of(request), "\"opEventType\":\"NG_RAN_EVENT\"") != NULL);
+        CHECK(strstr(body_of(request), "\"ngranFailureIndication\":\"NG_RAN_REQUIRED_RELEASE\"") != NULL);
+        CHECK(strstr(body_of(request), "\"gNBValue\":\"000400\"") != NULL);
+        CHECK(strstr(body_of(request), "\"bitLength\":22") != NULL);
+        CHECK(strstr(body_of(request), "releasedInd") == NULL);
+        ogs_sbi_request_free(request);
+    }
+
+    /* no gNB ID known: no event rather than an event without its mandatory identity */
+    {
+        amf_gnb_t *unknown = make_gnb(0, 0);
+
+        request = amf_namf_build_mbs_broadcast_context_status_notify(
+                &ctx, &infos, OpenAPI_operation_status_NULL, false, unknown);
+        CHECK(request != NULL);
+        if (request) {
+            CHECK(strstr(body_of(request), "operationEvents") == NULL);
+            ogs_sbi_request_free(request);
+        }
+        ogs_free(unknown);
+    }
+
     /* location dependent, one container, update complete */
     ctx.location_dependent = true;
     ctx.area_session_id = 13;
     ogs_list_add(&infos, amf_mbs_n2_info_create(gnb, OpenAPI_ngap_ie_type_MBS_SES_FAIL, t, sizeof(t)));
     request = amf_namf_build_mbs_broadcast_context_status_notify(
-            &ctx, &infos, OpenAPI_operation_status_MBS_SESSION_UPDATE_COMPLETE, false);
+            &ctx, &infos, OpenAPI_operation_status_MBS_SESSION_UPDATE_COMPLETE, false, NULL);
     CHECK(request != NULL);
     if (request) {
         CHECK(strstr(body_of(request), "\"areaSessionId\":13") != NULL);
@@ -204,7 +232,7 @@ static void test_status_notify(void)
     /* the request has no target without the consumer's notifyUri */
     ctx.notify_uri = NULL;
     CHECK(amf_namf_build_mbs_broadcast_context_status_notify(
-                &ctx, &infos, OpenAPI_operation_status_NULL, false) == NULL);
+                &ctx, &infos, OpenAPI_operation_status_NULL, false, NULL) == NULL);
     ogs_free(gnb);
 }
 
