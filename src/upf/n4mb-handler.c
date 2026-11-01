@@ -499,11 +499,9 @@ void upf_n4mb_handle_session_establishment_request(
 
     for (i = 0; i < OGS_MAX_NUM_OF_PDR; i++) {
         // NOTE (borieher): Put sereq_flags to NULL?
-        uint8_t offending_ie_value_tmp = 0;
         created_pdr[i] = ogs_pfcp_handle_create_pdr(&mbs_sess->pfcp,
                 &req->create_pdr[i], NULL,
-                &cause_value, &offending_ie_value_tmp);
-        offending_ie_value = offending_ie_value_tmp;
+                &cause_value, &offending_ie_value);
         if (created_pdr[i] == NULL)
             break;
     }
@@ -513,13 +511,9 @@ void upf_n4mb_handle_session_establishment_request(
         goto cleanup;
 
     for (i = 0; i < OGS_MAX_NUM_OF_FAR; i++) {
-        uint8_t offending_ie_value_tmp = 0;
         if (ogs_pfcp_handle_create_far(&mbs_sess->pfcp, &req->create_far[i],
-                    &cause_value, &offending_ie_value_tmp) == NULL) {
-            offending_ie_value = offending_ie_value_tmp;
+                    &cause_value, &offending_ie_value) == NULL)
             break;
-        }
-        offending_ie_value = offending_ie_value_tmp;
     }
     if (cause_value != OGS_PFCP_CAUSE_REQUEST_ACCEPTED)
         goto cleanup;
@@ -542,13 +536,9 @@ void upf_n4mb_handle_session_establishment_request(
     }
 
     for (i = 0; i < OGS_MAX_NUM_OF_QER; i++) {
-        uint8_t offending_ie_value_tmp = 0;
         if (ogs_pfcp_handle_create_qer(&mbs_sess->pfcp, &req->create_qer[i],
-                    &cause_value, &offending_ie_value_tmp) == NULL) {
-            offending_ie_value = offending_ie_value_tmp;
+                    &cause_value, &offending_ie_value) == NULL)
             break;
-        }
-        offending_ie_value = offending_ie_value_tmp;
     }
     if (cause_value != OGS_PFCP_CAUSE_REQUEST_ACCEPTED)
         goto cleanup;

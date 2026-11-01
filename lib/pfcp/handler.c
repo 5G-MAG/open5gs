@@ -355,7 +355,7 @@ bool ogs_pfcp_up_handle_error_indication(
 ogs_pfcp_pdr_t *ogs_pfcp_handle_create_pdr(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_create_pdr_t *message,
         ogs_pfcp_sereq_flags_t *sereq_flags,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     ogs_pfcp_pdr_t *pdr = NULL;
     ogs_pfcp_far_t *far = NULL;
@@ -697,7 +697,7 @@ ogs_pfcp_pdr_t *ogs_pfcp_handle_create_pdr(ogs_pfcp_sess_t *sess,
 
 ogs_pfcp_pdr_t *ogs_pfcp_handle_created_pdr(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_created_pdr_t *message,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     ogs_pfcp_pdr_t *pdr = NULL;
 
@@ -748,7 +748,7 @@ ogs_pfcp_pdr_t *ogs_pfcp_handle_created_pdr(ogs_pfcp_sess_t *sess,
 
 ogs_pfcp_pdr_t *ogs_pfcp_handle_update_pdr(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_update_pdr_t *message,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     ogs_pfcp_pdr_t *pdr = NULL;
     int i, len;
@@ -933,7 +933,7 @@ ogs_pfcp_pdr_t *ogs_pfcp_handle_update_pdr(ogs_pfcp_sess_t *sess,
 
 bool ogs_pfcp_handle_remove_pdr(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_remove_pdr_t *message,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     ogs_pfcp_pdr_t *pdr = NULL;
 
@@ -964,7 +964,7 @@ bool ogs_pfcp_handle_remove_pdr(ogs_pfcp_sess_t *sess,
 
 ogs_pfcp_far_t *ogs_pfcp_handle_create_far(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_create_far_t *message,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     ogs_pfcp_far_t *far = NULL;
 
@@ -1106,7 +1106,7 @@ ogs_pfcp_far_t *ogs_pfcp_handle_create_far(ogs_pfcp_sess_t *sess,
 
 ogs_pfcp_far_t *ogs_pfcp_handle_update_far_flags(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_update_far_t *message,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     ogs_pfcp_far_t *far = NULL;
 
@@ -1144,7 +1144,7 @@ ogs_pfcp_far_t *ogs_pfcp_handle_update_far_flags(ogs_pfcp_sess_t *sess,
 
 ogs_pfcp_far_t *ogs_pfcp_handle_update_far(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_update_far_t *message,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     ogs_pfcp_far_t *far = NULL;
 
@@ -1217,7 +1217,7 @@ ogs_pfcp_far_t *ogs_pfcp_handle_update_far(ogs_pfcp_sess_t *sess,
 
 bool ogs_pfcp_handle_remove_far(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_remove_far_t *message,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     ogs_pfcp_far_t *far = NULL;
 
@@ -1248,7 +1248,7 @@ bool ogs_pfcp_handle_remove_far(ogs_pfcp_sess_t *sess,
 
 ogs_pfcp_qer_t *ogs_pfcp_handle_create_qer(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_create_qer_t *message,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     ogs_pfcp_qer_t *qer = NULL;
 
@@ -1305,7 +1305,7 @@ ogs_pfcp_qer_t *ogs_pfcp_handle_create_qer(ogs_pfcp_sess_t *sess,
 
 ogs_pfcp_qer_t *ogs_pfcp_handle_update_qer(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_update_qer_t *message,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     ogs_pfcp_qer_t *qer = NULL;
 
@@ -1340,7 +1340,7 @@ ogs_pfcp_qer_t *ogs_pfcp_handle_update_qer(ogs_pfcp_sess_t *sess,
 
 bool ogs_pfcp_handle_remove_qer(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_remove_qer_t *message,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     ogs_pfcp_qer_t *qer = NULL;
 
@@ -1371,7 +1371,7 @@ bool ogs_pfcp_handle_remove_qer(ogs_pfcp_sess_t *sess,
 
 ogs_pfcp_bar_t *ogs_pfcp_handle_create_bar(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_create_bar_t *message,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     ogs_assert(message);
     ogs_assert(sess);
@@ -1399,7 +1399,7 @@ ogs_pfcp_bar_t *ogs_pfcp_handle_create_bar(ogs_pfcp_sess_t *sess,
 
 bool ogs_pfcp_handle_remove_bar(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_remove_bar_t *message,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     ogs_assert(sess);
     ogs_assert(message);
@@ -1426,7 +1426,7 @@ bool ogs_pfcp_handle_remove_bar(ogs_pfcp_sess_t *sess,
 
 ogs_pfcp_urr_t *ogs_pfcp_handle_create_urr(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_create_urr_t *message,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     int16_t decoded;
     ogs_pfcp_urr_t *urr = NULL;
@@ -1543,7 +1543,7 @@ ogs_pfcp_urr_t *ogs_pfcp_handle_create_urr(ogs_pfcp_sess_t *sess,
 
 ogs_pfcp_urr_t *ogs_pfcp_handle_update_urr(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_update_urr_t *message,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     int16_t decoded;
     ogs_pfcp_urr_t *urr = NULL;
@@ -1650,7 +1650,7 @@ ogs_pfcp_urr_t *ogs_pfcp_handle_update_urr(ogs_pfcp_sess_t *sess,
 
 bool ogs_pfcp_handle_remove_urr(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_remove_urr_t *message,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     ogs_pfcp_urr_t *urr = NULL;
 

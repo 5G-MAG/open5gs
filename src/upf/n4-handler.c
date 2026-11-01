@@ -23,7 +23,7 @@
 #include "n4-handler.h"
 
 static void upf_n4_handle_create_urr(upf_sess_t *sess, ogs_pfcp_tlv_create_urr_t *create_urr_arr,
-                              uint8_t *cause_value, uint8_t *offending_ie_value)
+                              uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     int i;
     ogs_pfcp_urr_t *urr;
@@ -52,7 +52,7 @@ void upf_n4_handle_session_establishment_request(
     ogs_pfcp_pdr_t *created_pdr[OGS_MAX_NUM_OF_PDR];
     int num_of_created_pdr = 0;
     uint8_t cause_value = 0;
-    uint8_t offending_ie_value = 0;
+    uint16_t offending_ie_value = 0;
     int i;
 
     ogs_pfcp_sereq_flags_t sereq_flags;
@@ -232,7 +232,7 @@ void upf_n4_handle_session_modification_request(
     ogs_pfcp_pdr_t *created_pdr[OGS_MAX_NUM_OF_PDR];
     int num_of_created_pdr = 0;
     uint8_t cause_value = 0;
-    uint8_t offending_ie_value = 0;
+    uint16_t offending_ie_value = 0;
     int i;
 
     ogs_assert(xact);

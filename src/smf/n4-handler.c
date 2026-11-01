@@ -149,7 +149,7 @@ uint8_t smf_5gc_n4_handle_session_establishment_response(
     int i;
 
     uint8_t cause_value = OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
-    uint8_t offending_ie_value = 0;
+    uint16_t offending_ie_value = 0;
 
     ogs_pfcp_f_seid_t *up_f_seid = NULL;
 
@@ -295,7 +295,7 @@ void smf_5gc_n4_handle_session_modification_response(
         int i;
 
         uint8_t pfcp_cause_value = OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
-        uint8_t offending_ie_value = 0;
+        uint16_t offending_ie_value = 0;
 
         ogs_pfcp_pdr_t *pdr = NULL;
         ogs_pfcp_far_t *far = NULL;
@@ -763,7 +763,7 @@ uint8_t smf_epc_n4_handle_session_establishment_response(
 
     if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED) {
         int i;
-        uint8_t offending_ie_value = 0;
+        uint16_t offending_ie_value = 0;
 
         ogs_pfcp_pdr_t *pdr = NULL;
         ogs_pfcp_far_t *far = NULL;
@@ -844,7 +844,7 @@ void smf_epc_n4_handle_session_modification_response(
     uint64_t flags = 0;
 
     uint8_t pfcp_cause_value = OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
-    uint8_t offending_ie_value = 0;
+    uint16_t offending_ie_value = 0;
 
     ogs_pfcp_pdr_t *pdr = NULL;
     ogs_pfcp_far_t *far = NULL;

@@ -78,7 +78,7 @@ uint8_t smf_n4mb_handle_session_establishment_response(
     int r;
 
     uint8_t cause_value = OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
-    uint8_t offending_ie_value = 0;
+    uint16_t offending_ie_value = 0;
 
     /* SBI response structures */
     OpenAPI_create_rsp_data_t *CreateRspData = NULL;

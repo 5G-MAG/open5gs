@@ -209,7 +209,7 @@ void sgwc_sxa_handle_session_establishment_response(
         int i;
 
         uint8_t pfcp_cause_value = OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
-        uint8_t offending_ie_value = 0;
+        uint16_t offending_ie_value = 0;
 
         sgwc_tunnel_t *tunnel = NULL;
         ogs_pfcp_pdr_t *pdr = NULL;
@@ -544,7 +544,7 @@ void sgwc_sxa_handle_session_modification_response(
 
     if (cause_value == OGS_GTP2_CAUSE_REQUEST_ACCEPTED) {
         uint8_t pfcp_cause_value = OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
-        uint8_t offending_ie_value = 0;
+        uint16_t offending_ie_value = 0;
 
         sgwc_tunnel_t *tunnel = NULL;
         ogs_pfcp_pdr_t *pdr = NULL;
