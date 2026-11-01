@@ -18,6 +18,7 @@
  */
 #include <inttypes.h>
 #include <ctype.h>
+#include <limits.h>
 
 #include "context.h"
 #include "gtp-path.h"
@@ -1083,6 +1084,21 @@ int smf_context_parse_config(void)
                         ogs_free(self.nid);
                     self.nid = ogs_strdup(nid);
                     ogs_assert(self.nid);
+                } else if (!strcmp(smf_key, "maxResponseTime")) {
+                    /* The maximum response time of a Namf_MBSBroadcast ContextCreate, which the MB-SMF "may
+                     * include" (TS 29.518 V18.14.0 cl. 5.6.2.2). No clause or documented default names a
+                     * value (rule 12), so it is the operator's: seconds, DurationSec of TS 29.571. */
+                    const char *value = ogs_yaml_iter_value(&smf_iter);
+                    char *end = NULL;
+                    long seconds = value ? strtol(value, &end, 10) : 0;
+
+                    if (!value || !*value || *end || seconds <= 0 || seconds > INT_MAX) {
+                        ogs_error("`smf.maxResponseTime` [%s] is not a positive number of seconds",
+                                value ? value : "");
+                        return OGS_ERROR;
+                    }
+                    self.has_mbs_max_response_time = true;
+                    self.mbs_max_response_time = (int)seconds;
                 } else if (!strcmp(smf_key, "mbsServiceArea")) {
                     /* TS 29.532 V18.6.0 cl.5.3.2.2.1/5.3.2.3.1 step 2b: this MB-SMF instance's own
                      * configured coverage, used by smf_mbs_service_area_reduce(). No clause,
@@ -3481,6 +3497,17 @@ char *smf_tmgi_gen_expiration_time(int validity_seconds)
         ogs_time_now() + ogs_time_from_sec(validity_seconds));
 
     return expiration_time;
+}
+
+/* The maximum response time configured for a Namf_MBSBroadcast ContextCreate, if any. */
+bool smf_mbs_max_response_time(int *seconds)
+{
+    ogs_assert(seconds);
+
+    if (!self.has_mbs_max_response_time)
+        return false;
+    *seconds = self.mbs_max_response_time;
+    return true;
 }
 
 /* TS 23.003 V18.8.0 clause 12.7.1: "The NID shall consist of 11 hexadecimal digits"; TS 29.571 V18.12.0

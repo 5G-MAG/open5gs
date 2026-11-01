@@ -131,6 +131,11 @@ typedef struct smf_context_s {
      * which has none. TS 23.003 V18.8.0 cl. 30.2: "In a SNPN (Stand-alone Non-Public Network), TMGI is
      * used together with NID (Network Identifier) to identify an MBS Session." */
     char *nid;
+
+    /* Maximum response time the MB-SMF asks the AMF to apply to a Namf_MBSBroadcast ContextCreate (smf.yaml
+     * `maxResponseTime`, seconds); unset when not configured, and then not sent. */
+    bool has_mbs_max_response_time;
+    int mbs_max_response_time;
 } smf_context_t;
 
 typedef struct smf_gtp_node_s {
@@ -753,6 +758,7 @@ bool smf_nid_is_valid(const char *nid);
 OpenAPI_snssai_t *smf_mbs_sess_build_snssai(const smf_mbs_sess_t *mbs_sess);
 OpenAPI_list_t *smf_mbs_sess_build_fsa_id_list(const smf_mbs_sess_t *mbs_sess);
 const char *smf_own_nid(void);
+bool smf_mbs_max_response_time(int *seconds);
 ogs_tmgi_t *smf_tmgi_allocate(char *expiration_time);
 char *smf_tmgi_pick_mbs_service_id(
         ogs_list_t *tmgi_list, const ogs_plmn_id_t *plmn_id, uint32_t start);

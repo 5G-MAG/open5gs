@@ -353,8 +353,24 @@ ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_create_request(
                     ogs_s_nssai_sd_to_string(self_s_nssai->sd) : NULL);
     }
 
-    ContextCreateReqData = OpenAPI_context_create_req_data_create(mbs_session_id, mbs_service_area_info_list,
-        mbs_service_area, n2_mbs_sm_info, notify_uri, NULL, 0, snssai, NULL, NULL);
+    /* TS 29.518 V18.14.0 cl. 5.6.2.2: "The NF Service Consumer may also include the maxResponseTime IE" and "The
+     * NF Service Consumer may also include the MB-SMF instance ID and MB-SMF service instance ID to enable the AMF
+     * subscribing to the MB-SMF status notifications." The time is the operator's setting (smf.maxResponseTime);
+     * the instance ID is this SMF's, the service instance ID that of its Nmbsmf_MBSSession service. */
+    {
+        int max_response_time = 0;
+        bool has_max_response_time = smf_mbs_max_response_time(&max_response_time);
+        ogs_sbi_nf_service_t *mbs_session_service = NULL;
+
+        nf_instance = ogs_sbi_self()->nf_instance;
+        ogs_assert(nf_instance);
+        mbs_session_service = ogs_sbi_nf_service_find_by_name(nf_instance, (char *)OGS_SBI_SERVICE_NAME_NMBSMF_MBS_SESSION);
+
+        ContextCreateReqData = OpenAPI_context_create_req_data_create(mbs_session_id, mbs_service_area_info_list,
+            mbs_service_area, n2_mbs_sm_info, notify_uri, has_max_response_time, max_response_time, snssai,
+            nf_instance->id ? ogs_strdup(nf_instance->id) : NULL,
+            (mbs_session_service && mbs_session_service->id) ? ogs_strdup(mbs_session_service->id) : NULL);
+    }
 
     message.ContextCreateReqData = ContextCreateReqData;
 

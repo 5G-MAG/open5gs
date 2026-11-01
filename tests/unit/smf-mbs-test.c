@@ -688,6 +688,49 @@ static void test_fsa_id_list(void)
     smf_mbs_sess_release(mbs_sess);
 }
 
+/* TS 29.518 V18.14.0 cl. 5.6.2.2: the ContextCreate "may also include the maxResponseTime IE" and "the MB-SMF
+ * instance ID and MB-SMF service instance ID". */
+static void test_context_create_optional_ids(void)
+{
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    ogs_sbi_nf_instance_t *self_nf = ogs_sbi_self()->nf_instance;
+    ogs_sbi_nf_service_t *service;
+    ogs_sbi_request_t *request;
+    char expected[200];
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+
+    /* no service registered yet, no time configured: the SMF's instance ID only */
+    request = smf_namf_build_mbs_broadcast_context_create_request(mbs_sess, NULL);
+    CHECK(request != NULL);
+    if (request) {
+        snprintf(expected, sizeof(expected), "\"mbsmfId\":\"%s\"", self_nf->id);
+        CHECK(request->http.content && strstr(request->http.content, expected) != NULL);
+        CHECK(request->http.content && strstr(request->http.content, "mbsmfServiceInstId") == NULL);
+        CHECK(request->http.content && strstr(request->http.content, "maxResponseTime") == NULL);
+        ogs_sbi_request_free(request);
+    }
+
+    service = ogs_sbi_nf_service_build_default(self_nf, (char *)OGS_SBI_SERVICE_NAME_NMBSMF_MBS_SESSION);
+    CHECK(service != NULL);
+    smf_self()->has_mbs_max_response_time = true;
+    smf_self()->mbs_max_response_time = 7;
+    request = smf_namf_build_mbs_broadcast_context_create_request(mbs_sess, NULL);
+    CHECK(request != NULL);
+    if (request && service) {
+        snprintf(expected, sizeof(expected), "\"mbsmfServiceInstId\":\"%s\"", service->id);
+        CHECK(request->http.content && strstr(request->http.content, expected) != NULL);
+        CHECK(request->http.content && strstr(request->http.content, "\"maxResponseTime\":7") != NULL);
+        ogs_sbi_request_free(request);
+    }
+    smf_self()->has_mbs_max_response_time = false;
+    if (service)
+        ogs_sbi_nf_service_remove(service);
+
+    smf_mbs_sess_release(mbs_sess);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -704,6 +747,7 @@ int main(void)
     test_create_outcomes();
     test_reduced_area_is_used();
     test_fsa_id_list();
+    test_context_create_optional_ids();
 
     printf("smf-mbs: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
