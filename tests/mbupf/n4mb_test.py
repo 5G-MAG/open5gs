@@ -2069,6 +2069,72 @@ def t_U01_mbs_session_identifier_is_mandatory():
         assert cause(r) == CAUSE_MANDATORY_MISSING and offending(r) == T_MBS_ID, '%s: cause %s offending %s' % (what, cause(r), offending(r))
 
 
+T_SDF = 23
+
+
+def sdf(desc):
+    d = desc.encode()
+    return ie(T_SDF, b'\x01\x00' + struct.pack('>H', len(d)) + d)
+
+
+def tunnel_packet_qfi(r, dport):
+    """Sends a packet for a group port into the session's ingress tunnel; the QFI of the G-PDU on the N3mb group, or
+    None if nothing came."""
+    lit = created_te(r)[T_LIT]
+    lst = N3mbListener(mc_group_of(r))
+    try:
+        sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sk.sendto(ip_packet(dport=dport), (socket.inet_ntoa(lit[3:7]), struct.unpack('>H', lit[1:3])[0]))
+        sk.close()
+        pk = lst.packets()
+    finally:
+        lst.close()
+    if not pk:
+        return None
+    g = gtpu_parse(pk[0])
+    return g['ext'][0][1][1] & 0x3f if g['ext'] else None
+
+
+def sdf_flow_pdr(n, precedence, dport, te=b'\x01'):
+    pdi = [ie(T_SRC_IF, b'\x01'), ie(T_TE_ID, te), sdf('permit out 17 from 10.46.0.1 to 232.1.1.1 %d' % dport)]
+    return ie(T_CREATE_PDR, [ie(T_PDR_ID, struct.pack('>H', n)), ie(T_PRECEDENCE, struct.pack('>I', precedence)), ie(T_PDI, pdi),
+                             ie(T_FAR_ID, struct.pack('>I', n)), ie(T_QER_ID, struct.pack('>I', n))])
+
+
+@test
+def t_sdf_filter_that_cannot_be_compiled():
+    """A flow description that is not valid is a semantically incorrect IE (cl. 7.6.8); the daemon must not stop."""
+    for desc in ('garbage', 'permit', '', 'deny out 17 from 10.46.0.1 to 232.1.1.1 5000'):
+        bad = ie(T_CREATE_PDR, [ie(T_PDR_ID, struct.pack('>H', 1)), ie(T_PRECEDENCE, struct.pack('>I', 100)),
+                                ie(T_PDI, [ie(T_SRC_IF, b'\x01'), ie(T_TE_ID, b'\x01'), sdf(desc)]),
+                                ie(T_FAR_ID, struct.pack('>I', 1)), ie(T_QER_ID, struct.pack('>I', 1))])
+        r = U.establish([node_id(), fseid(0xf111), bad, far(), qer(), ie(T_CREATE_TE, [ie(T_TE_ID, b'\x01'), lit_choose()]),
+                         n4mb_ctrl(flags=0x01)])
+        assert U.alive(), 'the daemon stopped with the flow description %r' % desc
+        assert r is not None and cause(r) == CAUSE_MANDATORY_INCORRECT and offending(r) == T_SDF, \
+            '%r: cause %s offending %s' % (desc, cause(r) if r else None, offending(r) if r else None)
+    # an ordinary N4 session (no MBS Session N4mb Control Information) is served by the same handlers
+    plain = ie(T_CREATE_PDR, [ie(T_PDR_ID, struct.pack('>H', 1)), ie(T_PRECEDENCE, struct.pack('>I', 100)),
+                              ie(T_PDI, [ie(T_SRC_IF, b'\x01'), sdf('garbage')]), ie(T_FAR_ID, struct.pack('>I', 1))])
+    r = U.establish([node_id(), fseid(0xf113), plain, ie(T_CREATE_FAR, [ie(T_FAR_ID, struct.pack('>I', 1)), ie(T_APPLY, struct.pack('>H', 0x0002))])])
+    assert U.alive(), 'the daemon stopped (N4 session)'
+    assert r is not None and cause(r) == CAUSE_MANDATORY_INCORRECT and offending(r) == T_SDF, \
+        'N4 session: cause %s offending %s' % (cause(r) if r else None, offending(r) if r else None)
+    r = U.establish(smf_session(0xf112))
+    s = accepted(r, 'session')
+    try:
+        m = modify(s, ie(T_CREATE_PDR, [ie(T_PDR_ID, struct.pack('>H', 2)), ie(T_PRECEDENCE, struct.pack('>I', 10)),
+                                        ie(T_PDI, [ie(T_SRC_IF, b'\x01'), ie(T_TE_ID, b'\x01'), sdf('garbage')]),
+                                        ie(T_FAR_ID, struct.pack('>I', 2)), ie(T_QER_ID, struct.pack('>I', 2))]),
+                   far(far_id=2), qer(qer_id=2, qfi=2))
+        assert U.alive(), 'the daemon stopped (modification)'
+        assert m is not None and cause(m) == CAUSE_MANDATORY_INCORRECT and offending(m) == T_SDF, \
+            'modification: cause %s offending %s' % (cause(m) if m else None, offending(m) if m else None)
+        assert tunnel_packet_qfi(r, 5000) == 1, 'a refused request changed the session'
+    finally:
+        U.delete(s)
+
+
 # E-TESTS-BELOW
 
 

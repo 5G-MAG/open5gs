@@ -355,6 +355,42 @@ bool ogs_pfcp_up_handle_error_indication(
     return true;
 }
 
+/*
+ * The Flow Descriptions of the SDF Filters of a PDI can be compiled. Nothing is changed: a request that is
+ * refused for one has to leave the PFCP session as it was. Returns OGS_OK, or OGS_ERROR for the first filter
+ * whose Flow Description is not valid (TS 29.244 cl. 7.6.8: semantically incorrect).
+ */
+int ogs_pfcp_check_sdf_filters(const ogs_pfcp_tlv_pdi_t *pdi)
+{
+    int i, len;
+
+    ogs_assert(pdi);
+
+    for (i = 0; i < OGS_MAX_NUM_OF_FLOW_IN_PDR; i++) {
+        ogs_pfcp_sdf_filter_t sdf_filter;
+        ogs_ipfw_rule_t ipfw;
+        char *flow_description;
+        int rv;
+
+        if (pdi->sdf_filter[i].presence == 0)
+            break;
+
+        len = ogs_pfcp_parse_sdf_filter(&sdf_filter, (ogs_tlv_octet_t *)&pdi->sdf_filter[i]);
+        if (pdi->sdf_filter[i].len != len || !sdf_filter.fd)
+            continue;   /* the handlers skip these */
+
+        flow_description = ogs_calloc(1, sdf_filter.flow_description_len + 1);
+        ogs_assert(flow_description);
+        ogs_cpystrn(flow_description, sdf_filter.flow_description, sdf_filter.flow_description_len + 1);
+        rv = ogs_ipfw_compile_rule(&ipfw, flow_description);
+        ogs_free(flow_description);
+        if (rv != OGS_OK)
+            return OGS_ERROR;
+    }
+
+    return OGS_OK;
+}
+
 ogs_pfcp_pdr_t *ogs_pfcp_handle_create_pdr(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_create_pdr_t *message,
         ogs_pfcp_sereq_flags_t *sereq_flags,
@@ -491,9 +527,13 @@ ogs_pfcp_pdr_t *ogs_pfcp_handle_create_pdr(ogs_pfcp_sess_t *sess,
                     sdf_filter.flow_description_len+1);
 
             rv = ogs_ipfw_compile_rule(&rule->ipfw, flow_description);
-            ogs_assert(rv == OGS_OK);
-
             ogs_free(flow_description);
+            if (rv != OGS_OK) {
+                ogs_error("Invalid Flow Description in the SDF Filter");
+                *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+                *offending_ie_value = OGS_PFCP_SDF_FILTER_TYPE;
+                return NULL;
+            }
 /*
  *
  * TS29.244 Ch 5.2.1A.2A
@@ -864,9 +904,13 @@ ogs_pfcp_pdr_t *ogs_pfcp_handle_update_pdr(ogs_pfcp_sess_t *sess,
                         sdf_filter.flow_description_len+1);
 
                 rv = ogs_ipfw_compile_rule(&rule->ipfw, flow_description);
-                ogs_assert(rv == OGS_OK);
-
                 ogs_free(flow_description);
+                if (rv != OGS_OK) {
+                    ogs_error("Invalid Flow Description in the SDF Filter");
+                    *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+                    *offending_ie_value = OGS_PFCP_SDF_FILTER_TYPE;
+                    return NULL;
+                }
     /*
      *
      * TS29.244 Ch 5.2.1A.2A

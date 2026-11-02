@@ -52,6 +52,7 @@ bool ogs_pfcp_up_handle_pdr(
 bool ogs_pfcp_up_handle_error_indication(
         ogs_pfcp_far_t *far, ogs_pfcp_user_plane_report_t *report);
 
+int ogs_pfcp_check_sdf_filters(const ogs_pfcp_tlv_pdi_t *pdi);
 ogs_pfcp_pdr_t *ogs_pfcp_handle_create_pdr(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_create_pdr_t *message,
         ogs_pfcp_sereq_flags_t *sereq_flags,

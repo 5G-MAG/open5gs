@@ -504,6 +504,12 @@ bool upf_n4mb_check_session_establishment_request(
         /* Precedence is mandatory in a Create PDR on N4mb. The shared PDR handler cannot require it: its
          * other callers (Sxa) carry no Precedence. */
         for (i = 0; i < OGS_MAX_NUM_OF_PDR && req->create_pdr[i].presence; i++) {
+            if (ogs_pfcp_check_sdf_filters(&req->create_pdr[i].pdi) != OGS_OK) {
+                ogs_error("Invalid Flow Description in the SDF Filter of a Create PDR of the N4mb Session Establishment Request");
+                cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+                offending_ie_value = OGS_PFCP_SDF_FILTER_TYPE;
+                break;
+            }
             if (req->create_pdr[i].precedence.presence == 0) {
                 ogs_error("No Precedence in Create PDR of N4mb Session Establishment Request");
                 cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
@@ -1158,6 +1164,8 @@ static int _check_flow_changes(upf_mbs_sess_t *mbs_sess, const ogs_pfcp_session_
                 !(ogs_pfcp_qer_find(&mbs_sess->pfcp, c->qer_id.u32) && !_removes_qer(req, c->qer_id.u32)) &&
                 !_creates_qer(req, c->qer_id.u32))
             FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_QER_ID_TYPE);
+        if (ogs_pfcp_check_sdf_filters(&c->pdi) != OGS_OK)
+            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_SDF_FILTER_TYPE);
         /* the session has one ingress tunnel (Table 7.5.2.7-1 and cl. 5.34.2.2: "a single ingress tunnel address,
          * regardless of the number of MBS QoS flows"): a new flow refers to it by the Traffic Endpoint ID */
         if (c->pdi.local_ingress_tunnel.presence)
