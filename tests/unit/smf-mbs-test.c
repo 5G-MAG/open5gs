@@ -1481,6 +1481,28 @@ static void test_update(void)
                 "{\"taiList\":[{\"tac\":\"1\"}]}") == SMF_MBS_UPDATE_ERROR_INPUT_PARAMETERS);
         CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_add, "/mbsFsaIdList",
                 "[\"xyz\"]") == SMF_MBS_UPDATE_ERROR_INPUT_PARAMETERS);
+        /* TS 38.413 V18.8.0 clause 9.3.5.3: "maxnoofMBSFSAs ... Value is 64": 65 entries are refused, 64 are not */
+        {
+            char list[65 * 10 + 4];
+            int k, pos = 0;
+
+            list[pos++] = '[';
+            for (k = 0; k < 65; k++)
+                pos += snprintf(list + pos, sizeof(list) - pos, "%s\"%06x\"", k ? "," : "", k + 1);
+            list[pos++] = ']';
+            list[pos] = 0;
+            CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_add, "/mbsFsaIdList", list) ==
+                    SMF_MBS_UPDATE_ERROR_INPUT_PARAMETERS);
+            CHECK(detail && strstr(detail, "64") != NULL);
+            pos = (int)(strrchr(list, ',') - list);
+            list[pos] = ']';
+            list[pos + 1] = 0;
+            CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_add, "/mbsFsaIdList", list) ==
+                    SMF_MBS_UPDATE_OK);
+            CHECK(ogs_list_count(&mbs_sess->mbs_fsa_id_list) == 64);
+            CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation__remove, "/mbsFsaIdList", NULL) ==
+                    SMF_MBS_UPDATE_OK);
+        }
         CHECK(update_with(mbs_sess, &update, &detail, OpenAPI_patch_operation_add, "/contactPcfInd",
                 "\"yes\"") == SMF_MBS_UPDATE_ERROR_INPUT_PARAMETERS);
         CHECK(count_flows(mbs_sess) == flows && count_tais(mbs_sess) == tais);

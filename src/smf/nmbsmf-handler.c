@@ -728,6 +728,17 @@ bool smf_nmbsmf_handle_mbs_session_create(
     /* TS 29.571 V18.12.0 MbsFsaId: pattern '^[A-Fa-f0-9]{6}$'. An entry of the list of MBS FSA IDs that is not six
      * hexadecimal digits is rejected as the Update rejects it: TS 29.532 V18.6.0 table 6.2.7.3-1 is the table of the
      * application errors, and ERROR_INPUT_PARAMETERS is the 400 this MB-SMF answers for an erroneous attribute. */
+    if (CreateReqData->mbs_session->mbs_fsa_id_list &&
+            CreateReqData->mbs_session->mbs_fsa_id_list->count > SMF_MBS_MAX_FSA_IDS) {
+        /* TS 38.413 V18.8.0 clause 9.3.5.3: "MBS Session FSA ID List | | 0..<maxnoofMBSFSAs>", "maxnoofMBSFSAs |
+         * Maximum no. of FSA IDs for one MBS session. Value is 64." */
+        ogs_error("MBS Session Create: mbsFsaIdList has more than %d entries", SMF_MBS_MAX_FSA_IDS);
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST, message, "Invalid MBS FSA ID list",
+            "[mbsFsaIdList] has more than 64 entries, the bound of the MBS Session FSA ID List",
+            NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
     if (CreateReqData->mbs_session->mbs_fsa_id_list) {
         OpenAPI_lnode_t *fsa_node;
 

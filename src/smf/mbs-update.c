@@ -661,6 +661,12 @@ smf_mbs_update_result_e smf_mbs_sess_update_check(smf_mbs_sess_t *mbs_sess, Open
             goto done;
         }
         num_fsa_ids = cJSON_GetArraySize(member);
+        if (num_fsa_ids > SMF_MBS_MAX_FSA_IDS) {
+            if (detail)
+                *detail = "[mbsFsaIdList] has more than 64 entries, the bound of the MBS Session FSA ID List";
+            result = SMF_MBS_UPDATE_ERROR_INPUT_PARAMETERS;
+            goto done;
+        }
         fsa_ids = ogs_calloc(num_fsa_ids ? num_fsa_ids : 1, sizeof(*fsa_ids));
         ogs_assert(fsa_ids);
         i = 0;

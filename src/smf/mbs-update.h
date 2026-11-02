@@ -54,6 +54,10 @@ typedef struct smf_mbs_update_s {
 /* Whether \p id is an MBS FSA ID: six hexadecimal digits (TS 29.571 V18.12.0 MbsFsaId, pattern '^[A-Fa-f0-9]{6}$') */
 bool smf_mbs_fsa_id_is_valid(const char *id);
 
+/* The most MBS FSA IDs one MBS session has: TS 38.413 V18.8.0 clause 9.3.5.3, "MBS Session FSA ID List | | 0..<maxnoofMBSFSAs>",
+ * "maxnoofMBSFSAs | Maximum no. of FSA IDs for one MBS session. Value is 64." */
+#define SMF_MBS_MAX_FSA_IDS 64
+
 /* Whether the patch path names an attribute smf_mbs_sess_update() applies: the first segment is mbsServiceArea,
  * mbsServInfo, mbsFsaIdList, contactPcfInd or nrRedCapUeInfo. */
 bool smf_mbs_update_path_is_modifiable(const char *path);
