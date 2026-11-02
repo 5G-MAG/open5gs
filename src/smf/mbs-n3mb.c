@@ -512,11 +512,22 @@ int smf_mbs_sess_send_tunnel_changes(smf_mbs_sess_t *mbs_sess, const smf_mbs_tun
          * is set with the first tunnel given and cleared with the last one taken away. */
         ogs_list_for_each(&mbs_sess->pfcp.far_list, far) {
             if (change->has_add && !(far->apply_action & OGS_PFCP_APPLY_ACTION_MBSU)) {
-                far->apply_action |= OGS_PFCP_APPLY_ACTION_MBSU;
+                /* "One and only one of the DROP, FORW, BUFF, IPMA, IPMD and (FFSM and/or MBSU) flags shall be set to
+                 * "1"" (TS 29.244 V18.10.0 clause 8.2.26): the DROP of a session whose DL tunnels were not known
+                 * gives way to MBSU */
+                if (far->apply_action & OGS_PFCP_APPLY_ACTION_DROP)
+                    far->apply_action = OGS_PFCP_APPLY_ACTION_MBSU;
+                else
+                    far->apply_action |= OGS_PFCP_APPLY_ACTION_MBSU;
                 mod.update_apply_action = true;
             } else if (!change->has_add && !unicast && i == changes->count - 1 &&
                     (far->apply_action & OGS_PFCP_APPLY_ACTION_MBSU)) {
                 far->apply_action &= ~OGS_PFCP_APPLY_ACTION_MBSU;
+                /* TS 29.244 V18.10.0 clause 5.34.2.2: the Apply Action is "DROP", "if only unicast transport is used
+                 * over N3mb or N19mb and N3mb/N19mb DL F-TEIDs are not known yet": no LL SSM was assigned to the
+                 * session (the MB-UPF gave none) and the last DL tunnel is gone */
+                if (!mbs_sess->ll_ssm.dest_ip_addr.ipv4 && !mbs_sess->ll_ssm.dest_ip_addr.ipv6)
+                    far->apply_action = OGS_PFCP_APPLY_ACTION_DROP;
                 mod.update_apply_action = true;
             }
         }

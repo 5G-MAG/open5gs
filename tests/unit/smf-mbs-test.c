@@ -4083,6 +4083,45 @@ static void test_area_session_id_in_establishment(void)
     smf_mbs_sess_release(mbs_sess);
 }
 
+/* TS 29.244 V18.10.0 clause 5.34.2.2: the Apply Action is "DROP", "if only unicast transport is used over N3mb or N19mb
+ * and N3mb/N19mb DL F-TEIDs are not known yet"; clause 8.2.26: one and only one of DROP and (FSSM and/or MBSU) */
+static void test_apply_action_drop(void)
+{
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    ogs_pfcp_far_t *far;
+    smf_mbs_tunnel_changes_t changes;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+    far = ogs_list_first(&mbs_sess->pfcp.far_list);
+    CHECK(far != NULL);
+    if (!far) return;
+
+    /* unicast only (no LL SSM): the first tunnel gives MBSU, the last one's removal gives DROP, a tunnel again MBSU */
+    memset(&changes, 0, sizeof(changes));
+    changes.count = 1;
+    changes.change[0].has_add = true;
+    changes.change[0].add_id = 1;
+    far->apply_action = OGS_PFCP_APPLY_ACTION_DROP;
+    smf_mbs_sess_send_tunnel_changes(mbs_sess, &changes);
+    CHECK(far->apply_action == OGS_PFCP_APPLY_ACTION_MBSU);
+
+    memset(&changes, 0, sizeof(changes));
+    changes.count = 1;
+    changes.change[0].has_remove = true;
+    changes.change[0].remove_id = 1;
+    smf_mbs_sess_send_tunnel_changes(mbs_sess, &changes);
+    CHECK(far->apply_action == OGS_PFCP_APPLY_ACTION_DROP);
+
+    /* with an LL SSM the session still goes by multicast: FSSM stays, MBSU goes */
+    mbs_sess->ll_ssm.dest_ip_addr.ipv4 = 1;
+    far->apply_action = OGS_PFCP_APPLY_ACTION_FSSM | OGS_PFCP_APPLY_ACTION_MBSU;
+    smf_mbs_sess_send_tunnel_changes(mbs_sess, &changes);
+    CHECK(far->apply_action == OGS_PFCP_APPLY_ACTION_FSSM);
+
+    smf_mbs_sess_release(mbs_sess);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -4130,6 +4169,7 @@ int main(void)
     test_restoration_request();
     test_area_session_id_in_establishment();
     test_changes_during_restoration();
+    test_apply_action_drop();
     test_relocation();
     test_multicast_transport_information_answer();
     test_node_report_several_peers();
