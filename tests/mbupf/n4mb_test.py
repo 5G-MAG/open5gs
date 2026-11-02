@@ -72,7 +72,7 @@ class Upf:
         self.pre_net()
         self.start()
 
-    def write_config(self, port_yaml, extra_upf='', gtpu_port=None):
+    def write_config(self, port_yaml, extra_upf='', gtpu_port=None, gtpu6=None):
         open(self.cfg, 'w').write("""logger:
   level: debug
   file:
@@ -85,7 +85,7 @@ upf:
   gtpu:
     server:
       - address: 127.0.0.31
-%s  session:
+%s%s  session:
     - subnet: 10.46.0.0/16
       gateway: 10.46.0.1
       dev: ogstunt
@@ -93,11 +93,11 @@ upf:
     udptunnel:
       address: 127.0.0.31
       port: %s
-%s""" % (self.log, '        port: %d\n' % gtpu_port if gtpu_port else '', port_yaml, extra_upf))
+%s""" % (self.log, '        port: %d\n' % gtpu_port if gtpu_port else '', '      - address: %s\n' % gtpu6 if gtpu6 else '', port_yaml, extra_upf))
 
-    def restart(self, port_yaml='0', extra_upf='', gtpu_port=None):
+    def restart(self, port_yaml='0', extra_upf='', gtpu_port=None, gtpu6=None):
         self.stop()
-        self.write_config(port_yaml, extra_upf, gtpu_port)
+        self.write_config(port_yaml, extra_upf, gtpu_port, gtpu6)
         self.start()
 
     def start(self):
@@ -122,6 +122,9 @@ upf:
                     ['ip', 'addr', 'add', '10.99.0.2/24', 'dev', 'v1'],
                     ['ip', 'link', 'set', 'v0', 'up'],
                     ['ip', 'link', 'set', 'v1', 'up'],
+                    ['ip', '-6', 'addr', 'add', 'fd00::31/128', 'dev', 'lo', 'nodad'],
+                    ['ip', '-6', 'addr', 'add', 'fd00::41/128', 'dev', 'lo', 'nodad'],
+                    ['ip', '-6', 'addr', 'add', 'fd00::42/128', 'dev', 'lo', 'nodad'],
                     # v1's address is a local one: let v0 accept it as the source of what arrives from v1
                     ['sysctl', '-q', '-w', 'net.ipv4.conf.all.rp_filter=0', 'net.ipv4.conf.v0.rp_filter=0',
                      'net.ipv4.conf.v0.accept_local=1']):
@@ -2525,6 +2528,95 @@ def t_buffered_packets_follow_the_new_apply_action():
     finally:
         lst.close()
         U.delete(s)
+
+
+class GtpuPeer6(GtpuPeer):
+    """A remote GTP-U peer reached over IPv6."""
+    def __init__(self, ip):
+        self.sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+        self.sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_RECVTCLASS, 1)
+        self.sock.bind((ip, 2152))
+        self.sock.settimeout(0.7)
+        self.tos = []
+
+    def packets(self):
+        out = []
+        try:
+            while True:
+                out.append(self.sock.recvfrom(65535)[0])
+        except socket.timeout:
+            pass
+        return out
+
+
+def add_unicast6(uid, teid, ip, dst_if=0):
+    """Add MBS Unicast Parameters with a GTP-U/UDP/IPv6 outer header (octet 5 bit 2)."""
+    return add_unicast(uid, dst_if=dst_if, ohc=b'\x02\x00' + struct.pack('>I', teid) + socket.inet_pton(socket.AF_INET6, ip))
+
+
+@test
+def t_U08_5_unicast_peers_over_ipv6():
+    """TS 29.244 cl. 8.2.56 (Outer Header Creation): GTP-U/UDP/IPv6 carries the IPv6 address of the remote GTP-U peer; the MB-UPF
+    forwards "one copy of the MBS session data" to each peer, over its own IPv6 GTP-U socket."""
+    U.restart(gtpu6='fd00::31')
+    try:
+        r, s = drop_session(0xf601)
+        p4, p6a, p6b = GtpuPeer('127.0.0.41'), GtpuPeer6('fd00::41'), GtpuPeer6('fd00::42')
+        try:
+            m = modify(s, update_far(apply=APPLY_MBSU, extra=(add_unicast(1, 0x1111, '127.0.0.41'), add_unicast6(2, 0x2222, 'fd00::41'),
+                                                               add_unicast6(3, 0x3333, 'fd00::42'))))
+            assert m and cause(m) == CAUSE_ACCEPTED, 'IPv6 peers: %s/%s' % (cause(m) if m else None, offending(m) if m else None)
+            send_multicast('10.46.0.1', '232.1.1.1')
+            got4, gota, gotb = p4.packets(), p6a.packets(), p6b.packets()
+            assert (len(got4), len(gota), len(gotb)) == (1, 1, 1), 'copies %s' % [len(got4), len(gota), len(gotb)]
+            assert [gtpu_parse(x[0])['teid'] for x in (got4, gota, gotb)] == [0x1111, 0x2222, 0x3333]
+            assert b'mbs-data' in gtpu_parse(gota[0])['tpdu'], 'payload over IPv6'
+            # one IPv6 peer leaves: the others still get their copy
+            m = modify(s, update_far(extra=(remove_unicast(2),)))
+            assert m and cause(m) == CAUSE_ACCEPTED
+            send_multicast('10.46.0.1', '232.1.1.1')
+            assert (len(p4.packets()), len(p6a.packets()), len(p6b.packets())) == (1, 0, 1)
+        finally:
+            for p in (p4, p6a, p6b):
+                p.close()
+            U.delete(s)
+    finally:
+        U.restart()
+
+
+@test
+def t_U02_9_restoration_with_pllssm_and_jmbssm_flags():
+    """MBSN4mbReq-Flags (Table 7.5.2.1-4): PLLSSM, JMBSSM and MBS RESTI are separate bits. A restoration that also asks
+    to join the N6mb group (JMBSSM) joins it; the requested low layer SSM is used."""
+    U.restart('0', ROUTER)
+    try:
+        group = socket.inet_aton('239.77.0.9')
+        # RESTI with JMBSSM: the AF group is joined, the requested low layer SSM is used
+        r = U.establish(resti_request(0xf711, mti(0x00777777, group, UPF_ADDR), flags=0x06))
+        s = accepted(r, 'RESTI and JMBSSM')
+        assert '232.1.1.1' in igmp_groups(), 'RESTI with JMBSSM did not join: %s' % igmp_groups()
+        lst = N3mbListener('239.77.0.9')
+        try:
+            send_multicast('10.46.0.1', '232.1.1.1')
+            pk = lst.packets()
+            assert pk and gtpu_parse(pk[0])['teid'] == 0x00777777, 'the requested low layer SSM and C-TEID are not used'
+        finally:
+            lst.close()
+        U.delete(s)
+        assert settled(lambda: '232.1.1.1' not in igmp_groups()), 'the join of the restored session was kept'
+        # RESTI with PLLSSM: the MB-SMF asks for an allocation and gives the addresses; the answer, if accepted, carries the
+        # addresses that the MB-UPF uses
+        r = U.establish(resti_request(0xf712, mti(0x00888888, group, UPF_ADDR), flags=0x05))
+        assert U.alive()
+        assert r is not None, 'RESTI with PLLSSM: no response'
+        if cause(r) == CAUSE_ACCEPTED:
+            s = upf_seid(r)
+            info = find(r, T_N4MB_INFO)
+            assert info is not None, 'PLLSSM set and no Multicast Transport Information in the response'
+            assert mc_group_of(r) == '239.77.0.9', 'the response gives %s, not the requested group' % mc_group_of(r)
+            U.delete(s)
+    finally:
+        U.restart()
 
 
 # E-TESTS-BELOW
