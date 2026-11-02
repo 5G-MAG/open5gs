@@ -12,6 +12,7 @@
 #include "ogs-sbi.h"
 #include "context.h"
 #include "n4mb-build.h"
+#include "smf-sm.h"
 #include "pfcp-path.h"
 #include "n4mb-handler.h"
 #include "ngap-build.h"
@@ -3520,6 +3521,58 @@ static void test_session_tnl_info_arms(void)
     smf_mbs_sess_release(mbs_sess);
 }
 
+/* TS 23.247 V18.8.0 clause 7.1.3, MB-UPF selection: the round robin advances over the associated PFCP peers, and a
+ * peer that serves the DNN of the session is preferred (the DNN criterion of the UPF selection of PDU sessions) */
+static void test_mb_upf_selection(void)
+{
+    ogs_pfcp_node_t n[3];
+    char *dnn_b = (char *)"mbs-b";
+    smf_mbs_sess_t *a = new_broadcast_session(), *b = new_broadcast_session();
+    ogs_pfcp_node_t *saved = ogs_pfcp_self()->pfcp_node;
+    int i, round;
+    ogs_pfcp_node_t *picked[6];
+
+    CHECK(a != NULL && b != NULL);
+    if (!a || !b) return;
+    memset(n, 0, sizeof(n));
+    for (i = 0; i < 3; i++) {
+        n[i].sm.state = (ogs_fsm_handler_t)smf_pfcp_state_associated;
+        ogs_list_add(&ogs_pfcp_self()->pfcp_peer_list, &n[i]);
+    }
+    n[1].num_of_dnn = 1;
+    n[1].dnn[0] = dnn_b;
+    ogs_pfcp_self()->pfcp_node = NULL;
+
+    /* no DNN: the peers in turn, round and round */
+    for (round = 0; round < 6; round++) {
+        smf_mbs_sess_select_upf(a);
+        picked[round] = a->pfcp_node;
+    }
+    CHECK(picked[0] != picked[1] && picked[1] != picked[2] && picked[0] != picked[2]);
+    CHECK(picked[0] == picked[3] && picked[1] == picked[4] && picked[2] == picked[5]);
+
+    /* a DNN a peer serves: that peer, every time */
+    if (b->dnn) ogs_free(b->dnn);
+    b->dnn = ogs_strdup("MBS-B");
+    for (round = 0; round < 3; round++) {
+        smf_mbs_sess_select_upf(b);
+        CHECK(b->pfcp_node == &n[1]);
+    }
+
+    /* a node that is not associated is passed over */
+    n[1].sm.state = NULL;
+    smf_mbs_sess_select_upf(b);
+    CHECK(b->pfcp_node != &n[1]);
+
+    for (i = 0; i < 3; i++)
+        ogs_list_remove(&ogs_pfcp_self()->pfcp_peer_list, &n[i]);
+    ogs_pfcp_self()->pfcp_node = saved;
+    a->pfcp_node = NULL;
+    b->pfcp_node = NULL;
+    smf_mbs_sess_release(a);
+    smf_mbs_sess_release(b);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -3569,6 +3622,7 @@ int main(void)
     test_multicast_transport_information_answer();
     test_node_report_several_peers();
     test_local_ingress_tunnel_answer();
+    test_mb_upf_selection();
 
     printf("smf-mbs: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;

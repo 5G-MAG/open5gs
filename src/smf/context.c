@@ -4360,7 +4360,59 @@ smf_mbs_sess_t *smf_mbs_sess_find_by_seid(uint64_t seid)
     return mbs_sess;
 }
 
-// TODO (borieher): Select UPF based on MBS parameters
+/* The DNN criterion of the UPF selection of PDU sessions (compare_ue_info()): the node serves the session's DNN. A
+ * session without a DNN matches no node by it. */
+static bool compare_mbs_info(ogs_pfcp_node_t *node, smf_mbs_sess_t *mbs_sess)
+{
+    int i;
+
+    ogs_assert(node);
+    ogs_assert(mbs_sess);
+
+    if (!mbs_sess->dnn)
+        return false;
+    for (i = 0; i < node->num_of_dnn; i++)
+        if (ogs_strcasecmp(node->dnn[i], mbs_sess->dnn) == 0)
+            return true;
+    return false;
+}
+
+/* The associated node after \p current, going round the list of peers: one that serves the DNN of the session, else
+ * (unless parameter.no_pfcp_rr_select) the next associated one; as selected_upf_node() does for PDU sessions. */
+static ogs_pfcp_node_t *selected_mbs_upf_node(ogs_pfcp_node_t *current, smf_mbs_sess_t *mbs_sess)
+{
+    ogs_pfcp_node_t *next, *node;
+    int pass;
+
+    ogs_assert(current);
+    ogs_assert(mbs_sess);
+
+    next = ogs_list_next(current);
+    for (pass = 0; pass < 2; pass++) {
+        bool by_dnn = (pass == 0);
+
+        if (!by_dnn && ogs_global_conf()->parameter.no_pfcp_rr_select != 0)
+            break;
+        for (node = next; node; node = ogs_list_next(node))
+            if (OGS_FSM_CHECK(&node->sm, smf_pfcp_state_associated) && (!by_dnn || compare_mbs_info(node, mbs_sess)))
+                return node;
+        for (node = ogs_list_first(&ogs_pfcp_self()->pfcp_peer_list); node != next; node = ogs_list_next(node))
+            if (OGS_FSM_CHECK(&node->sm, smf_pfcp_state_associated) && (!by_dnn || compare_mbs_info(node, mbs_sess)))
+                return node;
+    }
+
+    ogs_error("No UPFs are PFCP associated that are suited to RR");
+    return ogs_list_first(&ogs_pfcp_self()->pfcp_peer_list);
+}
+
+/*
+ * TS 23.247 V18.8.0 clause 7.1.3: "The selection and reselection of the MB-UPF are performed by the MB-SMF by
+ * considering MB-UPF deployment. For the local Broadcast/Multicast MBS session and location dependent MBS session,
+ * the service area is taken into consideration for MB-UPF selection." The selection is the one of the UPF for PDU
+ * sessions (smf_sess_select_upf()): the DNN of the UPF configuration and the round robin that advances the peer.
+ * The service area is not used: the UPF configuration holds cells and TACs for NG-RAN cells of a PDU session, and
+ * no clause says how an MBS service area maps onto them.
+ */
 void smf_mbs_sess_select_upf(smf_mbs_sess_t *mbs_sess)
 {
     ogs_assert(mbs_sess);
@@ -4374,6 +4426,8 @@ void smf_mbs_sess_select_upf(smf_mbs_sess_t *mbs_sess)
             ogs_list_last(&ogs_pfcp_self()->pfcp_peer_list);
 
     /* setup GTP session with selected UPF */
+    ogs_assert(ogs_pfcp_self()->pfcp_node);
+    ogs_pfcp_self()->pfcp_node = selected_mbs_upf_node(ogs_pfcp_self()->pfcp_node, mbs_sess);
     ogs_assert(ogs_pfcp_self()->pfcp_node);
     OGS_SETUP_PFCP_NODE(mbs_sess, ogs_pfcp_self()->pfcp_node);
 }
