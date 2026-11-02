@@ -2413,6 +2413,42 @@ def t_session_without_room_for_another_rule_answers_cause_75():
     assert r is not None and cause(r) != CAUSE_ACCEPTED, 'five QERs: cause %s' % (cause(r) if r else None)
 
 
+@test
+def t_several_flows_added_in_one_request():
+    """cl. 5.34.2.2: "for each MBS QoS flow: a Create PDR IE ..., a Create QER IE ..., a Create FAR IE": the flows of an
+    MBS session update come in one request."""
+    r = U.establish(smf_session(0xf401))
+    s = accepted(r, 'session of the MB-SMF')
+    try:
+        # two flows selected by SDF filters on their own ports, QFI 2 and 3
+        flows = []
+        for n, port in ((2, 6002), (3, 6003)):
+            flows += [sdf_flow_pdr(n, 10 * n, port), far(far_id=n), qer(qer_id=n, qfi=n, indications=0x01)]
+        m = modify(s, *flows)
+        assert m and cause(m) == CAUSE_ACCEPTED, '%s/%s' % (cause(m) if m else None, offending(m) if m else None)
+        for n, port in ((2, 6002), (3, 6003)):
+            assert tunnel_packet_qfi(r, port) == n, 'flow %d' % n
+        assert tunnel_packet_qfi(r, 5000) == 1, 'flow 1 (no filter, last precedence) after the others'
+        # a request of several flows whose last one is not valid creates none of them
+        flows = []
+        for n, port in ((4, 6004),):
+            flows += [sdf_flow_pdr(n, 10 * n, port), far(far_id=n), qer(qer_id=n, qfi=n)]
+        flows += [sdf_flow_pdr(5, 50, 6005), far(far_id=5)]       # no QER 5 anywhere
+        m = modify(s, *flows)
+        assert m and cause(m) == CAUSE_MANDATORY_INCORRECT, 'cause %s' % (cause(m) if m else None)
+        assert tunnel_packet_qfi(r, 6004) == 1, 'a refused request created a flow'
+        # ... and the identifiers are free
+        m = modify(s, sdf_flow_pdr(4, 40, 6004), far(far_id=4), qer(qer_id=4, qfi=4))
+        assert m and cause(m) == CAUSE_ACCEPTED, 'a refused request left rules: %s/%s' % (cause(m) if m else None, offending(m) if m else None)
+        assert tunnel_packet_qfi(r, 6004) == 4
+        # the flows leave in one request
+        m = modify(s, *(removal(2) + removal(3) + removal(4)))
+        assert m and cause(m) == CAUSE_ACCEPTED, '%s/%s' % (cause(m) if m else None, offending(m) if m else None)
+        assert tunnel_packet_qfi(r, 6002) == 1
+    finally:
+        U.delete(s)
+
+
 # E-TESTS-BELOW
 
 
