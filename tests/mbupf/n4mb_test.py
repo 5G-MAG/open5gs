@@ -2584,6 +2584,59 @@ def t_U08_5_unicast_peers_over_ipv6():
         U.restart()
 
 
+class N3mbListener6:
+    """Receives what the UPF sends to an IPv6 N3mb group: sent out of v0, received on v1 (IPv6 multicast is not looped on lo)."""
+    def __init__(self, group):
+        self.sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind((group, 2152))
+        self.sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP,
+                             socket.inet_pton(socket.AF_INET6, group) + struct.pack('@I', socket.if_nametoindex('v1')))
+        self.sock.settimeout(0.7)
+
+    packets = GtpuPeer6.packets
+
+    def close(self):
+        self.sock.close()
+
+
+@test
+def t_U02_9_restoration_with_an_ipv6_low_layer_ssm():
+    """TS 29.244 Table 7.5.2.1-4, Multicast Transport Information: "the low layer source specific multicast address information (i.e. multicast
+    destination address and related source IP address) and the GTP-U Common Tunnel EndPoint Identifier (C-TEID) that the MB-SMF requests the
+    MB-UPF to allocate for multicast transport over N3mb"; NOTE: "The MB-UPF shall accept the MB-SMF allocated N3mb/N19mb ... address ... if
+    the requested addresses are available."
+    """
+    subprocess.run(['ip', '-6', 'route', 'add', 'ff1e::/16', 'dev', 'v0'], stderr=subprocess.DEVNULL)
+    U.restart(gtpu6='fd00::31')
+    group = socket.inet_pton(socket.AF_INET6, 'ff1e::7777')
+    src = socket.inet_pton(socket.AF_INET6, 'fd00::31')
+    try:
+        r = U.establish(resti_request(0xf701, mti(0x00123456, group, src, dest_tl=0x50, src_tl=0x50)))
+        s = accepted(r, 'IPv6 restoration')
+        lst = N3mbListener6('ff1e::7777')
+        try:
+            send_multicast('10.46.0.1', '232.1.1.1')
+            pk = lst.packets()
+            assert pk, 'nothing on the requested IPv6 group'
+            assert gtpu_parse(pk[0])['teid'] == 0x00123456, 'TEID %08x, requested 00123456' % gtpu_parse(pk[0])['teid']
+            assert inner_payload_seen(pk)
+            # the group is held
+            r2 = U.establish(resti_request(0xf702, mti(0x1, group, src, dest_tl=0x50, src_tl=0x50)))
+            assert r2 and cause(r2) == CAUSE_RESTORATION_FAILURE and offending(r2) == T_MC_TRANSPORT, 'same IPv6 group: %s/%s' % (
+                cause(r2) if r2 else None, offending(r2) if r2 else None)
+        finally:
+            lst.close()
+        U.delete(s)
+        # a source that is an IPv6 address of the MB-UPF only if it is one it sends from
+        r = U.establish(resti_request(0xf703, mti(2, group, socket.inet_pton(socket.AF_INET6, 'fd00::99'), dest_tl=0x50, src_tl=0x50)))
+        assert r and cause(r) == CAUSE_RESTORATION_FAILURE, 'foreign IPv6 source: %s' % (cause(r) if r else None)
+        # an IPv6 destination with an IPv4 source: both families are allowed to differ only if the TLV is valid
+        accepted_and_deleted(U.establish(resti_request(0xf704, mti(3, group, src, dest_tl=0x50, src_tl=0x50))), 'the group after the session ended')
+    finally:
+        U.restart()
+
+
 @test
 def t_U02_9_restoration_with_pllssm_and_jmbssm_flags():
     """MBSN4mbReq-Flags (Table 7.5.2.1-4): PLLSSM, JMBSSM and MBS RESTI are separate bits. A restoration that also asks

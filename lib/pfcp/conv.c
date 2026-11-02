@@ -463,7 +463,10 @@ void ogs_pfcp_outer_header_creation_to_ip(
     } else if (outer_header_creation->gtpu4 ||
                 outer_header_creation->ip4 ||
                 outer_header_creation->udp4 ||
-                outer_header_creation->ssm_c_teid) {
+                /* Low Layer SSM and C-TEID (TS 29.244 cl. 8.2.56 NOTE 7): the description carries no address; an IPv6
+                 * low layer SSM is marked by the IPv6 bit of the FAR that the MB-UPF keeps, otherwise it is IPv4 */
+                (outer_header_creation->ssm_c_teid &&
+                    !(outer_header_creation->gtpu6 || outer_header_creation->ip6 || outer_header_creation->udp6))) {
         ip->ipv4 = 1;
         ip->len = OGS_IPV4_LEN;
         ip->addr = outer_header_creation->addr;

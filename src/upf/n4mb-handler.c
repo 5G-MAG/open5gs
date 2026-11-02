@@ -446,6 +446,9 @@ static int _setup_far_node(upf_mbs_sess_t *mbs_sess, ogs_pfcp_far_t *far)
     } else if (mbs_sess->ll_ssm->dest_ip_addr.ipv6) {
         memcpy(&far->outer_header_creation.addr6, mbs_sess->ll_ssm->dest_ip_addr.addr6, OGS_IPV6_LEN);
         far->outer_header_creation_len += OGS_IPV6_LEN;
+        /* The description of an FSSM FAR carries no address (cl. 8.2.56 NOTE 7); the FAR kept here names the family of
+         * its low layer SSM by the IPv6 bit, which the node of the FAR and its hash read */
+        far->outer_header_creation.ip6 = 1;
     }
 
     if (far->mbs_multicast_parameters)
