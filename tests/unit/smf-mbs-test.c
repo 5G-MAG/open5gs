@@ -596,6 +596,17 @@ static void test_create_outcomes(void)
         smf_mbs_sess_t *extra = create_session(tmgi, false, true, "999", NULL, &result);
         CHECK(extra == NULL && result == SMF_MBS_SESS_CREATE_POOL_FULL);
     }
+    /* a TMGI allocated for the request that finds the pool full is not left allocated */
+    {
+        int count = smf_tmgi_count();
+        ogs_tmgi_t *fresh = smf_tmgi_allocate(smf_tmgi_gen_expiration_time(60));
+        smf_mbs_sess_t *extra;
+
+        CHECK(fresh != NULL && smf_tmgi_count() == count + 1);
+        extra = create_session(fresh, true, false, NULL, NULL, &result);
+        CHECK(extra == NULL && result == SMF_MBS_SESS_CREATE_POOL_FULL);
+        CHECK(smf_tmgi_count() == count);
+    }
     for (n = 0; n < max; n++)
         if (many[n]) smf_mbs_sess_release(many[n]);
     CHECK(smf_tmgi_count() == tmgis_before);

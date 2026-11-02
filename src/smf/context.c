@@ -4279,6 +4279,17 @@ smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, bool tmgi_allocated, ogs_s
         ogs_error("smf_mbs_sess_add() failed");
         if (result)
             *result = SMF_MBS_SESS_CREATE_POOL_FULL;
+        /* a TMGI allocated for this request is given up with the session that was not created, as it is with
+         * one that is released */
+        if (tmgi_allocated)
+            smf_tmgi_deallocate(tmgi);
+        /* what the caller handed over is not kept either */
+        if (mbs_service_area)
+            ogs_mbs_service_area_free(mbs_service_area);
+        if (ext_mbs_service_area)
+            ogs_ext_mbs_service_area_free(ext_mbs_service_area);
+        if (ssm)
+            ogs_free(ssm);
         return NULL;
     }
 
