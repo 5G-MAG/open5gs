@@ -1471,6 +1471,64 @@ static void test_notify_uri_is_valid(void)
     CHECK(!amf_namf_notify_uri_is_valid("ftp://127.0.0.1/x"));
 }
 
+/* TS 38.413 V18.11.0 cl. 9.3.1.208: "maxnoofCellsforMBS ... Value is 8192." and "maxnoofTAIforMBS ... Value is 1024." */
+static void test_service_area_bounds(void)
+{
+    OpenAPI_mbs_service_area_t area;
+    OpenAPI_ncgi_tai_t tai_a, tai_b;
+    OpenAPI_list_t *tais = OpenAPI_list_create(), *ncgis = OpenAPI_list_create();
+    OpenAPI_list_t *cells_a = OpenAPI_list_create(), *cells_b = OpenAPI_list_create();
+    OpenAPI_mbs_service_area_info_t info;
+    OpenAPI_list_t *infos = OpenAPI_list_create();
+    static int dummy;
+    int i;
+
+    memset(&area, 0, sizeof(area));
+    memset(&tai_a, 0, sizeof(tai_a));
+    memset(&tai_b, 0, sizeof(tai_b));
+    memset(&info, 0, sizeof(info));
+    CHECK(amf_namf_service_area_is_valid(NULL));
+    CHECK(amf_namf_service_area_is_valid(&area));
+
+    for (i = 0; i < 1024; i++)
+        OpenAPI_list_add(tais, &dummy);
+    area.tai_list = tais;
+    CHECK(amf_namf_service_area_is_valid(&area));
+    OpenAPI_list_add(tais, &dummy);
+    CHECK(!amf_namf_service_area_is_valid(&area));
+    area.tai_list = NULL;
+
+    /* cells count over all the NcgiTai entries */
+    for (i = 0; i < 8000; i++)
+        OpenAPI_list_add(cells_a, &dummy);
+    for (i = 0; i < 192; i++)
+        OpenAPI_list_add(cells_b, &dummy);
+    tai_a.cell_list = cells_a;
+    tai_b.cell_list = cells_b;
+    OpenAPI_list_add(ncgis, &tai_a);
+    OpenAPI_list_add(ncgis, &tai_b);
+    area.ncgi_list = ncgis;
+    CHECK(amf_namf_service_area_is_valid(&area));
+    OpenAPI_list_add(cells_b, &dummy);
+    CHECK(!amf_namf_service_area_is_valid(&area));
+
+    /* the area of each item of an mbsServiceAreaInfoList is held to it as well */
+    info.area_session_id = 1;
+    info.mbs_service_area = &area;
+    OpenAPI_list_add(infos, &info);
+    CHECK(!amf_namf_area_info_list_is_valid(infos));
+    OpenAPI_list_free(cells_b);
+    cells_b = OpenAPI_list_create();
+    tai_b.cell_list = cells_b;
+    CHECK(amf_namf_area_info_list_is_valid(infos));
+
+    OpenAPI_list_free(infos);
+    OpenAPI_list_free(tais);
+    OpenAPI_list_free(ncgis);
+    OpenAPI_list_free(cells_a);
+    OpenAPI_list_free(cells_b);
+}
+
 int main(int argc, const char *argv[])
 {
     ogs_pkbuf_config_t config;
@@ -1498,6 +1556,7 @@ int main(int argc, const char *argv[])
     test_earliest_reestablish();
     test_gnb_holds_session();
     test_area_apply_undo();
+    test_service_area_bounds();
     test_notify_uri_is_valid();
     test_area_apply_replaces_state();
     test_gnb_owes();

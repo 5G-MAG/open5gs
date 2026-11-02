@@ -66,6 +66,9 @@ int amf_namf_handle_mbs_broadcast_context_update(
 /* Whether \p notify_uri has a scheme and an address, so that notifications can be sent to it */
 bool amf_namf_notify_uri_is_valid(const char *notify_uri);
 
+/* Whether \p area (NULL: yes) has at most 1024 TAIs and 8192 cells, the bounds of the NGAP MBS Service Area */
+bool amf_namf_service_area_is_valid(const OpenAPI_mbs_service_area_t *area);
+
 /* Whether \p list, an mbsServiceAreaInfoList, has 1 to 256 items with distinct Area Session IDs in 0..65535 */
 bool amf_namf_area_info_list_is_valid(const OpenAPI_list_t *list);
 

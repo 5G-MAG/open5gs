@@ -2340,12 +2340,42 @@ void amf_namf_handle_mbs_broadcast_response_timeout(uint32_t mbs_context_index)
 }
 
 /*
+ * Whether \p area fits the MBS Service Area of NGAP: TS 38.413 V18.11.0 cl. 9.3.1.208, "MBS Service Area Cell List ...
+ * 0..<maxnoofCellsforMBS>" with "maxnoofCellsforMBS | Maximum no. of cells allowed within one MBS Service Area. Value is 8192."
+ * and "MBS Service Area TAI List ... 0..<maxnoofTAIforMBS>" with "maxnoofTAIforMBS | Maximum no. of TAs allowed within one MBS
+ * Service Area. Value is 1024." (the ASN.1 types are SEQUENCE (SIZE(1.. maxnoofCellsforMBS)) OF NR-CGI and
+ * SEQUENCE (SIZE(1.. maxnoofTAIforMBS)) OF TAI). An area that does not is refused, not left to the encoder.
+ */
+bool amf_namf_service_area_is_valid(const OpenAPI_mbs_service_area_t *area)
+{
+    OpenAPI_lnode_t *node = NULL;
+    long cells = 0;
+
+    if (!area)
+        return true;
+
+    if (area->tai_list && area->tai_list->count > 1024)
+        return false;
+
+    if (area->ncgi_list) {
+        OpenAPI_list_for_each(area->ncgi_list, node) {
+            const OpenAPI_ncgi_tai_t *ncgi_tai = node->data;
+
+            if (ncgi_tai && ncgi_tai->cell_list)
+                cells += ncgi_tai->cell_list->count;
+        }
+    }
+
+    return cells <= 8192;
+}
+
+/*
  * Whether \p list, the mbsServiceAreaInfoList of a request, can be applied: it has 1 to 256 items (TS 29.518 V18.14.0
  * Table 6.5.6.2.2-1: "array(MbsServiceAreaInfo) ... 1..N"; TS 38.413 V18.11.0 clause 9.3.1.208: "maxnoofMBSServiceAreaInformation
  * ... Value is 256" for the MBS Service Area Information Location Dependent List the AMF sends), each Area Session ID is in
  * 0..65535 (TS 29.571 AreaSessionId, Uint16; TS 38.413 MBS-AreaSessionID ::= INTEGER (0..65535, ...)) and no ID is used twice
  * (TS 23.247 V18.8.0 clause 6.2.3: "MB-SMF allocates Area Session ID for each MBS services area which is unique within the
- * MBS session.").
+ * MBS session."), and the area of each item fits the NGAP MBS Service Area (amf_namf_service_area_is_valid()).
  */
 bool amf_namf_area_info_list_is_valid(const OpenAPI_list_t *list)
 {
@@ -2357,7 +2387,8 @@ bool amf_namf_area_info_list_is_valid(const OpenAPI_list_t *list)
     OpenAPI_list_for_each(list, node) {
         const OpenAPI_mbs_service_area_info_t *info = node->data;
 
-        if (!info || info->area_session_id < 0 || info->area_session_id > 65535)
+        if (!info || info->area_session_id < 0 || info->area_session_id > 65535 ||
+                !amf_namf_service_area_is_valid(info->mbs_service_area))
             return false;
         for (other = node->next; other; other = other->next) {
             const OpenAPI_mbs_service_area_info_t *o = other->data;
@@ -2541,6 +2572,15 @@ int amf_namf_handle_mbs_broadcast_context_create(
         ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
             recvmsg, "Bad Request",
             "Requested MBS Broadcast ContextCreate failed, [mbsServiceArea] and [mbsServiceAreaInfoList] are mutually exclusive", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    if (!amf_namf_service_area_is_valid(ContextCreateReqData->mbs_service_area)) {
+        ogs_error("MBS Broadcast ContextCreate: mbsServiceArea has more than 1024 TAIs or 8192 cells");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request",
+            "Requested MBS Broadcast ContextCreate failed, [mbsServiceArea] holds more than 1024 TAIs or 8192 cells", NULL);
         rv = OGS_ERROR;
         goto cleanup;
     }
@@ -2923,6 +2963,15 @@ int amf_namf_handle_mbs_broadcast_context_update(
         rv = OGS_ERROR;
         goto cleanup;
     }
+    if (!amf_namf_service_area_is_valid(ContextUpdateReqData->mbs_service_area)) {
+        ogs_error("MBS Broadcast ContextUpdate: mbsServiceArea has more than 1024 TAIs or 8192 cells");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request",
+            "Requested MBS Broadcast ContextUpdate failed, [mbsServiceArea] holds more than 1024 TAIs or 8192 cells", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
     if (ContextUpdateReqData->mbs_service_area_info_list &&
             !amf_namf_area_info_list_is_valid(ContextUpdateReqData->mbs_service_area_info_list)) {
         ogs_error("MBS Broadcast ContextUpdate: mbsServiceAreaInfoList is not valid");
