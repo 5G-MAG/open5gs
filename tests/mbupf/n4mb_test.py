@@ -550,11 +550,22 @@ def t_U06_3_fssm_without_mbs_multicast_parameters():
     accepted_and_deleted(U.establish(good(cp_seid=0x6003)), 'FSSM with its parameters')
 
 
+NO_SOURCE = 'no Source IP Address'
+
+
+def default_source(dest):
+    """The source of the SSM of a session whose test does not care for it: the one the data tests send from (Table 7.5.2.2-4: on N4mb the
+    Source IP Address is mandatory)."""
+    return b'\x01' + socket.inet_pton(socket.AF_INET6, 'fd99::2') if dest and dest[0] & 0x01 else b'\x02' + socket.inet_aton('10.46.0.1')
+
+
 def mc_info(dest=None, src=None):
     parts = []
+    if src is None:
+        src = default_source(dest)
     if dest is not None:
         parts.append(ie(T_IPMC_ADDR, dest))
-    if src is not None:
+    if src is not NO_SOURCE:
         parts.append(ie(T_SRC_IP, src))
     return ie(T_IPMC_INFO, parts)
 
@@ -749,17 +760,31 @@ def t_U11_2_source_is_part_of_the_channel():
 
 
 @test
-def t_U03_15_absent_source_means_any_source():
-    s, group = data_session(0x9011, b'\x02' + V4G, None)
-    lst = N3mbListener(group)
+def t_U03_15_source_ip_address_is_mandatory_on_n4mb():
+    """TS 29.244 Table 7.5.2.2-4, IP Multicast Addressing Info: on N4mb the IP Multicast Address and the Source IP Address are "M"; the
+    "If this IE is not present, this indicates "any" source IP address" is the N4 row."""
+    def refused(what, r, c, o):
+        assert r is not None and cause(r) == c and offending(r) == o, '%s: cause %s offending %s' % (what, cause(r) if r else None, offending(r) if r else None)
+
+    refused('no Source IP Address in the PDI', U.establish(mc_request(0x9011, b'\x02' + V4G, NO_SOURCE)), CAUSE_MANDATORY_MISSING, T_SRC_IP)
+    refused('no Source IP Address in the Traffic Endpoint', U.establish(mc_request(0x9012, b'\x02' + V4G, NO_SOURCE, te_id=3)), CAUSE_MANDATORY_MISSING, T_SRC_IP)
+    only_src = ie(T_IPMC_INFO, [ie(T_SRC_IP, b'\x02' + V4S)])
+    refused('no IP Multicast Address', U.establish([node_id(), fseid(0x9013), pdr(pdi_extra=(only_src,)), far(), qer(), n4mb_ctrl()]),
+            CAUSE_MANDATORY_MISSING, T_IPMC_ADDR)
+    # a flow added by a modification, with the group but not the source
+    r = U.establish(mc_request(0x9014, b'\x02' + V4G, None))
+    s = accepted(r, 'session')
     try:
-        send_multicast('10.46.0.1', '232.1.1.1')
-        assert inner_payload_seen(lst.packets()), 'data from the first source was not forwarded'
-        send_multicast('10.46.0.2', '232.1.1.1')
-        assert inner_payload_seen(lst.packets()), 'data from the second source was not forwarded'
+        pdi = [ie(T_SRC_IF, b'\x01'), mc_info(b'\x02' + V4G, NO_SOURCE)]
+        m = modify(s, ie(T_CREATE_PDR, [ie(T_PDR_ID, struct.pack('>H', 2)), ie(T_PRECEDENCE, struct.pack('>I', 10)), ie(T_PDI, pdi),
+                                        ie(T_FAR_ID, struct.pack('>I', 2)), ie(T_QER_ID, struct.pack('>I', 2))]), far(far_id=2), qer(qer_id=2, qfi=2))
+        refused('flow without Source IP Address', m, CAUSE_MANDATORY_MISSING, T_SRC_IP)
+        m = modify(s, update_pdr(1, pdi=pdi))
+        refused('Update PDR without Source IP Address', m, CAUSE_MANDATORY_MISSING, T_SRC_IP)
     finally:
-        lst.close()
         U.delete(s)
+    # a session without any multicast addressing (tunnel only) is not affected
+    accepted_and_deleted(U.establish(good(0x9015)), 'no multicast addressing')
 
 
 @test
@@ -893,12 +918,10 @@ def t_U04_2_U04_3_U04_6_join_leave_ipv4():
         assert ('232.1.1.1', '10.1.1.1') in igmp_sources(), 'left while a session still uses the channel'
         U.delete(s2)
         assert settled(lambda: '232.1.1.1' not in igmp_groups() and not igmp_sources()), 'channel kept after the sessions ended: %s %s' % (igmp_groups(), igmp_sources())
-        # no source address: any source
-        s = accepted(U.establish(mc_request(0xb004, b'\x02' + V4G, None, flags=0x03)), 'any source')
-        assert '232.1.1.1' in igmp_groups(), 'group not joined for any source'
-        assert not igmp_sources(), 'a source filter for an any-source join: %s' % igmp_sources()
-        U.delete(s)
-        assert settled(lambda: '232.1.1.1' not in igmp_groups()), 'any-source group kept'
+        # no source address: refused (Table 7.5.2.2-4), nothing is joined
+        r = U.establish(mc_request(0xb004, b'\x02' + V4G, NO_SOURCE, flags=0x03))
+        assert r and cause(r) == CAUSE_MANDATORY_MISSING and offending(r) == T_SRC_IP
+        assert '232.1.1.1' not in igmp_groups(), 'joined for a request without a source'
         # a rejected establishment leaves nothing joined
         r = U.establish(replace_ie(mc_request(0xb005, b'\x02' + V4G, b'\x02' + V4S, flags=0x03), T_CREATE_FAR, far(apply=0x0008, params=False)))
         assert r and cause(r) != CAUSE_ACCEPTED
@@ -945,10 +968,9 @@ def t_U04_4_join_leave_ipv6():
         assert ('ff3e::1234', '2001:db8::1') in mld_sources(), 'IPv6 join not source specific: %s' % mld_sources()
         U.delete(s)
         assert settled(lambda: 'ff3e::1234' not in mld_groups() and not mld_sources()), 'IPv6 channel kept'
-        s = accepted(U.establish(mc_request(0xb022, b'\x01' + G6, None, flags=0x03)), 'IPv6 any source')
-        assert 'ff3e::1234' in mld_groups(), 'IPv6 group not joined for any source'
-        U.delete(s)
-        assert settled(lambda: 'ff3e::1234' not in mld_groups()), 'IPv6 group kept'
+        r = U.establish(mc_request(0xb022, b'\x01' + G6, NO_SOURCE, flags=0x03))
+        assert r and cause(r) == CAUSE_MANDATORY_MISSING and offending(r) == T_SRC_IP, 'IPv6 without source'
+        assert 'ff3e::1234' not in mld_groups(), 'IPv6 group joined for a request without a source'
     finally:
         U.restart()
 
@@ -1679,29 +1701,6 @@ def t_two_sessions_on_one_group_with_different_sources():
         U.delete(s2)
 
 
-@test
-def t_U04_data_from_an_any_source_join_reaches_n3mb():
-    # JMBSSM with no source address: the join is (*,G) and the packets of any source are routed to the UPF
-    U.restart('0', ROUTER)
-    try:
-        subprocess.run(['ip', 'route', 'add', '232.0.0.0/8', 'dev', 'v1'], stderr=subprocess.DEVNULL)
-        r = U.establish(mc_request(0xb042, b'\x02' + V4G, None, flags=0x03))
-        s = accepted(r, 'any source session')
-        lst = N3mbListener(mc_group_of(r))
-        try:
-            routed_sender()
-            assert inner_payload_seen(lst.packets()), 'data of the (*,G) join did not reach N3mb'
-            # a source the join never named
-            subprocess.run(['ip', 'addr', 'add', '10.99.0.3/24', 'dev', 'v1'], stderr=subprocess.DEVNULL)
-            routed_sender(src='10.99.0.3')
-            assert inner_payload_seen(lst.packets()), 'data of a second source did not reach N3mb'
-        finally:
-            lst.close()
-        U.delete(s)
-    finally:
-        U.restart()
-
-
 def routed_sender6(src='fd99::2', dst='ff3e::1234', payload=b'mbs-data'):
     sk = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
     sk.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, 8)
@@ -1721,7 +1720,7 @@ def t_U04_4_data_from_ipv6_joins_reaches_n3mb():
                      'net.ipv6.conf.all.forwarding=1']):
             subprocess.run(cmd, stderr=subprocess.DEVNULL)
         src6 = socket.inet_pton(socket.AF_INET6, 'fd99::2')
-        for name, srcie, cp in (('source specific', b'\x01' + src6, 0xb051), ('any source', None, 0xb052)):
+        for name, srcie, cp in (('source specific', b'\x01' + src6, 0xb051),):
             r = U.establish(mc_request(cp, b'\x01' + G6, srcie, flags=0x03))
             s = accepted(r, 'IPv6 ' + name)
             lst = N3mbListener(mc_group_of(r))

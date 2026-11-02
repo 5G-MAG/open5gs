@@ -154,6 +154,28 @@ static int _decode_addressing_info(
     return OGS_OK;
 }
 
+/*
+ * IP Multicast Addressing Info on N4mb (TS 29.244 Table 7.5.2.2-4): the IP Multicast Address is "M" ("For N4mb, the IP Multicast Address
+ * shall be set to the value of IP Multicast Address in the SSM for the MBS Session") and so is the Source IP Address in the N4mb row of
+ * the table ("This IE shall be set to the value of the IP Source Address in the SSM for the MBS Session"); the "If this IE is not present,
+ * this indicates "any" source IP address" of the N4 row does not apply. A member that is missing is answered with cause 66 and its type
+ * (cl. 7.6.6). Both members are absent when the PDI carries no information at all.
+ */
+static int _check_addressing_members(bool has_dest, bool has_src, uint8_t *cause_value, uint16_t *offending_ie_value)
+{
+    if (has_dest && !has_src) {
+        *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+        *offending_ie_value = OGS_PFCP_SOURCE_IP_ADDRESS_TYPE;
+        return OGS_ERROR;
+    }
+    if (has_src && !has_dest) {
+        *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+        *offending_ie_value = OGS_PFCP_IP_MULTICAST_ADDRESS_TYPE;
+        return OGS_ERROR;
+    }
+    return OGS_OK;
+}
+
 static int _decode_pdr_addressing(const ogs_pfcp_session_establishment_request_t *req, int pdr_index,
         bool *has_dest, ogs_pfcp_decoded_ip_multicast_address_t *dest,
         bool *has_src, ogs_pfcp_decoded_source_ip_address_t *src, uint16_t *offending_ie_value)
@@ -631,6 +653,10 @@ bool upf_n4mb_check_session_establishment_request(
 
             if (_decode_pdr_addressing(req, i, &has_dest, &dest, &has_src, &src, &offending_ie_value) != OGS_OK) {
                 cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+                break;
+            }
+            if (_check_addressing_members(has_dest, has_src, &cause_value, &offending_ie_value) != OGS_OK) {
+                ogs_error("IP Multicast Addressing Info of PDR[%d] misses its Source IP Address or IP Multicast Address", i);
                 break;
             }
         }
@@ -1213,6 +1239,8 @@ static int _check_flow_pdi(upf_mbs_sess_t *mbs_sess, const ogs_pfcp_tlv_pdi_t *p
     if (_decode_addressing_info(&pdi->ip_multicast_addressing_info, &has_dest, &dest, &has_src, &src,
                 offending_ie_value) != OGS_OK)
         FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, *offending_ie_value);
+    if (_check_addressing_members(has_dest, has_src, cause_value, offending_ie_value) != OGS_OK)
+        return OGS_ERROR;
     if (has_dest && (dest.any || dest.range || !_ip_equal(&dest.start, &mbs_sess->ssm.dest_ip_addr)))
         FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_IP_MULTICAST_ADDRESS_TYPE);
     if (has_src && !_ip_equal(&src.addr, &mbs_sess->ssm.src_ip_addr))
