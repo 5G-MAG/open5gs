@@ -3422,16 +3422,16 @@ static void test_fsa_id_pattern(void)
             !smf_mbs_fsa_id_is_valid("0000 1") && !smf_mbs_fsa_id_is_valid("0x0001"));
 }
 
-/* TS 29.244 V18.10.0 clause 8.2.209: flags (CH, V6, V4), UDP Port, the addresses the flags name */
+/* TS 29.244 V18.10.0 clause 8.2.209: flags (bit 1 V4, bit 2 V6, bit 3 CH), UDP Port, the address the set flag names */
 static void test_local_ingress_tunnel_answer(void)
 {
-    static const uint8_t v4[] = { 0x02, 0x0f, 0xa0, 10, 9, 9, 9 };
-    static const uint8_t v6[] = { 0x01, 0x0f, 0xa0, 0x20, 0x01, 0xd, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 };
+    static const uint8_t v4[] = { 0x01, 0x0f, 0xa0, 10, 9, 9, 9 };
+    static const uint8_t v6[] = { 0x02, 0x0f, 0xa0, 0x20, 0x01, 0xd, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 };
     static const uint8_t both[] = { 0x03, 0x0f, 0xa0, 10, 9, 9, 9, 0x20, 0x01, 0xd, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 };
-    static const uint8_t short_v4[] = { 0x02, 0x0f, 0xa0, 10, 9 };
-    static const uint8_t long_v4[] = { 0x02, 0x0f, 0xa0, 10, 9, 9, 9, 0 };
+    static const uint8_t short_v4[] = { 0x01, 0x0f, 0xa0, 10, 9 };
+    static const uint8_t long_v4[] = { 0x01, 0x0f, 0xa0, 10, 9, 9, 9, 0 };
     static const uint8_t no_addr[] = { 0x04, 0x0f, 0xa0 };
-    static const uint8_t flags_only[] = { 0x02 };
+    static const uint8_t flags_only[] = { 0x01 };
     ogs_tlv_octet_t ie;
 
     memset(&ie, 0, sizeof(ie));
@@ -3441,7 +3441,7 @@ static void test_local_ingress_tunnel_answer(void)
     ie.data = (void *)v6; ie.len = sizeof(v6);
     CHECK(smf_n4mb_local_ingress_tunnel_is_valid(&ie));
     ie.data = (void *)both; ie.len = sizeof(both);
-    CHECK(smf_n4mb_local_ingress_tunnel_is_valid(&ie));
+    CHECK(!smf_n4mb_local_ingress_tunnel_is_valid(&ie)); /* "Only one of the V4 and V6 flags shall be set" */
     ie.data = (void *)short_v4; ie.len = sizeof(short_v4);
     CHECK(!smf_n4mb_local_ingress_tunnel_is_valid(&ie));
     ie.data = (void *)long_v4; ie.len = sizeof(long_v4);

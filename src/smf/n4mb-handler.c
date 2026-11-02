@@ -63,19 +63,20 @@ static bool _set_ingress_tunnel(smf_mbs_sess_t *mbs_sess, ogs_pfcp_local_ingress
     return changed;
 }
 
-/* TS 29.244 V18.10.0 clause 8.2.209: the Local Ingress Tunnel IE is the flags octet (spare, CH, V6, V4), the UDP Port
- * (2 octets) and the IPv4 and IPv6 addresses the flags name. An answer carries the address the MB-UPF allocated: the
- * IE is refused when it is shorter or longer than its flags say, or names no address. */
+/* TS 29.244 V18.10.0 clause 8.2.209: the Local Ingress Tunnel IE is the flags octet (bit 1 V4, bit 2 V6, bit 3 CH), the
+ * UDP Port (2 octets) and the address the set flag names; "Only one of the V4 and V6 flags shall be set to "1"." An
+ * answer carries the address the MB-UPF allocated: the IE is refused when it is shorter or longer than its flags say,
+ * or names no address. */
 bool smf_n4mb_local_ingress_tunnel_is_valid(const ogs_tlv_octet_t *ie)
 {
-    const uint8_t *data = ie ? ie->data : NULL;
+    const ogs_pfcp_local_ingress_tunnel_t *lit = ie ? ie->data : NULL;
     int expected;
 
-    if (!data || ie->len < 1)
+    if (!lit || ie->len < 1)
         return false;
-    if (!(data[0] & 0x03))
+    if (lit->ipv4 == lit->ipv6)
         return false;
-    expected = 1 + 2 + ((data[0] & 0x02) ? OGS_IPV4_LEN : 0) + ((data[0] & 0x01) ? OGS_IPV6_LEN : 0);
+    expected = 1 + 2 + (lit->ipv4 ? OGS_IPV4_LEN : OGS_IPV6_LEN);
     return ie->len == expected;
 }
 
