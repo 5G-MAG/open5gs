@@ -1172,7 +1172,7 @@ def t_create_qer_without_gate_status_reports_gate_status():
 
 # ---- N4mb Session Modification (TS 29.244 cl. 7.5.4) ----------------------------------------------------------
 
-APPLY_DROP, APPLY_FSSM, APPLY_MBSU, APPLY_BUFF = 0x0100, 0x0008, 0x0010, 0x0004
+APPLY_DROP, APPLY_FSSM, APPLY_MBSU, APPLY_BUFF = 0x0100, 0x0008, 0x0010, 0x0400
 
 
 def update_far(far_id=1, apply=None, extra=(), drop=()):
