@@ -2918,24 +2918,29 @@ static void test_ngran_failure_events(void)
     CHECK(smf_mbs_sess_take_ngran_failure_event(mbs_sess, &event, &changes, &restore) == 0);
     CHECK(!restore.restore && changes.count == 0);
 
-    /* a restoration ContextUpdate whose parameters the builder owns: built and freed once */
+    /* the builder reads the parameters and keeps nothing of them (ogs_sbi_xact_add() calls it before it returns, and
+     * keeps no pointer): the same parameters, and the NG-RAN ID text on the stack, serve a second request */
     {
-        smf_namf_context_update_param_t *param = ogs_calloc(1, sizeof(*param));
-        const char **ids = ogs_calloc(1, sizeof(*ids));
+        smf_namf_context_update_param_t param;
+        const char *ids[1];
         smf_mbs_amf_t *amf = smf_mbs_sess_amf_add(mbs_sess);
         ogs_sbi_request_t *request;
+        int pass;
 
         amf->mbs_context_ref = ogs_strdup("9");
-        ids[0] = ogs_strdup(text_a);
-        param->amf = amf;
-        param->no_n2_info_change_ind = true;
-        param->ran_ids = ids;
-        param->num_ran_ids = 1;
-        param->heap_owned = true;
-        request = smf_namf_build_mbs_broadcast_context_update_request(mbs_sess, param);
-        CHECK(request && request->http.content && strstr(request->http.content, "\"ranIdList\"") &&
-                strstr(request->http.content, "n2MbsInfoChangeInd") == NULL);
-        if (request) ogs_sbi_request_free(request);
+        ids[0] = text_a;
+        memset(&param, 0, sizeof(param));
+        param.amf = amf;
+        param.no_n2_info_change_ind = true;
+        param.ran_ids = ids;
+        param.num_ran_ids = 1;
+        for (pass = 0; pass < 2; pass++) {
+            request = smf_namf_build_mbs_broadcast_context_update_request(mbs_sess, &param);
+            CHECK(request && request->http.content && strstr(request->http.content, "\"ranIdList\"") &&
+                    strstr(request->http.content, "n2MbsInfoChangeInd") == NULL);
+            if (request) ogs_sbi_request_free(request);
+        }
+        CHECK(param.ran_ids == ids && ids[0] == text_a);
     }
 
     ogs_free(text_a);

@@ -67,9 +67,6 @@ typedef struct smf_namf_context_update_param_s {
      * GlobalRanNodeId as JSON text (smf_mbs_ran_id_text()); none: all the NG-RANs of the context */
     const char *const *ran_ids;
     int num_ran_ids;
-    /* the param and the NG-RAN ID texts are on the heap and the builder frees them once the request is built (the
-     * request can be built after an asynchronous NF discovery, when the sender has returned) */
-    bool heap_owned;
     /* the container carries the MBS NG-U Failure Indication of an N3mb path failure (TS 23.527 V18.6.0 cl. 8.5) */
     bool n3mb_path_failure;
 } smf_namf_context_update_param_t;

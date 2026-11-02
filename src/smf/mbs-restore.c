@@ -109,8 +109,8 @@ int smf_mbs_sess_take_ngran_failure_event(smf_mbs_sess_t *mbs_sess, const OpenAP
 
 int smf_mbs_sess_send_ngran_restoration(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf, const char *ran_id)
 {
-    smf_namf_context_update_param_t *param = NULL;
-    const char **ran_ids = NULL;
+    smf_namf_context_update_param_t param;
+    const char *ran_ids[1] = { ran_id };
 
     ogs_assert(mbs_sess);
     ogs_assert(ran_id);
@@ -121,23 +121,16 @@ int smf_mbs_sess_send_ngran_restoration(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t 
         return OGS_ERROR;
     }
 
-    param = ogs_calloc(1, sizeof(*param));
-    ogs_assert(param);
-    ran_ids = ogs_calloc(1, sizeof(*ran_ids));
-    ogs_assert(ran_ids);
-    ran_ids[0] = ogs_strdup(ran_id);
-    ogs_assert(ran_ids[0]);
-    param->amf = amf;
-    param->no_n2_info_change_ind = true;
-    param->ran_ids = ran_ids;
-    param->num_ran_ids = 1;
-    param->heap_owned = true;
+    memset(&param, 0, sizeof(param));
+    param.amf = amf;
+    param.no_n2_info_change_ind = true;
+    param.ran_ids = ran_ids;
+    param.num_ran_ids = 1;
 
     ogs_info("MBS session mbsSessionRef[%s]: restoring it in NG-RAN [%s]", mbs_sess->mbs_session_ref, ran_id);
 
-    /* the builder frees param, ran_ids and the text once it ran; when sending fails it may or may not have run, so
-     * nothing is freed here (a failed send leaks these few bytes rather than risk a double free) */
-    if (smf_sbi_send_mbs_broadcast_context_update(mbs_sess, param) != OGS_OK) {
+    /* ogs_sbi_xact_add() builds the request before it returns (lib/sbi/context.c), and keeps no pointer to param */
+    if (smf_sbi_send_mbs_broadcast_context_update(mbs_sess, &param) != OGS_OK) {
         ogs_error("Failed to send MBS Broadcast ContextUpdate to restore an NG-RAN");
         return OGS_ERROR;
     }
@@ -315,8 +308,8 @@ int smf_mbs_node_report_path_failure(ogs_pfcp_node_t *node, const ogs_ip_t *peer
     ogs_list_for_each_safe(&smf_self()->smf_mbs_sess_list, next, mbs_sess) {
         smf_mbs_dl_tunnel_t *tunnel = NULL;
         smf_mbs_amf_t *amf = NULL;
-        smf_namf_context_update_param_t *param = NULL;
-        const char **ran_ids = NULL;
+        smf_namf_context_update_param_t param;
+        const char *ran_ids[1];
 
         if (mbs_sess->pfcp_node != node || mbs_sess->release_triggered)
             continue;
@@ -331,23 +324,17 @@ int smf_mbs_node_report_path_failure(ogs_pfcp_node_t *node, const ogs_ip_t *peer
             continue;
         }
 
-        param = ogs_calloc(1, sizeof(*param));
-        ogs_assert(param);
-        ran_ids = ogs_calloc(1, sizeof(*ran_ids));
-        ogs_assert(ran_ids);
-        ran_ids[0] = ogs_strdup(tunnel->ran_id);
-        ogs_assert(ran_ids[0]);
-        param->amf = amf;
-        param->no_n2_info_change_ind = true;
-        param->ran_ids = ran_ids;
-        param->num_ran_ids = 1;
-        param->n3mb_path_failure = true;
-        param->heap_owned = true;
+        ran_ids[0] = tunnel->ran_id;
+        memset(&param, 0, sizeof(param));
+        param.amf = amf;
+        param.no_n2_info_change_ind = true;
+        param.ran_ids = ran_ids;
+        param.num_ran_ids = 1;
+        param.n3mb_path_failure = true;
 
         ogs_warn("MBS session mbsSessionRef[%s]: N3mb path failure towards NG-RAN [%s]", mbs_sess->mbs_session_ref,
                 tunnel->ran_id);
-        /* see smf_mbs_sess_send_ngran_restoration() for the ownership of param */
-        if (smf_sbi_send_mbs_broadcast_context_update(mbs_sess, param) == OGS_OK)
+        if (smf_sbi_send_mbs_broadcast_context_update(mbs_sess, &param) == OGS_OK)
             sent++;
         else
             ogs_error("Failed to send MBS Broadcast ContextUpdate for an N3mb path failure");

@@ -541,13 +541,6 @@ ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_update_request(
 
     if (ContextUpdateReqData)
         OpenAPI_context_update_req_data_free(ContextUpdateReqData);
-    if (param->heap_owned) {
-        for (i = 0; i < param->num_ran_ids; i++)
-            ogs_free((char *)param->ran_ids[i]);
-        if (param->ran_ids)
-            ogs_free((void *)param->ran_ids);
-        ogs_free(param);
-    }
     /* the request holds a copy of the part */
     if (n2_pkbuf)
         ogs_pkbuf_free(n2_pkbuf);
