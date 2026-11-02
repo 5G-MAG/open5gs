@@ -60,6 +60,7 @@ libupf_sources = files('''
     multicastrouter-path.h
     path-management.h
     mbs-report.h
+    mbs-charging.h
 
     rule-match.c
     init.c
@@ -78,6 +79,7 @@ libupf_sources = files('''
     multicastrouter-path.c
     path-management.c
     mbs-report.c
+    mbs-charging.c
 '''.split())
 
 libtins_dep = dependency('libtins',

@@ -109,6 +109,8 @@ const char *upf_event_get_name(upf_event_t *e)
         return "UPF_EVT_MBS_TIMER";
     case UPF_EVT_MBS_DL_DATA:
         return "UPF_EVT_MBS_DL_DATA";
+    case UPF_EVT_MBS_URR_CHECK:
+        return "UPF_EVT_MBS_URR_CHECK";
 
     default: 
        break;

@@ -32,6 +32,7 @@
 #include "context.h"
 #include "path-management.h"
 #include "mbs-report.h"
+#include "mbs-charging.h"
 #include "gtp-path.h"
 #include "pfcp-path.h"
 #include "n4mb-handler.h"
@@ -972,6 +973,13 @@ void upf_n4mb_handle_session_establishment_request(
             mbs_sess->c_teid = pdr->teid;
     }
 
+    /* Create URR (Table 7.5.2.1-1, N4mb "X"): MBS charging, see mbs-charging.c */
+    cause_value = upf_mbs_urr_check_create(mbs_sess, req->create_urr, OGS_ARRAY_SIZE(req->create_urr), NULL, 0, &offending_ie_value);
+    if (cause_value != OGS_PFCP_CAUSE_REQUEST_ACCEPTED) {
+        ogs_error("Create URR of the N4mb Session Establishment Request is not valid (cause %u)", cause_value);
+        goto cleanup;
+    }
+
     // TODO (borieher): Handle the reception of MBS Session N4mb Control Information IE
     if (req->mbs_session_n4mb_control_information.presence) {
 
@@ -1123,6 +1131,8 @@ void upf_n4mb_handle_session_establishment_request(
             _join_session_ssm(mbs_sess, &cause_value, &offending_ie_value) != OGS_OK)
         goto cleanup;
 
+    upf_mbs_urr_create(mbs_sess, req->create_urr, OGS_ARRAY_SIZE(req->create_urr));
+
     ogs_assert(OGS_OK ==
             upf_pfcp_n4mb_send_session_establishment_response(
                 xact, mbs_sess, created_pdr, num_of_created_pdr));
@@ -1158,16 +1168,13 @@ static bool _modification_ie_not_supported(const ogs_pfcp_session_modification_r
 {
     static const struct { size_t offset; uint16_t type; } ies[] = {
         { offsetof(ogs_pfcp_session_modification_request_t, cp_f_seid), OGS_PFCP_F_SEID_TYPE },
-        { offsetof(ogs_pfcp_session_modification_request_t, remove_urr), OGS_PFCP_REMOVE_URR_TYPE },
         { offsetof(ogs_pfcp_session_modification_request_t, remove_traffic_endpoint),
             OGS_PFCP_REMOVE_TRAFFIC_ENDPOINT_TYPE },
-        { offsetof(ogs_pfcp_session_modification_request_t, create_urr), OGS_PFCP_CREATE_URR_TYPE },
         { offsetof(ogs_pfcp_session_modification_request_t, create_traffic_endpoint),
             OGS_PFCP_CREATE_TRAFFIC_ENDPOINT_TYPE },
         { offsetof(ogs_pfcp_session_modification_request_t, update_urr), OGS_PFCP_UPDATE_URR_TYPE },
         { offsetof(ogs_pfcp_session_modification_request_t, update_traffic_endpoint),
             OGS_PFCP_UPDATE_TRAFFIC_ENDPOINT_TYPE },
-        { offsetof(ogs_pfcp_session_modification_request_t, query_urr), OGS_PFCP_QUERY_URR_TYPE },
     };
     size_t i;
 
@@ -1590,9 +1597,14 @@ static void _release_buffered_packets(upf_mbs_sess_t *mbs_sess, ogs_pfcp_far_t *
         if (pdr && pdr->far == far && (far->apply_action & (OGS_PFCP_APPLY_ACTION_FSSM | OGS_PFCP_APPLY_ACTION_MBSU))) {
             ogs_gtp2_header_desc_t sendhdr;
 
+            uint32_t octets = buf->len;
+            bool counted = upf_mbs_far_has_destination(far);
+
             memset(&sendhdr, 0, sizeof(sendhdr));
             sendhdr.type = OGS_GTPU_MSGTYPE_GPDU;
             ogs_pfcp_send_g_pdu_mbs(pdr, &sendhdr, buf);
+            if (counted)
+                upf_mbs_urr_account(mbs_sess, octets);      /* MBS charging: it is forwarded now */
         } else {
             ogs_pkbuf_free(buf);
         }
@@ -1771,6 +1783,8 @@ void upf_n4mb_handle_session_modification_request(
     mbs_unicast_journal_t journal;
     ogs_pfcp_far_t *far;
     bool delete_all_f_teids = false;
+    bool query_all_urrs = false;
+    ogs_pfcp_user_plane_report_t *report = NULL;
 
     ogs_assert(xact);
     ogs_assert(req);
@@ -1801,13 +1815,15 @@ void upf_n4mb_handle_session_modification_request(
         flags.value = req->pfcpsmreq_flags.u8;
         /* "Bit 8 – Spare, for future use, shall be set to "0" by the sender and discarded by the receiver." (cl. 8.2.31) */
         flags.value &= 0x7f;
-        if (flags.value & ~(uint8_t)(1 << 5)) {   /* bit 6, DETEID, is the only one supported */
-            ogs_error("PFCPSMReq-Flags 0x%02x: only DETEID is supported", flags.value);
+        /* Table 7.5.4.1-1, N4mb "X": QAURR (bit 3, usage reports of all URRs) and DETEID (bit 6) */
+        if (flags.value & ~(uint8_t)((1 << 5) | (1 << 2))) {
+            ogs_error("PFCPSMReq-Flags 0x%02x: only QAURR and DETEID are supported", flags.value);
             cause_value = OGS_PFCP_CAUSE_SERVICE_NOT_SUPPORTED;
             offending_ie_value = OGS_PFCP_PFCPSMREQ_FLAGS_TYPE;
             goto reject;
         }
         delete_all_f_teids = flags.delete_all_dl_n3mb_and_or_n19mb_f_teids;
+        query_all_urrs = flags.query_all_urrs;
     }
 
     if (req->user_plane_inactivity_timer.presence && req->user_plane_inactivity_timer.len != sizeof(uint32_t)) {
@@ -1818,6 +1834,15 @@ void upf_n4mb_handle_session_modification_request(
     }
 
     if (_check_flow_changes(mbs_sess, req, &cause_value, &offending_ie_value) != OGS_OK)
+        goto reject;
+
+    /* URRs (Table 7.5.4.1-1, N4mb "X": Create URR, Remove URR, Query URR; Update URR is not applied, see _modification_ie_not_supported()) */
+    cause_value = upf_mbs_urr_check_remove_query(mbs_sess, req->remove_urr, OGS_ARRAY_SIZE(req->remove_urr),
+            req->query_urr, OGS_ARRAY_SIZE(req->query_urr), &offending_ie_value);
+    if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED)
+        cause_value = upf_mbs_urr_check_create(mbs_sess, req->create_urr, OGS_ARRAY_SIZE(req->create_urr),
+                req->remove_urr, OGS_ARRAY_SIZE(req->remove_urr), &offending_ie_value);
+    if (cause_value != OGS_PFCP_CAUSE_REQUEST_ACCEPTED)
         goto reject;
 
     for (i = 0; i < OGS_MAX_NUM_OF_FAR && req->update_far[i].presence; i++) {
@@ -1878,7 +1903,17 @@ void upf_n4mb_handle_session_modification_request(
 
     _remove_flows(mbs_sess, req);
 
-    ogs_assert(OGS_OK == upf_pfcp_n4mb_send_session_modification_response(xact, mbs_sess));
+    /* URRs: the reports of the queries and of the removals first (before any update, cl. 5.2.2.3.1), then the new URRs */
+    report = ogs_calloc(1, sizeof(*report));
+    ogs_assert(report);
+    upf_mbs_urr_query_and_remove(mbs_sess, req->query_urr, OGS_ARRAY_SIZE(req->query_urr), query_all_urrs,
+            req->remove_urr, OGS_ARRAY_SIZE(req->remove_urr), report);
+    upf_mbs_urr_create(mbs_sess, req->create_urr, OGS_ARRAY_SIZE(req->create_urr));
+
+    ogs_assert(OGS_OK == upf_pfcp_n4mb_send_session_modification_response_report(xact, mbs_sess, report,
+                req->query_urr_reference.presence ? req->query_urr_reference.data : NULL,
+                req->query_urr_reference.presence ? req->query_urr_reference.len : 0));
+    ogs_free(report);
     upf_gtpu_path_sync();
     if (req->user_plane_inactivity_timer.presence) {
         uint32_t seconds;

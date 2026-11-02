@@ -20,6 +20,7 @@
 
 #include "context.h"
 #include "path-management.h"
+#include "mbs-charging.h"
 #include "pfcp-path.h"
 #include "multicastrouter/multicastrouter.h"
 
@@ -56,7 +57,10 @@ void upf_context_init(void)
     ogs_pfcp_self()->up_function_features.mnop = 1;
     ogs_pfcp_self()->up_function_features.vtime = 1;
     ogs_pfcp_self()->up_function_features.frrt = 1;
-    ogs_pfcp_self()->up_function_features_len = 4;
+    /* MBS charging (TS 29.244 cl. 5.34.2.5: "The MB-UPF shall set the MBSCH feature flag in the UP Function Features IE ... if it supports MBS charging"),
+     * octet 14 bit 1: the IE is sent up to that octet */
+    ogs_pfcp_self()->up_function_features.mbsch = 1;
+    ogs_pfcp_self()->up_function_features_len = 10;
 
     ogs_list_init(&self.sess_list);
     ogs_pool_init(&upf_sess_pool, ogs_app()->pool.sess);
@@ -1351,6 +1355,7 @@ void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess)
         upf_mbs_sess->udp_tunnel_pkbuf_pool = NULL;
     }
 
+    upf_mbs_urr_free_all(upf_mbs_sess);
     if (upf_mbs_sess->t_up_inactivity) {
         ogs_timer_delete(upf_mbs_sess->t_up_inactivity);
         upf_mbs_sess->t_up_inactivity = NULL;

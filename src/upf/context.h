@@ -148,6 +148,27 @@ typedef struct upf_sess_s {
 } upf_sess_t;
 
 // TODO (borieher): Continue implementing this
+/* A URR of an MBS session (TS 29.244 cl. 5.34.2.5: volume measurement of the MBS data of the whole session), see mbs-charging.c */
+typedef struct upf_mbs_urr_acc_s {
+    bool used;
+    uint64_t seid;                      /* UPF N4mb SEID of the session: the data of the timer */
+    ogs_pfcp_urr_id_t id;
+    uint32_t seqn;                      /* UR-SEQN of the next Usage Report */
+    ogs_pfcp_reporting_triggers_t triggers;
+    uint32_t period;                    /* Measurement Period in seconds, 0: none */
+    bool thr_total, thr_downlink;       /* Volume Threshold: the flags TOVOL and DLVOL */
+    uint64_t thr_total_volume, thr_downlink_volume;
+    bool linked;                        /* Linked URR ID, with the trigger LIUSA */
+    ogs_pfcp_urr_id_t linked_id;
+    uint64_t total_octets, dl_octets;   /* measured: added by the data path (atomic) */
+    uint64_t rep_total_octets, rep_dl_octets;   /* at the last Usage Report of the URR */
+    uint64_t thr_total_octets, thr_dl_octets;   /* at the last Usage Report caused by the threshold */
+    ogs_time_t period_start;            /* start of the measurement of the next report */
+    ogs_time_t time_of_first_packet, time_of_last_packet;
+    int check_pending;                  /* an event for the threshold is queued */
+    ogs_timer_t *t_period;
+} upf_mbs_urr_acc_t;
+
 typedef struct upf_mbs_sess_s {
     ogs_lnode_t lnode;      /* A node of list_t */
 
@@ -203,6 +224,8 @@ typedef struct upf_mbs_sess_s {
     uint32_t up_inactivity_timer;   /* seconds */
     ogs_time_t last_dl_packet;      /* the last MBS data packet the session got, set by the data path */
     ogs_timer_t *t_up_inactivity;
+
+    upf_mbs_urr_acc_t urr_acc[OGS_MAX_NUM_OF_URR];     /* the URRs of the session */
 } upf_mbs_sess_t;
 
 void upf_mbs_session_id_clear(ogs_mbs_session_id_t *id);

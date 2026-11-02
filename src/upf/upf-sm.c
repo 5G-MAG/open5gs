@@ -24,6 +24,7 @@
 #include "gtp-path.h"
 #include "path-management.h"
 #include "mbs-report.h"
+#include "mbs-charging.h"
 
 void upf_state_initial(ogs_fsm_t *s, upf_event_t *e)
 {
@@ -113,7 +114,13 @@ void upf_state_operational(ogs_fsm_t *s, upf_event_t *e)
         upf_gtpu_path_handle_echo_response(&e->peer_ip, e->sequence_number);
         break;
     case UPF_EVT_MBS_TIMER:
-        upf_mbs_report_handle_timer(e->timer_id, e->seid);
+        if (e->timer_id == UPF_TIMER_MBS_PERIOD)
+            upf_mbs_charging_handle_period(e->seid, e->urr_id);
+        else
+            upf_mbs_report_handle_timer(e->timer_id, e->seid);
+        break;
+    case UPF_EVT_MBS_URR_CHECK:
+        upf_mbs_charging_handle_check(e->seid, e->urr_id);
         break;
     case UPF_EVT_MBS_DL_DATA:
         upf_mbs_report_handle_dl_data(e->seid, e->pdr_id, e->qfi);

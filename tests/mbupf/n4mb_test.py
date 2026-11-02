@@ -185,6 +185,7 @@ upf:
         body = ie(T_NODE_ID, b'\x00' + socket.inet_aton('127.0.0.77')) + ie(96, struct.pack('>I', 3900000000))
         r = self.xchg(msg(5, self.nextseq(), body))
         assert r, 'no association response'
+        self.assoc_rsp = r[0]
 
     def request(self, mtype, ies, seid=0):
         body = b''.join(ies)
@@ -1291,8 +1292,8 @@ def t_U08_modification_that_is_not_valid_changes_nothing():
         assert m and cause(m) == CAUSE_MANDATORY_INCORRECT, 'cause %s' % (cause(m) if m else None)
         assert not forwards(r), 'a rejected request changed the FAR'
         # an IE of the N4mb request that the MB-UPF does not process is rejected, not skipped
-        m = modify(s, update_far(apply=APPLY_FSSM), ie(6, [ie(81, struct.pack('>I', 9))]))
-        assert m and cause(m) == CAUSE_SERVICE_NOT_SUPPORTED and offending(m) == 6, 'Create URR: %s/%s' % (cause(m), offending(m))
+        m = modify(s, update_far(apply=APPLY_FSSM), ie(13, [ie(81, struct.pack('>I', 9))]))
+        assert m and cause(m) == CAUSE_SERVICE_NOT_SUPPORTED and offending(m) == 13, 'Update URR: %s/%s' % (cause(m), offending(m))
         assert not forwards(r), 'a rejected request changed the FAR'
     finally:
         U.delete(s)
@@ -1620,7 +1621,7 @@ def t_U08_7_deteid_deletes_all_provisioned_f_teids():
         got = sent_to(r, *peers)[0]
         assert [len(x) for x in got] == [1, 0], 'a rejected request with DETEID deleted the peers'
         # other flags are not supported: rejected, not ignored
-        m = modify(s, update_far(apply=APPLY_DROP), smreq_flags(0x04))
+        m = modify(s, update_far(apply=APPLY_DROP), smreq_flags(0x01))      # DROBU: "-" for N4mb in Table 7.5.4.1-1
         assert m and cause(m) == CAUSE_SERVICE_NOT_SUPPORTED and offending(m) == 49, '%s/%s' % (cause(m) if m else None, offending(m) if m else None)
     finally:
         for p in peers:
@@ -3236,6 +3237,209 @@ def t_user_plane_inactivity_is_reported_once_and_follows_updates():
     U.delete(s)
     assert session_report(s, 3.5) is None, 'a report for a session that ended'
     assert U.alive()
+
+
+T_CREATE_URR_, T_REMOVE_URR_, T_QUERY_URR_, T_URR_ID_, T_MEAS_METHOD, T_REP_TRIGGERS, T_MEAS_PERIOD, T_VOL_THR, T_LINKED_URR = 6, 17, 77, 81, 62, 37, 64, 31, 82
+T_USAGE_REPORT = {'mod': 78, 'del': 79, 'req': 80}
+T_UR_SEQN, T_UR_TRIGGER, T_VOL_MEAS, T_QUERY_REF = 104, 63, 66, 125
+RT_PERIO, RT_VOLTH, RT_LIUSA = 0x01, 0x02, 0x80          # Reporting Triggers, octet 5 (cl. 8.2.19)
+UT_IMMER = (0x80, 0x00)                                   # Usage Report Trigger octets 5 and 6 (cl. 8.2.41)
+UT_VOLTH, UT_PERIO, UT_LIUSA, UT_TERMR = (0x02, 0), (0x01, 0), (0, 0x04), (0, 0x08)
+
+
+def create_urr(urr_id, triggers=0, method=2, period=None, vol_total=None, linked=None, extra=()):
+    parts = [ie(T_URR_ID_, struct.pack('>I', urr_id)), ie(T_MEAS_METHOD, bytes([method])), ie(T_REP_TRIGGERS, bytes([triggers, 0, 0]))]
+    if period is not None:
+        parts.append(ie(T_MEAS_PERIOD, struct.pack('>I', period)))
+    if vol_total is not None:
+        parts.append(ie(T_VOL_THR, b'\x01' + struct.pack('>Q', vol_total)))
+    if linked is not None:
+        parts.append(ie(T_LINKED_URR, struct.pack('>I', linked)))
+    return ie(T_CREATE_URR_, parts + list(extra))
+
+
+def remove_urr(urr_id):
+    return ie(T_REMOVE_URR_, [ie(T_URR_ID_, struct.pack('>I', urr_id))])
+
+
+def query_urr(urr_id):
+    return ie(T_QUERY_URR_, [ie(T_URR_ID_, struct.pack('>I', urr_id))])
+
+
+def usage_reports(ies, kind):
+    """The Usage Reports of a message as dicts: id, seqn, trigger (octets 5, 6), volume (total, uplink, downlink), ref."""
+    out = []
+    for t, v in ies:
+        if t != T_USAGE_REPORT[kind]:
+            continue
+        d = dict(parse_ies(v))
+        vm = d[T_VOL_MEAS]
+        assert vm[0] == 0x07, 'volume measurement flags %02x: all three counters are reported' % vm[0]
+        out.append(dict(id=struct.unpack('>I', d[T_URR_ID_])[0], seqn=struct.unpack('>I', d[T_UR_SEQN])[0],
+                        trigger=(d[T_UR_TRIGGER][0], d[T_UR_TRIGGER][1]), total=struct.unpack('>Q', vm[1:9])[0],
+                        uplink=struct.unpack('>Q', vm[9:17])[0], downlink=struct.unpack('>Q', vm[17:25])[0],
+                        ref=d.get(T_QUERY_REF), start='75' and d.get(75) is not None, end=d.get(76) is not None))
+    return out
+
+
+def charged_session(cp_seid, *urrs):
+    """The session of the MB-SMF (ingress tunnel) with URRs in the establishment."""
+    return U.establish(smf_session(cp_seid) + list(urrs))
+
+
+PKT = 36        # the IP packet that ip_packet() sends: 20 octets of IP header, 8 of UDP header and the payload of 8
+
+
+@test
+def t_mbsch_is_advertised_and_the_volume_of_mbs_data_is_reported():
+    """TS 29.244 cl. 5.34.2.5: "The MB-UPF shall set the MBSCH feature flag in the UP Function Features IE ... if it supports MBS charging"; "Only volume-based
+    measurement shall be used"; "The measured volume corresponds to the volume of MBS data received from the AF or MBSTF that is transmitted downstreams towards
+    at least one NG-RAN or UPF"; cl. 5.2.2.3.1: UR-SEQN "set to "0" for the first Usage Report and incremented"; "At the PFCP session termination, the UP function
+    shall indicate ... in the PFCP Session Deletion Response, the resources that have been consumed for each URR"."""
+    feat = dict(parse_ies(U.assoc_rsp[8:]))[43]
+    assert len(feat) >= 10 and feat[14 - 5] & 0x01, 'MBSCH (octet 14 bit 1) is not set in the UP Function Features: %s' % feat.hex()
+    r = charged_session(0xfd11, create_urr(1))
+    s = accepted(r, 'session with a URR')
+    try:
+        for _ in range(3):
+            assert tunnel_packet_qfi(r, 5000) == 1
+        m = modify(s, query_urr(1), ie(T_QUERY_REF, struct.pack('>I', 0x01020304)))
+        assert m and cause(m) == CAUSE_ACCEPTED, '%s/%s' % (cause(m) if m else None, offending(m) if m else None)
+        ur = usage_reports(m['ies'], 'mod')
+        assert len(ur) == 1 and ur[0]['id'] == 1 and ur[0]['seqn'] == 0, ur
+        assert ur[0]['trigger'] == UT_IMMER and ur[0]['total'] == 3 * PKT and ur[0]['downlink'] == 3 * PKT and ur[0]['uplink'] == 0, ur
+        assert ur[0]['ref'] == struct.pack('>I', 0x01020304), 'Query URR Reference %s' % ur[0]['ref']
+        assert ur[0]['start'] and ur[0]['end']
+        # the counts were reset; the sequence number counts on
+        m = modify(s, query_urr(1))
+        ur = usage_reports(m['ies'], 'mod')
+        assert ur[0]['seqn'] == 1 and ur[0]['total'] == 0 and ur[0]['ref'] is None, ur
+        # what is dropped, buffered or discarded by a closed gate is not forwarded: not measured
+        assert modify(s, update_far(apply=APPLY_DROP))
+        tunnel_packet_qfi(r, 5000)
+        assert modify(s, update_far(apply=APPLY_BUFF))
+        tunnel_packet_qfi(r, 5000)
+        assert modify(s, update_far(apply=APPLY_FSSM))        # the buffered packet is forwarded now (counted once)
+        time.sleep(0.3)
+        assert tunnel_packet_qfi(r, 5000) == 1
+        m = modify(s, query_urr(1))
+        ur = usage_reports(m['ies'], 'mod')
+        assert ur[0]['total'] == 2 * PKT, 'the dropped packet was measured or the buffered one was lost: %s' % ur
+    finally:
+        d = U.delete(s)
+    assert d and cause(d) == CAUSE_ACCEPTED
+    ur = usage_reports(d['ies'], 'del')
+    assert len(ur) == 1 and ur[0]['id'] == 1 and ur[0]['seqn'] == 3 and ur[0]['trigger'] == UT_TERMR and ur[0]['total'] == 0, ur
+
+
+@test
+def t_mbs_charging_requests_qaurr_remove_and_the_urrs_that_are_not_for_n4mb():
+    r = charged_session(0xfd21, create_urr(1), create_urr(2))
+    s = accepted(r, 'two URRs')
+    try:
+        for _ in range(2):
+            tunnel_packet_qfi(r, 5000)
+        # QAURR (PFCPSMReq-Flags bit 3): the reports of all URRs
+        m = modify(s, smreq_flags(0x04))
+        assert m and cause(m) == CAUSE_ACCEPTED, '%s/%s' % (cause(m) if m else None, offending(m) if m else None)
+        ur = sorted(usage_reports(m['ies'], 'mod'), key=lambda u: u['id'])
+        assert [(u['id'], u['total']) for u in ur] == [(1, 2 * PKT), (2, 2 * PKT)], ur
+        # Remove URR: the usage that was not reported goes in the response, the URR is gone
+        tunnel_packet_qfi(r, 5000)
+        m = modify(s, remove_urr(2))
+        ur = usage_reports(m['ies'], 'mod')
+        assert len(ur) == 1 and ur[0]['id'] == 2 and ur[0]['total'] == PKT, ur
+        m = modify(s, query_urr(2))
+        assert m and cause(m) == CAUSE_MANDATORY_INCORRECT and offending(m) == T_URR_ID_, 'a removed URR can be queried'
+        m = modify(s, remove_urr(2))
+        assert m and cause(m) == CAUSE_MANDATORY_INCORRECT
+        # a new URR with the ID of the removed one, in a request that removes the other one too
+        m = modify(s, remove_urr(1), create_urr(2, triggers=RT_PERIO, period=100))
+        assert m and cause(m) == CAUSE_ACCEPTED, '%s/%s' % (cause(m) if m else None, offending(m) if m else None)
+        # invalid Create URR: nothing changes
+        def bad(what, c, o, *ies):
+            m = modify(s, *ies)
+            assert m and cause(m) == c and offending(m) == o, '%s: cause %s offending %s, wanted %s/%s' % (
+                what, cause(m) if m else None, offending(m) if m else None, c, o)
+        bad('URR ID in use', CAUSE_RULE_FAILURE, T_URR_ID_, create_urr(2))
+        bad('time measurement', CAUSE_MANDATORY_INCORRECT, T_MEAS_METHOD, create_urr(5, method=1))
+        bad('time and volume measurement', CAUSE_MANDATORY_INCORRECT, T_MEAS_METHOD, create_urr(5, method=3))
+        bad('event measurement', CAUSE_MANDATORY_INCORRECT, T_MEAS_METHOD, create_urr(5, method=4))
+        bad('a trigger of a time threshold', CAUSE_SERVICE_NOT_SUPPORTED, T_REP_TRIGGERS, create_urr(5, triggers=0x04))
+        bad('VOLTH without Volume Threshold', CAUSE_CONDITIONAL_MISSING, T_VOL_THR, create_urr(5, triggers=RT_VOLTH))
+        bad('PERIO without Measurement Period', CAUSE_CONDITIONAL_MISSING, T_MEAS_PERIOD, create_urr(5, triggers=RT_PERIO))
+        bad('LIUSA without Linked URR ID', CAUSE_CONDITIONAL_MISSING, T_LINKED_URR, create_urr(5, triggers=RT_LIUSA))
+        bad('no Measurement Method', CAUSE_MANDATORY_MISSING, T_MEAS_METHOD,
+            ie(T_CREATE_URR_, [ie(T_URR_ID_, struct.pack('>I', 5)), ie(T_REP_TRIGGERS, b'\x00\x00\x00')]))
+        # a flow added with a bad URR leaves nothing (the checks come first)
+        m = modify(s, *(flow_rules(3, 3) + [create_urr(5, method=1)]))
+        assert m and cause(m) == CAUSE_MANDATORY_INCORRECT
+        m = modify(s, *flow_rules(3, 3))
+        assert m and cause(m) == CAUSE_ACCEPTED, 'a refused request left the flow: %s' % (cause(m) if m else None)
+        # Update URR has an inconsistent N4mb column (the URR ID, M, is "-"): not applied
+        m = modify(s, ie(13, [ie(T_URR_ID_, struct.pack('>I', 2)), ie(T_REP_TRIGGERS, b'\x00\x00\x00')]))
+        assert m and cause(m) == CAUSE_SERVICE_NOT_SUPPORTED, 'Update URR: %s' % (cause(m) if m else None)
+    finally:
+        U.delete(s)
+    # a session established with an invalid URR is refused and not created
+    r = U.establish(smf_session(0xfd22) + [create_urr(1, method=1)])
+    assert r is not None and cause(r) == CAUSE_MANDATORY_INCORRECT and offending(r) == T_MEAS_METHOD, 'cause %s' % (cause(r) if r else None)
+    assert U.alive()
+
+
+@test
+def t_mbs_charging_reports_volume_threshold_period_and_linked_usage():
+    """cl. 5.2.2.3.1: "When detecting that a provisioned reporting trigger occurs, the UP function shall generate a Usage Report for the related URR and send it
+    to the CP function by initiating the PFCP Session Report procedure"; cl. 5.2.2.4: "When a usage report is to be generated for the URR "Y" ... the UP function
+    shall also send a Usage Report for the URR "X" with the accumulated usage information, and the Usage Report Trigger IE set to Linked Usage Reporting"."""
+    # volume threshold of 100 octets: the third packet (108) reaches it; URR 2 is linked to URR 1
+    r = charged_session(0xfd31, create_urr(1, triggers=RT_VOLTH, vol_total=100), create_urr(2, triggers=RT_LIUSA, linked=1), create_urr(3))
+    s = accepted(r, 'URR with a volume threshold')
+    try:
+        tunnel_packet_qfi(r, 5000)
+        tunnel_packet_qfi(r, 5000)
+        assert session_report(s, 0.5) is None, 'a report below the threshold'
+        tunnel_packet_qfi(r, 5000)
+        rep = session_report(s, 3)
+        assert rep is not None, 'no Session Report Request for the volume threshold'
+        assert find({'ies': rep[1]}, T_REPORT_TYPE) == b'\x02', 'Report Type %s (USAR)' % find({'ies': rep[1]}, T_REPORT_TYPE)
+        ur = sorted(usage_reports(rep[1], 'req'), key=lambda u: u['id'])
+        assert [(u['id'], u['trigger'], u['total']) for u in ur] == [(1, UT_VOLTH, 3 * PKT), (2, UT_LIUSA, 3 * PKT)], ur
+        # the threshold is re-applied from the report on
+        tunnel_packet_qfi(r, 5000)
+        tunnel_packet_qfi(r, 5000)
+        assert session_report(s, 0.5) is None
+        # an immediate report is not a threshold report: the threshold is adjusted by what it reported (cl. 5.2.2.3.1)
+        m = modify(s, query_urr(3))
+        assert usage_reports(m['ies'], 'mod')[0]['total'] == 5 * PKT
+        tunnel_packet_qfi(r, 5000)
+        rep = session_report(s, 3)
+        assert rep is not None and usage_reports(rep[1], 'req')[0]['total'] == 3 * PKT, 'the third packet after the report reaches the threshold again'
+        # a query of URR 1 reports the linked URR 2 with it
+        m = modify(s, query_urr(1))
+        ur = sorted(usage_reports(m['ies'], 'mod'), key=lambda u: u['id'])
+        assert [u['id'] for u in ur] == [1] or [u['id'] for u in ur] == [1, 2], ur
+    finally:
+        U.delete(s)
+    # periodic reporting every 2 seconds
+    r = charged_session(0xfd32, create_urr(1, triggers=RT_PERIO, period=2))
+    s = accepted(r, 'periodic URR')
+    try:
+        tunnel_packet_qfi(r, 5000)
+        t0 = time.time()
+        rep = session_report(s, 5)
+        assert rep is not None and 1.0 < time.time() - t0 + 0.7 < 4.5, 'no periodic report'
+        ur = usage_reports(rep[1], 'req')
+        assert ur[0]['trigger'] == UT_PERIO and ur[0]['total'] == PKT and ur[0]['seqn'] == 0, ur
+        rep = session_report(s, 5)
+        assert rep is not None and usage_reports(rep[1], 'req')[0]['seqn'] == 1 and usage_reports(rep[1], 'req')[0]['total'] == 0
+    finally:
+        U.delete(s)
+    # the session that ends with a period running: no report afterwards, the daemon lives
+    r = charged_session(0xfd33, create_urr(1, triggers=RT_PERIO, period=1))
+    s = accepted(r, 'second periodic URR')
+    U.delete(s)
+    assert session_report(s, 2.5) is None and U.alive()
 
 
 # E-TESTS-BELOW

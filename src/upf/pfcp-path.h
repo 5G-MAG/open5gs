@@ -49,6 +49,9 @@ int upf_pfcp_n4mb_send_session_report_request(
         upf_mbs_sess_t *mbs_sess, ogs_pfcp_user_plane_report_t *report);
 int upf_pfcp_n4mb_send_session_deletion_response(
         ogs_pfcp_xact_t *xact, upf_mbs_sess_t *mbs_sess);
+int upf_pfcp_n4mb_send_session_modification_response_report(
+        ogs_pfcp_xact_t *xact, upf_mbs_sess_t *mbs_sess, const ogs_pfcp_user_plane_report_t *report,
+        const void *query_urr_reference, uint32_t query_urr_reference_len);
 int upf_pfcp_n4mb_send_session_modification_response(
         ogs_pfcp_xact_t *xact, upf_mbs_sess_t *mbs_sess);
 

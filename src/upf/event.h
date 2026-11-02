@@ -41,6 +41,7 @@ typedef enum {
     UPF_EVT_GTPU_ECHO_RESPONSE,   /* peer_ip, sequence_number */
     UPF_EVT_MBS_TIMER,            /* timer_id, seid */
     UPF_EVT_MBS_DL_DATA,          /* seid, pdr_id, qfi: the first packet buffered for a PDR of an MBS session */
+    UPF_EVT_MBS_URR_CHECK,        /* seid, urr_id: the data path saw a volume threshold reached */
 
     UPF_EVT_TOP,
 
@@ -63,6 +64,7 @@ typedef struct upf_event_s {
     uint64_t seid;              /* UPF N4mb SEID of the MBS session */
     uint16_t pdr_id;
     uint8_t qfi;
+    uint32_t urr_id;
 } upf_event_t;
 
 OGS_STATIC_ASSERT(OGS_EVENT_SIZE >= sizeof(upf_event_t));

@@ -354,8 +354,9 @@ int upf_pfcp_n4mb_send_session_deletion_response(
     return rv;
 }
 
-int upf_pfcp_n4mb_send_session_modification_response(
-        ogs_pfcp_xact_t *xact, upf_mbs_sess_t *mbs_sess)
+int upf_pfcp_n4mb_send_session_modification_response_report(
+        ogs_pfcp_xact_t *xact, upf_mbs_sess_t *mbs_sess, const ogs_pfcp_user_plane_report_t *report,
+        const void *query_urr_reference, uint32_t query_urr_reference_len)
 {
     int rv;
     ogs_pkbuf_t *n4mbbuf = NULL;
@@ -368,7 +369,8 @@ int upf_pfcp_n4mb_send_session_modification_response(
     h.type = OGS_PFCP_SESSION_MODIFICATION_RESPONSE_TYPE;
     h.seid = mbs_sess->smf_n4mb_f_seid.seid;
 
-    n4mbbuf = upf_n4mb_build_session_modification_response(h.type, mbs_sess);
+    n4mbbuf = upf_n4mb_build_session_modification_response(h.type, mbs_sess, report,
+            query_urr_reference, query_urr_reference_len);
     if (!n4mbbuf) {
         ogs_error("upf_n4mb_build_session_modification_response() failed");
         return OGS_ERROR;
@@ -384,6 +386,12 @@ int upf_pfcp_n4mb_send_session_modification_response(
     ogs_expect(rv == OGS_OK);
 
     return rv;
+}
+
+int upf_pfcp_n4mb_send_session_modification_response(
+        ogs_pfcp_xact_t *xact, upf_mbs_sess_t *mbs_sess)
+{
+    return upf_pfcp_n4mb_send_session_modification_response_report(xact, mbs_sess, NULL, NULL, 0);
 }
 
 static void sess_timeout(ogs_pfcp_xact_t *xact, void *data)

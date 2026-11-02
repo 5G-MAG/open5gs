@@ -29,7 +29,8 @@ ogs_pkbuf_t *upf_n4mb_build_session_establishment_response(uint8_t type,
     upf_mbs_sess_t *mbs_sess, ogs_pfcp_pdr_t *created_pdr[], int num_of_created_pdr);
 
 ogs_pkbuf_t *upf_n4mb_build_session_deletion_response(uint8_t type, upf_mbs_sess_t *mbs_sess);
-ogs_pkbuf_t *upf_n4mb_build_session_modification_response(uint8_t type, upf_mbs_sess_t *mbs_sess);
+ogs_pkbuf_t *upf_n4mb_build_session_modification_response(uint8_t type, upf_mbs_sess_t *mbs_sess,
+        const ogs_pfcp_user_plane_report_t *report, const void *query_urr_reference, uint32_t query_urr_reference_len);
 
 #ifdef __cplusplus
 }

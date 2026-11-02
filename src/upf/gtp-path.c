@@ -20,6 +20,7 @@
 #include "context.h"
 #include "path-management.h"
 #include "mbs-report.h"
+#include "mbs-charging.h"
 
 #if HAVE_NETINET_IP_H
 #include <netinet/ip.h>
@@ -312,8 +313,14 @@ void upf_gtpv1_receive_buffer_for_mbs_sess(ogs_pkbuf_t *recvbuf, upf_mbs_sess_t 
         bool notify = pdr->far && (pdr->far->apply_action & OGS_PFCP_APPLY_ACTION_BUFF) &&
             (pdr->far->apply_action & OGS_PFCP_APPLY_ACTION_NOCP) && !far_buffers_pdr(pdr);
 
+        /* MBS charging: the volume of the MBS data that is sent to at least one destination, once (TS 29.244 cl. 5.34.2.5 NOTE) */
+        bool counted = pdr->far && upf_mbs_far_has_destination(pdr->far);
+        uint32_t octets = recvbuf->len;
+
         ogs_assert(true == ogs_pfcp_up_handle_pdr(
                     pdr, OGS_GTPU_MSGTYPE_GPDU, NULL, recvbuf, &report));
+        if (counted)
+            upf_mbs_urr_account(mbs_sess, octets);
         if (notify && pdr->far->num_of_buffered_packet > held)
             upf_mbs_report_dl_data_event(mbs_sess, pdr->id, pdr->qer ? pdr->qer->qfi : 0);
         return;

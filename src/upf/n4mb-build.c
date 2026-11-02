@@ -19,6 +19,7 @@
  */
 
 #include "context.h"
+#include "mbs-charging.h"
 #include "n4mb-build.h"
 
 ogs_pkbuf_t *upf_n4mb_build_session_establishment_response(uint8_t type,
@@ -188,15 +189,25 @@ ogs_pkbuf_t *upf_n4mb_build_session_deletion_response(uint8_t type, upf_mbs_sess
     ogs_assert(mbs_sess);
 
     memset(&report, 0, sizeof(report));
+    /* the resources consumed for each URR since its last report (TS 29.244 cl. 5.2.2.3.1) */
+    upf_mbs_urr_terminate(mbs_sess, &report);
 
     return ogs_pfcp_build_session_deletion_response(type, OGS_PFCP_CAUSE_REQUEST_ACCEPTED, &report);
 }
 
-/* The response to an N4mb Session Modification Request that was accepted: the Cause only (TS 29.244 Table 7.5.5.1-1). */
-ogs_pkbuf_t *upf_n4mb_build_session_modification_response(uint8_t type, upf_mbs_sess_t *mbs_sess)
+/*
+ * The Session Modification Response: the Usage Reports of Query URR, QAURR and Remove URR (Table 7.5.5.1-1, "Usage Report ... shall be present
+ * if the Query URR IE was present or the QAURR flag was set ... ") with the Query URR Reference of the request ("This IE shall be present if
+ * this usage report is sent as a result of a query URR received").
+ */
+ogs_pkbuf_t *upf_n4mb_build_session_modification_response(uint8_t type, upf_mbs_sess_t *mbs_sess,
+        const ogs_pfcp_user_plane_report_t *report, const void *query_urr_reference, uint32_t query_urr_reference_len)
 {
     ogs_pfcp_message_t *pfcp_message = NULL;
+    ogs_pfcp_session_modification_response_t *rsp = NULL;
     ogs_pkbuf_t *pkbuf = NULL;
+    static ogs_pfcp_volume_measurement_t vol[OGS_MAX_NUM_OF_URR];
+    unsigned int i;
 
     ogs_debug("N4mb Session Modification Response");
     ogs_assert(mbs_sess);
@@ -206,9 +217,52 @@ ogs_pkbuf_t *upf_n4mb_build_session_modification_response(uint8_t type, upf_mbs_
         ogs_error("ogs_calloc() failed");
         return NULL;
     }
+    rsp = &pfcp_message->pfcp_session_modification_response;
 
-    pfcp_message->pfcp_session_modification_response.cause.presence = 1;
-    pfcp_message->pfcp_session_modification_response.cause.u8 = OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
+    rsp->cause.presence = 1;
+    rsp->cause.u8 = OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
+
+    if (report && report->type.usage_report) {
+        ogs_assert(report->num_of_usage_report <= OGS_ARRAY_SIZE(rsp->usage_report));
+        for (i = 0; i < report->num_of_usage_report; i++) {
+            const typeof(report->usage_report[0]) *u = &report->usage_report[i];
+
+            rsp->usage_report[i].presence = 1;
+            rsp->usage_report[i].urr_id.presence = 1;
+            rsp->usage_report[i].urr_id.u32 = u->id;
+            rsp->usage_report[i].ur_seqn.presence = 1;
+            rsp->usage_report[i].ur_seqn.u32 = u->seqn;
+            rsp->usage_report[i].usage_report_trigger.presence = 1;
+            rsp->usage_report[i].usage_report_trigger.u24 =
+                (u->rep_trigger.reptri_5 << 16) | (u->rep_trigger.reptri_6 << 8) | u->rep_trigger.reptri_7;
+            if (u->start_time) {
+                rsp->usage_report[i].start_time.presence = 1;
+                rsp->usage_report[i].start_time.u32 = u->start_time;
+            }
+            if (u->end_time) {
+                rsp->usage_report[i].end_time.presence = 1;
+                rsp->usage_report[i].end_time.u32 = u->end_time;
+            }
+            if (u->vol_measurement.flags) {
+                rsp->usage_report[i].volume_measurement.presence = 1;
+                vol[i] = u->vol_measurement;
+                ogs_pfcp_build_volume_measurement(&rsp->usage_report[i].volume_measurement, &vol[i], &vol[i], sizeof(vol[i]));
+            }
+            if (u->time_of_first_packet) {
+                rsp->usage_report[i].time_of_first_packet.presence = 1;
+                rsp->usage_report[i].time_of_first_packet.u32 = u->time_of_first_packet;
+            }
+            if (u->time_of_last_packet) {
+                rsp->usage_report[i].time_of_last_packet.presence = 1;
+                rsp->usage_report[i].time_of_last_packet.u32 = u->time_of_last_packet;
+            }
+            if (query_urr_reference) {
+                rsp->usage_report[i].query_urr_reference.presence = 1;
+                rsp->usage_report[i].query_urr_reference.data = (void *)query_urr_reference;
+                rsp->usage_report[i].query_urr_reference.len = query_urr_reference_len;
+            }
+        }
+    }
 
     pfcp_message->h.type = type;
     pkbuf = ogs_pfcp_build_msg(pfcp_message);
