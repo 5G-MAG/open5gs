@@ -4056,6 +4056,33 @@ static void test_reduced_area_cells(void)
     ogs_mbs_service_area_free(coverage);
 }
 
+/* TS 29.244 V18.10.0 clause 5.34.2.2: "the Area Session ID, for a location dependent MBS service", in the MBS Session
+ * N4mb Control Information; clause 8.2.213: two octets */
+static void test_area_session_id_in_establishment(void)
+{
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    ogs_pfcp_message_t *msg;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+
+    msg = build_and_parse_establishment(mbs_sess);
+    CHECK(msg && !msg->pfcp_session_establishment_request.mbs_session_n4mb_control_information.area_session_id.presence);
+
+    mbs_sess->location_dependent = true;
+    mbs_sess->area_session_id = 0x0102;
+    msg = build_and_parse_establishment(mbs_sess);
+    CHECK(msg != NULL);
+    if (msg) {
+        ogs_tlv_octet_t *ie = &msg->pfcp_session_establishment_request.mbs_session_n4mb_control_information
+                .area_session_id;
+
+        CHECK(ie->presence && ie->len == 2 && ((uint8_t *)ie->data)[0] == 0x01 && ((uint8_t *)ie->data)[1] == 0x02);
+    }
+    mbs_sess->location_dependent = false;
+    smf_mbs_sess_release(mbs_sess);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -4101,6 +4128,7 @@ int main(void)
     test_ngran_failure_events();
     test_node_report();
     test_restoration_request();
+    test_area_session_id_in_establishment();
     test_changes_during_restoration();
     test_relocation();
     test_multicast_transport_information_answer();

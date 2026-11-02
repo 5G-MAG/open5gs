@@ -69,6 +69,7 @@ ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
     uint8_t unicast_ids[SMF_N4MB_MAX_UNICAST_PARAMS][2];
     uint8_t qer_indications = 0x01;    /* IQFISN */
     uint8_t traffic_endpoint_id = 1;
+    uint8_t area_session_id[2];
 
     ogs_debug("N4mb Session Establishment Request");
 
@@ -364,6 +365,17 @@ ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
     req->mbs_session_n4mb_control_information.mbsn4mbreq_flags.presence = 1;
     req->mbs_session_n4mb_control_information.mbsn4mbreq_flags.data = &mbsn4mbreq_flags.value;
     req->mbs_session_n4mb_control_information.mbsn4mbreq_flags.len = sizeof(ogs_pfcp_mbsn4mbreq_flags_t);
+
+    /* "the Area Session ID, for a location dependent MBS service" (TS 29.244 V18.10.0 clause 5.34.2.2), in the group
+     * IE "MBS Session N4mb Control Information" (table 7.5.2.1-4); clause 8.2.213: 2 octets, the MBS Area Session ID
+     * (TS 23.003 clause 30.3) */
+    if (mbs_sess->location_dependent) {
+        area_session_id[0] = (mbs_sess->area_session_id >> 8) & 0xff;
+        area_session_id[1] = mbs_sess->area_session_id & 0xff;
+        req->mbs_session_n4mb_control_information.area_session_id.presence = 1;
+        req->mbs_session_n4mb_control_information.area_session_id.data = area_session_id;
+        req->mbs_session_n4mb_control_information.area_session_id.len = sizeof(area_session_id);
+    }
 
     pfcp_message->h.type = OGS_PFCP_SESSION_ESTABLISHMENT_REQUEST_TYPE;
     pkbuf = ogs_pfcp_build_msg(pfcp_message);
