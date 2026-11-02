@@ -1000,7 +1000,6 @@ static bool _modification_ie_not_supported(const ogs_pfcp_session_modification_r
         { offsetof(ogs_pfcp_session_modification_request_t, create_urr), OGS_PFCP_CREATE_URR_TYPE },
         { offsetof(ogs_pfcp_session_modification_request_t, create_traffic_endpoint),
             OGS_PFCP_CREATE_TRAFFIC_ENDPOINT_TYPE },
-        { offsetof(ogs_pfcp_session_modification_request_t, update_pdr), OGS_PFCP_UPDATE_PDR_TYPE },
         { offsetof(ogs_pfcp_session_modification_request_t, update_urr), OGS_PFCP_UPDATE_URR_TYPE },
         { offsetof(ogs_pfcp_session_modification_request_t, update_qer), OGS_PFCP_UPDATE_QER_TYPE },
         { offsetof(ogs_pfcp_session_modification_request_t, update_traffic_endpoint),
@@ -1081,6 +1080,57 @@ static bool _creates_qer(const ogs_pfcp_session_modification_request_t *req, uin
     return false;
 }
 
+/* The Update PDR of a request that names this PDR, or NULL. */
+static const ogs_pfcp_tlv_update_pdr_t *_updates_pdr(const ogs_pfcp_session_modification_request_t *req, uint16_t id)
+{
+    size_t i;
+
+    for (i = 0; i < OGS_ARRAY_SIZE(req->update_pdr) && req->update_pdr[i].presence; i++)
+        if (req->update_pdr[i].pdr_id.presence && req->update_pdr[i].pdr_id.u16 == id)
+            return &req->update_pdr[i];
+    return NULL;
+}
+
+/*
+ * The PDI of a flow that the request creates, or of an Update PDR that replaces the PDI of a flow. The session has one
+ * ingress tunnel, one group and one source (Table 7.5.2.7-1 and cl. 5.34.2.2: "a single ingress tunnel address,
+ * regardless of the number of MBS QoS flows"): a flow refers to the tunnel by the Traffic Endpoint ID, and carries
+ * the group and the source of the session if it carries any. Returns OGS_OK, or OGS_ERROR with the cause and the
+ * Offending IE.
+ */
+static int _check_flow_pdi(upf_mbs_sess_t *mbs_sess, const ogs_pfcp_tlv_pdi_t *pdi,
+        uint8_t *cause_value, uint16_t *offending_ie_value)
+{
+    bool has_dest, has_src;
+    ogs_pfcp_decoded_ip_multicast_address_t dest;
+    ogs_pfcp_decoded_source_ip_address_t src;
+
+#define FAIL(c, t) do { *cause_value = (c); *offending_ie_value = (t); return OGS_ERROR; } while (0)
+
+    if (ogs_pfcp_check_sdf_filters(pdi) != OGS_OK)
+        FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_SDF_FILTER_TYPE);
+    if (pdi->local_ingress_tunnel.presence)
+        FAIL(OGS_PFCP_CAUSE_SERVICE_NOT_SUPPORTED, OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE);
+    /* the PDR handlers refuse an F-TEID with neither the V4 nor the V6 flag (the first octet, bits 1 and 2) */
+    if (pdi->local_f_teid.presence &&
+            (pdi->local_f_teid.len < 1 || (*(const uint8_t *)pdi->local_f_teid.data & 0x03) == 0))
+        FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_F_TEID_TYPE);
+    if (pdi->traffic_endpoint_id.presence &&
+            (pdi->traffic_endpoint_id.len < 1 || !mbs_sess->traffic_endpoint_id_presence ||
+             *(const uint8_t *)pdi->traffic_endpoint_id.data != mbs_sess->traffic_endpoint_id))
+        FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_TRAFFIC_ENDPOINT_ID_TYPE);
+    if (_decode_addressing_info(&pdi->ip_multicast_addressing_info, &has_dest, &dest, &has_src, &src,
+                offending_ie_value) != OGS_OK)
+        FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, *offending_ie_value);
+    if (has_dest && (dest.any || dest.range || !_ip_equal(&dest.start, &mbs_sess->ssm.dest_ip_addr)))
+        FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_IP_MULTICAST_ADDRESS_TYPE);
+    if (has_src && !_ip_equal(&src.addr, &mbs_sess->ssm.src_ip_addr))
+        FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_SOURCE_IP_ADDRESS_TYPE);
+
+#undef FAIL
+    return OGS_OK;
+}
+
 /*
  * Checks the Remove and Create PDR, FAR and QER of an N4mb Session Modification Request against the session, without
  * changing it (the flows of an MBS session that came and went, TS 29.244 cl. 5.34.2.2: "for each MBS QoS flow: a
@@ -1124,21 +1174,50 @@ static int _check_flow_changes(upf_mbs_sess_t *mbs_sess, const ogs_pfcp_session_
                 FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_QER_ID_TYPE);
     }
 
-    /* A FAR or a QER that is removed is not used by a PDR that stays */
+    /* Update PDR (Table 7.5.4.2-1): PDR ID, M; Outer Header Removal, Precedence, PDI, FAR ID and QER ID, each "present if
+     * it needs to be changed". The PDI "shall replace the PDI previously stored", so it has what the PDI of a Create PDR
+     * has (Source Interface, M). The other IEs of the table are not applicable to N4mb ("-") and are not read. */
+    for (i = 0; i < OGS_ARRAY_SIZE(req->update_pdr) && req->update_pdr[i].presence; i++) {
+        const ogs_pfcp_tlv_update_pdr_t *u = &req->update_pdr[i];
+
+        if (!u->pdr_id.presence)
+            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_MISSING, OGS_PFCP_PDR_ID_TYPE);
+        if (!ogs_pfcp_pdr_find(&mbs_sess->pfcp, u->pdr_id.u16) || _removes_pdr(req, u->pdr_id.u16))
+            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_PDR_ID_TYPE);
+        for (j = 0; j < i; j++)
+            if (req->update_pdr[j].pdr_id.u16 == u->pdr_id.u16)
+                FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_PDR_ID_TYPE);
+        if (u->far_id.presence &&
+                !(ogs_pfcp_far_find(&mbs_sess->pfcp, u->far_id.u32) && !_removes_far(req, u->far_id.u32)) &&
+                !_creates_far(req, u->far_id.u32))
+            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_FAR_ID_TYPE);
+        if (u->qer_id.presence &&
+                !(ogs_pfcp_qer_find(&mbs_sess->pfcp, u->qer_id.u32) && !_removes_qer(req, u->qer_id.u32)) &&
+                !_creates_qer(req, u->qer_id.u32))
+            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_QER_ID_TYPE);
+        if (u->pdi.presence) {
+            if (!u->pdi.source_interface.presence)
+                FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_MISSING, OGS_PFCP_SOURCE_INTERFACE_TYPE);
+            if (_check_flow_pdi(mbs_sess, &u->pdi, cause_value, offending_ie_value) != OGS_OK)
+                return OGS_ERROR;
+        }
+    }
+
+    /* A FAR or a QER that is removed is not used by a PDR that stays (after its Update PDR) */
     ogs_list_for_each(&mbs_sess->pfcp.pdr_list, pdr) {
+        const ogs_pfcp_tlv_update_pdr_t *u;
+
         if (_removes_pdr(req, pdr->id))
             continue;
-        if (pdr->far && _removes_far(req, pdr->far->id))
+        u = _updates_pdr(req, pdr->id);
+        if (!(u && u->far_id.presence) && pdr->far && _removes_far(req, pdr->far->id))
             FAIL(OGS_PFCP_CAUSE_RULE_CREATION_MODIFICATION_FAILURE, OGS_PFCP_FAR_ID_TYPE);
-        if (pdr->qer && _removes_qer(req, pdr->qer->id))
+        if (!(u && u->qer_id.presence) && pdr->qer && _removes_qer(req, pdr->qer->id))
             FAIL(OGS_PFCP_CAUSE_RULE_CREATION_MODIFICATION_FAILURE, OGS_PFCP_QER_ID_TYPE);
     }
 
     for (i = 0; i < OGS_ARRAY_SIZE(req->create_pdr) && req->create_pdr[i].presence; i++) {
         const ogs_pfcp_tlv_create_pdr_t *c = &req->create_pdr[i];
-        bool has_dest, has_src;
-        ogs_pfcp_decoded_ip_multicast_address_t dest;
-        ogs_pfcp_decoded_source_ip_address_t src;
 
         if (!c->pdr_id.presence)
             FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_MISSING, OGS_PFCP_PDR_ID_TYPE);
@@ -1164,24 +1243,8 @@ static int _check_flow_changes(upf_mbs_sess_t *mbs_sess, const ogs_pfcp_session_
                 !(ogs_pfcp_qer_find(&mbs_sess->pfcp, c->qer_id.u32) && !_removes_qer(req, c->qer_id.u32)) &&
                 !_creates_qer(req, c->qer_id.u32))
             FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_QER_ID_TYPE);
-        if (ogs_pfcp_check_sdf_filters(&c->pdi) != OGS_OK)
-            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_SDF_FILTER_TYPE);
-        /* the session has one ingress tunnel (Table 7.5.2.7-1 and cl. 5.34.2.2: "a single ingress tunnel address,
-         * regardless of the number of MBS QoS flows"): a new flow refers to it by the Traffic Endpoint ID */
-        if (c->pdi.local_ingress_tunnel.presence)
-            FAIL(OGS_PFCP_CAUSE_SERVICE_NOT_SUPPORTED, OGS_PFCP_LOCAL_INGRESS_TUNNEL_TYPE);
-        if (c->pdi.traffic_endpoint_id.presence &&
-                (c->pdi.traffic_endpoint_id.len < 1 || !mbs_sess->traffic_endpoint_id_presence ||
-                 *(const uint8_t *)c->pdi.traffic_endpoint_id.data != mbs_sess->traffic_endpoint_id))
-            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_TRAFFIC_ENDPOINT_ID_TYPE);
-        /* the group and the source of the session are those of its flows */
-        if (_decode_addressing_info(&c->pdi.ip_multicast_addressing_info, &has_dest, &dest, &has_src, &src,
-                    offending_ie_value) != OGS_OK)
-            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, *offending_ie_value);
-        if (has_dest && (dest.any || dest.range || !_ip_equal(&dest.start, &mbs_sess->ssm.dest_ip_addr)))
-            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_IP_MULTICAST_ADDRESS_TYPE);
-        if (has_src && !_ip_equal(&src.addr, &mbs_sess->ssm.src_ip_addr))
-            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_SOURCE_IP_ADDRESS_TYPE);
+        if (_check_flow_pdi(mbs_sess, &c->pdi, cause_value, offending_ie_value) != OGS_OK)
+            return OGS_ERROR;
     }
 
     for (i = 0; i < OGS_ARRAY_SIZE(req->create_far) && req->create_far[i].presence; i++) {
@@ -1285,6 +1348,46 @@ static void _flows_rollback(upf_mbs_sess_t *mbs_sess, const ogs_pfcp_session_mod
 
         if (qer)
             ogs_pfcp_qer_remove(qer);
+    }
+}
+
+/*
+ * The Update PDR of a request that has been checked: the PDI replaces the PDI (the SDF filters, the Network Instance and
+ * the QFI of a PDI that does not carry them are gone), and the Precedence, FAR and QER are replaced. The Outer Header
+ * Removal is stored as at the establishment.
+ */
+static void _update_pdrs(upf_mbs_sess_t *mbs_sess, ogs_pfcp_session_modification_request_t *req)
+{
+    size_t i;
+
+    for (i = 0; i < OGS_ARRAY_SIZE(req->update_pdr) && req->update_pdr[i].presence; i++) {
+        ogs_pfcp_tlv_update_pdr_t *u = &req->update_pdr[i];
+        ogs_pfcp_pdr_t *pdr = ogs_pfcp_pdr_find(&mbs_sess->pfcp, u->pdr_id.u16);
+        uint8_t cause_value = OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
+        uint16_t offending_ie_value = 0;
+
+        ogs_assert(pdr);
+
+        if (u->pdi.presence) {
+            if (pdr->dnn) {
+                ogs_free(pdr->dnn);
+                pdr->dnn = NULL;
+            }
+            pdr->qfi = 0;
+            /* checked: the Flow Descriptions compile, the Source Interface is there */
+            ogs_assert(ogs_pfcp_handle_update_pdr(&mbs_sess->pfcp, u, &cause_value, &offending_ie_value));
+        }
+        if (u->precedence.presence)
+            ogs_pfcp_pdr_reorder_by_precedence(pdr, u->precedence.u32);
+        if (u->far_id.presence)
+            ogs_pfcp_pdr_associate_far(pdr, ogs_pfcp_far_find(&mbs_sess->pfcp, u->far_id.u32));
+        if (u->qer_id.presence)
+            ogs_pfcp_pdr_associate_qer(pdr, ogs_pfcp_qer_find(&mbs_sess->pfcp, u->qer_id.u32));
+        if (u->outer_header_removal.presence) {
+            memset(&pdr->outer_header_removal, 0, sizeof(pdr->outer_header_removal));
+            pdr->outer_header_removal_len = ogs_min(u->outer_header_removal.len, sizeof(pdr->outer_header_removal));
+            memcpy(&pdr->outer_header_removal, u->outer_header_removal.data, pdr->outer_header_removal_len);
+        }
     }
 }
 
@@ -1527,6 +1630,7 @@ void upf_n4mb_handle_session_modification_request(
             far->apply_action = req->update_far[i].apply_action.u16;
     }
 
+    _update_pdrs(mbs_sess, req);
     _remove_flows(mbs_sess, req);
 
     ogs_assert(OGS_OK == upf_pfcp_n4mb_send_session_modification_response(xact, mbs_sess));

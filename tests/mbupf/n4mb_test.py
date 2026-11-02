@@ -2185,6 +2185,124 @@ def t_create_far_and_qer_that_no_create_pdr_names():
         U.delete(s)
 
 
+T_UPDATE_PDR, T_UPDATE_QER, T_OHR = 9, 14, 95
+T_MBR = 26
+
+
+def update_pdr(n, precedence=None, far_id=None, qer_id=None, pdi=None, drop=(), extra=()):
+    parts = [ie(T_PDR_ID, struct.pack('>H', n))]
+    if precedence is not None:
+        parts.append(ie(T_PRECEDENCE, struct.pack('>I', precedence)))
+    if pdi is not None:
+        parts.append(ie(T_PDI, pdi))
+    if far_id is not None:
+        parts.append(ie(T_FAR_ID, struct.pack('>I', far_id)))
+    if qer_id is not None:
+        parts.append(ie(T_QER_ID, struct.pack('>I', qer_id)))
+    parts += list(extra)
+    return ie(T_UPDATE_PDR, [x for x in parts if struct.unpack('>H', x[:2])[0] not in drop])
+
+
+@test
+def t_update_pdr_changes_precedence_far_qer_and_pdi():
+    """TS 29.244 Table 7.5.4.1-1 (Update PDR, N4mb "X") and Table 7.5.4.2-1: of the IEs of an Update PDR, the N4mb
+    column is "X" for PDR ID, Outer Header Removal, Precedence, PDI, FAR ID and QER ID."""
+    r = U.establish(smf_session(0xf201))
+    s = accepted(r, 'session of the MB-SMF')
+    try:
+        assert tunnel_packet_qfi(r, 5000) == 1
+        # flow 2 behind flow 1 (precedence 200 > 100): flow 1 matches everything
+        m = modify(s, *flow_rules(2, 2, precedence=200))
+        assert m and cause(m) == CAUSE_ACCEPTED
+        assert tunnel_packet_qfi(r, 5000) == 1, 'flow 1 has the better precedence'
+        # Precedence
+        m = modify(s, update_pdr(2, precedence=10))
+        assert m and cause(m) == CAUSE_ACCEPTED, 'Precedence: cause %s offending %s' % (cause(m) if m else None, offending(m) if m else None)
+        assert tunnel_packet_qfi(r, 5000) == 2, 'the Update PDR did not change the precedence'
+        # FAR ID: a FAR that drops, created by the same request
+        m = modify(s, far(far_id=3, apply=APPLY_DROP, params=False), update_pdr(2, far_id=3))
+        assert m and cause(m) == CAUSE_ACCEPTED, 'FAR ID: cause %s offending %s' % (cause(m) if m else None, offending(m) if m else None)
+        assert tunnel_packet_qfi(r, 5000) is None, 'the PDR still uses the old FAR'
+        # back to FAR 2 and QER 1 (QFI 1); FAR 3 goes in the same request
+        m = modify(s, update_pdr(2, far_id=2, qer_id=1), ie(T_REMOVE_FAR, [ie(T_FAR_ID, struct.pack('>I', 3))]))
+        assert m and cause(m) == CAUSE_ACCEPTED, 'FAR 3 removed: cause %s offending %s' % (cause(m) if m else None, offending(m) if m else None)
+        assert tunnel_packet_qfi(r, 5000) == 1, 'QER ID: the PDR does not use QER 1'
+        # QER 2 again, the flow of PDR 2 limited by an SDF filter: PDI replaces the PDI
+        m = modify(s, update_pdr(2, qer_id=2, pdi=[ie(T_SRC_IF, b'\x01'), ie(T_TE_ID, b'\x01'),
+                                                   sdf('permit out 17 from 10.46.0.1 to 232.1.1.1 6000')]))
+        assert m and cause(m) == CAUSE_ACCEPTED, 'PDI: cause %s offending %s' % (cause(m) if m else None, offending(m) if m else None)
+        assert tunnel_packet_qfi(r, 6000) == 2, 'the new PDI does not select port 6000'
+        assert tunnel_packet_qfi(r, 5000) == 1, 'the new PDI is not an SDF filter: port 5000 is not flow 1 any more'
+        # the PDI replaces the PDI: without the SDF filter the PDR matches every packet again
+        m = modify(s, update_pdr(2, pdi=[ie(T_SRC_IF, b'\x01')]))
+        assert m and cause(m) == CAUSE_ACCEPTED
+        assert tunnel_packet_qfi(r, 5000) == 2, 'the PDI that replaced the PDI has no filter'
+        # Outer Header Removal is stored
+        m = modify(s, update_pdr(2, extra=[ie(T_OHR, b'\x00')]))
+        assert m and cause(m) == CAUSE_ACCEPTED, 'Outer Header Removal: %s/%s' % (cause(m) if m else None, offending(m) if m else None)
+        # several Update PDR in one request
+        m = modify(s, update_pdr(1, precedence=5), update_pdr(2, precedence=6))
+        assert m and cause(m) == CAUSE_ACCEPTED
+        assert tunnel_packet_qfi(r, 5000) == 1
+        m = modify(s, *removal(2))
+        assert m and cause(m) == CAUSE_ACCEPTED
+        assert tunnel_packet_qfi(r, 5000) == 1
+    finally:
+        U.delete(s)
+
+
+@test
+def t_update_pdr_that_is_not_valid_changes_nothing():
+    r = U.establish(smf_session(0xf211))
+    s = accepted(r, 'session of the MB-SMF')
+    try:
+        m = modify(s, *flow_rules(2, 2, precedence=200))
+        assert m and cause(m) == CAUSE_ACCEPTED
+
+        def bad(what, cause_want, off_want, *ies):
+            m = modify(s, *ies)
+            assert m and cause(m) == cause_want and offending(m) == off_want, '%s: cause %s offending %s, wanted %s/%s' % (
+                what, cause(m) if m else None, offending(m) if m else None, cause_want, off_want)
+            assert U.alive()
+            assert tunnel_packet_qfi(r, 5000) == 1, what + ': the request changed the session'
+            m = modify(s, update_pdr(2, precedence=300))     # still there, still of the same kind
+            assert m and cause(m) == CAUSE_ACCEPTED, what + ': the session was damaged'
+            m = modify(s, update_pdr(2, precedence=200))
+            assert m and cause(m) == CAUSE_ACCEPTED
+
+        bad('no PDR ID', CAUSE_MANDATORY_MISSING, T_PDR_ID, update_pdr(2, precedence=10, drop=(T_PDR_ID,)))
+        bad('unknown PDR', CAUSE_MANDATORY_INCORRECT, T_PDR_ID, update_pdr(9, precedence=10))
+        bad('unknown FAR', CAUSE_MANDATORY_INCORRECT, T_FAR_ID, update_pdr(2, precedence=10, far_id=9))
+        bad('unknown QER', CAUSE_MANDATORY_INCORRECT, T_QER_ID, update_pdr(2, precedence=10, qer_id=9))
+        bad('FAR that the request removes', CAUSE_MANDATORY_INCORRECT, T_FAR_ID,
+            update_pdr(2, precedence=10, far_id=1), ie(T_REMOVE_FAR, [ie(T_FAR_ID, struct.pack('>I', 1))]))
+        bad('PDR that the request removes', CAUSE_MANDATORY_INCORRECT, T_PDR_ID,
+            update_pdr(2, precedence=10), *removal(2))
+        bad('same PDR twice', CAUSE_MANDATORY_INCORRECT, T_PDR_ID, update_pdr(2, precedence=10), update_pdr(2, precedence=11))
+        bad('PDI without Source Interface', CAUSE_MANDATORY_MISSING, T_SRC_IF,
+            update_pdr(2, precedence=10, pdi=[ie(T_TE_ID, b'\x01')]))
+        bad('Local Ingress Tunnel in the PDI', CAUSE_SERVICE_NOT_SUPPORTED, T_LIT,
+            update_pdr(2, precedence=10, pdi=[ie(T_SRC_IF, b'\x01'), lit_choose()]))
+        bad('Traffic Endpoint that the session has not', CAUSE_MANDATORY_INCORRECT, 131,
+            update_pdr(2, precedence=10, pdi=[ie(T_SRC_IF, b'\x01'), ie(T_TE_ID, b'\x07')]))
+        bad('SDF filter that cannot be compiled', CAUSE_MANDATORY_INCORRECT, T_SDF,
+            update_pdr(2, precedence=10, pdi=[ie(T_SRC_IF, b'\x01'), sdf('garbage')]))
+        bad('F-TEID without V4 or V6', CAUSE_MANDATORY_INCORRECT, 21,
+            update_pdr(2, precedence=10, pdi=[ie(T_SRC_IF, b'\x01'), ie(21, b'\x00')]))
+        bad('the second Update PDR is not valid', CAUSE_MANDATORY_INCORRECT, T_PDR_ID,
+            update_pdr(2, precedence=10), update_pdr(9, precedence=10))
+        # the FAR and the QER of a PDR that stays cannot go, unless an Update PDR gives it others
+        bad('FAR of a PDR that stays', CAUSE_RULE_FAILURE, T_FAR_ID, ie(T_REMOVE_FAR, [ie(T_FAR_ID, struct.pack('>I', 2))]))
+        m = modify(s, update_pdr(2, far_id=1, qer_id=1), ie(T_REMOVE_FAR, [ie(T_FAR_ID, struct.pack('>I', 2))]),
+                   ie(T_REMOVE_QER, [ie(T_QER_ID, struct.pack('>I', 2))]))
+        assert m and cause(m) == CAUSE_ACCEPTED, 'FAR and QER of a PDR that moved: %s/%s' % (cause(m) if m else None, offending(m) if m else None)
+        # a failing Update FAR afterwards takes the Update PDR out with the rest
+        bad('Update PDR and a failing Update FAR', CAUSE_CONDITIONAL_MISSING, T_ADD_UNICAST,
+            update_pdr(1, precedence=500), update_far(apply=APPLY_MBSU))
+    finally:
+        U.delete(s)
+
+
 # E-TESTS-BELOW
 
 
