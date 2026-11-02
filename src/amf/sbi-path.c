@@ -659,6 +659,25 @@ bool amf_sbi_send_mbs_broadcast_ngran_event(
             mbs_context, &n2_info_list, OpenAPI_operation_status_NULL, false, ngran_gnb, indication);
 }
 
+int amf_sbi_parse_context_status_notify_response(ogs_sbi_message_t *message, ogs_sbi_response_t *response)
+{
+    char *uri = NULL;
+    int rv;
+
+    ogs_assert(message);
+    ogs_assert(response);
+
+    // The response carries the URI that was requested, the consumer's own: the resource is set from the request that
+    // was made. The response is put back as it was.
+    uri = response->h.uri;
+    response->h.uri = (char *)"/" OGS_SBI_SERVICE_NAME_NAMF_MBS_BC "/" OGS_SBI_API_V1
+        "/" OGS_SBI_RESOURCE_NAME_MBS_CONTEXT_STATUS_NOTIFY;
+    rv = ogs_sbi_parse_response(message, response);
+    response->h.uri = uri;
+
+    return rv;
+}
+
 /* What the answer of the MB-SMF to a Broadcast Session Transport Request needs: the NG-RAN node that asked and the
  * session, which may be gone by then. */
 typedef struct transport_request_s {
@@ -694,7 +713,7 @@ static int client_transport_cb(int status, ogs_sbi_response_t *response, void *d
 
     memset(&message, 0, sizeof(message));
     if (status == OGS_OK && response) {
-        if (ogs_sbi_parse_response(&message, response) != OGS_OK)
+        if (amf_sbi_parse_context_status_notify_response(&message, response) != OGS_OK)
             ogs_error("BROADCAST SESSION TRANSPORT: cannot parse the HTTP response of the MB-SMF");
         else if (message.res_status == OGS_SBI_HTTP_STATUS_OK && gnb)
             count = amf_namf_mbs_transport_answers(gnb, &request->tmgi, &message, answers, OGS_ARRAY_SIZE(answers));

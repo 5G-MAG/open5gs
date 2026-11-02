@@ -13,6 +13,7 @@
 #include "namf-build.h"
 #include "namf-handler.h"
 #include "ngap-build.h"
+#include "sbi-path.h"
 
 static int checks, failures;
 
@@ -1132,6 +1133,44 @@ static void test_tmgi_is_valid(void)
     CHECK(amf_namf_tmgi_is_valid(&t));
 }
 
+/* TS 29.518 V18.14.0 cl. 5.6.2.5 step 1: "The AMF shall send a POST request targeting the notification URI received from the NF
+ * Service Consumer." The answer is the answer of that request whatever the path of the URI is. */
+static void test_notify_response_any_uri(void)
+{
+    static const char *uris[] = {
+        "http://127.0.0.9:9999/mbs-status",
+        "http://127.0.0.9:9999/nmbsmf-mbs-session/v1/mbs-sessions/17/notify",
+        "http://127.0.0.9:9999/namf-mbs-bc/v1/mbs-context-status-notify",
+    };
+    size_t i;
+
+    for (i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
+        ogs_sbi_response_t *response = ogs_sbi_response_new();
+        ogs_sbi_message_t message;
+        const char *body = "{\"mbsSessionId\":{\"tmgi\":{\"mbsServiceId\":\"000001\",\"plmnId\":{\"mcc\":\"999\",\"mnc\":\"70\"}}}}";
+        char *uri_before;
+
+        response->status = OGS_SBI_HTTP_STATUS_OK;
+        response->h.method = ogs_strdup(OGS_SBI_HTTP_METHOD_POST);
+        response->h.uri = ogs_strdup(uris[i]);
+        uri_before = response->h.uri;
+        ogs_sbi_header_set(response->http.headers, OGS_SBI_CONTENT_TYPE, OGS_SBI_CONTENT_JSON_TYPE);
+        response->http.content = ogs_strdup(body);
+        response->http.content_length = strlen(body);
+
+        memset(&message, 0, sizeof(message));
+        CHECK(amf_sbi_parse_context_status_notify_response(&message, response) == OGS_OK);
+        CHECK(message.res_status == OGS_SBI_HTTP_STATUS_OK);
+        CHECK(message.ContextStatusNotificationResponse != NULL);
+        if (message.ContextStatusNotificationResponse)
+            CHECK(message.ContextStatusNotificationResponse->mbs_session_id != NULL);
+        CHECK(response->h.uri == uri_before);       /* the response is left as it was */
+
+        ogs_sbi_message_free(&message);
+        ogs_sbi_response_free(response);
+    }
+}
+
 int main(int argc, const char *argv[])
 {
     ogs_pkbuf_config_t config;
@@ -1161,6 +1200,7 @@ int main(int argc, const char *argv[])
     test_area_apply_undo();
     test_gnb_owes();
     test_tmgi_is_valid();
+    test_notify_response_any_uri();
     test_update_action_enters_area();
     test_update_action_leaves_area();
     test_update_action_info_unchanged();

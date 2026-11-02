@@ -106,6 +106,14 @@ bool amf_sbi_send_mbs_broadcast_ngran_event(
         amf_mbs_context_t *mbs_context, const amf_gnb_t *ngran_gnb, OpenAPI_ngran_failure_indication_e indication);
 
 /*
+ * Parses \p response, the answer of the NF Service Consumer to a ContextStatusNotify request, as the answer of that
+ * request: its resource is Namf_MBSBroadcast_ContextStatusNotify whatever notifyUri the consumer chose (TS 29.518 V18.14.0
+ * cl. 5.6.2.5 step 1: "The AMF shall send a POST request targeting the notification URI received from the NF Service
+ * Consumer."), so the body is read as a ContextStatusNotificationResponse and not according to the path of that URI.
+ */
+int amf_sbi_parse_context_status_notify_response(ogs_sbi_message_t *message, ogs_sbi_response_t *response);
+
+/*
  * A ContextStatusNotify that carries the Broadcast Session Transport Request Transfer \p transfer of NG-RAN node
  * \p gnb (TS 29.518 V18.14.0 clause 5.6.2.5); the answer of the MB-SMF is turned into the NGAP answer to \p gnb when it
  * arrives (or a failure when it does not). Returns false when the notification could not be sent.
