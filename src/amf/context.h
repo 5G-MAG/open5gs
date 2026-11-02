@@ -910,6 +910,8 @@ typedef struct amf_mbs_gnb_s {
      * step 3), and area_release_pending is set until the gNB has answered that release. The gNB holds no session. */
     bool area_released;
     bool area_release_pending;
+    /* The ContextRelease of the context has sent the gNB a Broadcast Session Release Request that it has not answered */
+    bool release_sent;
     /* The outstanding Setup Request restores the session in a gNB that restarted (TS 23.527 V18.6.0 cl. 8.3.2.2 step
      * 4): its response is not one of the responses of a ContextCreate or ContextUpdate. */
     bool restoring;
@@ -1227,6 +1229,12 @@ typedef enum {
     AMF_MBS_OWES_RESTORATION_RESPONSE,  /* to the Setup Request that restores the session */
 } amf_mbs_owes_e;
 amf_mbs_owes_e amf_mbs_gnb_owes(const amf_mbs_gnb_t *involved);
+/*
+ * The release the ContextRelease sent to the gNB of \p involved has been answered (or the gNB is lost): counts it.
+ * Returns false when no release was waiting for it. \p first is set when it is the first answer, \p last when every
+ * gNB the release was sent to has answered.
+ */
+bool amf_mbs_context_release_answered(amf_mbs_context_t *amf_mbs_context, amf_mbs_gnb_t *involved, bool *first, bool *last);
 bool amf_mbs_gnb_holds_session(const amf_mbs_gnb_t *involved);
 bool amf_mbs_gnb_has_ran_id(const amf_mbs_gnb_t *involved, const amf_gnb_t *gnb);
 amf_mbs_gnb_t *amf_mbs_context_find_stale_involved_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *gnb);

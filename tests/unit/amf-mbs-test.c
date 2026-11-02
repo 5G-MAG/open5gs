@@ -1230,6 +1230,50 @@ static void test_encode_large_cell_list(void)
     ogs_pkbuf_free(container);
 }
 
+/* TS 38.413 V18.8.0 cl. 8.17.3.2: "Upon reception of the BROADCAST SESSION RELEASE RESPONSE message, the AMF shall transfer
+ * transparently the Broadcast Session Release Response Transfer IE, if available, to the MB-SMF." Every answer to the
+ * release of a ContextRelease is counted: the first answers the consumer, the last ends the context. */
+static void test_release_answered(void)
+{
+    amf_gnb_t *a = make_gnb(0x100, 22), *b = make_gnb(0x200, 22), *c = make_gnb(0x300, 22);
+    amf_mbs_context_t ctx = make_context();
+    amf_mbs_gnb_t *ra, *rb, *rc;
+    bool first, last;
+
+    ogs_list_init(&ctx.involved_gnb_list);
+    a->id = 1; b->id = 2; c->id = 3;
+    amf_mbs_context_involve_gnb(&ctx, a);
+    amf_mbs_context_involve_gnb(&ctx, b);
+    amf_mbs_context_involve_gnb(&ctx, c);
+    ra = amf_mbs_context_find_involved_gnb(&ctx, a);
+    rb = amf_mbs_context_find_involved_gnb(&ctx, b);
+    rc = amf_mbs_context_find_involved_gnb(&ctx, c);
+
+    /* the release was sent to a and b only; c was not sent one */
+    ctx.release_pending = true;
+    ctx.gnb_request_count = 2;
+    ctx.gnb_response_count = 0;
+    ra->release_sent = true;
+    rb->release_sent = true;
+
+    CHECK(!amf_mbs_context_release_answered(&ctx, rc, &first, &last));       /* not one of the answers waited for */
+    CHECK(amf_mbs_context_release_answered(&ctx, rb, &first, &last));
+    CHECK(first && !last);
+    CHECK(!amf_mbs_context_release_answered(&ctx, rb, &first, &last));       /* a second answer of the same gNB */
+    CHECK(amf_mbs_context_release_answered(&ctx, ra, &first, &last));
+    CHECK(!first && last);
+
+    /* not releasing: nothing counts */
+    ctx.release_pending = false;
+    ra->release_sent = true;
+    CHECK(!amf_mbs_context_release_answered(&ctx, ra, &first, &last));
+
+    free_involved(&ctx);
+    ogs_free(a);
+    ogs_free(b);
+    ogs_free(c);
+}
+
 int main(int argc, const char *argv[])
 {
     ogs_pkbuf_config_t config;
@@ -1259,6 +1303,7 @@ int main(int argc, const char *argv[])
     test_area_apply_undo();
     test_gnb_owes();
     test_tmgi_is_valid();
+    test_release_answered();
     test_encode_large_cell_list();
     test_notify_response_any_uri();
     test_update_action_enters_area();

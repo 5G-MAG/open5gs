@@ -2803,7 +2803,7 @@ int amf_namf_handle_mbs_broadcast_context_update(
         // ContextCreate, ContextUpdate and ContextRelease. An update that arrived now would take the stream of the
         // operation in progress and leave it unanswered. No clause names the status; UNSPECIFIED_NF_FAILURE is
         // TS 29.500 Table 5.2.7.2-1's generic 500 cause.
-    if (ogs_sbi_stream_find_by_id(mbs_context->stream_id)) {
+    if (ogs_sbi_stream_find_by_id(mbs_context->stream_id) || mbs_context->release_pending) {
         ogs_error("MBS Broadcast ContextUpdate: mbsContextRef[%s] has an operation in progress", mbs_context_ref);
         ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
             recvmsg, "Internal Server Error",
@@ -3332,6 +3332,11 @@ void amf_namf_handle_mbs_broadcast_gnb_lost(amf_gnb_t *gnb)
         // TS 23.247 V18.8.0 cl. 7.3.1 step 7: "if all NG-RAN(s) report failure, the AMF should respond failure"), and say
         // nothing about a lost association.
         involved->area_release_pending = false;
+        // The release a ContextRelease sent to the gNB will not be answered: it counts as answered, without a transfer.
+        if (mbs_context->release_pending && involved->release_sent) {
+            amf_namf_send_mbs_broadcast_context_release_response(mbs_context, gnb, NULL);
+            continue;
+        }
         switch (amf_mbs_gnb_owes(involved)) {
         case AMF_MBS_OWES_SETUP_RESPONSE:
             amf_namf_handle_mbs_broadcast_ran_response(mbs_context, gnb, false, false, OpenAPI_ngap_ie_type_MBS_SES_FAIL, NULL);
@@ -3593,6 +3598,7 @@ static int amf_mbs_context_send_release(amf_mbs_context_t *mbs_context)
             amf_mbs_context_gnb_not_reached(mbs_context, gnb);
             continue;
         }
+        involved->release_sent = true;
         reached++;
     }
     ogs_pkbuf_free(n2msgreq);
@@ -3607,12 +3613,16 @@ static void amf_mbs_context_release(amf_mbs_context_t *mbs_context)
 }
 
 /*
- * Completes a ContextRelease once an NG-RAN has answered the release (ngap_handle_broadcast_session_release_response()):
- * sends the deferred 204 No Content and removes the context. If the consumer's stream is gone, only the context is removed.
- * TS 38.413 V18.8.0 cl. 8.17.3.2: "Upon reception of the BROADCAST SESSION RELEASE RESPONSE message, the AMF shall
- * transfer transparently the Broadcast Session Release Response Transfer IE, if available, to the MB-SMF." The 204 cannot
- * carry it (TS 29.518 cl. 5.6.2.4), so it goes first in a ContextStatusNotify request, whose content may be a "MBS
- * Session Release Response Transfer IE" (cl. 5.6.2.5), before the context and its notification URI are removed.
+ * An NG-RAN has answered the release that the ContextRelease sent it (ngap_handle_broadcast_session_release_response()),
+ * or it is lost and never will. TS 38.413 V18.8.0 cl. 8.17.3.2: "Upon reception of the BROADCAST SESSION RELEASE RESPONSE
+ * message, the AMF shall transfer transparently the Broadcast Session Release Response Transfer IE, if available, to the
+ * MB-SMF." The 204 cannot carry it (TS 29.518 cl. 5.6.2.4), so each answer's transfer goes in its own ContextStatusNotify
+ * request (cl. 5.6.2.5), with the identity of the NG-RAN. TS 23.247 V18.8.0 cl. 7.3.2 step 7: "The NG-RAN reports successful
+ * release of resources for the MBS Session by sending MBS Session Resource Release Response (TMGI) message(s) to the AMF(s)."
+ * and step 8: "The AMF sends Namf_MBSBroadcast_ContextRelease response (TMGI) to the MB-SMF." The clause does not say after
+ * which answer: the 204 is sent on the first, so that an NG-RAN that never answers cannot keep the consumer waiting, and
+ * the context, which the later answers are matched to, is removed after the last. If the consumer's stream is gone, only
+ * the notifications and the removal are done.
  */
 void amf_namf_send_mbs_broadcast_context_release_response(amf_mbs_context_t *mbs_context,
         amf_gnb_t *gnb, const OCTET_STRING_t *transfer)
@@ -3622,9 +3632,18 @@ void amf_namf_send_mbs_broadcast_context_release_response(amf_mbs_context_t *mbs
     ogs_sbi_response_t *response = NULL;
     ogs_list_t n2_info_list;
     amf_mbs_n2_info_t *n2_info = NULL;
+    amf_mbs_gnb_t *involved = NULL;
+    bool first, last;
 
     ogs_assert(mbs_context);
     ogs_assert(gnb);
+
+    involved = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
+    if (!involved || !amf_mbs_context_release_answered(mbs_context, involved, &first, &last)) {
+        ogs_warn("BROADCAST SESSION RELEASE RESPONSE from gNB %i, which was sent no release by the ContextRelease, ignored",
+                gnb->gnb_id);
+        return;
+    }
 
     if (transfer && transfer->size > 0)
         n2_info = amf_mbs_n2_info_create(gnb, OpenAPI_ngap_ie_type_MBS_SES_REL_RSP, transfer->buf, transfer->size);
@@ -3636,19 +3655,22 @@ void amf_namf_send_mbs_broadcast_context_release_response(amf_mbs_context_t *mbs
         amf_mbs_n2_info_remove_all(&n2_info_list);
     }
 
-    stream = ogs_sbi_stream_find_by_id(mbs_context->stream_id);
-    if (!stream) {
-        ogs_warn("MBS Broadcast ContextRelease: stream [%d] no longer exists, response not sent",
-                (int)mbs_context->stream_id);
-    } else {
-        memset(&sendmsg, 0, sizeof(sendmsg));
-        response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
-        ogs_assert(response);
-        ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+    if (first) {
+        stream = ogs_sbi_stream_find_by_id(mbs_context->stream_id);
+        if (!stream) {
+            ogs_warn("MBS Broadcast ContextRelease: stream [%d] no longer exists, response not sent",
+                    (int)mbs_context->stream_id);
+        } else {
+            memset(&sendmsg, 0, sizeof(sendmsg));
+            response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
+            ogs_assert(response);
+            ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+        }
+        mbs_context->stream_id = OGS_INVALID_POOL_ID;
     }
 
-    mbs_context->stream_id = OGS_INVALID_POOL_ID;
-    amf_mbs_context_remove(mbs_context);
+    if (last)
+        amf_mbs_context_remove(mbs_context);
 }
 
 /*

@@ -160,6 +160,24 @@ amf_mbs_owes_e amf_mbs_gnb_owes(const amf_mbs_gnb_t *involved)
     return AMF_MBS_OWES_SETUP_RESPONSE;
 }
 
+bool amf_mbs_context_release_answered(amf_mbs_context_t *amf_mbs_context, amf_mbs_gnb_t *involved, bool *first, bool *last)
+{
+    ogs_assert(amf_mbs_context);
+    ogs_assert(involved);
+    ogs_assert(first);
+    ogs_assert(last);
+
+    *first = *last = false;
+    if (!amf_mbs_context->release_pending || !involved->release_sent)
+        return false;
+
+    involved->release_sent = false;
+    amf_mbs_context->gnb_response_count++;
+    *first = amf_mbs_context->gnb_response_count == 1;
+    *last = amf_mbs_context->gnb_response_count >= amf_mbs_context->gnb_request_count;
+    return true;
+}
+
 /*
  * Whether the gNB of the record \p involved holds the session: it did not fail its Setup, did not ask for the release
  * and was not released for leaving the service area.
