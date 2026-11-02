@@ -513,6 +513,12 @@ static bool fsa_ids_equal(const ogs_list_t *current, char **ids, int num)
 smf_mbs_update_result_e smf_mbs_sess_update(smf_mbs_sess_t *mbs_sess, OpenAPI_list_t *patch_items,
         smf_mbs_update_t *update, const char **detail)
 {
+    return smf_mbs_sess_update_check(mbs_sess, patch_items, update, detail, false);
+}
+
+smf_mbs_update_result_e smf_mbs_sess_update_check(smf_mbs_sess_t *mbs_sess, OpenAPI_list_t *patch_items,
+        smf_mbs_update_t *update, const char **detail, bool check_only)
+{
     smf_mbs_update_result_e result = SMF_MBS_UPDATE_OK;
     cJSON *doc = NULL, *member = NULL;
     OpenAPI_lnode_t *node;
@@ -690,6 +696,19 @@ smf_mbs_update_result_e smf_mbs_sess_update(smf_mbs_sess_t *mbs_sess, OpenAPI_li
             goto done;
         }
         nr_red_cap = smf_mbs_nr_red_cap_from_string(member->valuestring);
+    }
+
+    /* Only asked whether the result is acceptable: nothing is applied, and the service information the request leaves
+     * is given */
+    if (check_only) {
+        bool same_json = (!mbs_sess->mbs_serv_info_json && !serv_info_json) ||
+            (mbs_sess->mbs_serv_info_json && serv_info_json &&
+             strcmp(mbs_sess->mbs_serv_info_json, serv_info_json) == 0);
+
+        update->service_info_changed = !same_json;
+        update->serv_info_json = serv_info_json;
+        serv_info_json = NULL;
+        goto done;
     }
 
     /* From here the result is accepted: the flows are the first thing that can still fail (more rules than a

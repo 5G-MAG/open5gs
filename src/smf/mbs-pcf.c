@@ -163,6 +163,45 @@ ogs_sbi_request_t *smf_npcf_mbspolicycontrol_build_create(smf_mbs_sess_t *mbs_se
     return request;
 }
 
+/* TS 29.537 cl. 5.2.2.3.2 step 1: "the NF service consumer shall invoke the "Update" resource custom operation by sending
+ * an HTTP POST request to the PCF targeting the URI of the corresponding "Individual MBS Policy" resource custom
+ * operation, i.e. "{apiRoot}/npcf-mbspolicycontrol/<apiVersion>/mbs-policies/{mbsPolicyId}/update", with the request
+ * body including the MbsPolicyCtxtDataUpdate data structure that may contain: the updated MBS Service Information,
+ * within the "mbsServInfo" attribute; the MBS Policy Control Request Triggers that are met, within the "mbsPcrts"
+ * attribute". */
+ogs_sbi_request_t *smf_npcf_mbspolicycontrol_build_update(smf_mbs_sess_t *mbs_sess, void *data)
+{
+    ogs_sbi_message_t message;
+    ogs_sbi_request_t *request = NULL;
+    OpenAPI_mbs_policy_ctxt_data_update_t *update = NULL;
+    OpenAPI_list_t *pcrts;
+
+    ogs_assert(mbs_sess);
+    ogs_assert(mbs_sess->pcf_policy_id);
+
+    memset(&message, 0, sizeof(message));
+    message.h.method = (char *)OGS_SBI_HTTP_METHOD_POST;
+    message.h.service.name = (char *)OGS_SBI_SERVICE_NAME_NPCF_MBSPOLICYCONTROL;
+    message.h.api.version = (char *)OGS_SBI_API_V1;
+    message.h.resource.component[0] = (char *)OGS_SBI_RESOURCE_NAME_MBS_POLICIES;
+    message.h.resource.component[1] = mbs_sess->pcf_policy_id;
+    message.h.resource.component[2] = (char *)OGS_SBI_RESOURCE_NAME_UPDATE;
+
+    pcrts = OpenAPI_list_create();
+    OpenAPI_list_add(pcrts, ogs_strdup("MBS_SESSION_UPDATE"));
+    update = OpenAPI_mbs_policy_ctxt_data_update_create(build_mbs_service_info(data), pcrts);
+    message.MbsPolicyCtxtDataUpdate = update;
+
+    message.http.accept = (char *)(OGS_SBI_CONTENT_JSON_TYPE "," OGS_SBI_CONTENT_PROBLEM_TYPE);
+
+    request = ogs_sbi_build_request(&message);
+    ogs_expect(request);
+
+    OpenAPI_mbs_policy_ctxt_data_update_free(update);
+
+    return request;
+}
+
 /* TS 29.537 cl. 5.2.2.4.2 step 1: "the NF service consumer shall send an HTTP DELETE request to the PCF, targeting
  * the URI of the corresponding "Individual MBS Policy" resource." */
 ogs_sbi_request_t *smf_npcf_mbspolicycontrol_build_delete(smf_mbs_sess_t *mbs_sess, void *data)
@@ -217,6 +256,10 @@ void smf_mbs_pcf_sess_clear(smf_mbs_sess_t *mbs_sess)
     if (mbs_sess->pcf_policy_id) {
         ogs_free(mbs_sess->pcf_policy_id);
         mbs_sess->pcf_policy_id = NULL;
+    }
+    if (mbs_sess->pcf_patch_json) {
+        ogs_free(mbs_sess->pcf_patch_json);
+        mbs_sess->pcf_patch_json = NULL;
     }
     mbs_sess->pcf_pending = SMF_MBS_PCF_OP_NONE;
 }
@@ -396,6 +439,167 @@ static void create_answered(smf_mbs_sess_t *mbs_sess, ogs_sbi_message_t *recvmsg
     smf_nmbsmf_mbs_session_create_continue(mbs_sess, stream);
 }
 
+/* The Update */
+
+static bool is_modified_path(const char *path, const char *name)
+{
+    size_t len = strlen(name);
+
+    return path && !strncmp(path, name, len) && (path[len] == '\0' || path[len] == '/');
+}
+
+bool smf_mbs_pcf_update_wanted(smf_mbs_sess_t *mbs_sess, OpenAPI_list_t *patch_items)
+{
+    OpenAPI_lnode_t *node;
+    bool contact = false, no_contact = false, service_info = false;
+
+    ogs_assert(mbs_sess);
+
+    if (!smf_mbs_policy_control_enabled(NULL) || !mbs_sess->pcf_policy_id)
+        return false;
+
+    OpenAPI_list_for_each(patch_items, node) {
+        OpenAPI_patch_item_t *item = node->data;
+
+        if (!item || !item->path)
+            continue;
+        if (is_modified_path(item->path, "/contactPcfInd")) {
+            if (item->op == OpenAPI_patch_operation_add || item->op == OpenAPI_patch_operation_replace) {
+                if (item->value && item->value->json && cJSON_IsTrue(item->value->json))
+                    contact = true;
+                else if (item->value && item->value->json && cJSON_IsFalse(item->value->json))
+                    no_contact = true;
+            }
+        } else if (is_modified_path(item->path, "/mbsServInfo")) {
+            service_info = true;
+        }
+    }
+
+    return contact || (service_info && !no_contact);
+}
+
+bool smf_mbs_pcf_update_send(smf_mbs_sess_t *mbs_sess, ogs_sbi_stream_t *stream, OpenAPI_list_t *patch_items,
+        const char *serv_info_json)
+{
+    OpenAPI_lnode_t *node;
+    cJSON *array = cJSON_CreateArray();
+    bool service_info = false;
+
+    ogs_assert(mbs_sess);
+    ogs_assert(stream);
+    ogs_assert(array);
+
+    OpenAPI_list_for_each(patch_items, node) {
+        OpenAPI_patch_item_t *item = node->data;
+        cJSON *json = OpenAPI_patch_item_convertToJSON(item);
+
+        ogs_assert(json);
+        cJSON_AddItemToArray(array, json);
+        if (is_modified_path(item->path, "/mbsServInfo"))
+            service_info = true;
+    }
+    if (mbs_sess->pcf_patch_json)
+        ogs_free(mbs_sess->pcf_patch_json);
+    mbs_sess->pcf_patch_json = cJSON_PrintUnformatted(array);
+    ogs_assert(mbs_sess->pcf_patch_json);
+    cJSON_Delete(array);
+
+    if (!pcf_send(mbs_sess, SMF_MBS_PCF_OP_UPDATE, stream, smf_npcf_mbspolicycontrol_build_update,
+                service_info ? (void *)serv_info_json : NULL)) {
+        ogs_free(mbs_sess->pcf_patch_json);
+        mbs_sess->pcf_patch_json = NULL;
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_GATEWAY_TIMEOUT, NULL, "Cannot discover",
+                "Requested MBS Session Update failed, no PCF could be reached for the MBS policy", NULL);
+        return false;
+    }
+    return true;
+}
+
+/* The Update that waited for the PCF, as the list of patch items it was made of; NULL when there is none */
+static OpenAPI_list_t *take_patch_items(smf_mbs_sess_t *mbs_sess)
+{
+    OpenAPI_list_t *items = NULL;
+    cJSON *array, *entry;
+
+    if (!mbs_sess->pcf_patch_json)
+        return NULL;
+    array = cJSON_Parse(mbs_sess->pcf_patch_json);
+    ogs_free(mbs_sess->pcf_patch_json);
+    mbs_sess->pcf_patch_json = NULL;
+    if (!array)
+        return NULL;
+
+    items = OpenAPI_list_create();
+    cJSON_ArrayForEach(entry, array) {
+        OpenAPI_patch_item_t *item = OpenAPI_patch_item_parseFromJSON(entry);
+
+        if (item)
+            OpenAPI_list_add(items, item);
+    }
+    cJSON_Delete(array);
+    return items;
+}
+
+static void free_patch_items(OpenAPI_list_t *items)
+{
+    OpenAPI_lnode_t *node;
+
+    if (!items)
+        return;
+    OpenAPI_list_for_each(items, node)
+        OpenAPI_patch_item_free(node->data);
+    OpenAPI_list_free(items);
+}
+
+static void update_answered(smf_mbs_sess_t *mbs_sess, ogs_sbi_message_t *recvmsg)
+{
+    smf_mbs_pcf_failure_action_e action = SMF_MBS_PCF_FAILURE_ACTION_NONE;
+    smf_mbs_pcf_answer_t answer;
+    ogs_sbi_stream_t *stream = pcf_take_stream(mbs_sess);
+    OpenAPI_list_t *items = take_patch_items(mbs_sess);
+
+    smf_mbs_policy_control_enabled(&action);
+    smf_mbs_pcf_classify(SMF_MBS_PCF_OP_UPDATE, recvmsg->res_status, problem_cause(recvmsg), action, &answer);
+
+    if (answer.outcome == SMF_MBS_PCF_OUTCOME_REJECT) {
+        ogs_error("MBS session mbsSessionRef[%s]: the PCF answered %d [%s] to the update of the MBS policy",
+                mbs_sess->mbs_session_ref, recvmsg->res_status, problem_cause(recvmsg) ? problem_cause(recvmsg) : "");
+        if (stream)
+            smf_mbs_pcf_send_error(stream, &answer, "Requested MBS Session Update failed, the PCF refused the MBS policy",
+                    recvmsg->AcceptableMbsServInfo);
+        free_patch_items(items);
+        return;
+    }
+    if (answer.outcome == SMF_MBS_PCF_OUTCOME_ALLOW)
+        ogs_warn("MBS session mbsSessionRef[%s]: the PCF denied the update of the MBS policy context "
+                "(MBS_POLICY_CONTEXT_DENIED); smf.mbsPolicyControl.failureAction is allow, the update is applied",
+                mbs_sess->mbs_session_ref);
+
+    if (!stream) {
+        ogs_error("MBS session mbsSessionRef[%s]: the MBS Session Update request is no longer there",
+                mbs_sess->mbs_session_ref);
+        free_patch_items(items);
+        return;
+    }
+    if (mbs_sess->release_triggered) {
+        /* TS 29.532 V18.6.0 table 6.2.3.3.3.1-3, 404: "UNKNOWN_MBS_SESSION, if the indicated MBS session is not found in
+         * the MB-SMF." */
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_NOT_FOUND, NULL, "Not Found",
+                "Requested MBS Session Update failed, the MBS session is being released",
+                NMBSMF_MBSESSION_UNKNOWN_MBS_SESSION);
+        free_patch_items(items);
+        return;
+    }
+    if (!items) {
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR, NULL, "Internal Server Error",
+                "Requested MBS Session Update failed, the update is no longer known", NMBSMF_MBSSESSION_SYSTEM_FAILURE);
+        return;
+    }
+
+    smf_nmbsmf_mbs_session_patch_apply(mbs_sess, stream, NULL, items, true);
+    free_patch_items(items);
+}
+
 void smf_mbs_pcf_handle_response(smf_mbs_sess_t *mbs_sess, int xact_state, ogs_sbi_message_t *recvmsg)
 {
     ogs_assert(mbs_sess);
@@ -410,6 +614,9 @@ void smf_mbs_pcf_handle_response(smf_mbs_sess_t *mbs_sess, int xact_state, ogs_s
     switch (mbs_sess->pcf_pending) {
     case SMF_MBS_PCF_OP_CREATE:
         create_answered(mbs_sess, recvmsg);
+        break;
+    case SMF_MBS_PCF_OP_UPDATE:
+        update_answered(mbs_sess, recvmsg);
         break;
     default:
         ogs_error("MBS session mbsSessionRef[%s]: unknown exchange with the PCF", mbs_sess->mbs_session_ref);
@@ -437,6 +644,15 @@ void smf_mbs_pcf_timeout(ogs_pool_id_t mbs_sess_id, int serial)
             ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_GATEWAY_TIMEOUT, NULL, "Cannot receive SBI message",
                     "MBS Session Create failed, the PCF did not answer", NULL);
         smf_mbs_sess_release(mbs_sess);
+        break;
+    case SMF_MBS_PCF_OP_UPDATE:
+        if (mbs_sess->pcf_patch_json) {
+            ogs_free(mbs_sess->pcf_patch_json);
+            mbs_sess->pcf_patch_json = NULL;
+        }
+        if (stream)
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_GATEWAY_TIMEOUT, NULL, "Cannot receive SBI message",
+                    "Requested MBS Session Update failed, the PCF did not answer", NULL);
         break;
     default:
         break;

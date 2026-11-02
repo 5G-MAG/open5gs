@@ -740,6 +740,7 @@ typedef struct smf_mbs_sess_s {
     ogs_pool_id_t pcf_stream_id;
     ogs_timer_t *pcf_timer;
     int pcf_serial;
+    char *pcf_patch_json;       /* the Update waiting for the answer of the PCF: its patch items, as a JSON array */
 
     /* contactPcfInd of the last Update (TS 29.532 V18.6.0 cl. 5.3.2.3.1) */
     bool has_contact_pcf_ind;

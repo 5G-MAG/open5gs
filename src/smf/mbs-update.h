@@ -44,6 +44,7 @@ typedef struct smf_mbs_update_s {
     bool area_changed;          /* the area the session runs with is another one */
     bool area_reduced;          /* the area of the request was reduced to the coverage of this MB-SMF */
     bool service_info_changed;
+    char *serv_info_json;       /* smf_mbs_sess_update_check() only: the service information the request leaves, to be freed */
     bool fsa_changed;
     bool contact_pcf_ind_changed;
     smf_mbs_flow_change_t flow_change;
@@ -63,6 +64,11 @@ bool smf_mbs_update_path_is_modifiable(const char *path);
  * path is not one smf_mbs_update_path_is_modifiable() accepts are left out. */
 smf_mbs_update_result_e smf_mbs_sess_update(smf_mbs_sess_t *mbs_sess, OpenAPI_list_t *patch_items,
         smf_mbs_update_t *update, const char **detail);
+
+/* As smf_mbs_sess_update(); with \p check_only nothing is applied (neither the session nor the user plane rules), and
+ * of \p update only service_info_changed and serv_info_json are set. */
+smf_mbs_update_result_e smf_mbs_sess_update_check(smf_mbs_sess_t *mbs_sess, OpenAPI_list_t *patch_items,
+        smf_mbs_update_t *update, const char **detail, bool check_only);
 
 /* RFC 6902 on a cJSON document. Returns NULL when every operation was applied, else a description of the first
  * that was not (the document is then partly modified). */

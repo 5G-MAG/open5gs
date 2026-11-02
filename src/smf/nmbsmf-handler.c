@@ -1302,179 +1302,49 @@ bool smf_nmbsmf_handle_mbs_session_release(
     return true;
 }
 
-/*
- * 3GPP TS 29.532 - Release 17.4.0
- * 5G System; 5G Multicast-Broadcast Session Management Services; Stage 3
- * Ch. 5.3.2.3 - Nmbsmf_MBSSession Service - MBS Session Update service operation
- */
-bool smf_nmbsmf_handle_mbs_session_patch(smf_mbs_sess_t *mbs_sess,
-                                         ogs_sbi_stream_t *stream,
-                                         ogs_sbi_message_t *message)
+/* Answers the consumer when the result of an Update is not acceptable; returns whether it did. */
+static bool patch_update_refused(ogs_sbi_stream_t *stream, ogs_sbi_message_t *message,
+        smf_mbs_update_result_e update_result, const char *update_detail)
 {
-    // TODO (davidjw): Not handling the 307 Temporary Redirect and 308 Permanent Redirect errors for now
-    ogs_debug("MBS Session update request received");
+    switch (update_result) {
+    case SMF_MBS_UPDATE_OK:
+        return false;
+    case SMF_MBS_UPDATE_PATCH_FAILED:
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST, message, "Update failed",
+                update_detail, "INVALID_MSG_FORMAT");
+        return true;
+    case SMF_MBS_UPDATE_ERROR_INPUT_PARAMETERS:
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST, message, "Error input parameters",
+                update_detail, NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
+        return true;
+    case SMF_MBS_UPDATE_FILTER_RESTRICTIONS_NOT_RESPECTED:
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST, message,
+                "Filter restrictions not respected", update_detail,
+                NMBSMF_MBSSESSION_FILTER_RESTRICTIONS_NOT_RESPECTED);
+        return true;
+    case SMF_MBS_UPDATE_INVALID_MBS_SERVICE_INFO:
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST, message,
+                "Invalid MBS service information", update_detail, NMBSMF_MBSSESSION_INVALID_MBS_SERVICE_INFO);
+        return true;
+    default:
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR, message,
+                "Insufficient resources", update_detail, NMBSMF_MBSSESSION_INSUFFICIENT_RESOURCES);
+        return true;
+    }
+}
 
+/* The Update applied to the session, the user plane and the AMFs, and the answer to the consumer on \p stream */
+bool smf_nmbsmf_mbs_session_patch_apply(smf_mbs_sess_t *mbs_sess, ogs_sbi_stream_t *stream,
+        ogs_sbi_message_t *message, OpenAPI_list_t *patch_items, bool has_modifications)
+{
     ogs_sbi_message_t sendmsg;
     ogs_sbi_response_t *response = NULL;
-
-    ogs_assert(stream);
-    ogs_assert(message);
-    ogs_assert(mbs_sess);
-
-    /* code-derived, no spec claim: sendmsg was previously used uninitialized -- harmless while
-     * every path here only ever built a bodyless 204, but this function now also builds a 200
-     * response carrying sendmsg.UpdateRspData, and ogs_sbi_build_response()'s own serialiser
-     * (lib/sbi/message.c) picks its response body by checking each OpenAPI_*_t field on this
-     * struct in turn, so stack garbage in an unrelated field could otherwise be mistaken for a
-     * different response type. */
-    memset(&sendmsg, 0, sizeof(sendmsg));
-
-    /* A session whose release has begun is no longer there to be updated: TS 29.532 V18.6.0 table 6.2.3.3.3.1-3,
-     * 404: "UNKNOWN_MBS_SESSION, if the indicated MBS session is not found in the MB-SMF." */
-    if (mbs_sess->release_triggered) {
-        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_NOT_FOUND, message, "Not Found",
-                "Requested MBS Session Update failed, the MBS session is being released",
-                NMBSMF_MBSESSION_UNKNOWN_MBS_SESSION);
-        return false;
-    }
-
-    /* The PFCP session of the MBS session is being restored at the MB-UPF after its restart (TS 23.527 V18.6.0 clause
-     * 8.2.2) and is not there to be told of a change of the QoS flows: the update is refused instead of being applied
-     * to the MB-SMF alone. TS 29.500 V18.10.0 table 5.2.7.2-1, row SYSTEM_FAILURE, "500 Internal Server Error": "The
-     * request is rejected due to generic error condition in the NF." (no clause names a cause for this case) */
-    if (mbs_sess->restoring || mbs_sess->relocating) {
-        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR, message,
-                "Internal Server Error", "Requested MBS Session Update failed, the MBS session is being restored at "
-                "the MB-UPF", NMBSMF_MBSSESSION_SYSTEM_FAILURE);
-        return false;
-    }
-
-    if (!message->PatchItemList) {
-        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
-                    message, "Missing patch list", "Requested MBS Session Update failed, no patch list provided",
-                    "INVALID_MSG_FORMAT");
-        return false;
-    }
-
-    OpenAPI_lnode_t *node;
     smf_mbs_update_t update;
     smf_mbs_update_result_e update_result = SMF_MBS_UPDATE_OK;
-    bool has_modifications = false;
     const char *update_detail = NULL;
-    OpenAPI_list_for_each(message->PatchItemList, node) {
-        OpenAPI_patch_item_t *patch_item = (OpenAPI_patch_item_t*)node->data;
-        if (!patch_item->path || !patch_item->op) {
-            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
-                    message, "Malformed patch list", "Requested MBS Session Update failed, patch list malformed",
-                    "INVALID_MSG_FORMAT");
-            return false;
-        }
-        /* The attributes TS 29.532 V18.6.0 cl. 5.3.2.3.1 lets a consumer modify for a broadcast session (the
-         * MBS service area, the MBS service information, the list of MBS FSA IDs) and contactPcfInd are applied
-         * together, below. */
-        if (smf_mbs_update_path_is_modifiable(patch_item->path)) {
-            has_modifications = true;
-            continue;
-        }
-        SWITCH(patch_item->path)
-        CASE("/activityStatus")
-            if (strcmp(mbs_sess->service_type, "MULTICAST")) {
-                ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN, message, "Update forbidden",
-                        "Requested MBS Session Update failed, activityStatus can only be updated for multicast services",
-                        "MODIFICATION_NOT_ALLOWED");
-                return false;
-            }
-            mbs_sess->activity_status = OpenAPI_mbs_session_activity_status_FromString(cJSON_GetStringValue(patch_item->value->json));
-            break;
-        CASE("/mbsSessionId")
-        CASE("/mbsSessionId/tmgi")
-        CASE("/mbsSessionId/tmgi/mbsServiceId")
-        CASE("/mbsSessionId/tmgi/plmnId")
-        CASE("/mbsSessionId/tmgi/plmnId/mcc")
-        CASE("/mbsSessionId/tmgi/plmnId/mnc")
-        CASE("/mbsSessionId/ssm/sourceIpAddr")
-        CASE("/mbsSessionId/ssm/sourceIpAddr/ipv4Addr")
-        CASE("/mbsSessionId/ssm/sourceIpAddr/ipv6Addr")
-        CASE("/mbsSessionId/ssm/sourceIpAddr/ipv6Prefix")
-        CASE("/mbsSessionId/ssm/destIpAddr")
-        CASE("/mbsSessionId/ssm/destIpAddr/ipv4Addr")
-        CASE("/mbsSessionId/ssm/destIpAddr/ipv6Addr")
-        CASE("/mbsSessionId/ssm/destIpAddr/ipv6Prefix")
-        CASE("/mbsSessionId/nid")
-        CASE("/tmgiAllocReq")
-        CASE("/tmgi")
-        CASE("/tmgi/mbsServiceId")
-        CASE("/tmgi/plmnId")
-        CASE("/tmgi/plmnId/mcc")
-        CASE("/tmgi/plmnId/mnc")
-        CASE("/expirationTime")
-        CASE("/serviceType")
-        CASE("/locationDependent")
-        CASE("/areaSessionId")
-        CASE("/ingressTunReqAddr")
-        CASE("/ingressTunAddr")
-        CASE("/ssm")
-        CASE("/ssm/sourceIpAddr")
-        CASE("/ssm/sourceIpAddr/ipv4Addr")
-        CASE("/ssm/sourceIpAddr/ipv6Addr")
-        CASE("/ssm/sourceIpAddr/ipv6Prefix")
-        CASE("/ssm/destIpAddr")
-        CASE("/ssm/destIpAddr/ipv4Addr")
-        CASE("/ssm/destIpAddr/ipv6Addr")
-        CASE("/ssm/destIpAddr/ipv6Prefix")
-        CASE("/dnn")
-        CASE("/snssai")
-        CASE("/snssai/sst")
-        CASE("/snssai/sd")
-        CASE("/startTime")
-        CASE("/terminationTime")
-        CASE("/mbsSessionSubsc")
-        CASE("/mbsSessionSubsc/mbsSessionId")
-        CASE("/mbsSessionSubsc/mbsSessionId/tmgi")
-        CASE("/mbsSessionSubsc/mbsSessionId/tmgi/mbsServiceId")
-        CASE("/mbsSessionSubsc/mbsSessionId/tmgi/plmnId")
-        CASE("/mbsSessionSubsc/mbsSessionId/tmgi/plmnId/mcc")
-        CASE("/mbsSessionSubsc/mbsSessionId/tmgi/plmnId/mnc")
-        CASE("/mbsSessionSubsc/mbsSessionId/ssm/sourceIpAddr")
-        CASE("/mbsSessionSubsc/mbsSessionId/ssm/sourceIpAddr/ipv4Addr")
-        CASE("/mbsSessionSubsc/mbsSessionId/ssm/sourceIpAddr/ipv6Addr")
-        CASE("/mbsSessionSubsc/mbsSessionId/ssm/sourceIpAddr/ipv6Prefix")
-        CASE("/mbsSessionSubsc/mbsSessionId/ssm/destIpAddr")
-        CASE("/mbsSessionSubsc/mbsSessionId/ssm/destIpAddr/ipv4Addr")
-        CASE("/mbsSessionSubsc/mbsSessionId/ssm/destIpAddr/ipv6Addr")
-        CASE("/mbsSessionSubsc/mbsSessionId/ssm/destIpAddr/ipv6Prefix")
-        CASE("/anyUeInd")
-            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN, message, "Update forbidden",
-                    "Requested MBS Session Update failed, update not allowed for one or more field paths",
-                    "MODIFICATION_NOT_ALLOWED");
-            return false;
-        CASE("/extMbsServiceArea")
-        CASE("/extMbsServiceArea/geographicAreaList")
-        CASE("/extMbsServiceArea/civicAddressList")
-        /* TS 29.532 clause 5.3.2.3.1 lists mbsSecurityContext (MSK/MTK key rotation) as modifiable for a
-         * multicast session, unlike the fields above this block, which the same clause never lists as
-         * updatable at all. This SMF has no multicast security-context state to update (mbsSecurityContext
-         * is stubbed NULL throughout -- see this file's own Multicast-scope survey), so the honest response
-         * is "not implemented", not "forbidden". */
-        CASE("/mbsSecurityContext")
-        CASE("/mbsSecurityContext/keyList")
-            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_NOT_IMPLEMENTED, message, "Update not implemented",
-                    "Requested MBS Session Update failed, update for requested field path is not implemented", NULL);
-            return false;
-        DEFAULT
-            /* handle array paths */
-            if (!strncmp(patch_item->path, "/extMbsServiceArea/geographicAreaList/", 38) ||
-                !strncmp(patch_item->path, "/extMbsServiceArea/civicAddressList", 35)) {
-                ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_NOT_IMPLEMENTED, message, "Update not implemented",
-                        "Requested MBS Session Update failed, update for requested field path is not implemented", NULL);
-                return false;
-            } else {
-                ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST, message, "Update path not found",
-                        "Requested MBS Session Update failed, patch path not recognised", "INVALID_MSG_FORMAT");
-                return false;
-            }
-        END
-    }
+
+    memset(&sendmsg, 0, sizeof(sendmsg));
+
     /* The attributes of the Update are applied together: all or none (TS 29.500 V18.10.0 cl. 5.2.7.2: a request
      * that cannot be fulfilled is rejected with the most similar status code, "400 Bad Request" for what the
      * client caused and "500 Server Internal Error" for the server). The causes are those of TS 29.532 V18.6.0
@@ -1482,32 +1352,9 @@ bool smf_nmbsmf_handle_mbs_session_patch(smf_mbs_sess_t *mbs_sess,
      * (INVALID_MSG_FORMAT, INSUFFICIENT_RESOURCES). */
     memset(&update, 0, sizeof(update));
     if (has_modifications)
-        update_result = smf_mbs_sess_update(mbs_sess, message->PatchItemList, &update, &update_detail);
-    switch (update_result) {
-    case SMF_MBS_UPDATE_OK:
-        break;
-    case SMF_MBS_UPDATE_PATCH_FAILED:
-        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST, message, "Update failed",
-                update_detail, "INVALID_MSG_FORMAT");
+        update_result = smf_mbs_sess_update(mbs_sess, patch_items, &update, &update_detail);
+    if (patch_update_refused(stream, message, update_result, update_detail))
         return false;
-    case SMF_MBS_UPDATE_ERROR_INPUT_PARAMETERS:
-        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST, message, "Error input parameters",
-                update_detail, NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
-        return false;
-    case SMF_MBS_UPDATE_FILTER_RESTRICTIONS_NOT_RESPECTED:
-        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST, message,
-                "Filter restrictions not respected", update_detail,
-                NMBSMF_MBSSESSION_FILTER_RESTRICTIONS_NOT_RESPECTED);
-        return false;
-    case SMF_MBS_UPDATE_INVALID_MBS_SERVICE_INFO:
-        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST, message,
-                "Invalid MBS service information", update_detail, NMBSMF_MBSSESSION_INVALID_MBS_SERVICE_INFO);
-        return false;
-    default:
-        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR, message,
-                "Insufficient resources", update_detail, NMBSMF_MBSSESSION_INSUFFICIENT_RESOURCES);
-        return false;
-    }
 
     /* TS 29.532 V18.6.0 cl. 5.3.2.3.1 step 2b: the "200 OK" response carries "the representation of the updated
      * MBS session including the reduced MBS service area in the redMbsServArea attribute", step 2a, otherwise, "204
@@ -1631,6 +1478,198 @@ bool smf_nmbsmf_handle_mbs_session_patch(smf_mbs_sess_t *mbs_sess,
     ogs_assert(true == ogs_sbi_server_send_response(stream, response));
 
     return true;
+}
+
+/*
+ * 3GPP TS 29.532 - Release 17.4.0
+ * 5G System; 5G Multicast-Broadcast Session Management Services; Stage 3
+ * Ch. 5.3.2.3 - Nmbsmf_MBSSession Service - MBS Session Update service operation
+ */
+bool smf_nmbsmf_handle_mbs_session_patch(smf_mbs_sess_t *mbs_sess,
+                                         ogs_sbi_stream_t *stream,
+                                         ogs_sbi_message_t *message)
+{
+    // TODO (davidjw): Not handling the 307 Temporary Redirect and 308 Permanent Redirect errors for now
+    ogs_debug("MBS Session update request received");
+
+    ogs_assert(stream);
+    ogs_assert(message);
+    ogs_assert(mbs_sess);
+
+    /* A session whose release has begun is no longer there to be updated: TS 29.532 V18.6.0 table 6.2.3.3.3.1-3,
+     * 404: "UNKNOWN_MBS_SESSION, if the indicated MBS session is not found in the MB-SMF." */
+    if (mbs_sess->release_triggered) {
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_NOT_FOUND, message, "Not Found",
+                "Requested MBS Session Update failed, the MBS session is being released",
+                NMBSMF_MBSESSION_UNKNOWN_MBS_SESSION);
+        return false;
+    }
+
+    /* The MBS Policy Association is being created, updated or deleted at the PCF: the answer of the PCF is waited for
+     * before another change is taken in. TS 29.500 V18.10.0 table 5.2.7.2-1, row SYSTEM_FAILURE, "500 Internal Server
+     * Error": "The request is rejected due to generic error condition in the NF." (no clause names a cause for this
+     * case) */
+    if (mbs_sess->pcf_pending) {
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR, message,
+                "Internal Server Error", "Requested MBS Session Update failed, the MBS policy of the MBS session is "
+                "being negotiated with the PCF", NMBSMF_MBSSESSION_SYSTEM_FAILURE);
+        return false;
+    }
+
+    /* The PFCP session of the MBS session is being restored at the MB-UPF after its restart (TS 23.527 V18.6.0 clause
+     * 8.2.2) and is not there to be told of a change of the QoS flows: the update is refused instead of being applied
+     * to the MB-SMF alone. TS 29.500 V18.10.0 table 5.2.7.2-1, row SYSTEM_FAILURE, "500 Internal Server Error": "The
+     * request is rejected due to generic error condition in the NF." (no clause names a cause for this case) */
+    if (mbs_sess->restoring || mbs_sess->relocating) {
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR, message,
+                "Internal Server Error", "Requested MBS Session Update failed, the MBS session is being restored at "
+                "the MB-UPF", NMBSMF_MBSSESSION_SYSTEM_FAILURE);
+        return false;
+    }
+
+    if (!message->PatchItemList) {
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                    message, "Missing patch list", "Requested MBS Session Update failed, no patch list provided",
+                    "INVALID_MSG_FORMAT");
+        return false;
+    }
+
+    OpenAPI_lnode_t *node;
+    bool has_modifications = false;
+    OpenAPI_list_for_each(message->PatchItemList, node) {
+        OpenAPI_patch_item_t *patch_item = (OpenAPI_patch_item_t*)node->data;
+        if (!patch_item->path || !patch_item->op) {
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                    message, "Malformed patch list", "Requested MBS Session Update failed, patch list malformed",
+                    "INVALID_MSG_FORMAT");
+            return false;
+        }
+        /* The attributes TS 29.532 V18.6.0 cl. 5.3.2.3.1 lets a consumer modify for a broadcast session (the
+         * MBS service area, the MBS service information, the list of MBS FSA IDs) and contactPcfInd are applied
+         * together, below. */
+        if (smf_mbs_update_path_is_modifiable(patch_item->path)) {
+            has_modifications = true;
+            continue;
+        }
+        SWITCH(patch_item->path)
+        CASE("/activityStatus")
+            if (strcmp(mbs_sess->service_type, "MULTICAST")) {
+                ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN, message, "Update forbidden",
+                        "Requested MBS Session Update failed, activityStatus can only be updated for multicast services",
+                        "MODIFICATION_NOT_ALLOWED");
+                return false;
+            }
+            mbs_sess->activity_status = OpenAPI_mbs_session_activity_status_FromString(cJSON_GetStringValue(patch_item->value->json));
+            break;
+        CASE("/mbsSessionId")
+        CASE("/mbsSessionId/tmgi")
+        CASE("/mbsSessionId/tmgi/mbsServiceId")
+        CASE("/mbsSessionId/tmgi/plmnId")
+        CASE("/mbsSessionId/tmgi/plmnId/mcc")
+        CASE("/mbsSessionId/tmgi/plmnId/mnc")
+        CASE("/mbsSessionId/ssm/sourceIpAddr")
+        CASE("/mbsSessionId/ssm/sourceIpAddr/ipv4Addr")
+        CASE("/mbsSessionId/ssm/sourceIpAddr/ipv6Addr")
+        CASE("/mbsSessionId/ssm/sourceIpAddr/ipv6Prefix")
+        CASE("/mbsSessionId/ssm/destIpAddr")
+        CASE("/mbsSessionId/ssm/destIpAddr/ipv4Addr")
+        CASE("/mbsSessionId/ssm/destIpAddr/ipv6Addr")
+        CASE("/mbsSessionId/ssm/destIpAddr/ipv6Prefix")
+        CASE("/mbsSessionId/nid")
+        CASE("/tmgiAllocReq")
+        CASE("/tmgi")
+        CASE("/tmgi/mbsServiceId")
+        CASE("/tmgi/plmnId")
+        CASE("/tmgi/plmnId/mcc")
+        CASE("/tmgi/plmnId/mnc")
+        CASE("/expirationTime")
+        CASE("/serviceType")
+        CASE("/locationDependent")
+        CASE("/areaSessionId")
+        CASE("/ingressTunReqAddr")
+        CASE("/ingressTunAddr")
+        CASE("/ssm")
+        CASE("/ssm/sourceIpAddr")
+        CASE("/ssm/sourceIpAddr/ipv4Addr")
+        CASE("/ssm/sourceIpAddr/ipv6Addr")
+        CASE("/ssm/sourceIpAddr/ipv6Prefix")
+        CASE("/ssm/destIpAddr")
+        CASE("/ssm/destIpAddr/ipv4Addr")
+        CASE("/ssm/destIpAddr/ipv6Addr")
+        CASE("/ssm/destIpAddr/ipv6Prefix")
+        CASE("/dnn")
+        CASE("/snssai")
+        CASE("/snssai/sst")
+        CASE("/snssai/sd")
+        CASE("/startTime")
+        CASE("/terminationTime")
+        CASE("/mbsSessionSubsc")
+        CASE("/mbsSessionSubsc/mbsSessionId")
+        CASE("/mbsSessionSubsc/mbsSessionId/tmgi")
+        CASE("/mbsSessionSubsc/mbsSessionId/tmgi/mbsServiceId")
+        CASE("/mbsSessionSubsc/mbsSessionId/tmgi/plmnId")
+        CASE("/mbsSessionSubsc/mbsSessionId/tmgi/plmnId/mcc")
+        CASE("/mbsSessionSubsc/mbsSessionId/tmgi/plmnId/mnc")
+        CASE("/mbsSessionSubsc/mbsSessionId/ssm/sourceIpAddr")
+        CASE("/mbsSessionSubsc/mbsSessionId/ssm/sourceIpAddr/ipv4Addr")
+        CASE("/mbsSessionSubsc/mbsSessionId/ssm/sourceIpAddr/ipv6Addr")
+        CASE("/mbsSessionSubsc/mbsSessionId/ssm/sourceIpAddr/ipv6Prefix")
+        CASE("/mbsSessionSubsc/mbsSessionId/ssm/destIpAddr")
+        CASE("/mbsSessionSubsc/mbsSessionId/ssm/destIpAddr/ipv4Addr")
+        CASE("/mbsSessionSubsc/mbsSessionId/ssm/destIpAddr/ipv6Addr")
+        CASE("/mbsSessionSubsc/mbsSessionId/ssm/destIpAddr/ipv6Prefix")
+        CASE("/anyUeInd")
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN, message, "Update forbidden",
+                    "Requested MBS Session Update failed, update not allowed for one or more field paths",
+                    "MODIFICATION_NOT_ALLOWED");
+            return false;
+        CASE("/extMbsServiceArea")
+        CASE("/extMbsServiceArea/geographicAreaList")
+        CASE("/extMbsServiceArea/civicAddressList")
+        /* TS 29.532 clause 5.3.2.3.1 lists mbsSecurityContext (MSK/MTK key rotation) as modifiable for a
+         * multicast session, unlike the fields above this block, which the same clause never lists as
+         * updatable at all. This SMF has no multicast security-context state to update (mbsSecurityContext
+         * is stubbed NULL throughout -- see this file's own Multicast-scope survey), so the honest response
+         * is "not implemented", not "forbidden". */
+        CASE("/mbsSecurityContext")
+        CASE("/mbsSecurityContext/keyList")
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_NOT_IMPLEMENTED, message, "Update not implemented",
+                    "Requested MBS Session Update failed, update for requested field path is not implemented", NULL);
+            return false;
+        DEFAULT
+            /* handle array paths */
+            if (!strncmp(patch_item->path, "/extMbsServiceArea/geographicAreaList/", 38) ||
+                !strncmp(patch_item->path, "/extMbsServiceArea/civicAddressList", 35)) {
+                ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_NOT_IMPLEMENTED, message, "Update not implemented",
+                        "Requested MBS Session Update failed, update for requested field path is not implemented", NULL);
+                return false;
+            } else {
+                ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST, message, "Update path not found",
+                        "Requested MBS Session Update failed, patch path not recognised", "INVALID_MSG_FORMAT");
+                return false;
+            }
+        END
+    }
+    /* TS 23.247 V18.8.0 clause 7.1.1.7 step 8 (MBS Session Update with PCC): the MB-SMF sends an
+     * Npcf_MBSPolicyControl_Update Request "(MBS Policy Association ID, [MBS Service Information])" towards the PCF, before
+     * the user plane and the AMFs are told (steps 11-16, "Same as steps 5-10 in Figure 7.1.1.6-1"). */
+    if (has_modifications && smf_mbs_pcf_update_wanted(mbs_sess, message->PatchItemList)) {
+        smf_mbs_update_t check;
+        smf_mbs_update_result_e check_result;
+        const char *check_detail = NULL;
+        bool sent;
+
+        memset(&check, 0, sizeof(check));
+        check_result = smf_mbs_sess_update_check(mbs_sess, message->PatchItemList, &check, &check_detail, true);
+        if (patch_update_refused(stream, message, check_result, check_detail))
+            return false;
+        sent = smf_mbs_pcf_update_send(mbs_sess, stream, message->PatchItemList, check.serv_info_json);
+        if (check.serv_info_json)
+            ogs_free(check.serv_info_json);
+        return sent;
+    }
+
+    return smf_nmbsmf_mbs_session_patch_apply(mbs_sess, stream, message, message->PatchItemList, has_modifications);
 }
 
 static bool smf_nmbsmf_parse_tai(ogs_sbi_stream_t *stream, ogs_sbi_message_t *message, ogs_tai_t *tai, OpenAPI_tai_t *api_tai)

@@ -59,6 +59,19 @@ void smf_mbs_pcf_classify(smf_mbs_pcf_op_e op, int pcf_status, const char *pcf_c
 /* The requests (the data of the builder is unused for Create and Delete) */
 ogs_sbi_request_t *smf_npcf_mbspolicycontrol_build_create(smf_mbs_sess_t *mbs_sess, void *data);
 ogs_sbi_request_t *smf_npcf_mbspolicycontrol_build_delete(smf_mbs_sess_t *mbs_sess, void *data);
+/* The data of the Update is the MBS service information as JSON text, or NULL when the Update brings none */
+ogs_sbi_request_t *smf_npcf_mbspolicycontrol_build_update(smf_mbs_sess_t *mbs_sess, void *data);
+
+/* Whether an Nmbsmf_MBSSession Update (its patch items) needs an Npcf_MBSPolicyControl_Update: the session has an MBS
+ * Policy Association, and the request carries contactPcfInd true, or new MBS service information without
+ * contactPcfInd false (TS 29.532 V18.6.0 table 6.2.6.2.4-1: "false" means that the PCF shall not be contacted). */
+bool smf_mbs_pcf_update_wanted(smf_mbs_sess_t *mbs_sess, OpenAPI_list_t *patch_items);
+
+/* Starts Npcf_MBSPolicyControl_Update for the Update that waits on \p stream; \p serv_info_json is the MBS service
+ * information the Update leaves. The Update is applied when the PCF answers. Returns false when the exchange could not
+ * be started: the stream has then been answered. */
+bool smf_mbs_pcf_update_send(smf_mbs_sess_t *mbs_sess, ogs_sbi_stream_t *stream, OpenAPI_list_t *patch_items,
+        const char *serv_info_json);
 
 /* Starts Npcf_MBSPolicyControl_Create for the session, whose Create request waits on \p stream. Returns false when the
  * exchange could not be started: the stream has then been answered. Otherwise the answer arrives in

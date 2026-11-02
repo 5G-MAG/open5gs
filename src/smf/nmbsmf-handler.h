@@ -120,6 +120,11 @@ bool smf_nmbsmf_handle_mbs_session_release(
  * Establishment, whose answer is the answer to the consumer on \p stream. */
 void smf_nmbsmf_mbs_session_create_continue(smf_mbs_sess_t *mbs_sess, ogs_sbi_stream_t *stream);
 
+/* The Update applied to the session, the MB-UPF and the AMFs, answered on \p stream (message is for the problem
+ * details and may be NULL). Returns false when the consumer was answered with an error. */
+bool smf_nmbsmf_mbs_session_patch_apply(smf_mbs_sess_t *mbs_sess, ogs_sbi_stream_t *stream,
+        ogs_sbi_message_t *message, OpenAPI_list_t *patch_items, bool has_modifications);
+
 /* Nmbsmf_MBSSession Service - MBS Session Update/Patch service operation */
 bool smf_nmbsmf_handle_mbs_session_patch(
     smf_mbs_sess_t *mbs_sess, ogs_sbi_stream_t *stream, ogs_sbi_message_t *message);

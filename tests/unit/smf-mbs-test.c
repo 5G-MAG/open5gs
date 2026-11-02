@@ -3872,6 +3872,97 @@ static void test_mbs_pcf_create_request(void)
     smf_mbs_sess_release(mbs_sess);
 }
 
+/* TS 23.247 V18.8.0 clause 7.1.1.7 step 8: with an MBS Policy Association the MB-SMF sends the Update to the PCF
+ * when told "that the PCF has to be contacted" or when it has new MBS service information; contactPcfInd "false"
+ * means that the PCF shall not be contacted (TS 29.532 V18.6.0 table 6.2.6.2.4-1) */
+static bool wanted_with(smf_mbs_sess_t *mbs_sess, const char *path1, const char *value1, const char *path2,
+        const char *value2)
+{
+    OpenAPI_list_t *items = OpenAPI_list_create();
+    bool wanted;
+
+    OpenAPI_list_add(items, patch_item(OpenAPI_patch_operation_replace, path1, NULL, value1));
+    if (path2)
+        OpenAPI_list_add(items, patch_item(OpenAPI_patch_operation_replace, path2, NULL, value2));
+    wanted = smf_mbs_pcf_update_wanted(mbs_sess, items);
+    free_patch_items(items);
+    return wanted;
+}
+
+static void test_mbs_pcf_update(void)
+{
+    smf_mbs_sess_t *mbs_sess = make_session(serv_info_2_text, area_1_text);
+    const char *new_info = "{\"mbsMediaComps\":{\"1\":{\"mbsMedCompNum\":1,\"mbsQoSReq\":{\"5qi\":9}}}}";
+    smf_mbs_update_t update;
+    const char *detail = NULL;
+    OpenAPI_list_t *items;
+    ogs_sbi_request_t *request;
+    char *before;
+    cJSON *json;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+
+    /* no PCF configured, or no association: never */
+    CHECK(!wanted_with(mbs_sess, "/contactPcfInd", "true", NULL, NULL));
+    CHECK(smf_mbs_policy_control_configure("true", "reject"));
+    CHECK(!wanted_with(mbs_sess, "/contactPcfInd", "true", NULL, NULL));
+
+    mbs_sess->pcf_policy_id = ogs_strdup("42");
+    CHECK(wanted_with(mbs_sess, "/contactPcfInd", "true", NULL, NULL));
+    CHECK(!wanted_with(mbs_sess, "/contactPcfInd", "false", NULL, NULL));
+    CHECK(wanted_with(mbs_sess, "/mbsServInfo", new_info, NULL, NULL));
+    CHECK(wanted_with(mbs_sess, "/mbsServInfo/mbsMediaComps", "{}", NULL, NULL));
+    CHECK(!wanted_with(mbs_sess, "/mbsServInfo", new_info, "/contactPcfInd", "false"));
+    CHECK(wanted_with(mbs_sess, "/mbsServInfo", new_info, "/contactPcfInd", "true"));
+    CHECK(!wanted_with(mbs_sess, "/mbsServiceArea", area_1_text, NULL, NULL));
+    CHECK(!wanted_with(mbs_sess, "/mbsFsaIdList", "[\"00000A\"]", NULL, NULL));
+    CHECK(smf_mbs_policy_control_configure("false", NULL));
+    CHECK(!wanted_with(mbs_sess, "/contactPcfInd", "true", NULL, NULL));
+    CHECK(smf_mbs_policy_control_configure("true", "reject"));
+
+    /* a check only: nothing of the session changes, the service information the Update leaves is given */
+    before = ogs_strdup(mbs_sess->mbs_serv_info_json);
+    items = OpenAPI_list_create();
+    OpenAPI_list_add(items, patch_item(OpenAPI_patch_operation_replace, "/mbsServInfo", NULL, new_info));
+    memset(&update, 0, sizeof(update));
+    CHECK(smf_mbs_sess_update_check(mbs_sess, items, &update, &detail, true) == SMF_MBS_UPDATE_OK);
+    CHECK(update.service_info_changed && update.serv_info_json && strstr(update.serv_info_json, "\"5qi\":9") &&
+            !strstr(update.serv_info_json, "\"5qi\":5"));
+    CHECK(count_flows(mbs_sess) == 2 && !strcmp(mbs_sess->mbs_serv_info_json, before));
+    CHECK(!update.flow_change.num_removed && !update.area_changed);
+    request = smf_npcf_mbspolicycontrol_build_update(mbs_sess, update.serv_info_json);
+    CHECK(request != NULL);
+    if (request) {
+        CHECK(request->h.method && !strcmp(request->h.method, "POST"));
+        CHECK(request->h.resource.component[0] && !strcmp(request->h.resource.component[0], "mbs-policies"));
+        CHECK(request->h.resource.component[1] && !strcmp(request->h.resource.component[1], "42"));
+        CHECK(request->h.resource.component[2] && !strcmp(request->h.resource.component[2], "update"));
+        json = cJSON_Parse(request->http.content);
+        CHECK(json && cJSON_GetObjectItemCaseSensitive(json, "mbsServInfo") &&
+                cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(json, "mbsPcrts")) == 1);
+        if (json) cJSON_Delete(json);
+        ogs_sbi_request_free(request);
+    }
+    ogs_free(update.serv_info_json);
+    /* the same Update applied: now the flows change */
+    memset(&update, 0, sizeof(update));
+    CHECK(smf_mbs_sess_update_check(mbs_sess, items, &update, &detail, false) == SMF_MBS_UPDATE_OK);
+    CHECK(count_flows(mbs_sess) == 1 && update.service_info_changed && update.flow_change.num_removed == 1);
+    free_patch_items(items);
+
+    /* no service information: the request has only the trigger */
+    request = smf_npcf_mbspolicycontrol_build_update(mbs_sess, NULL);
+    CHECK(request != NULL);
+    if (request) {
+        CHECK(request->http.content && !strcmp(request->http.content, "{\"mbsPcrts\":[\"MBS_SESSION_UPDATE\"]}"));
+        ogs_sbi_request_free(request);
+    }
+    ogs_free(before);
+    CHECK(smf_mbs_policy_control_configure(NULL, NULL));
+    smf_mbs_sess_release(mbs_sess);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -3926,6 +4017,7 @@ int main(void)
     test_npcf_mbspolicycontrol_messages();
     test_mbs_pcf_classify();
     test_mbs_pcf_create_request();
+    test_mbs_pcf_update();
 
     printf("smf-mbs: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
