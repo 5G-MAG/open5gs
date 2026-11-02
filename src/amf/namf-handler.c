@@ -2320,7 +2320,9 @@ void amf_namf_handle_mbs_broadcast_response_timeout(uint32_t mbs_context_index)
         return;
     }
 
-    if (ogs_get_monotonic_time() < mbs_context->response_deadline) {
+    // A context that has armed no window (a context created after the one the event was for was removed, in the same
+    // pool slot) has nothing to report.
+    if (!mbs_context->response_deadline || ogs_get_monotonic_time() < mbs_context->response_deadline) {
         ogs_debug("MBS Broadcast response window: stale timer event");
         return;
     }
@@ -2618,8 +2620,17 @@ int amf_namf_handle_mbs_broadcast_context_create(
     {
         amf_mbs_context_t *stale_mbs_context = amf_mbs_context_find_by_tmgi(&tmgi);
         if (stale_mbs_context) {
+            ogs_sbi_stream_t *pending = ogs_sbi_stream_find_by_id(stale_mbs_context->stream_id);
+
             ogs_warn("MBS Broadcast ContextCreate: replacing existing context [%s] for the same TMGI",
                     stale_mbs_context->mbs_context_ref);
+            // The operation of the replaced context that still waits for its NG-RANs will never be answered by them:
+            // its consumer is answered (no clause names the status: 500, as for a context released before the NG-RANs
+            // answered).
+            if (pending)
+                ogs_sbi_server_send_error(pending, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR, NULL,
+                        "MBS Broadcast context replaced",
+                        "The Broadcast MBS session context has been replaced by a ContextCreate of the same MBS session", NULL);
             amf_mbs_context_remove(stale_mbs_context);
         }
     }
