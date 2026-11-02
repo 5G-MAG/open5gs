@@ -1153,7 +1153,10 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
         break;
 
     case AMF_EVENT_MBS_TIMER:
-        amf_namf_handle_mbs_broadcast_response_timeout(e->mbs_context_index);
+        if (e->h.timer_id == AMF_TIMER_MBS_REESTABLISH)
+            amf_namf_handle_mbs_broadcast_reestablish_timeout(e->mbs_context_index);
+        else
+            amf_namf_handle_mbs_broadcast_response_timeout(e->mbs_context_index);
         break;
 
     default:

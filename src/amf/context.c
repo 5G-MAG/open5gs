@@ -126,6 +126,25 @@ amf_mbs_gnb_t *amf_mbs_context_find_involved_gnb(amf_mbs_context_t *amf_mbs_cont
     return NULL;
 }
 
+/*
+ * The earliest amf_mbs_gnb_t.reestablish_at of the context's records, 0 when none is set (amf.mbs.reestablish_after: one
+ * timer of the context serves every NG-RAN, and is armed for this time).
+ */
+ogs_time_t amf_mbs_context_earliest_reestablish(amf_mbs_context_t *amf_mbs_context)
+{
+    amf_mbs_gnb_t *involved = NULL;
+    ogs_time_t earliest = 0;
+
+    ogs_assert(amf_mbs_context);
+
+    ogs_list_for_each(&amf_mbs_context->involved_gnb_list, involved) {
+        if (involved->reestablish_at && (!earliest || involved->reestablish_at < earliest))
+            earliest = involved->reestablish_at;
+    }
+
+    return earliest;
+}
+
 /* Whether the record \p involved was made for a gNB with the Global RAN Node ID of \p gnb */
 bool amf_mbs_gnb_has_ran_id(const amf_mbs_gnb_t *involved, const amf_gnb_t *gnb)
 {
@@ -417,6 +436,18 @@ int amf_context_parse_config(void)
                                         v ? v : "", ogs_app()->file);
                                 return OGS_ERROR;
                             }
+                        } else if (!strcmp(mbs_key, "reestablish_after")) {
+                            const char *v = ogs_yaml_iter_value(&mbs_iter);
+                            char *end = NULL;
+                            unsigned long seconds = (v && *v && *v != '-') ? strtoul(v, &end, 10) : 0;
+
+                            if (!v || !*v || *v == '-' || *end || seconds > UINT32_MAX) {
+                                ogs_error("Invalid amf.mbs.reestablish_after `%s` in '%s': a number of seconds",
+                                        v ? v : "", ogs_app()->file);
+                                return OGS_ERROR;
+                            }
+                            self.mbs_reestablish = true;
+                            self.mbs_reestablish_after = (uint32_t)seconds;
                         } else
                             ogs_warn("unknown key `%s`", mbs_key);
                     }
@@ -3311,6 +3342,8 @@ void amf_mbs_context_remove(amf_mbs_context_t *amf_mbs_context)
         ogs_free(amf_mbs_context->notify_uri);
     if (amf_mbs_context->t_response)
         ogs_timer_delete(amf_mbs_context->t_response);
+    if (amf_mbs_context->t_reestablish)
+        ogs_timer_delete(amf_mbs_context->t_reestablish);
 
     ogs_pool_free(&amf_mbs_context_pool, amf_mbs_context);
 
@@ -3355,6 +3388,14 @@ amf_mbs_context_t *amf_mbs_context_create(ogs_tmgi_t *tmgi)
     amf_mbs_context->t_response = ogs_timer_add(ogs_app()->timer_mgr,
             amf_timer_mbs_response_expire, OGS_UINT_TO_POINTER(amf_mbs_context->index));
     if (!amf_mbs_context->t_response) {
+        ogs_error("ogs_timer_add() failed");
+        amf_mbs_context_remove(amf_mbs_context);
+        return NULL;
+    }
+
+    amf_mbs_context->t_reestablish = ogs_timer_add(ogs_app()->timer_mgr,
+            amf_timer_mbs_reestablish_expire, OGS_UINT_TO_POINTER(amf_mbs_context->index));
+    if (!amf_mbs_context->t_reestablish) {
         ogs_error("ogs_timer_add() failed");
         amf_mbs_context_remove(amf_mbs_context);
         return NULL;

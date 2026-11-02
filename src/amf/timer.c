@@ -80,6 +80,8 @@ const char *amf_timer_get_name(int timer_id)
         return "AMF_TIMER_NG_DELAYED_SEND";
     case AMF_TIMER_MBS_RESPONSE:
         return "AMF_TIMER_MBS_RESPONSE";
+    case AMF_TIMER_MBS_REESTABLISH:
+        return "AMF_TIMER_MBS_REESTABLISH";
     case AMF_TIMER_T3513:
         return "AMF_TIMER_T3513";
     case AMF_TIMER_T3522:
@@ -211,6 +213,29 @@ void amf_timer_mbs_response_expire(void *data)
     ogs_assert(e);
 
     e->h.timer_id = AMF_TIMER_MBS_RESPONSE;
+    e->mbs_context_index = OGS_POINTER_TO_UINT(data);
+
+    rv = ogs_queue_push(ogs_app()->queue, e);
+    if (rv != OGS_OK) {
+        ogs_error("ogs_queue_push() failed:%d", (int)rv);
+        ogs_event_free(e);
+    }
+}
+
+/*
+ * The time after which the session is established again in the NG-RANs that asked for its release has elapsed
+ * (amf.mbs.reestablish_after). \p data is the index of the context; the context may be gone by the time the event is
+ * handled.
+ */
+void amf_timer_mbs_reestablish_expire(void *data)
+{
+    int rv;
+    amf_event_t *e = NULL;
+
+    e = amf_event_new(AMF_EVENT_MBS_TIMER);
+    ogs_assert(e);
+
+    e->h.timer_id = AMF_TIMER_MBS_REESTABLISH;
     e->mbs_context_index = OGS_POINTER_TO_UINT(data);
 
     rv = ogs_queue_push(ogs_app()->queue, e);

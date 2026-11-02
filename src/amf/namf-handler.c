@@ -3333,6 +3333,74 @@ void amf_namf_handle_mbs_broadcast_ng_setup(amf_gnb_t *gnb)
 }
 
 /*
+ * The release that NG-RAN \p involved asked for is over: when amf.mbs.reestablish_after is set, the session is set up
+ * again in it after that time (TS 29.518 V18.14.0 cl. 5.6.2.5: "attempt to re-establish the MBS session after some
+ * operator configurable time in these NG-RANs by performing the Broadcast MBS session restoration by AMF procedure
+ * specified in clause 8.3.2.2 of TS 23.527"). One timer of the context serves every NG-RAN: it is armed for the
+ * earliest time.
+ */
+static void amf_mbs_context_schedule_reestablish(amf_mbs_context_t *mbs_context, amf_mbs_gnb_t *involved)
+{
+    ogs_time_t now = ogs_get_monotonic_time(), duration;
+
+    ogs_assert(mbs_context);
+    ogs_assert(involved);
+
+    if (!amf_self()->mbs_reestablish)
+        return;
+
+    // A timer cannot be armed with no duration; 0 seconds is "at once".
+    involved->reestablish_at = now + ogs_time_from_sec(amf_self()->mbs_reestablish_after);
+    if (involved->reestablish_at <= now)
+        involved->reestablish_at = now + 1;
+
+    duration = amf_mbs_context_earliest_reestablish(mbs_context) - now;
+    if (duration < 1)
+        duration = 1;
+    ogs_timer_start(mbs_context->t_reestablish, duration);
+}
+
+/*
+ * The time to set the session up again in the NG-RANs that asked for its release has elapsed (event
+ * AMF_EVENT_MBS_TIMER, AMF_TIMER_MBS_REESTABLISH): the NG-RANs whose time it is get the session as after a restart
+ * (amf_mbs_context_restore_in_gnb()), if they are still connected and the session is not being released. The timer is
+ * armed again for the next of the others. The context may have been released since the timer was armed.
+ */
+void amf_namf_handle_mbs_broadcast_reestablish_timeout(uint32_t mbs_context_index)
+{
+    amf_mbs_context_t *mbs_context = amf_mbs_context_find_by_index(mbs_context_index);
+    amf_mbs_gnb_t *involved = NULL;
+    ogs_time_t now = ogs_get_monotonic_time(), next;
+
+    if (!mbs_context) {
+        ogs_debug("MBS Broadcast re-establishment: the context has been removed");
+        return;
+    }
+
+    ogs_list_for_each(&mbs_context->involved_gnb_list, involved) {
+        amf_gnb_t *gnb = NULL;
+
+        if (!involved->reestablish_at || involved->reestablish_at > now)
+            continue;
+        involved->reestablish_at = 0;
+
+        gnb = amf_gnb_find_by_id(involved->gnb_id);
+        if (!gnb || mbs_context->release_pending || !involved->release_required || !involved->released ||
+                !amf_gnb_takes_mbs_session(gnb, mbs_context)) {
+            ogs_debug("MBS Broadcast [%s]: the session is not set up again in gNB %u",
+                    mbs_context->mbs_context_ref, (unsigned)involved->gnb_id);
+            continue;
+        }
+
+        amf_mbs_context_restore_in_gnb(mbs_context, gnb);
+    }
+
+    next = amf_mbs_context_earliest_reestablish(mbs_context);
+    if (next)
+        ogs_timer_start(mbs_context->t_reestablish, next > now ? next - now : 1);
+}
+
+/*
  * Sends the NGAP BROADCAST SESSION RELEASE REQUEST for \p mbs_context to the gNBs that have been involved in the
  * session and are still connected (TS 23.247 V18.8.0 cl. 7.3.2 step 4: "The AMF sends an N2 message to all RAN nodes
  * that have been involved to release MBS session."), and returns how many it reached. Used by ContextDelete and when
@@ -3511,8 +3579,13 @@ static void amf_mbs_context_required_release_done(amf_mbs_context_t *mbs_context
     // what the NG-RAN returned (TS 38.413 V18.8.0 cl. 8.17.3.2), with the identity of the node.
     amf_mbs_context_notify_required_release(mbs_context, gnb, transfer, all);
 
-    if (!all)
+    if (!all) {
+        amf_mbs_gnb_t *involved = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
+
+        if (involved)
+            amf_mbs_context_schedule_reestablish(mbs_context, involved);
         return;
+    }
 
     // A ContextCreate or ContextUpdate still waiting for its NG-RAN responses will never be answered by them. No
     // clause names the status (as for the failure of a Setup).

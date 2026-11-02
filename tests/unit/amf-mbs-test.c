@@ -897,6 +897,39 @@ static void test_gnb_record_ran_id(void)
     ogs_free(again);
 }
 
+/* TS 29.518 V18.14.0 cl. 5.6.2.5: "attempt to re-establish the MBS session after some operator configurable time in
+ * these NG-RANs": one timer of the context serves every NG-RAN that asked for the release, and is armed for the earliest
+ * time. */
+static void test_earliest_reestablish(void)
+{
+    amf_gnb_t *a = make_gnb(0x100, 22), *b = make_gnb(0x200, 22), *c = make_gnb(0x300, 22);
+    amf_mbs_context_t ctx = make_context();
+
+    ogs_list_init(&ctx.involved_gnb_list);
+    a->id = 1; b->id = 2; c->id = 3;
+    amf_mbs_context_involve_gnb(&ctx, a);
+    amf_mbs_context_involve_gnb(&ctx, b);
+    amf_mbs_context_involve_gnb(&ctx, c);
+
+    /* none set: none */
+    CHECK(amf_mbs_context_earliest_reestablish(&ctx) == 0);
+
+    amf_mbs_context_find_involved_gnb(&ctx, b)->reestablish_at = 5000;
+    CHECK(amf_mbs_context_earliest_reestablish(&ctx) == 5000);
+    amf_mbs_context_find_involved_gnb(&ctx, c)->reestablish_at = 3000;
+    amf_mbs_context_find_involved_gnb(&ctx, a)->reestablish_at = 9000;
+    CHECK(amf_mbs_context_earliest_reestablish(&ctx) == 3000);
+
+    /* one that has been dealt with (cleared) is not the earliest any more */
+    amf_mbs_context_find_involved_gnb(&ctx, c)->reestablish_at = 0;
+    CHECK(amf_mbs_context_earliest_reestablish(&ctx) == 5000);
+
+    free_involved(&ctx);
+    ogs_free(a);
+    ogs_free(b);
+    ogs_free(c);
+}
+
 int main(int argc, const char *argv[])
 {
     ogs_pkbuf_config_t config;
@@ -920,6 +953,7 @@ int main(int argc, const char *argv[])
     test_store_n2_container();
     test_update_action_ran_id_list();
     test_gnb_record_ran_id();
+    test_earliest_reestablish();
     test_update_action_enters_area();
     test_update_action_leaves_area();
     test_update_action_info_unchanged();

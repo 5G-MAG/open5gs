@@ -121,6 +121,14 @@ typedef struct amf_context_s {
         AMF_MBS_RESTORATION_BY_AMF,
     }               mbs_restoration;
 
+    /* amf.mbs.reestablish_after: seconds after which the AMF sets a Broadcast MBS session up again in an NG-RAN that
+     * asked for its release (TS 29.518 V18.14.0 cl. 5.6.2.5: "attempt to re-establish the MBS session after some
+     * operator configurable time in these NG-RANs by performing the Broadcast MBS session restoration by AMF procedure
+     * specified in clause 8.3.2.2 of TS 23.527"). No document gives a value: without the key the AMF does not
+     * re-establish. */
+    bool            mbs_reestablish;
+    uint32_t        mbs_reestablish_after;
+
     /* Generator for unique identification */
     uint64_t        amf_ue_ngap_id; /* amf_ue_ngap_id generator */
 
@@ -899,6 +907,10 @@ typedef struct amf_mbs_gnb_s {
      * 4): its response is not one of the responses of a ContextCreate or ContextUpdate. */
     bool restoring;
 
+    /* The monotonic time at which the session is set up again in the gNB after it asked for the release, 0 for none
+     * (amf.mbs.reestablish_after) */
+    ogs_time_t reestablish_at;
+
     /* The Global RAN Node ID of the gNB, kept as the gNB had it, to find the record again when the gNB connects anew
      * (amf_gnb_t.id then differs) */
     ogs_plmn_id_t ran_plmn_id;
@@ -1009,6 +1021,7 @@ typedef struct amf_mbs_context_s {
      * that has been replaced since.
      */
     ogs_timer_t *t_response;
+    ogs_timer_t *t_reestablish;     /* armed for the earliest amf_mbs_gnb_t.reestablish_at */
     ogs_time_t response_deadline;
     bool response_window_is_update;
 
@@ -1198,6 +1211,7 @@ amf_mbs_n2_info_t *amf_mbs_n2_info_create(amf_gnb_t *gnb,
         OpenAPI_ngap_ie_type_e ngap_ie_type, const uint8_t *transfer, size_t transfer_len);
 void amf_mbs_context_involve_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *gnb);
 amf_mbs_gnb_t *amf_mbs_context_find_involved_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *gnb);
+ogs_time_t amf_mbs_context_earliest_reestablish(amf_mbs_context_t *amf_mbs_context);
 bool amf_mbs_gnb_has_ran_id(const amf_mbs_gnb_t *involved, const amf_gnb_t *gnb);
 amf_mbs_gnb_t *amf_mbs_context_find_stale_involved_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *gnb);
 bool amf_mbs_context_store_n2_container(amf_mbs_context_t *amf_mbs_context, const ogs_pkbuf_t *container);
