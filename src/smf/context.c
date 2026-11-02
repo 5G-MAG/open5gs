@@ -24,6 +24,7 @@
 #include "gtp-path.h"
 #include "pfcp-path.h"
 #include "mbs-restore.h"
+#include "mbs-pcf.h"
 
 static smf_context_t self;
 static ogs_diam_config_t g_diam_conf;
@@ -4033,6 +4034,8 @@ static void smf_mbs_sess_free(smf_mbs_sess_t *smf_mbs_sess)
 
     if (smf_mbs_sess->termination_time)
         ogs_free(smf_mbs_sess->termination_time);
+
+    smf_mbs_pcf_sess_clear(smf_mbs_sess);
 
     if (smf_mbs_sess->mbs_serv_info_json)
         ogs_free(smf_mbs_sess->mbs_serv_info_json);

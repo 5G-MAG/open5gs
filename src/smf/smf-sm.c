@@ -33,6 +33,7 @@
 #include "nmbsmf-handler.h"
 #include "mbs-subsc.h"
 #include "mbs-restore.h"
+#include "mbs-pcf.h"
 
 void smf_state_initial(ogs_fsm_t *s, smf_event_t *e)
 {
@@ -455,6 +456,10 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
     case SMF_EVT_MBS_NGRAN_RESTORE:
         ogs_assert(e->mbs_ngran_restoration);
         smf_mbs_ngran_restoration_expired(e->mbs_ngran_restoration);
+        break;
+
+    case SMF_EVT_MBS_PCF_TIMEOUT:
+        smf_mbs_pcf_timeout(e->mbs_sess_id, e->h.sbi.state);
         break;
 
     case SMF_EVT_N4_TIMER:
@@ -1189,6 +1194,34 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
                         sbi_message.h.resource.component[0]);
                 ogs_assert_if_reached();
             END
+            break;
+
+        CASE(OGS_SBI_SERVICE_NAME_NPCF_MBSPOLICYCONTROL)
+            sbi_xact_id = OGS_POINTER_TO_UINT(e->h.sbi.data);
+            ogs_assert(sbi_xact_id >= OGS_MIN_POOL_ID &&
+                    sbi_xact_id <= OGS_MAX_POOL_ID);
+
+            sbi_xact = ogs_sbi_xact_find_by_id(sbi_xact_id);
+            if (!sbi_xact) {
+                /* CLIENT_WAIT timer could remove SBI transaction
+                 * before receiving SBI message */
+                ogs_error("SBI transaction has already been removed [%d]",
+                        sbi_xact_id);
+                break;
+            }
+
+            mbs_sess = smf_mbs_sess_find_by_id(sbi_xact->sbi_object_id);
+            {
+                int pcf_state = sbi_xact->state;
+
+                ogs_sbi_xact_remove(sbi_xact);
+
+                if (!mbs_sess) {
+                    ogs_error("MBS Session has already been removed");
+                    break;
+                }
+                smf_mbs_pcf_handle_response(mbs_sess, pcf_state, &sbi_message);
+            }
             break;
 
         DEFAULT

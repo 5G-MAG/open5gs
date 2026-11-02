@@ -64,6 +64,7 @@ typedef enum {
     SMF_EVT_5GSM_TIMER,
 
     SMF_EVT_MBS_NGRAN_RESTORE,
+    SMF_EVT_MBS_PCF_TIMEOUT,
 
     SMF_EVT_TOP,
 

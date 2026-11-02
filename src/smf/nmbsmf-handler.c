@@ -23,6 +23,7 @@
 #include "sbi-path.h"
 #include "pfcp-path.h"
 #include "nmbsmf-handler.h"
+#include "mbs-pcf.h"
 #include "mbs-update.h"
 #include "mbs-subsc.h"
 
@@ -1157,7 +1158,20 @@ bool smf_nmbsmf_handle_mbs_session_create(
         }
     }
 
-    smf_5gc_pfcp_n4mb_send_session_establishment_request(mbs_sess, 0, stream);
+    /* TS 23.247 V18.8.0 clause 7.1.1.3 steps 21 and 22 (with dynamic PCC deployed): "The MB-SMF discovers the PCF using
+     * NRF." and "The MB-SMF sends an Npcf_MBSPolicyControl_Create Request (MBS Session ID, [Area Session policy ID], [MBS
+     * Service Information (as defined in clause 6.14)]) for the MBS session towards the PCF.", before the steps "Same
+     * as steps 14-22 in Figure 7.1.1.2-1", which set up the user plane. */
+    if (smf_mbs_policy_control_enabled(NULL)) {
+        if (!smf_mbs_pcf_create_send(mbs_sess, stream)) {
+            /* the consumer has been answered */
+            smf_mbs_sess_release(mbs_sess);
+            rv = OGS_ERROR;
+            goto cleanup;
+        }
+    } else {
+        smf_nmbsmf_mbs_session_create_continue(mbs_sess, stream);
+    }
 
 cleanup:
     if (mbs_service_area)
@@ -1197,6 +1211,15 @@ cleanup:
         return true;
     else
         return false;
+}
+
+/* The rest of an MBS Session Create: the N4mb Session Establishment, whose answer answers the consumer on \p stream */
+void smf_nmbsmf_mbs_session_create_continue(smf_mbs_sess_t *mbs_sess, ogs_sbi_stream_t *stream)
+{
+    ogs_assert(mbs_sess);
+    ogs_assert(stream);
+
+    smf_5gc_pfcp_n4mb_send_session_establishment_request(mbs_sess, 0, stream);
 }
 
 /*

@@ -23,6 +23,7 @@
 #include "mbs-subsc.h"
 #include "mbs-n3mb.h"
 #include "mbs-restore.h"
+#include "mbs-pcf.h"
 #include "asn_internal.h"
 
 static int checks, failures;
@@ -3747,6 +3748,130 @@ static void test_npcf_mbspolicycontrol_messages(void)
     ogs_sbi_response_free(response);
 }
 
+/* TS 29.537 cl. 5.2.2.2.2 and TS 29.532 V18.6.0 tables 6.2.3.2.3.1-3 and 6.2.3.3.3.1-3: what the consumer is told when
+ * the PCF refuses, and what MBS_POLICY_CONTEXT_DENIED leaves to "the internally configured failure actions" */
+static void check_answer(smf_mbs_pcf_op_e op, int status, const char *cause, smf_mbs_pcf_failure_action_e action,
+        smf_mbs_pcf_outcome_e outcome, int answer_status, const char *answer_cause)
+{
+    smf_mbs_pcf_answer_t answer;
+
+    smf_mbs_pcf_classify(op, status, cause, action, &answer);
+    CHECK(answer.outcome == outcome);
+    if (outcome == SMF_MBS_PCF_OUTCOME_REJECT) {
+        CHECK(answer.status == answer_status);
+        CHECK(answer.cause && !strcmp(answer.cause, answer_cause));
+        CHECK(answer.title != NULL);
+    }
+}
+
+static void test_mbs_pcf_classify(void)
+{
+    const smf_mbs_pcf_op_e c = SMF_MBS_PCF_OP_CREATE, u = SMF_MBS_PCF_OP_UPDATE, d = SMF_MBS_PCF_OP_DELETE;
+    const smf_mbs_pcf_failure_action_e rej = SMF_MBS_PCF_FAILURE_ACTION_REJECT, all = SMF_MBS_PCF_FAILURE_ACTION_ALLOW;
+    const smf_mbs_pcf_outcome_e ok = SMF_MBS_PCF_OUTCOME_OK, rjt = SMF_MBS_PCF_OUTCOME_REJECT,
+            alw = SMF_MBS_PCF_OUTCOME_ALLOW;
+
+    /* the success of each operation */
+    check_answer(c, 201, NULL, rej, ok, 0, NULL);
+    check_answer(u, 200, NULL, rej, ok, 0, NULL);
+    check_answer(d, 204, NULL, rej, ok, 0, NULL);
+    check_answer(c, 200, NULL, rej, rjt, 500, "SYSTEM_FAILURE");      /* not the status of Create */
+
+    /* the errors of the PCF with the same cause for the consumer, for Create and Update */
+    check_answer(c, 400, "INVALID_MBS_SERVICE_INFO", rej, rjt, 400, "INVALID_MBS_SERVICE_INFO");
+    check_answer(c, 400, "FILTER_RESTRICTIONS_NOT_RESPECTED", rej, rjt, 400, "FILTER_RESTRICTIONS_NOT_RESPECTED");
+    check_answer(u, 400, "ERROR_INPUT_PARAMETERS", all, rjt, 400, "ERROR_INPUT_PARAMETERS");
+    check_answer(c, 403, "MBS_SERVICE_INFO_NOT_AUTHORIZED", all, rjt, 403, "MBS_SERVICE_INFO_NOT_AUTHORIZED");
+    check_answer(u, 403, "MBS_SERVICE_INFO_NOT_AUTHORIZED", rej, rjt, 403, "MBS_SERVICE_INFO_NOT_AUTHORIZED");
+
+    /* MBS_POLICY_CONTEXT_DENIED: the configured failure action */
+    check_answer(c, 403, "MBS_POLICY_CONTEXT_DENIED", rej, rjt, 403, "MBS_POLICY_CONTEXT_DENIED");
+    check_answer(c, 403, "MBS_POLICY_CONTEXT_DENIED", all, alw, 0, NULL);
+    check_answer(u, 403, "MBS_POLICY_CONTEXT_DENIED", rej, rjt, 403, "MBS_POLICY_CONTEXT_DENIED");
+    check_answer(u, 403, "MBS_POLICY_CONTEXT_DENIED", all, alw, 0, NULL);
+    check_answer(c, 403, "MBS_POLICY_CONTEXT_DENIED", SMF_MBS_PCF_FAILURE_ACTION_NONE, rjt, 403,
+            "MBS_POLICY_CONTEXT_DENIED");
+
+    /* what no clause maps */
+    check_answer(u, 404, "MBS_POLICY_ASSOCIATION_NOT_FOUND", rej, rjt, 500, "SYSTEM_FAILURE");
+    check_answer(c, 500, NULL, rej, rjt, 500, "SYSTEM_FAILURE");
+    check_answer(c, 400, "SOMETHING_ELSE", rej, rjt, 500, "SYSTEM_FAILURE");
+    check_answer(c, 403, NULL, all, rjt, 500, "SYSTEM_FAILURE");
+    check_answer(c, 308, NULL, rej, rjt, 500, "SYSTEM_FAILURE");
+}
+
+/* TS 29.537 cl. 5.2.2.2.2 step 1: mbsSessionId, mbsServInfo "if available", suppFeat and areaSessPolId for an MBS session
+ * of a location-dependent service, dnn and snssai */
+static void test_mbs_pcf_create_request(void)
+{
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    ogs_sbi_request_t *request;
+    cJSON *json, *member;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+
+    request = smf_npcf_mbspolicycontrol_build_create(mbs_sess, NULL);
+    CHECK(request != NULL);
+    if (request) {
+        CHECK(request->h.method && !strcmp(request->h.method, "POST"));
+        CHECK(request->h.service.name && !strcmp(request->h.service.name, "npcf-mbspolicycontrol"));
+        CHECK(request->h.resource.component[0] && !strcmp(request->h.resource.component[0], "mbs-policies") &&
+                !request->h.resource.component[1]);
+        json = cJSON_Parse(request->http.content);
+        CHECK(json != NULL);
+        if (json) {
+            member = cJSON_GetObjectItemCaseSensitive(json, "mbsSessionId");
+            CHECK(member && cJSON_GetObjectItemCaseSensitive(member, "tmgi"));
+            CHECK(!cJSON_GetObjectItemCaseSensitive(json, "mbsServInfo"));
+            CHECK(!cJSON_GetObjectItemCaseSensitive(json, "areaSessPolId"));
+            CHECK(!cJSON_GetObjectItemCaseSensitive(json, "suppFeat"));
+            CHECK(!cJSON_GetObjectItemCaseSensitive(json, "dnn"));
+            cJSON_Delete(json);
+        }
+        ogs_sbi_request_free(request);
+    }
+
+    mbs_sess->dnn = ogs_strdup("internet");
+    mbs_sess->has_s_nssai = true;
+    mbs_sess->s_nssai.sst = 1;
+    mbs_sess->s_nssai.sd.v = 0x000001;
+    mbs_sess->mbs_serv_info_json = ogs_strdup("{\"mbsMediaComps\":{\"1\":{\"mbsMedCompNum\":1,\"mbsQoSReq\":{\"5qi\":9}}}}");
+    mbs_sess->location_dependent = true;
+    mbs_sess->area_session_id = 5;
+    request = smf_npcf_mbspolicycontrol_build_create(mbs_sess, NULL);
+    CHECK(request != NULL);
+    if (request) {
+        json = cJSON_Parse(request->http.content);
+        CHECK(json != NULL);
+        if (json) {
+            CHECK(cJSON_GetObjectItemCaseSensitive(json, "mbsServInfo") != NULL);
+            member = cJSON_GetObjectItemCaseSensitive(json, "areaSessPolId");
+            CHECK(member && (int)member->valuedouble == 5);
+            member = cJSON_GetObjectItemCaseSensitive(json, "suppFeat");
+            CHECK(member && cJSON_IsString(member) && !strcmp(member->valuestring, "1"));
+            member = cJSON_GetObjectItemCaseSensitive(json, "dnn");
+            CHECK(member && cJSON_IsString(member) && !strcmp(member->valuestring, "internet"));
+            CHECK(cJSON_GetObjectItemCaseSensitive(json, "snssai") != NULL);
+            cJSON_Delete(json);
+        }
+        ogs_sbi_request_free(request);
+    }
+
+    mbs_sess->pcf_policy_id = ogs_strdup("42");
+    request = smf_npcf_mbspolicycontrol_build_delete(mbs_sess, NULL);
+    CHECK(request != NULL);
+    if (request) {
+        CHECK(request->h.method && !strcmp(request->h.method, "DELETE"));
+        CHECK(request->h.resource.component[0] && !strcmp(request->h.resource.component[0], "mbs-policies"));
+        CHECK(request->h.resource.component[1] && !strcmp(request->h.resource.component[1], "42"));
+        CHECK(request->http.content == NULL);
+        ogs_sbi_request_free(request);
+    }
+
+    smf_mbs_sess_release(mbs_sess);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -3799,6 +3924,8 @@ int main(void)
     test_mb_upf_selection();
     test_mbs_policy_control_config();
     test_npcf_mbspolicycontrol_messages();
+    test_mbs_pcf_classify();
+    test_mbs_pcf_create_request();
 
     printf("smf-mbs: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;

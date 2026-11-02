@@ -732,6 +732,15 @@ typedef struct smf_mbs_sess_s {
     char *mbs_serv_info_json;
     char *mbs_service_area_json;
 
+    /* The MBS Policy Association at the PCF (src/smf/mbs-pcf.c): the mbsPolicyId of the Individual MBS Policy resource
+     * (NULL when there is none), the request to the PCF in flight (smf_mbs_pcf_op_e, 0 for none) with the stream of
+     * the consumer's request it answers, the timer that bounds it, and the counter of the exchanges. */
+    char *pcf_policy_id;
+    int pcf_pending;
+    ogs_pool_id_t pcf_stream_id;
+    ogs_timer_t *pcf_timer;
+    int pcf_serial;
+
     /* contactPcfInd of the last Update (TS 29.532 V18.6.0 cl. 5.3.2.3.1) */
     bool has_contact_pcf_ind;
     bool contact_pcf_ind;

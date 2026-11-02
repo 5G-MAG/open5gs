@@ -77,6 +77,8 @@ bool smf_nmbsmf_handle_tmgi_deallocate(
 #define NMBSMF_MBSSESSION_FILTER_RESTRICTIONS_NOT_RESPECTED "FILTER_RESTRICTIONS_NOT_RESPECTED"
 #define NMBSMF_MBSSESSION_INSUFFICIENT_RESOURCES      "INSUFFICIENT_RESOURCES"
 #define NMBSMF_MBSSESSION_OVERLAPPING_MBS_SERVICE_AREA "OVERLAPPING_MBS_SERVICE_AREA"
+#define NMBSMF_MBSSESSION_MBS_SERVICE_INFO_NOT_AUTHORIZED "MBS_SERVICE_INFO_NOT_AUTHORIZED"
+#define NMBSMF_MBSSESSION_MBS_POLICY_CONTEXT_DENIED   "MBS_POLICY_CONTEXT_DENIED"
 
 /* The MBS QoS flows an MBS session can carry: the QFIs 1 to 63 (QFI 0 is not assigned: the user plane adds
  * the PDU session container only for a QER whose QFI is not 0), within the 64 of TS 38.413 V18.8.0
@@ -113,6 +115,10 @@ bool smf_nmbsmf_handle_mbs_session_create(
 /* Nmbsmf_MBSSession Service - MBS Session Release service operation */
 bool smf_nmbsmf_handle_mbs_session_release(
     smf_mbs_sess_t *mbs_sess, ogs_sbi_stream_t *stream, ogs_sbi_message_t *message);
+
+/* The rest of an MBS Session Create once the MBS Policy Association is made (or none is needed): the N4mb Session
+ * Establishment, whose answer is the answer to the consumer on \p stream. */
+void smf_nmbsmf_mbs_session_create_continue(smf_mbs_sess_t *mbs_sess, ogs_sbi_stream_t *stream);
 
 /* Nmbsmf_MBSSession Service - MBS Session Update/Patch service operation */
 bool smf_nmbsmf_handle_mbs_session_patch(
