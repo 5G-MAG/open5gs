@@ -3477,6 +3477,10 @@ static int amf_mbs_context_send_release(amf_mbs_context_t *mbs_context)
             ogs_debug("gNB %i left the service area and has already been sent the release", gnb->gnb_id);
             continue;
         }
+        if (involved->setup_failed) {
+            ogs_debug("gNB %i failed the Setup of the session: it holds nothing to release", gnb->gnb_id);
+            continue;
+        }
 
         n2msgreq_copy = ogs_pkbuf_copy(n2msgreq);
         if (!n2msgreq_copy) {
