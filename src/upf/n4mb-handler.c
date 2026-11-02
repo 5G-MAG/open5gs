@@ -514,6 +514,15 @@ bool upf_n4mb_check_session_establishment_request(
                 offending_ie_value = OGS_PFCP_SDF_FILTER_TYPE;
                 break;
             }
+            /* Table 7.5.2.2-1, FAR ID: "This IE shall be present if the Activate Predefined Rules IE is not included or if it is
+             * included but it does not result in activating a predefined FAR, and if the MAR ID is not included." The
+             * Activate Predefined Rules IE and the MAR ID are not applicable to N4mb ("-"): a PDR has its FAR ID. */
+            if (req->create_pdr[i].far_id.presence == 0) {
+                ogs_error("No FAR ID in Create PDR of N4mb Session Establishment Request");
+                cause_value = OGS_PFCP_CAUSE_CONDITIONAL_IE_MISSING;
+                offending_ie_value = OGS_PFCP_FAR_ID_TYPE;
+                break;
+            }
             if (req->create_pdr[i].precedence.presence == 0) {
                 ogs_error("No Precedence in Create PDR of N4mb Session Establishment Request");
                 cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;

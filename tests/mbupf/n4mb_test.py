@@ -2938,6 +2938,32 @@ def t_ipv6_groups_that_share_their_first_eight_octets():
         U.restart()
 
 
+@test
+def t_create_pdr_without_far_id_is_refused():
+    """Table 7.5.2.2-1, FAR ID: "shall be present if the Activate Predefined Rules IE is not included ... and if the MAR ID is not
+    included" (neither applies to N4mb): cause Conditional IE missing, FAR ID."""
+    for flags in (0x01, 0x00):
+        r = U.establish([node_id(), fseid(0xfa01), pdr(drop=(T_FAR_ID,)), far(), qer(), ie(T_CREATE_TE, [lit_choose()]), n4mb_ctrl(flags=flags)])
+        assert U.alive(), 'the daemon stopped (flags %d)' % flags
+        assert r is not None and cause(r) == CAUSE_CONDITIONAL_MISSING and offending(r) == T_FAR_ID, \
+            'flags %d: cause %s offending %s' % (flags, cause(r) if r else None, offending(r) if r else None)
+    # the second of two PDRs
+    r = U.establish([node_id(), fseid(0xfa02), pdr(1), pdr(2, precedence=50, drop=(T_FAR_ID,)), far(), qer(),
+                     ie(T_CREATE_TE, [lit_choose()]), n4mb_ctrl()])
+    assert r is not None and cause(r) == CAUSE_CONDITIONAL_MISSING and offending(r) == T_FAR_ID
+    # a modification: a Create PDR without FAR ID, and an Update PDR cannot take the FAR away (an IE of length 0 is not accepted)
+    r = U.establish(smf_session(0xfa03))
+    s = accepted(r, 'session')
+    try:
+        m = modify(s, flow_pdr(2, qfi=2, drop=(T_FAR_ID,)), qer(qer_id=2))
+        assert m and cause(m) == CAUSE_CONDITIONAL_MISSING and offending(m) == T_FAR_ID
+        m = modify(s, update_pdr(1, extra=[ie(T_FAR_ID, b'')]))
+        assert U.alive() and (m is None or cause(m) != CAUSE_ACCEPTED)
+        assert tunnel_packet_qfi(r, 5000) == 1
+    finally:
+        U.delete(s)
+
+
 # E-TESTS-BELOW
 
 
