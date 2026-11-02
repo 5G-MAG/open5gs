@@ -197,6 +197,12 @@ typedef struct upf_mbs_sess_s {
     bool pdr_has_ingress_tunnel[OGS_MAX_NUM_OF_PDR];  /* by Create PDR index: the PDI asked for the ingress tunnel */
     unsigned int udp_tunnel_mtu;
     ogs_pkbuf_pool_t *udp_tunnel_pkbuf_pool;
+
+    /* User plane inactivity detection and reporting (TS 29.244 cl. 5.11.2), see mbs-report.c */
+    bool up_inactivity_monitoring;
+    uint32_t up_inactivity_timer;   /* seconds */
+    ogs_time_t last_dl_packet;      /* the last MBS data packet the session got, set by the data path */
+    ogs_timer_t *t_up_inactivity;
 } upf_mbs_sess_t;
 
 void upf_mbs_session_id_clear(ogs_mbs_session_id_t *id);

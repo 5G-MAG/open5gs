@@ -23,6 +23,7 @@
 #include "pfcp-path.h"
 #include "gtp-path.h"
 #include "path-management.h"
+#include "mbs-report.h"
 
 void upf_state_initial(ogs_fsm_t *s, upf_event_t *e)
 {
@@ -110,6 +111,12 @@ void upf_state_operational(ogs_fsm_t *s, upf_event_t *e)
         break;
     case UPF_EVT_GTPU_ECHO_RESPONSE:
         upf_gtpu_path_handle_echo_response(&e->peer_ip, e->sequence_number);
+        break;
+    case UPF_EVT_MBS_TIMER:
+        upf_mbs_report_handle_timer(e->timer_id, e->seid);
+        break;
+    case UPF_EVT_MBS_DL_DATA:
+        upf_mbs_report_handle_dl_data(e->seid, e->pdr_id, e->qfi);
         break;
     default:
         ogs_error("No handler for event %s", upf_event_get_name(e));

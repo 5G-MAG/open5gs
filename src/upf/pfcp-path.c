@@ -275,6 +275,53 @@ int upf_pfcp_send_session_deletion_response(ogs_pfcp_xact_t *xact,
  * upf_n4mb_handle_session_deletion_request() (n4mb-handler.c) can actually respond to the SMF and let the
  * MBS session pool entry be freed at runtime instead of only at process shutdown.
  */
+static void mbs_report_timeout(ogs_pfcp_xact_t *xact, void *data)
+{
+    ogs_error("No PFCP Session Report Response of the CP function (MBS session)");
+}
+
+/* A PFCP Session Report Request of an MBS session: to the MB-SMF, with its SEID */
+int upf_pfcp_n4mb_send_session_report_request(
+        upf_mbs_sess_t *mbs_sess, ogs_pfcp_user_plane_report_t *report)
+{
+    int rv;
+    ogs_pkbuf_t *n4buf = NULL;
+    ogs_pfcp_header_t h;
+    ogs_pfcp_xact_t *xact = NULL;
+
+    ogs_assert(mbs_sess);
+    ogs_assert(report);
+    ogs_assert(mbs_sess->pfcp_node);
+
+    memset(&h, 0, sizeof(ogs_pfcp_header_t));
+    h.type = OGS_PFCP_SESSION_REPORT_REQUEST_TYPE;
+    h.seid = mbs_sess->smf_n4mb_f_seid.seid;
+
+    xact = ogs_pfcp_xact_local_create(mbs_sess->pfcp_node, mbs_report_timeout, NULL);
+    if (!xact) {
+        ogs_error("ogs_pfcp_xact_local_create() failed");
+        return OGS_ERROR;
+    }
+
+    n4buf = ogs_pfcp_build_session_report_request(h.type, report);
+    if (!n4buf) {
+        ogs_error("ogs_pfcp_build_session_report_request() failed");
+        ogs_pfcp_xact_delete(xact);
+        return OGS_ERROR;
+    }
+
+    rv = ogs_pfcp_xact_update_tx(xact, &h, n4buf);
+    if (rv != OGS_OK) {
+        ogs_error("ogs_pfcp_xact_update_tx() failed");
+        return OGS_ERROR;
+    }
+
+    rv = ogs_pfcp_xact_commit(xact);
+    ogs_expect(rv == OGS_OK);
+
+    return rv;
+}
+
 int upf_pfcp_n4mb_send_session_deletion_response(
         ogs_pfcp_xact_t *xact, upf_mbs_sess_t *mbs_sess)
 {

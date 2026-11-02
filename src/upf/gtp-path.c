@@ -19,6 +19,7 @@
 
 #include "context.h"
 #include "path-management.h"
+#include "mbs-report.h"
 
 #if HAVE_NETINET_IP_H
 #include <netinet/ip.h>
@@ -168,6 +169,24 @@ cleanup:
     ogs_pkbuf_free(recvbuf);
 }
 
+/* The packets the FAR of the PDR holds, and whether it holds one that this PDR matched */
+static uint32_t far_of_pdr_buffered(const ogs_pfcp_pdr_t *pdr)
+{
+    return pdr->far ? pdr->far->num_of_buffered_packet : 0;
+}
+
+static bool far_buffers_pdr(const ogs_pfcp_pdr_t *pdr)
+{
+    uint32_t i;
+
+    if (!pdr->far)
+        return false;
+    for (i = 0; i < pdr->far->num_of_buffered_packet; i++)
+        if (pdr->far->buffered_packet_pdr_id[i] == pdr->id)
+            return true;
+    return false;
+}
+
 void upf_gtpv1_receive_buffer_for_mbs_sess(ogs_pkbuf_t *recvbuf, upf_mbs_sess_t *mbs_sess)
 {
     upf_sess_t *sess = NULL;
@@ -181,6 +200,7 @@ void upf_gtpv1_receive_buffer_for_mbs_sess(ogs_pkbuf_t *recvbuf, upf_mbs_sess_t 
      * have their own hashes. A session without a low layer SSM (unicast transport only, no PLLSSM) is one too. */
     if (mbs_sess) {
         ogs_debug("MBS type sess");
+        upf_mbs_note_activity(mbs_sess);    /* user plane activity of the session (TS 29.244 cl. 5.11.2) */
     } else {
         sess = upf_sess_find_by_ue_ip_address(recvbuf);
         if (sess == NULL) {
@@ -281,6 +301,22 @@ void upf_gtpv1_receive_buffer_for_mbs_sess(ogs_pkbuf_t *recvbuf, upf_mbs_sess_t 
         /* Increment total & dl octets + pkts */
         for (i = 0; i < pdr->num_of_urr; i++)
             upf_sess_urr_acc_add(sess, pdr->urr[i], recvbuf->len, false);
+    }
+
+    /* TS 29.244 cl. 5.2.3: "When instructed to buffer and notify the CP function about the arrival of a DL packet, the UP function shall
+     * notify the CP function, when it receives a first downlink packet for each QoS flow for a given FAR (in 5GC), by sending a PFCP Session
+     * Report Request including a Downlink Data Report IE identifying the PDR(s) for which downlink packets have been received": BUFF with
+     * NOCP; the PDR identifies the flow, so the first packet of each PDR in the buffer of its FAR is the one. */
+    if (mbs_sess) {
+        uint32_t held = far_of_pdr_buffered(pdr);
+        bool notify = pdr->far && (pdr->far->apply_action & OGS_PFCP_APPLY_ACTION_BUFF) &&
+            (pdr->far->apply_action & OGS_PFCP_APPLY_ACTION_NOCP) && !far_buffers_pdr(pdr);
+
+        ogs_assert(true == ogs_pfcp_up_handle_pdr(
+                    pdr, OGS_GTPU_MSGTYPE_GPDU, NULL, recvbuf, &report));
+        if (notify && pdr->far->num_of_buffered_packet > held)
+            upf_mbs_report_dl_data_event(mbs_sess, pdr->id, pdr->qer ? pdr->qer->qfi : 0);
+        return;
     }
 
     ogs_assert(true == ogs_pfcp_up_handle_pdr(

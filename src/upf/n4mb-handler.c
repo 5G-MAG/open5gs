@@ -31,6 +31,7 @@
 
 #include "context.h"
 #include "path-management.h"
+#include "mbs-report.h"
 #include "gtp-path.h"
 #include "pfcp-path.h"
 #include "n4mb-handler.h"
@@ -685,6 +686,14 @@ bool upf_n4mb_check_session_establishment_request(
         }
     }
 
+    /* User Plane Inactivity Timer (cl. 8.2.83): the inactivity time period in seconds, 4 octets (Table 7.5.2.1-1, N4mb "X") */
+    if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED && req->user_plane_inactivity_timer.presence &&
+            req->user_plane_inactivity_timer.len != sizeof(uint32_t)) {
+        ogs_error("User Plane Inactivity Timer of length %u", req->user_plane_inactivity_timer.len);
+        cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
+        offending_ie_value = OGS_PFCP_USER_PLANE_INACTIVITY_TIMER_TYPE;
+    }
+
     /* Table 7.5.2.7-1, Traffic Endpoint ID: "M", "This IE shall uniquely identify the Traffic Endpoint for that PFCP session." */
     if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED && req->create_traffic_endpoint.presence &&
             (!req->create_traffic_endpoint.traffic_endpoint_id.presence || req->create_traffic_endpoint.traffic_endpoint_id.len < 1)) {
@@ -1118,6 +1127,12 @@ void upf_n4mb_handle_session_establishment_request(
             upf_pfcp_n4mb_send_session_establishment_response(
                 xact, mbs_sess, created_pdr, num_of_created_pdr));
     upf_gtpu_path_sync();
+    if (req->user_plane_inactivity_timer.presence) {
+        uint32_t seconds;
+
+        memcpy(&seconds, req->user_plane_inactivity_timer.data, sizeof(seconds));
+        upf_mbs_set_inactivity_timer(mbs_sess, be32toh(seconds));
+    }
 
     return;
 
@@ -1153,8 +1168,6 @@ static bool _modification_ie_not_supported(const ogs_pfcp_session_modification_r
         { offsetof(ogs_pfcp_session_modification_request_t, update_traffic_endpoint),
             OGS_PFCP_UPDATE_TRAFFIC_ENDPOINT_TYPE },
         { offsetof(ogs_pfcp_session_modification_request_t, query_urr), OGS_PFCP_QUERY_URR_TYPE },
-        { offsetof(ogs_pfcp_session_modification_request_t, user_plane_inactivity_timer),
-            OGS_PFCP_USER_PLANE_INACTIVITY_TIMER_TYPE },
     };
     size_t i;
 
@@ -1797,6 +1810,13 @@ void upf_n4mb_handle_session_modification_request(
         delete_all_f_teids = flags.delete_all_dl_n3mb_and_or_n19mb_f_teids;
     }
 
+    if (req->user_plane_inactivity_timer.presence && req->user_plane_inactivity_timer.len != sizeof(uint32_t)) {
+        ogs_error("User Plane Inactivity Timer of length %u", req->user_plane_inactivity_timer.len);
+        cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
+        offending_ie_value = OGS_PFCP_USER_PLANE_INACTIVITY_TIMER_TYPE;
+        goto reject;
+    }
+
     if (_check_flow_changes(mbs_sess, req, &cause_value, &offending_ie_value) != OGS_OK)
         goto reject;
 
@@ -1860,6 +1880,12 @@ void upf_n4mb_handle_session_modification_request(
 
     ogs_assert(OGS_OK == upf_pfcp_n4mb_send_session_modification_response(xact, mbs_sess));
     upf_gtpu_path_sync();
+    if (req->user_plane_inactivity_timer.presence) {
+        uint32_t seconds;
+
+        memcpy(&seconds, req->user_plane_inactivity_timer.data, sizeof(seconds));
+        upf_mbs_set_inactivity_timer(mbs_sess, be32toh(seconds));
+    }
     return;
 
 rollback_flows:

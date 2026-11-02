@@ -34,6 +34,7 @@ typedef enum {
     UPF_TIMER_NO_HEARTBEAT,
     UPF_TIMER_GTPU_ECHO,        /* the next Echo Request of a GTP-U path */
     UPF_TIMER_GTPU_T3_RESPONSE, /* T3-RESPONSE of an Echo Request */
+    UPF_TIMER_MBS_INACTIVITY,   /* User Plane Inactivity Timer of an MBS session */
 
     MAX_NUM_OF_UPF_TIMER,
 
@@ -45,6 +46,7 @@ void upf_timer_association(void *data);
 void upf_timer_no_heartbeat(void *data);
 void upf_timer_gtpu_echo(void *data);          /* data: the path id */
 void upf_timer_gtpu_t3_response(void *data);   /* data: the path id */
+void upf_timer_mbs_inactivity(void *data);     /* data: the UPF N4mb SEID of the MBS session */
 
 #ifdef __cplusplus
 }

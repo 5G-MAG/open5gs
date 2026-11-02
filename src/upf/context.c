@@ -1351,6 +1351,11 @@ void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess)
         upf_mbs_sess->udp_tunnel_pkbuf_pool = NULL;
     }
 
+    if (upf_mbs_sess->t_up_inactivity) {
+        ogs_timer_delete(upf_mbs_sess->t_up_inactivity);
+        upf_mbs_sess->t_up_inactivity = NULL;
+    }
+
     upf_mbs_session_id_clear(&upf_mbs_sess->mbs_session_id);
 
     // PFCP finalization

@@ -1515,7 +1515,7 @@ typedef uint8_t  ogs_pfcp_data_status_t;
 typedef struct ogs_pfcp_user_plane_report_s {
     ogs_pfcp_report_type_t type;
     struct {
-        uint8_t pdr_id;
+        uint16_t pdr_id;
         uint8_t paging_policy_indication_value;
         uint8_t qfi;
     } downlink_data;

@@ -39,6 +39,8 @@ typedef enum {
     UPF_EVT_N4_NO_HEARTBEAT,
     UPF_EVT_GTPU_PATH_TIMER,      /* timer_id, path_id */
     UPF_EVT_GTPU_ECHO_RESPONSE,   /* peer_ip, sequence_number */
+    UPF_EVT_MBS_TIMER,            /* timer_id, seid */
+    UPF_EVT_MBS_DL_DATA,          /* seid, pdr_id, qfi: the first packet buffered for a PDR of an MBS session */
 
     UPF_EVT_TOP,
 
@@ -57,6 +59,10 @@ typedef struct upf_event_s {
     ogs_pool_id_t path_id;      /* GTP-U path management */
     ogs_ip_t peer_ip;
     uint16_t sequence_number;
+
+    uint64_t seid;              /* UPF N4mb SEID of the MBS session */
+    uint16_t pdr_id;
+    uint8_t qfi;
 } upf_event_t;
 
 OGS_STATIC_ASSERT(OGS_EVENT_SIZE >= sizeof(upf_event_t));

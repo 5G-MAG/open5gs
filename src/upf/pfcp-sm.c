@@ -335,6 +335,17 @@ void upf_pfcp_state_associated(ogs_fsm_t *s, upf_event_t *e)
             }
             break;
         case OGS_PFCP_SESSION_REPORT_RESPONSE_TYPE:
+            if (mbs_sess) {
+                /* the answer to a report of an MBS session */
+                ogs_assert(xact);
+                ogs_pfcp_xact_commit(xact);
+                if (!message->pfcp_session_report_response.cause.presence ||
+                        message->pfcp_session_report_response.cause.u8 != OGS_PFCP_CAUSE_REQUEST_ACCEPTED)
+                    ogs_error("PFCP Session Report Response (MBS session): cause %d, not accepted",
+                            message->pfcp_session_report_response.cause.presence ?
+                            message->pfcp_session_report_response.cause.u8 : -1);
+                break;
+            }
             upf_n4_handle_session_report_response(
                 sess, xact, &message->pfcp_session_report_response);
             break;

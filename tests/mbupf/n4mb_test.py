@@ -3107,6 +3107,137 @@ def t_apply_action_is_one_and_only_one_and_other_request_details():
         cause(r) if r else None, offending(r) if r else None)
 
 
+def session_report(upf_seid_, timeout):
+    """Waits for a PFCP Session Report Request on the CP socket, answers it (Session Report Response, cause 1) and returns
+    (header SEID, IEs); None if none came."""
+    end = time.time() + timeout
+    U.sock.settimeout(0.3)
+    try:
+        while time.time() < end:
+            try:
+                d, addr = U.sock.recvfrom(65535)
+            except socket.timeout:
+                continue
+            if d[1] == 1:       # Heartbeat Request
+                U.sock.sendto(msg(2, int.from_bytes(d[4:7], 'big'), ie(96, struct.pack('>I', 3900000000))), addr)
+                continue
+            if d[1] != 56:
+                continue
+            assert d[0] & 1, 'a Session Report Request without SEID'
+            seid_h = struct.unpack('>Q', d[4:12])[0]
+            ies = parse_ies(d[16:])
+            U.sock.sendto(msg(57, int.from_bytes(d[12:15], 'big'), ie(T_CAUSE, b'\x01'), seid=upf_seid_), addr)
+            return seid_h, ies
+        return None
+    finally:
+        U.sock.settimeout(2.0)
+
+
+T_REPORT_TYPE, T_DLDR, T_UP_INACT = 39, 83, 117
+
+
+@test
+def t_downlink_data_report_of_a_buffering_far_that_notifies():
+    """TS 29.244 cl. 5.2.3: "When instructed to buffer and notify the CP function about the arrival of a DL packet, the UP function shall notify
+    the CP function, when it receives a first downlink packet for each QoS flow for a given FAR (in 5GC), by sending a PFCP Session Report
+    Request including a Downlink Data Report IE identifying the PDR(s) for which downlink packets have been received" (BUFF with NOCP)."""
+    NOCP = 0x0800
+    ies = replace_ie(mc_request(0xf8a1, b'\x02' + V4G, None), T_CREATE_FAR, far(apply=APPLY_BUFF | NOCP))
+    r = U.establish(ies)
+    s = accepted(r, 'BUFF and NOCP session')
+    lst = N3mbListener(mc_group_of(r))
+    try:
+        assert session_report(s, 0.3) is None
+        send_multicast('10.46.0.1', '232.1.1.1', payload=b'one')
+        rep = session_report(s, 3)
+        assert rep is not None, 'no Session Report Request for the first buffered packet'
+        seid_h, ies_ = rep
+        assert seid_h == 0xf8a1, 'header SEID %x, the CP SEID is f8a1' % seid_h
+        assert find({'ies': ies_}, T_REPORT_TYPE) == b'\x01', 'Report Type %s' % find({'ies': ies_}, T_REPORT_TYPE)
+        dl = dict(parse_ies(find({'ies': ies_}, T_DLDR)))
+        assert struct.unpack('>H', dl[T_PDR_ID])[0] == 1, 'PDR ID in the Downlink Data Report'
+        # the second packet is not "a first downlink packet"
+        send_multicast('10.46.0.1', '232.1.1.1', payload=b'two')
+        assert session_report(s, 1.5) is None, 'a second report for the same PDR'
+        # the buffer is emptied by FSSM; BUFF with NOCP again: the next packet is a first one again
+        assert modify(s, update_far(apply=APPLY_FSSM))
+        assert len(lst.packets()) == 2
+        assert modify(s, update_far(apply=APPLY_BUFF | NOCP))
+        send_multicast('10.46.0.1', '232.1.1.1', payload=b'three')
+        assert session_report(s, 3) is not None, 'no report after the buffer was emptied'
+    finally:
+        lst.close()
+        U.delete(s)
+    # BUFF without NOCP: nothing is reported
+    r = U.establish(replace_ie(mc_request(0xf8a2, b'\x02' + V4G, None), T_CREATE_FAR, far(apply=APPLY_BUFF)))
+    s = accepted(r, 'BUFF session')
+    try:
+        send_multicast('10.46.0.1', '232.1.1.1')
+        assert session_report(s, 2) is None, 'a report without NOCP'
+    finally:
+        U.delete(s)
+    # two flows selected by SDF filters, each with its own PDR and FAR: a report for each, with its PDR ID
+    r = U.establish([node_id(), fseid(0xf8a3), sdf_flow_pdr(1, 100, 5000), far(apply=APPLY_BUFF | NOCP), qer(),
+                     ie(T_CREATE_TE, [ie(T_TE_ID, b'\x01'), lit_choose()]), n4mb_ctrl(flags=0x01)])
+    s = accepted(r, 'two flows')
+    try:
+        m = modify(s, sdf_flow_pdr(2, 50, 6000), far(far_id=2, apply=APPLY_BUFF | NOCP), qer(qer_id=2, qfi=2))
+        assert m and cause(m) == CAUSE_ACCEPTED
+        got = []
+        for port in (5000, 6000, 5000, 6000):
+            tunnel_packet_qfi(r, port)
+            rep = session_report(s, 1.5)
+            if rep:
+                got.append(struct.unpack('>H', dict(parse_ies(find({'ies': rep[1]}, T_DLDR)))[T_PDR_ID])[0])
+        assert got == [1, 2], 'reports for the PDRs %s: one per PDR, the first packet of each' % got
+    finally:
+        U.delete(s)
+
+
+@test
+def t_user_plane_inactivity_is_reported_once_and_follows_updates():
+    """TS 29.244 cl. 5.11.2: "the UP function shall monitor the user plane activity of the PFCP session and report any user plane inactivity
+    exceeding the duration indicated by this IE by sending a PFCP Session Report Request with the Report Type set to UPIR"; "After sending the
+    User Plane Inactivity Report, the UP function shall stop monitoring"; an updated timer is used at once, and reported at once if exceeded."""
+    UPIR = b'\x08'
+    ies = mc_request(0xf8b1, b'\x02' + V4G, None) + [ie(T_UP_INACT, struct.pack('>I', 3))]
+    r = U.establish(ies)
+    s = accepted(r, 'session with an inactivity timer')
+    lst = N3mbListener(mc_group_of(r))
+    try:
+        t0 = time.time()
+        time.sleep(2)
+        send_multicast('10.46.0.1', '232.1.1.1')        # activity: the 3 s count from here
+        rep = session_report(s, 8)
+        assert rep is not None, 'no User Plane Inactivity Report'
+        waited = time.time() - t0
+        assert 4.6 < waited < 6.5, 'reported after %.1f s, 2 s + 3 s of inactivity expected' % waited
+        assert find({'ies': rep[1]}, T_REPORT_TYPE) == UPIR, 'Report Type %s' % find({'ies': rep[1]}, T_REPORT_TYPE)
+        assert rep[0] == 0xf8b1
+        assert session_report(s, 4) is None, 'a second report: the monitoring stops after the report'
+        # provisioned again: monitoring starts again; an update that is already exceeded is reported at once
+        assert modify(s, ie(T_UP_INACT, struct.pack('>I', 2)))
+        rep = session_report(s, 6)
+        assert rep is not None and find({'ies': rep[1]}, T_REPORT_TYPE) == UPIR, 'no report after the timer was provisioned again'
+        assert modify(s, ie(T_UP_INACT, struct.pack('>I', 30)))
+        time.sleep(1.2)
+        assert modify(s, ie(T_UP_INACT, struct.pack('>I', 1)))
+        rep = session_report(s, 2)
+        assert rep is not None, 'an updated timer that is already exceeded was not reported at once'
+        # a timer with a wrong length
+        m = modify(s, ie(T_UP_INACT, b'\x00\x01'))
+        assert m and cause(m) == CAUSE_INVALID_LENGTH and offending(m) == T_UP_INACT
+    finally:
+        lst.close()
+        U.delete(s)
+    # the session that ends with a timer running: no report, the daemon lives
+    r = U.establish(mc_request(0xf8b2, b'\x02' + V4G, None) + [ie(T_UP_INACT, struct.pack('>I', 2))])
+    s = accepted(r, 'second session')
+    U.delete(s)
+    assert session_report(s, 3.5) is None, 'a report for a session that ended'
+    assert U.alive()
+
+
 # E-TESTS-BELOW
 
 

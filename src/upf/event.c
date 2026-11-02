@@ -105,6 +105,10 @@ const char *upf_event_get_name(upf_event_t *e)
         return "UPF_EVT_GTPU_PATH_TIMER";
     case UPF_EVT_GTPU_ECHO_RESPONSE:
         return "UPF_EVT_GTPU_ECHO_RESPONSE";
+    case UPF_EVT_MBS_TIMER:
+        return "UPF_EVT_MBS_TIMER";
+    case UPF_EVT_MBS_DL_DATA:
+        return "UPF_EVT_MBS_DL_DATA";
 
     default: 
        break;
