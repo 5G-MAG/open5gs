@@ -417,7 +417,12 @@ ogs_pfcp_pdr_t *ogs_pfcp_handle_create_pdr(ogs_pfcp_sess_t *sess,
     }
 
     pdr = ogs_pfcp_pdr_find_or_add(sess, message->pdr_id.u16);
-    ogs_assert(pdr);
+    if (!pdr) {
+        ogs_error("No room for PDR-ID[%d]", message->pdr_id.u16);
+        *cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+        *offending_ie_value = OGS_PFCP_PDR_ID_TYPE;
+        return NULL;
+    }
 
     if (message->precedence.presence) {
         ogs_pfcp_pdr_reorder_by_precedence(pdr, message->precedence.u32);
@@ -685,7 +690,12 @@ ogs_pfcp_pdr_t *ogs_pfcp_handle_create_pdr(ogs_pfcp_sess_t *sess,
 
     if (message->far_id.presence) {
         far = ogs_pfcp_far_find_or_add(sess, message->far_id.u32);
-        ogs_assert(far);
+        if (!far) {
+            ogs_error("No room for FAR-ID[%d]", message->far_id.u32);
+            *cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+            *offending_ie_value = OGS_PFCP_FAR_ID_TYPE;
+            return NULL;
+        }
         ogs_pfcp_pdr_associate_far(pdr, far);
     }
 
@@ -695,7 +705,12 @@ ogs_pfcp_pdr_t *ogs_pfcp_handle_create_pdr(ogs_pfcp_sess_t *sess,
     for (i = 0; i < OGS_ARRAY_SIZE(message->urr_id); i++) {
         if (message->urr_id[i].presence) {
             urr = ogs_pfcp_urr_find_or_add(sess, message->urr_id[i].u32);
-            ogs_assert(urr);
+            if (!urr) {
+                ogs_error("No room for URR-ID[%d]", message->urr_id[i].u32);
+                *cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+                *offending_ie_value = OGS_PFCP_URR_ID_TYPE;
+                return NULL;
+            }
             ogs_pfcp_pdr_associate_urr(pdr,urr);
         }
     }
@@ -704,7 +719,12 @@ ogs_pfcp_pdr_t *ogs_pfcp_handle_create_pdr(ogs_pfcp_sess_t *sess,
 
     if (message->qer_id.presence) {
         qer = ogs_pfcp_qer_find_or_add(sess, message->qer_id.u32);
-        ogs_assert(qer);
+        if (!qer) {
+            ogs_error("No room for QER-ID[%d]", message->qer_id.u32);
+            *cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+            *offending_ie_value = OGS_PFCP_QER_ID_TYPE;
+            return NULL;
+        }
         ogs_pfcp_pdr_associate_qer(pdr, qer);
     }
 

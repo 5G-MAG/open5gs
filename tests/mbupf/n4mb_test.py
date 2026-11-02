@@ -33,6 +33,7 @@ CAUSE_ACCEPTED, CAUSE_PARTIAL, CAUSE_REJECTED, CAUSE_CONTEXT_NOT_FOUND = 1, 3, 6
 CAUSE_MANDATORY_MISSING, CAUSE_CONDITIONAL_MISSING, CAUSE_INVALID_LENGTH, CAUSE_MANDATORY_INCORRECT = 66, 67, 68, 69
 CAUSE_RULE_FAILURE, CAUSE_NO_RESOURCES, CAUSE_SERVICE_NOT_SUPPORTED, CAUSE_SYSTEM_FAILURE = 73, 75, 76, 77
 CAUSE_RESTORATION_FAILURE = 86
+CAUSE_NO_RESOURCES = 75
 
 
 
@@ -2368,6 +2369,48 @@ def t_update_qer_that_is_not_valid_changes_nothing():
         bad('Update QER and a failing Update FAR', CAUSE_CONDITIONAL_MISSING, T_ADD_UNICAST, update_qer(1, gate=0x01), update_far(apply=APPLY_MBSU))
     finally:
         U.delete(s)
+
+
+@test
+def t_session_without_room_for_another_rule_answers_cause_75():
+    """TS 29.244 cl. 8.2.1 (Cause), "No resources available": "This cause shall be returned to indicate a temporary
+    unavailability of resources to process the received request." A session holds a fixed number of QERs (4) and PDRs
+    (16): one more is refused, the daemon does not stop."""
+    # modification: flows 2 to 4 fit (QER 1 exists), the fifth QER does not
+    r = U.establish(smf_session(0xf4a1))
+    s = accepted(r, 'session of the MB-SMF')
+    try:
+        for n in (2, 3, 4):
+            m = modify(s, *flow_rules(n, n, precedence=100 + n))
+            assert m and cause(m) == CAUSE_ACCEPTED, 'flow %d: %s/%s' % (n, cause(m) if m else None, offending(m) if m else None)
+        m = modify(s, *flow_rules(5, 5, precedence=105))
+        assert U.alive(), 'the daemon stopped for the fifth QER'
+        assert m is not None and cause(m) == CAUSE_NO_RESOURCES, 'fifth QER: cause %s offending %s' % (cause(m) if m else None, offending(m) if m else None)
+        assert tunnel_packet_qfi(r, 5000) == 1, 'a refused request changed the session'
+        # the room is given back with the flow
+        m = modify(s, *removal(4))
+        assert m and cause(m) == CAUSE_ACCEPTED
+        m = modify(s, *flow_rules(5, 5, precedence=105))
+        assert m and cause(m) == CAUSE_ACCEPTED, '%s/%s' % (cause(m) if m else None, offending(m) if m else None)
+        m = modify(s, *removal(5))
+        assert m and cause(m) == CAUSE_ACCEPTED
+        # PDRs that share one FAR and QER: 16 fit, the 17th does not
+        for n in range(10, 25):
+            m = modify(s, pdr(pdr_id=n, precedence=1000 + n, pdi_extra=(ie(T_TE_ID, b'\x01'),)))
+            if cause(m) != CAUSE_ACCEPTED:
+                break
+        else:
+            n = 25
+        assert U.alive(), 'the daemon stopped for the 17th PDR'
+        assert m is not None and cause(m) == CAUSE_NO_RESOURCES, 'PDR %d: cause %s' % (n, cause(m) if m else None)
+    finally:
+        U.delete(s)
+    # establishment: five PDRs with five QERs (the fifth Create QER does not fit in the message either)
+    pdrs = [pdr(pdr_id=n, precedence=10 * n, far_id=1, qer_id=n) for n in range(1, 6)]
+    r = U.establish([node_id(), fseid(0xf4a2)] + pdrs + [far()] + [qer(qer_id=n, qfi=n) for n in range(1, 6)] +
+                    [ie(T_CREATE_TE, [lit_choose()]), n4mb_ctrl()])
+    assert U.alive(), 'the daemon stopped for five QERs in an establishment'
+    assert r is not None and cause(r) != CAUSE_ACCEPTED, 'five QERs: cause %s' % (cause(r) if r else None)
 
 
 # E-TESTS-BELOW
