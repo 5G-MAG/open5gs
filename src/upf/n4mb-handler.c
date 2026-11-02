@@ -727,6 +727,7 @@ void upf_n4mb_handle_session_establishment_request(
     ogs_pfcp_far_t *far = NULL;
     ogs_pfcp_pdr_t *created_pdr[OGS_MAX_NUM_OF_PDR];
     ogs_pfcp_mbs_session_identifier_t mbs_session_identifier;
+    ogs_ssm_t id_ssm;
     int num_of_created_pdr = 0;
     bool resti = false, requested_llssm = false;
     uint32_t requested_c_teid = 0;
@@ -922,7 +923,10 @@ void upf_n4mb_handle_session_establishment_request(
                 if (mbs_session_identifier.tmgif) {
                     mbs_sess->mbs_session_id.is_tmgi = 1;
                     mbs_sess->mbs_session_id.tmgi = (ogs_tmgi_t*)ogs_calloc(1, sizeof(*mbs_sess->mbs_session_id.tmgi));
-                    mbs_sess->mbs_session_id.tmgi->mbs_service_id = ogs_msprintf("%.2X%.2X%.2X", mbs_session_identifier.tmgi.mbs_service_id[2], mbs_session_identifier.tmgi.mbs_service_id[1], mbs_session_identifier.tmgi.mbs_service_id[0]);
+                    mbs_sess->mbs_session_id.tmgi->mbs_service_id = ogs_msprintf("%.2X%.2X%.2X", mbs_session_identifier.tmgi.mbs_service_id[0], mbs_session_identifier.tmgi.mbs_service_id[1], mbs_session_identifier.tmgi.mbs_service_id[2]);
+                    /* TS 24.008 figure 10.5.154: "bit 8 of octet 3 is the most significant bit and bit 1 of octet 5 the least significant
+                     * bit" of the MBMS Service ID: the first octet is the first two digits */
+                    ogs_debug("MBS Session Identifier: TMGI MBS Service ID [%s]", mbs_sess->mbs_session_id.tmgi->mbs_service_id);
                     /* The three PLMN octets are those of TS 24.008 figure 10.5.154 (TS 29.244 cl. 8.2.206: "The
                      * TMGI field shall be encoded as octets 3 to octet 8 in the figure 10.5.154"), the layout of
                      * ogs_nas_plmn_id_t: converted, not copied digit by digit, since ogs_plmn_id_t names the
@@ -934,19 +938,20 @@ void upf_n4mb_handle_session_establishment_request(
                             ogs_plmn_id_mnc_len(&mbs_sess->mbs_session_id.tmgi->plmn_id),
                             ogs_plmn_id_mnc(&mbs_sess->mbs_session_id.tmgi->plmn_id));
                     /* mbs_sess->mbs_session_id.tmgi->expiration_time = ; */
-                } else if (mbs_session_identifier.ssmif) {
-                    mbs_sess->mbs_session_id.is_ssm = 1;
-                    mbs_sess->mbs_session_id.ssm = (ogs_ssm_t*)ogs_calloc(1, sizeof(*mbs_sess->mbs_session_id.ssm));
+                }
+                /* the TMGI and the SSM may be there together (cl. 8.2.206: each has its flag) */
+                if (mbs_session_identifier.ssmif) {
+                    memset(&id_ssm, 0, sizeof(id_ssm));
                     switch (mbs_session_identifier.ssm.ip_source_address.address_type) {
                     case 0: /* IPv4 */
-                        mbs_sess->mbs_session_id.ssm->src_ip_addr.ipv4 = 1;
-                        mbs_sess->mbs_session_id.ssm->src_ip_addr.addr = mbs_session_identifier.ssm.ip_source_address.ipv4_addr;
-                        mbs_sess->mbs_session_id.ssm->src_ip_addr.len = mbs_session_identifier.ssm.ip_source_address.address_length;
+                        id_ssm.src_ip_addr.ipv4 = 1;
+                        id_ssm.src_ip_addr.addr = mbs_session_identifier.ssm.ip_source_address.ipv4_addr;
+                        id_ssm.src_ip_addr.len = mbs_session_identifier.ssm.ip_source_address.address_length;
                         break;
                     case 1: /* IPv6 */
-                        mbs_sess->mbs_session_id.ssm->src_ip_addr.ipv6 = 1;
-                        memcpy(mbs_sess->mbs_session_id.ssm->src_ip_addr.addr6, mbs_session_identifier.ssm.ip_source_address.ipv6_addr, sizeof(mbs_sess->mbs_session_id.ssm->src_ip_addr.addr6));
-                        mbs_sess->mbs_session_id.ssm->src_ip_addr.len = mbs_session_identifier.ssm.ip_source_address.address_length;
+                        id_ssm.src_ip_addr.ipv6 = 1;
+                        memcpy(id_ssm.src_ip_addr.addr6, mbs_session_identifier.ssm.ip_source_address.ipv6_addr, sizeof(id_ssm.src_ip_addr.addr6));
+                        id_ssm.src_ip_addr.len = mbs_session_identifier.ssm.ip_source_address.address_length;
                         break;
                     default:
                         ogs_warn("Unknown address_type %i in SSM source address", mbs_session_identifier.ssm.ip_source_address.address_type);
@@ -954,23 +959,30 @@ void upf_n4mb_handle_session_establishment_request(
                     }
                     switch (mbs_session_identifier.ssm.ip_multicast_distribution_address.address_type) {
                     case 0: /* IPv4 */
-                        mbs_sess->mbs_session_id.ssm->dest_ip_addr.ipv4 = 1;
-                        mbs_sess->mbs_session_id.ssm->dest_ip_addr.addr = mbs_session_identifier.ssm.ip_multicast_distribution_address.ipv4_addr;
-                        mbs_sess->mbs_session_id.ssm->dest_ip_addr.len = mbs_session_identifier.ssm.ip_multicast_distribution_address.address_length;
+                        id_ssm.dest_ip_addr.ipv4 = 1;
+                        id_ssm.dest_ip_addr.addr = mbs_session_identifier.ssm.ip_multicast_distribution_address.ipv4_addr;
+                        id_ssm.dest_ip_addr.len = mbs_session_identifier.ssm.ip_multicast_distribution_address.address_length;
                         break;
                     case 1: /* IPv6 */
-                        mbs_sess->mbs_session_id.ssm->dest_ip_addr.ipv6 = 1;
-                        memcpy(mbs_sess->mbs_session_id.ssm->dest_ip_addr.addr6, mbs_session_identifier.ssm.ip_multicast_distribution_address.ipv6_addr, sizeof(mbs_sess->mbs_session_id.ssm->dest_ip_addr.addr6));
-                        mbs_sess->mbs_session_id.ssm->dest_ip_addr.len = mbs_session_identifier.ssm.ip_multicast_distribution_address.address_length;
+                        id_ssm.dest_ip_addr.ipv6 = 1;
+                        memcpy(id_ssm.dest_ip_addr.addr6, mbs_session_identifier.ssm.ip_multicast_distribution_address.ipv6_addr, sizeof(id_ssm.dest_ip_addr.addr6));
+                        id_ssm.dest_ip_addr.len = mbs_session_identifier.ssm.ip_multicast_distribution_address.address_length;
                         break;
                     default:
                         ogs_warn("Unknown address_type %i in SSM destination address", mbs_session_identifier.ssm.ip_multicast_distribution_address.address_type);
                         break;
                     }
+                    /* The TMGI and the SSM share the field of the identifier (a union): with a TMGI the SSM is the session's, below */
+                    if (!mbs_session_identifier.tmgif) {
+                        mbs_sess->mbs_session_id.is_ssm = 1;
+                        mbs_sess->mbs_session_id.ssm = (ogs_ssm_t *)ogs_calloc(1, sizeof(*mbs_sess->mbs_session_id.ssm));
+                        ogs_assert(mbs_sess->mbs_session_id.ssm);
+                        *mbs_sess->mbs_session_id.ssm = id_ssm;
+                    }
                 }
                 if (!mbs_sess->ssm.dest_ip_addr.ipv4 && !mbs_sess->ssm.dest_ip_addr.ipv6 && mbs_session_identifier.ssmif) {
                     /* Duplicate to ID SSM to SSM settings if we don't already have an SSM destination */
-                    memcpy(&mbs_sess->ssm, mbs_sess->mbs_session_id.ssm, sizeof(mbs_sess->ssm));
+                    memcpy(&mbs_sess->ssm, &id_ssm, sizeof(mbs_sess->ssm));
                     upf_mbs_sess_set_ssm(mbs_sess);
                 }
                 if (mbs_session_identifier.nidif) {

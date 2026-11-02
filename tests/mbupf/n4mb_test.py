@@ -3042,6 +3042,25 @@ def t_cp_fseid_without_an_address_is_refused():
     accepted_and_deleted(r, 'V4 and V6')
 
 
+@test
+def t_tmgi_mbs_service_id_is_stored_most_significant_octet_first():
+    """TS 24.008 figure 10.5.154: "bit 8 of octet 3 is the most significant bit and bit 1 of octet 5 the least significant bit" of the
+    MBMS Service ID: the octets 12 34 56 are the service 123456 (and with a TMGI and an SSM together both are taken)."""
+    plmn = b'\x00\xf1\x10'
+    ident = ie(T_MBS_ID, b'\x01' + b'\x12\x34\x56' + plmn)
+    s = accepted(U.establish(good(cp_seid=0xff11)[:-1] + [n4mb_ctrl(ident)]), 'TMGI')
+    assert 'MBS Service ID [123456]' in U.log_text(), 'service ID not stored most significant octet first: %s' % [
+        l for l in U.log_text().splitlines() if 'MBS Service ID' in l][-1:]
+    U.delete(s)
+    # TMGI and SSM flags together (cl. 8.2.206): TMGI, then the SSM destination and source
+    ident = ie(T_MBS_ID, b'\x03' + b'\xab\xcd\xef' + plmn + b'\x04' + V4G + b'\x04' + V4S)
+    r = U.establish(good(cp_seid=0xff12)[:-1] + [n4mb_ctrl(ident)])
+    assert U.alive(), 'the daemon stopped with the TMGI and the SSM together'
+    s = accepted(r, 'TMGI and SSM')
+    assert 'MBS Service ID [ABCDEF]' in U.log_text()
+    U.delete(s)
+
+
 # E-TESTS-BELOW
 
 
