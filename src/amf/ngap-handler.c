@@ -4991,6 +4991,8 @@ void ngap_handle_broadcast_session_release_response(
     mbs_context = amf_mbs_context_find_by_tmgi(&tmgi);
     if (mbs_context && amf_namf_handle_mbs_broadcast_required_release_response(mbs_context, gnb, transfer))
         ;   // the answer to a release that this NG-RAN asked for
+    else if (mbs_context && amf_namf_handle_mbs_broadcast_area_release_response(mbs_context, gnb, transfer))
+        ;   // the answer to a release for a gNB that left the service area
     else if (mbs_context && mbs_context->release_pending)
         amf_namf_send_mbs_broadcast_context_release_response(mbs_context, gnb, transfer);
     else

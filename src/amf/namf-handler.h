@@ -71,6 +71,7 @@ typedef enum {
     AMF_MBS_UPDATE_UNAFFECTED, /* nothing is sent: the node is not affected by the change the update carries */
     AMF_MBS_UPDATE_MODIFY,  /* a Broadcast Session Modification Request */
     AMF_MBS_UPDATE_SETUP,   /* a Broadcast Session Setup Request */
+    AMF_MBS_UPDATE_RELEASE, /* a Broadcast Session Release Request: the node left the service area */
 } amf_mbs_update_action_e;
 
 /* What a ContextUpdate carries that decides which NG-RAN nodes it goes to */
@@ -118,6 +119,8 @@ void amf_namf_send_transport_failure(amf_gnb_t *gnb, const ogs_tmgi_t *tmgi, NGA
  */
 int amf_namf_mbs_transport_answers(const amf_gnb_t *gnb, const ogs_tmgi_t *tmgi, ogs_sbi_message_t *message,
         ogs_pkbuf_t **out, int max);
+bool amf_namf_handle_mbs_broadcast_area_release_response(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb,
+        const OCTET_STRING_t *transfer);
 bool amf_namf_handle_mbs_broadcast_required_release_response(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb,
         const OCTET_STRING_t *transfer);
 void amf_namf_handle_mbs_broadcast_ran_response(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb,

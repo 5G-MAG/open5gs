@@ -882,6 +882,10 @@ typedef struct amf_mbs_gnb_s {
     /* The request outstanding is a Broadcast Session Setup Request sent as part of a ContextUpdate (TS 23.527
      * V18.6.0 cl. 8.3.2.3 step 7), not of the ContextCreate: its response completes the update. */
     bool update_setup;
+    /* The AMF has released the session in the gNB because it left the MBS service area (TS 23.247 V18.8.0 cl. 7.3.3
+     * step 3), and area_release_pending is set until the gNB has answered that release. The gNB holds no session. */
+    bool area_released;
+    bool area_release_pending;
 } amf_mbs_gnb_t;
 
 typedef struct amf_mbs_context_s {

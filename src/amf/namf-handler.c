@@ -2195,7 +2195,8 @@ static bool amf_gnb_takes_mbs_session(amf_gnb_t *gnb, amf_mbs_context_t *mbs_con
  * NG-RAN nodes get a Broadcast Session Setup Request and no other node gets anything (TS 23.527 V18.6.0 cl. 8.3.2.3 step 7:
  * "The AMF sends the N2 MBS Session Setup Request message to the NG-RAN node(s) including the MBS Session Setup or
  * Modification Request Transfer IE."). A node that enters the service area (serves the new one and did not serve the old
- * one) gets a Setup Request, not a Modification Request. With n2MbsInfoChangeInd false (plan->n2_info_unchanged) the nodes that the change
+ * one) gets a Setup Request, not a Modification Request, and a node that holds the session and leaves it gets a Release
+ * Request. With n2MbsInfoChangeInd false (plan->n2_info_unchanged) the nodes that the change
  * of the service area does not affect get nothing. With noNgapSignallingInd true (TS 29.518 V18.14.0 Table 6.5.6.2.5-1: "true: the AMF
  * may consider to not trigger a NGAP signaling message to any NG-RAN."; TS 23.527 V18.6.0 cl. 8.3.2.4 step 8: "The AMF
  * may consider to not trigger any NGAP signalling towards NG-RANs covering the MBS service area.") no node gets anything.
@@ -2216,12 +2217,20 @@ amf_mbs_update_action_e amf_namf_mbs_update_action(
         return amf_namf_ran_id_list_has_gnb(plan->ran_id_list, gnb) ?
             AMF_MBS_UPDATE_SETUP : AMF_MBS_UPDATE_SKIP;
 
-    if (!amf_gnb_takes_mbs_session(gnb, mbs_context))
+    involved = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
+
+    if (!amf_gnb_takes_mbs_session(gnb, mbs_context)) {
+        // TS 23.247 V18.8.0 cl. 7.3.3 step 3: "the AMF may send ... MBS Session Resource Release to some other NG-RANs in
+        // old MBS service area": a node that holds the session, served the old service area and does not serve the new
+        // one leaves it.
+        if (involved && !involved->setup_failed && !involved->release_required && !involved->area_released &&
+                amf_namf_gnb_serves_tai_list(gnb, plan->old_area))
+            return AMF_MBS_UPDATE_RELEASE;
         return AMF_MBS_UPDATE_SKIP;
+    }
 
     // The session has been released in this gNB at its own request (BROADCAST SESSION RELEASE REQUIRED): it holds no
     // session to modify.
-    involved = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
     if (involved && involved->release_required)
         return AMF_MBS_UPDATE_SKIP;
 
@@ -2675,6 +2684,8 @@ int amf_namf_handle_mbs_broadcast_context_update(
     ogs_pkbuf_t *n2mbssmbuf = NULL;
     ogs_pkbuf_t *n2msgreq = NULL;       /* the Modification Request, sent to the nodes that hold the session */
     ogs_pkbuf_t *n2setupreq = NULL;     /* the Setup Request, sent to the nodes that are to get the session */
+    ogs_pkbuf_t *n2releasereq = NULL;   /* the Release Request, sent to the nodes that left the service area */
+    int released = 0;
     amf_gnb_t *gnb = NULL;
     amf_mbs_update_plan_t plan;
     ogs_mbs_service_area_t *old_area = NULL;    /* the service area this update replaced, held until the nodes are chosen */
@@ -2902,6 +2913,27 @@ int amf_namf_handle_mbs_broadcast_context_update(
             unaffected++;
         if (action == AMF_MBS_UPDATE_SKIP || action == AMF_MBS_UPDATE_UNAFFECTED)
             continue;
+        if (action == AMF_MBS_UPDATE_RELEASE) {
+            // A node that left the service area is released; nothing waits for its answer, which goes to the MB-SMF in
+            // a ContextStatusNotify request (amf_namf_handle_mbs_broadcast_area_release_response()).
+            amf_mbs_gnb_t *leaving = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
+
+            if (!n2releasereq)
+                n2releasereq = ngap_build_broadcast_session_release_request(mbs_context);
+            n2msgreq_copy = n2releasereq ? ogs_pkbuf_copy(n2releasereq) : NULL;
+            if (!n2msgreq_copy || ngap_send_to_gnb(gnb, n2msgreq_copy, NGAP_NON_UE_SIGNALLING) != OGS_OK) {
+                ogs_error("MBS Broadcast ContextUpdate: the Broadcast Session Release Request could not be sent to gNB %i",
+                        gnb->gnb_id);
+                send_failed = true;
+                continue;
+            }
+            if (leaving) {
+                leaving->area_released = true;
+                leaving->area_release_pending = true;
+            }
+            released++;
+            continue;
+        }
         // The Setup Request carries the container of the request, or else the last one received (TS 23.527 V18.6.0
         // cl. 8.3.2.2 step 1).
         if (action == AMF_MBS_UPDATE_SETUP && !n2setupreq) {
@@ -2939,6 +2971,8 @@ int amf_namf_handle_mbs_broadcast_context_update(
                 involved->release_required = false;
                 involved->released = false;
                 involved->setup_failed = false;
+                involved->area_released = false;
+                involved->area_release_pending = false;
             }
         }
     }
@@ -2946,11 +2980,14 @@ int amf_namf_handle_mbs_broadcast_context_update(
         ogs_pkbuf_free(n2msgreq);
     if (n2setupreq)
         ogs_pkbuf_free(n2setupreq);
+    if (n2releasereq)
+        ogs_pkbuf_free(n2releasereq);
 
-    // Every node that takes the session was left out as not affected by the change (n2MbsInfoChangeInd false): there is
-    // nothing to wait for, and "the AMF does not need to contact NG-RAN nodes unaffected by the MBS service area change"
-    // (TS 29.518 V18.14.0 cl. 5.6.2.3). 204 No Content: no additional information is to be returned (step 2b).
-    if (mbs_context->gnb_request_count == 0 && unaffected > 0 && !send_failed) {
+    // Every node that takes the session was left out as not affected by the change (n2MbsInfoChangeInd false), or has
+    // been released as it left the service area: there is nothing to wait for, and "the AMF does not need to contact
+    // NG-RAN nodes unaffected by the MBS service area change" (TS 29.518 V18.14.0 cl. 5.6.2.3). 204 No Content: no
+    // additional information is to be returned (step 2b).
+    if (mbs_context->gnb_request_count == 0 && unaffected + released > 0 && !send_failed) {
         ogs_sbi_message_t sendmsg;
         ogs_sbi_response_t *response = NULL;
 
@@ -3211,6 +3248,10 @@ static int amf_mbs_context_send_release(amf_mbs_context_t *mbs_context)
             ogs_debug("gNB %i has asked for the release and has already been sent it", gnb->gnb_id);
             continue;
         }
+        if (involved->area_released) {
+            ogs_debug("gNB %i left the service area and has already been sent the release", gnb->gnb_id);
+            continue;
+        }
 
         n2msgreq_copy = ogs_pkbuf_copy(n2msgreq);
         if (!n2msgreq_copy) {
@@ -3319,7 +3360,7 @@ static bool amf_mbs_context_all_released_on_request(amf_mbs_context_t *mbs_conte
     int serving = 0;
 
     ogs_list_for_each(&mbs_context->involved_gnb_list, involved) {
-        if (!amf_gnb_find_by_id(involved->gnb_id) || involved->setup_failed)
+        if (!amf_gnb_find_by_id(involved->gnb_id) || involved->setup_failed || involved->area_released)
             continue;
         if (!involved->release_required || !involved->released)
             return false;
@@ -3395,6 +3436,10 @@ void amf_namf_handle_mbs_broadcast_release_required(amf_mbs_context_t *mbs_conte
         ogs_warn("BROADCAST SESSION RELEASE REQUIRED from gNB %i, which has asked before, ignored", gnb->gnb_id);
         return;
     }
+    if (involved->area_released) {
+        ogs_warn("BROADCAST SESSION RELEASE REQUIRED from gNB %i, which left the service area, ignored", gnb->gnb_id);
+        return;
+    }
     if (mbs_context->release_pending) {
         // The consumer's ContextRelease is releasing the session in every NG-RAN.
         ogs_warn("BROADCAST SESSION RELEASE REQUIRED from gNB %i while the context is being released, ignored",
@@ -3411,6 +3456,41 @@ void amf_namf_handle_mbs_broadcast_release_required(amf_mbs_context_t *mbs_conte
         involved->released = true;
         amf_mbs_context_required_release_done(mbs_context, gnb, NULL);
     }
+}
+
+/*
+ * BROADCAST SESSION RELEASE RESPONSE of NG-RAN \p gnb to the release the AMF sent it because it left the service area.
+ * Returns false when it is not the answer to such a release. TS 38.413 V18.8.0 cl. 8.17.3.2: "Upon reception of the
+ * BROADCAST SESSION RELEASE RESPONSE message, the AMF shall transfer transparently the Broadcast Session Release Response
+ * Transfer IE, if available, to the MB-SMF." It goes in a ContextStatusNotify request (TS 29.518 V18.14.0 cl. 5.6.2.5).
+ */
+bool amf_namf_handle_mbs_broadcast_area_release_response(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb,
+        const OCTET_STRING_t *transfer)
+{
+    amf_mbs_gnb_t *involved = NULL;
+    amf_mbs_n2_info_t *n2_info = NULL;
+    ogs_list_t n2_info_list;
+
+    ogs_assert(mbs_context);
+    ogs_assert(gnb);
+
+    involved = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
+    if (!involved || !involved->area_release_pending)
+        return false;
+
+    involved->area_release_pending = false;
+
+    if (transfer && transfer->size > 0)
+        n2_info = amf_mbs_n2_info_create(gnb, OpenAPI_ngap_ie_type_MBS_SES_REL_RSP, transfer->buf, transfer->size);
+    if (n2_info) {
+        ogs_list_init(&n2_info_list);
+        ogs_list_add(&n2_info_list, n2_info);
+        amf_sbi_send_mbs_broadcast_context_status_notify(
+                mbs_context, &n2_info_list, OpenAPI_operation_status_NULL, false, NULL);
+        amf_mbs_n2_info_remove_all(&n2_info_list);
+    }
+
+    return true;
 }
 
 /*
