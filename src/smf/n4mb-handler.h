@@ -59,6 +59,10 @@ uint8_t smf_n4mb_handle_session_restoration_response(
         smf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
         ogs_pfcp_session_establishment_response_t *rsp);
 
+/* The LL SSM and C-TEID of a Multicast Transport Information IE of an answer, taken in. Returns false, taking nothing,
+ * when the IE is malformed. */
+bool smf_n4mb_take_multicast_transport_information(smf_mbs_sess_t *mbs_sess, ogs_tlv_octet_t *octet);
+
 /* A PFCP Node Report Request of the MB-UPF (TS 29.244 V18.10.0 clause 6.2.9.3: "process the information being
  * reported as appropriate and send a PFCP Node Report Response with the cause "success"; otherwise return an
  * appropriate error cause value."). The User Plane Path Failure Report is the N3mb path failure of TS 23.527

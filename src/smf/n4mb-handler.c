@@ -236,8 +236,19 @@ uint8_t smf_n4mb_handle_session_establishment_response(
         // Multicast Transport Information for MBS Session N4mb Information
         if (rsp->mbs_session_n4mb_information.multicast_transport_information.presence) {
             ogs_pfcp_multicast_transport_information_t multicast_transport_information;
-            ogs_pfcp_parse_multicast_transport_information(&multicast_transport_information,
-                    &rsp->mbs_session_n4mb_information.multicast_transport_information);
+
+            /* TS 29.244 V18.10.0 clause 8.2.207: the octets of the IE are laid out as the clause says; one that is
+             * not is a malformed IE (the parser returns -1), and the answer is refused: the MB-UPF holds a session
+             * the MB-SMF does not use, and it is deleted. */
+            if (ogs_pfcp_parse_multicast_transport_information(&multicast_transport_information,
+                    &rsp->mbs_session_n4mb_information.multicast_transport_information) < 0) {
+                ogs_error("MBS Session N4mb Information: the Multicast Transport Information is malformed");
+                ogs_assert(true == ogs_sbi_server_send_error(sbi_stream, 500, NULL, "Unable to establish MBS session",
+                        "MBS Session establishment with UPF failed, the Multicast Transport Information is malformed",
+                        _pfcp_cause_to_problem_cause(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT)));
+                _abandon_failed_establishment(mbs_sess, rsp);
+                return OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+            }
 
             if (multicast_transport_information.ip_multicast_distribution_address.address_type == 0) {
                 mbs_sess->ll_ssm.dest_ip_addr.ipv4 = 1;
@@ -571,6 +582,43 @@ uint8_t smf_n4mb_handle_node_report_request(
     return OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
 }
 
+bool smf_n4mb_take_multicast_transport_information(smf_mbs_sess_t *mbs_sess, ogs_tlv_octet_t *octet)
+{
+    ogs_pfcp_multicast_transport_information_t mti;
+
+    ogs_assert(mbs_sess);
+    ogs_assert(octet);
+
+    /* TS 29.244 V18.10.0 clause 8.2.207: an IE whose octets are not laid out as the clause says is malformed (the
+     * parser returns -1): nothing of it is taken */
+    if (ogs_pfcp_parse_multicast_transport_information(&mti, octet) < 0) {
+        ogs_error("MBS Session N4mb Information: the Multicast Transport Information is malformed");
+        return false;
+    }
+
+    if (mti.ip_multicast_distribution_address.address_type == 0) {
+        mbs_sess->ll_ssm.dest_ip_addr.ipv4 = 1;
+        mbs_sess->ll_ssm.dest_ip_addr.len = OGS_IPV4_LEN;
+        mbs_sess->ll_ssm.dest_ip_addr.addr = mti.ip_multicast_distribution_address.ipv4_addr;
+    } else if (mti.ip_multicast_distribution_address.address_type == 1) {
+        mbs_sess->ll_ssm.dest_ip_addr.ipv6 = 1;
+        mbs_sess->ll_ssm.dest_ip_addr.len = OGS_IPV6_LEN;
+        memcpy(mbs_sess->ll_ssm.dest_ip_addr.addr6, mti.ip_multicast_distribution_address.ipv6_addr, OGS_IPV6_LEN);
+    }
+    if (mti.ip_source_address.address_type == 0) {
+        mbs_sess->ll_ssm.src_ip_addr.ipv4 = 1;
+        mbs_sess->ll_ssm.src_ip_addr.len = OGS_IPV4_LEN;
+        mbs_sess->ll_ssm.src_ip_addr.addr = mti.ip_source_address.ipv4_addr;
+    } else if (mti.ip_source_address.address_type == 1) {
+        mbs_sess->ll_ssm.src_ip_addr.ipv6 = 1;
+        mbs_sess->ll_ssm.src_ip_addr.len = OGS_IPV6_LEN;
+        memcpy(mbs_sess->ll_ssm.src_ip_addr.addr6, mti.ip_source_address.ipv6_addr, OGS_IPV6_LEN);
+    }
+    if (mti.c_teid)
+        mbs_sess->c_teid = be32toh(mti.c_teid);
+    return true;
+}
+
 uint8_t smf_n4mb_handle_session_restoration_response(
         smf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
         ogs_pfcp_session_establishment_response_t *rsp)
@@ -623,36 +671,11 @@ uint8_t smf_n4mb_handle_session_restoration_response(
         /* At an alternative MB-UPF "the alternative MB-UPF will assign: a new N3mb and/or N19mb LL SSM address and
          * C-TEID, if multicast transport is used on N3mb and/or N19mb; and/or a new N6mb and/or Nmb9 ingress tunnel
          * address, if unicast transport is used on N6mb and/or Nmb9." (TS 23.527 V18.6.0 clause 8.2.3) */
-        if (relocating) {
-            ogs_pfcp_multicast_transport_information_t mti;
-
-            if (rsp->mbs_session_n4mb_information.presence &&
-                    rsp->mbs_session_n4mb_information.multicast_transport_information.presence) {
-                ogs_pfcp_parse_multicast_transport_information(&mti,
-                        &rsp->mbs_session_n4mb_information.multicast_transport_information);
-                if (mti.ip_multicast_distribution_address.address_type == 0) {
-                    mbs_sess->ll_ssm.dest_ip_addr.ipv4 = 1;
-                    mbs_sess->ll_ssm.dest_ip_addr.len = OGS_IPV4_LEN;
-                    mbs_sess->ll_ssm.dest_ip_addr.addr = mti.ip_multicast_distribution_address.ipv4_addr;
-                } else if (mti.ip_multicast_distribution_address.address_type == 1) {
-                    mbs_sess->ll_ssm.dest_ip_addr.ipv6 = 1;
-                    mbs_sess->ll_ssm.dest_ip_addr.len = OGS_IPV6_LEN;
-                    memcpy(mbs_sess->ll_ssm.dest_ip_addr.addr6, mti.ip_multicast_distribution_address.ipv6_addr,
-                            OGS_IPV6_LEN);
-                }
-                if (mti.ip_source_address.address_type == 0) {
-                    mbs_sess->ll_ssm.src_ip_addr.ipv4 = 1;
-                    mbs_sess->ll_ssm.src_ip_addr.len = OGS_IPV4_LEN;
-                    mbs_sess->ll_ssm.src_ip_addr.addr = mti.ip_source_address.ipv4_addr;
-                } else if (mti.ip_source_address.address_type == 1) {
-                    mbs_sess->ll_ssm.src_ip_addr.ipv6 = 1;
-                    mbs_sess->ll_ssm.src_ip_addr.len = OGS_IPV6_LEN;
-                    memcpy(mbs_sess->ll_ssm.src_ip_addr.addr6, mti.ip_source_address.ipv6_addr, OGS_IPV6_LEN);
-                }
-                if (mti.c_teid)
-                    mbs_sess->c_teid = be32toh(mti.c_teid);
-            }
-        }
+        if (relocating && rsp->mbs_session_n4mb_information.presence &&
+                rsp->mbs_session_n4mb_information.multicast_transport_information.presence &&
+                !smf_n4mb_take_multicast_transport_information(mbs_sess,
+                    &rsp->mbs_session_n4mb_information.multicast_transport_information))
+            cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
     }
 
     if (smf_mbs_sess_restoration_response(mbs_sess, cause_value) && cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED) {

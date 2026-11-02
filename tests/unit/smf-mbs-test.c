@@ -3272,6 +3272,43 @@ static void test_relocation(void)
     smf_mbs_sess_release(mbs_sess);
 }
 
+/* TS 29.244 V18.10.0 clause 8.2.207: a Multicast Transport Information whose octets are malformed is refused */
+static void test_multicast_transport_information_answer(void)
+{
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    ogs_pfcp_multicast_transport_information_t mti;
+    ogs_tlv_octet_t octet;
+    uint8_t buf[64];
+    static const uint8_t truncated[] = { 0x00, 0x01, 0x02, 0x03, 0x04, 0x04, 0xe8, 0x01 };
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+
+    memset(&mti, 0, sizeof(mti));
+    mti.c_teid = htobe32(0x0a0b0c0d);
+    mti.ip_multicast_distribution_address.address_type = 0;
+    mti.ip_multicast_distribution_address.address_length = OGS_IPV4_LEN;
+    mti.ip_multicast_distribution_address.ipv4_addr = htonl(0xe8010203);
+    mti.ip_source_address.address_type = 0;
+    mti.ip_source_address.address_length = OGS_IPV4_LEN;
+    mti.ip_source_address.ipv4_addr = htonl(0x0a000001);
+    memset(&octet, 0, sizeof(octet));
+    ogs_pfcp_build_multicast_transport_information(&octet, &mti, buf, sizeof(buf));
+    CHECK(smf_n4mb_take_multicast_transport_information(mbs_sess, &octet));
+    CHECK(mbs_sess->ll_ssm.dest_ip_addr.ipv4 && mbs_sess->ll_ssm.dest_ip_addr.addr == htonl(0xe8010203) &&
+            mbs_sess->ll_ssm.src_ip_addr.addr == htonl(0x0a000001) && mbs_sess->c_teid == 0x0a0b0c0d);
+
+    /* a truncated IE: refused, and the session keeps what it had */
+    memset(&octet, 0, sizeof(octet));
+    octet.presence = 1;
+    octet.data = (void *)truncated;
+    octet.len = sizeof(truncated);
+    CHECK(!smf_n4mb_take_multicast_transport_information(mbs_sess, &octet));
+    CHECK(mbs_sess->c_teid == 0x0a0b0c0d && mbs_sess->ll_ssm.dest_ip_addr.addr == htonl(0xe8010203));
+
+    smf_mbs_sess_release(mbs_sess);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -3316,6 +3353,7 @@ int main(void)
     test_restoration_request();
     test_changes_during_restoration();
     test_relocation();
+    test_multicast_transport_information_answer();
 
     printf("smf-mbs: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
