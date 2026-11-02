@@ -2102,6 +2102,31 @@ def sdf_flow_pdr(n, precedence, dport, te=b'\x01'):
 
 
 @test
+def t_sdf_filter_selects_the_flow():
+    """TS 29.244 cl. 5.2.1: "Only the highest precedence PDR matching the packet shall be selected" and "The UP function
+    should drop packets unmatched by any PDRs"; a PDR with an SDF Filter matches the packets of its flow."""
+    pdr1 = sdf_flow_pdr(1, 100, 5000)
+    r = U.establish([node_id(), fseid(0xf101), pdr1, far(), qer(), ie(T_CREATE_TE, [ie(T_TE_ID, b'\x01'), lit_choose()]),
+                     n4mb_ctrl(flags=0x01)])
+    s = accepted(r, 'session with an SDF filter')
+    try:
+        assert tunnel_packet_qfi(r, 5000) == 1, 'the packet of the flow is not forwarded'
+        assert tunnel_packet_qfi(r, 6000) is None, 'a packet that no PDR matches is forwarded'
+        m = modify(s, sdf_flow_pdr(2, 50, 6000), far(far_id=2), qer(qer_id=2, qfi=2, indications=1))
+        assert m and cause(m) == CAUSE_ACCEPTED, '%s/%s' % (cause(m) if m else None, offending(m) if m else None)
+        assert tunnel_packet_qfi(r, 5000) == 1, 'flow 1 after flow 2 was added'
+        assert tunnel_packet_qfi(r, 6000) == 2, 'flow 2'
+        assert tunnel_packet_qfi(r, 7000) is None, 'a packet that no PDR matches is forwarded (2 flows)'
+        # a flow of higher precedence whose FAR drops: its packets are dropped, not given to another flow
+        m = modify(s, sdf_flow_pdr(3, 10, 5000), far(far_id=3, apply=APPLY_DROP, params=False), qer(qer_id=3, qfi=3))
+        assert m and cause(m) == CAUSE_ACCEPTED, '%s/%s' % (cause(m) if m else None, offending(m) if m else None)
+        assert tunnel_packet_qfi(r, 5000) is None, 'the packet of a flow that drops is forwarded by another flow'
+        assert tunnel_packet_qfi(r, 6000) == 2, 'flow 2 after flow 3'
+    finally:
+        U.delete(s)
+
+
+@test
 def t_sdf_filter_that_cannot_be_compiled():
     """A flow description that is not valid is a semantically incorrect IE (cl. 7.6.8); the daemon must not stop."""
     for desc in ('garbage', 'permit', '', 'deny out 17 from 10.46.0.1 to 232.1.1.1 5000'):

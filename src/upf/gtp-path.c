@@ -194,6 +194,25 @@ void upf_gtpv1_receive_buffer_for_mbs_sess(ogs_pkbuf_t *recvbuf, upf_mbs_sess_t 
     else if (mbs_sess != NULL)
         pdr_list = &mbs_sess->pfcp.pdr_list;
 
+    if (mbs_sess) {
+        /* TS 29.244 cl. 5.2.1: "find the first PDR matching the incoming packet, among all the PDRs provisioned for
+         * this PFCP session, starting with the PDRs with the highest precedence ... Only the highest precedence PDR
+         * matching the packet shall be selected"; "The UP function should drop packets unmatched by any PDRs." The
+         * Apply Action of the FAR of that PDR then says what is done with it (DROP drops it, FSSM and MBSU forward it). */
+        ogs_list_for_each(pdr_list, pdr) {
+            ogs_assert(pdr->far);
+            if (pdr->src_if != OGS_PFCP_INTERFACE_CORE)
+                continue;
+            if (ogs_list_first(&pdr->rule_list) && ogs_pfcp_pdr_rule_find_by_packet(pdr, recvbuf) == NULL)
+                continue;
+            break;
+        }
+        if (!pdr) {
+            ogs_debug("MBS data discarded: no PDR of the MBS session matches the packet");
+            ogs_pkbuf_free(recvbuf);
+            return;
+        }
+    } else
     ogs_list_for_each(pdr_list, pdr) {
         far = pdr->far;
         ogs_assert(far);
