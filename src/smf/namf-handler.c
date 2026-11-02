@@ -393,7 +393,7 @@ bool smf_namf_handle_mbs_broadcast_context_delete_response(
  * containers of \p notification (see smf_namf_handle_mbs_broadcast_context_status_notify()). Returns false, with nothing
  * sent, when the notification has no such container. */
 static bool smf_namf_send_transport_answers(ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg,
-        smf_mbs_sess_t *mbs_sess, OpenAPI_context_status_notification_t *notification)
+        smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf, OpenAPI_context_status_notification_t *notification)
 {
     static const char *const content_id[SMF_MBS_MAX_TRANSPORT_ANSWERS] = {
         OGS_SBI_CONTENT_NGAP_SM_ID "-0", OGS_SBI_CONTENT_NGAP_SM_ID "-1",
@@ -410,7 +410,7 @@ static bool smf_namf_send_transport_answers(ogs_sbi_stream_t *stream, ogs_sbi_me
     int count, i;
 
     memset(answers, 0, sizeof(answers));
-    count = smf_mbs_sess_answer_transport_requests(mbs_sess, notification->n2_mbs_sm_info_list, recvmsg, &changes,
+    count = smf_mbs_sess_answer_transport_requests(mbs_sess, amf, notification->n2_mbs_sm_info_list, recvmsg, &changes,
             answers, SMF_MBS_MAX_TRANSPORT_ANSWERS);
     if (changes.count > 0)
         smf_mbs_sess_send_tunnel_changes(mbs_sess, &changes);
@@ -620,7 +620,7 @@ bool smf_namf_handle_mbs_broadcast_context_status_notify(
      * shall insert the identifier of the NG-RAN node to which the information in the container relates in the
      * corresponding entry of the n2MbsSmInfoList attribute." */
     if (ContextStatusNotification->released_ind != OpenAPI_context_status_notification_RELEASEDIND__true &&
-            smf_namf_send_transport_answers(stream, recvmsg, mbs_sess, ContextStatusNotification))
+            smf_namf_send_transport_answers(stream, recvmsg, mbs_sess, amf, ContextStatusNotification))
         return true;
 
     response = ogs_sbi_build_response(recvmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);

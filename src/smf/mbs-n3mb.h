@@ -60,7 +60,8 @@ typedef struct smf_mbs_transport_answer_s {
 /* TS 29.518 V18.14.0 clause 5.6.2.5 step 2a: for each Broadcast Session Transport Request Transfer container of the
  * notification the answer, and the DL tunnel the request offers is taken in (recorded in tunnel_changes, for
  * smf_mbs_sess_send_tunnel_changes()). Returns the number of answers. */
-int smf_mbs_sess_answer_transport_requests(smf_mbs_sess_t *mbs_sess, OpenAPI_list_t *n2_mbs_sm_info_list,
+int smf_mbs_sess_answer_transport_requests(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf,
+        OpenAPI_list_t *n2_mbs_sm_info_list,
         ogs_sbi_message_t *recvmsg, smf_mbs_tunnel_changes_t *tunnel_changes, smf_mbs_transport_answer_t *answers,
         int max_answers);
 

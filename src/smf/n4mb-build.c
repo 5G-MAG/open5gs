@@ -452,3 +452,39 @@ ogs_pkbuf_t *smf_n4mb_build_session_modification_request(
 
     return pkbuf;
 }
+
+ogs_pkbuf_t *smf_n4mb_build_node_report_response(uint8_t cause, uint16_t offending_ie)
+{
+    ogs_pfcp_message_t *pfcp_message = NULL;
+    ogs_pfcp_node_report_response_t *rsp = NULL;
+    ogs_pfcp_node_id_t node_id;
+    ogs_pkbuf_t *pkbuf = NULL;
+    int node_id_len = 0;
+
+    pfcp_message = ogs_calloc(1, sizeof(*pfcp_message));
+    ogs_assert(pfcp_message);
+    rsp = &pfcp_message->pfcp_node_report_response;
+
+    if (ogs_pfcp_sockaddr_to_node_id(&node_id, &node_id_len) != OGS_OK) {
+        ogs_error("ogs_pfcp_sockaddr_to_node_id() failed");
+        ogs_free(pfcp_message);
+        return NULL;
+    }
+    rsp->node_id.presence = 1;
+    rsp->node_id.data = &node_id;
+    rsp->node_id.len = node_id_len;
+
+    rsp->cause.presence = 1;
+    rsp->cause.u8 = cause;
+    if (offending_ie) {
+        rsp->offending_ie.presence = 1;
+        rsp->offending_ie.u16 = offending_ie;
+    }
+
+    pfcp_message->h.type = OGS_PFCP_NODE_REPORT_RESPONSE_TYPE;
+    pkbuf = ogs_pfcp_build_msg(pfcp_message);
+    ogs_expect(pkbuf);
+    ogs_free(pfcp_message);
+
+    return pkbuf;
+}

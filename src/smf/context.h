@@ -602,6 +602,7 @@ typedef struct smf_mbs_dl_tunnel_s {
     ogs_lnode_t lnode;
 
     char *ran_id;               /* the NG-RAN node: its GlobalRanNodeId as the AMF sent it (JSON text) */
+    uint32_t amf_id;            /* the entry of the AMF that gave the tunnel (0: not known) */
     ogs_ip_t addr;              /* transport layer address of the tunnel */
     uint32_t teid;
     uint16_t unicast_params_id; /* MBS Unicast Parameters ID, from 1 */

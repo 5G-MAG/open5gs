@@ -25,6 +25,7 @@
 
 // NOTE (borieher): Needed for the SBI request
 #include "sbi-path.h"
+#include "mbs-restore.h"
 
 static const char *_pfcp_cause_to_problem_cause(uint8_t pfcp_cause);
 
@@ -518,4 +519,53 @@ uint8_t smf_n4mb_handle_session_deletion_response(
     smf_mbs_sess_release(mbs_sess);
 
     return cause_value;
+}
+
+uint8_t smf_n4mb_handle_node_report_request(
+        ogs_pfcp_node_t *node, ogs_pfcp_node_report_request_t *req, uint16_t *offending_ie)
+{
+    ogs_ip_t peer;
+
+    ogs_assert(node);
+    ogs_assert(req);
+    ogs_assert(offending_ie);
+
+    *offending_ie = 0;
+
+    /* TS 29.244 V18.10.0 table 7.4.5.1.1-1: "Node Report Type | M" */
+    if (!req->node_report_type.presence || !req->node_report_type.data || req->node_report_type.len < 1) {
+        ogs_error("PFCP Node Report Request: No Node Report Type");
+        *offending_ie = OGS_PFCP_NODE_REPORT_TYPE_TYPE;
+        return OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+    }
+
+    /* "User Plane Path Failure Report | C | This IE shall be present if the Node Report Type indicates a User Plane
+     * Path Failure Report." (Node Report Type octet 5, bit 1, UPFR). Reports of the other types are not
+     * reports of an N3mb path: nothing in TS 23.527 clause 8 gives the MB-SMF an action for them. */
+    if (!(((const uint8_t *)req->node_report_type.data)[0] & 0x01)) {
+        ogs_info("PFCP Node Report Request: Node Report Type [0x%02x] needs no action of the MB-SMF",
+                ((const uint8_t *)req->node_report_type.data)[0]);
+        return OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
+    }
+
+    if (!req->user_plane_path_failure_report.presence) {
+        ogs_error("PFCP Node Report Request: the User Plane Path Failure Report is missing");
+        *offending_ie = OGS_PFCP_USER_PLANE_PATH_FAILURE_REPORT_TYPE;
+        return OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+    }
+
+    /* "Remote GTP-U Peer | M" in the report */
+    if (!req->user_plane_path_failure_report.remote_gtp_u_peer.presence ||
+            !smf_mbs_decode_remote_gtp_u_peer(req->user_plane_path_failure_report.remote_gtp_u_peer.data,
+                req->user_plane_path_failure_report.remote_gtp_u_peer.len, &peer)) {
+        /* TS 29.244 V18.10.0 clause 8.2.1, cause 69: "Mandatory IE incorrect"; and 66: "Mandatory IE missing" */
+        bool missing = !req->user_plane_path_failure_report.remote_gtp_u_peer.presence;
+
+        ogs_error("PFCP Node Report Request: the Remote GTP-U Peer is %s", missing ? "missing" : "incorrect");
+        *offending_ie = OGS_PFCP_REMOTE_GTP_U_PEER_TYPE;
+        return missing ? OGS_PFCP_CAUSE_MANDATORY_IE_MISSING : OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+    }
+
+    smf_mbs_node_report_path_failure(node, &peer);
+    return OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
 }

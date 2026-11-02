@@ -173,8 +173,8 @@ bool smf_mbs_n3mb_parse_failure_transfer(ogs_pkbuf_t *pkbuf, int *group, long *v
 
 /* The N3mb DL tunnel of the NG-RAN node \p ran_id, taken in; the change for the MB-UPF is recorded in
  * \p tunnel_changes when there is room. Returns 1 when the tunnel is new or another one, else 0. */
-static int set_dl_tunnel(smf_mbs_sess_t *mbs_sess, const char *ran_id, const ogs_ip_t *addr, uint32_t teid,
-        smf_mbs_tunnel_changes_t *tunnel_changes)
+static int set_dl_tunnel(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf, const char *ran_id, const ogs_ip_t *addr,
+        uint32_t teid, smf_mbs_tunnel_changes_t *tunnel_changes)
 {
     smf_mbs_dl_tunnel_t *old = smf_mbs_sess_dl_tunnel_find(mbs_sess, ran_id);
     smf_mbs_dl_tunnel_t *tunnel = NULL;
@@ -183,6 +183,8 @@ static int set_dl_tunnel(smf_mbs_sess_t *mbs_sess, const char *ran_id, const ogs
     bool changed = false;
 
     tunnel = smf_mbs_sess_dl_tunnel_set(mbs_sess, ran_id, addr, teid, &changed);
+    /* the AMF through which the NG-RAN node serves the session is the one a later ContextUpdate for it goes to */
+    tunnel->amf_id = amf ? amf->id : 0;
     ogs_info("NG-RAN [%s] N3mb DL tunnel TEID[0x%x]%s", ran_id, teid, changed ? "" : " (unchanged)");
     if (!changed)
         return 0;
@@ -288,7 +290,7 @@ int smf_mbs_sess_take_amf_answer(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf,
                 ogs_debug("NG-RAN [%s] offers no N3mb unicast tunnel", ran_id);
                 break;
             }
-            changes += set_dl_tunnel(mbs_sess, ran_id, &addr, teid, tunnel_changes);
+            changes += set_dl_tunnel(mbs_sess, amf, ran_id, &addr, teid, tunnel_changes);
             break;
         }
         case OpenAPI_ngap_ie_type_MBS_SES_FAIL: {
@@ -380,8 +382,8 @@ static bool transport_answer_add(smf_mbs_transport_answer_t *answers, int *count
     return true;
 }
 
-int smf_mbs_sess_answer_transport_requests(smf_mbs_sess_t *mbs_sess, OpenAPI_list_t *n2_mbs_sm_info_list,
-        ogs_sbi_message_t *recvmsg, smf_mbs_tunnel_changes_t *tunnel_changes, smf_mbs_transport_answer_t *answers,
+int smf_mbs_sess_answer_transport_requests(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf,
+        OpenAPI_list_t *n2_mbs_sm_info_list, ogs_sbi_message_t *recvmsg, smf_mbs_tunnel_changes_t *tunnel_changes, smf_mbs_transport_answer_t *answers,
         int max_answers)
 {
     OpenAPI_lnode_t *node;
@@ -450,7 +452,7 @@ int smf_mbs_sess_answer_transport_requests(smf_mbs_sess_t *mbs_sess, OpenAPI_lis
              * BROADCAST SESSION TRANSPORT REQUEST message, the MB-SMF shall use the included information as the
              * downlink termination point for the shared NG-U transport." */
             if (has_tunnel)
-                set_dl_tunnel(mbs_sess, ran_id, &addr, teid, tunnel_changes);
+                set_dl_tunnel(mbs_sess, amf, ran_id, &addr, teid, tunnel_changes);
             else
                 ogs_debug("NG-RAN [%s] offers no N3mb unicast tunnel in its Broadcast Session Transport Request",
                         ran_id);

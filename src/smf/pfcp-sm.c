@@ -22,6 +22,8 @@
 
 #include "n4-handler.h"
 #include "n4mb-handler.h"
+#include "n4mb-build.h"
+#include "mbs-restore.h"
 #include "namf-build.h"
 #include "mbs-subsc.h"
 
@@ -429,6 +431,34 @@ void smf_pfcp_state_associated(ogs_fsm_t *s, smf_event_t *e)
                 break;
             }
             ogs_fsm_dispatch(&sess->sm, e);
+            break;
+
+        case OGS_PFCP_NODE_REPORT_REQUEST_TYPE:
+            /* The report of the MB-UPF on its N4mb path (TS 29.244 V18.10.0 clause 6.2.9.3). A node that serves no
+             * MBS session is a UPF of PDU sessions, whose reports this SMF does not handle (as before). */
+            if (!smf_mbs_node_has_sessions(node)) {
+                ogs_error("Not implemented PFCP message type[%d]", message->h.type);
+                break;
+            }
+            {
+                uint16_t offending_ie = 0;
+                uint8_t cause = smf_n4mb_handle_node_report_request(
+                        node, &message->pfcp_node_report_request, &offending_ie);
+                ogs_pkbuf_t *n4buf = smf_n4mb_build_node_report_response(cause, offending_ie);
+                ogs_pfcp_header_t h;
+
+                if (!n4buf) {
+                    ogs_error("Cannot build the PFCP Node Report Response");
+                    break;
+                }
+                memset(&h, 0, sizeof(h));
+                h.type = OGS_PFCP_NODE_REPORT_RESPONSE_TYPE;
+                if (ogs_pfcp_xact_update_tx(xact, &h, n4buf) != OGS_OK) {
+                    ogs_error("ogs_pfcp_xact_update_tx() failed");
+                    break;
+                }
+                ogs_expect(ogs_pfcp_xact_commit(xact) == OGS_OK);
+            }
             break;
 
         case OGS_PFCP_SESSION_REPORT_REQUEST_TYPE:

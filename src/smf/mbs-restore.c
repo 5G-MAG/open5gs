@@ -243,3 +243,113 @@ void smf_mbs_ngran_restoration_remove_all(void)
     ogs_list_for_each_safe(&pending_restorations, next, restoration)
         restoration_remove(restoration);
 }
+
+bool smf_mbs_decode_remote_gtp_u_peer(const uint8_t *data, int len, ogs_ip_t *peer)
+{
+    int offset = 1;
+    bool v6, v4;
+
+    ogs_assert(peer);
+    memset(peer, 0, sizeof(*peer));
+
+    if (!data || len < 1)
+        return false;
+    v6 = data[0] & 0x01;
+    v4 = data[0] & 0x02;
+    if (v4) {
+        if (len < offset + OGS_IPV4_LEN)
+            return false;
+        peer->ipv4 = 1;
+        memcpy(&peer->addr, data + offset, OGS_IPV4_LEN);
+        offset += OGS_IPV4_LEN;
+    }
+    if (v6) {
+        if (len < offset + OGS_IPV6_LEN)
+            return false;
+        peer->ipv6 = 1;
+        memcpy(peer->addr6, data + offset, OGS_IPV6_LEN);
+    }
+    if (!peer->ipv4 && !peer->ipv6)
+        return false;
+    peer->len = (peer->ipv4 ? OGS_IPV4_LEN : 0) + (peer->ipv6 ? OGS_IPV6_LEN : 0);
+    return true;
+}
+
+bool smf_mbs_node_has_sessions(ogs_pfcp_node_t *node)
+{
+    smf_mbs_sess_t *mbs_sess = NULL;
+
+    ogs_assert(node);
+
+    ogs_list_for_each(&smf_self()->smf_mbs_sess_list, mbs_sess)
+        if (mbs_sess->pfcp_node == node)
+            return true;
+    return false;
+}
+
+smf_mbs_dl_tunnel_t *smf_mbs_sess_dl_tunnel_find_by_peer(smf_mbs_sess_t *mbs_sess, const ogs_ip_t *peer)
+{
+    smf_mbs_dl_tunnel_t *tunnel = NULL;
+
+    ogs_assert(mbs_sess);
+    ogs_assert(peer);
+
+    ogs_list_for_each(&mbs_sess->dl_tunnel_list, tunnel) {
+        if ((peer->ipv4 && tunnel->addr.ipv4 && peer->addr == tunnel->addr.addr) ||
+            (peer->ipv6 && tunnel->addr.ipv6 && memcmp(peer->addr6, tunnel->addr.addr6, OGS_IPV6_LEN) == 0))
+            return tunnel;
+    }
+    return NULL;
+}
+
+int smf_mbs_node_report_path_failure(ogs_pfcp_node_t *node, const ogs_ip_t *peer)
+{
+    smf_mbs_sess_t *mbs_sess = NULL, *next = NULL;
+    int sent = 0;
+
+    ogs_assert(node);
+    ogs_assert(peer);
+
+    ogs_list_for_each_safe(&smf_self()->smf_mbs_sess_list, next, mbs_sess) {
+        smf_mbs_dl_tunnel_t *tunnel = NULL;
+        smf_mbs_amf_t *amf = NULL;
+        smf_namf_context_update_param_t *param = NULL;
+        const char **ran_ids = NULL;
+
+        if (mbs_sess->pfcp_node != node || mbs_sess->release_triggered)
+            continue;
+        tunnel = smf_mbs_sess_dl_tunnel_find_by_peer(mbs_sess, peer);
+        if (!tunnel)
+            continue;
+
+        amf = smf_mbs_sess_amf_find(mbs_sess, tunnel->amf_id);
+        if (!amf || !amf->mbs_context_ref) {
+            ogs_error("MBS session mbsSessionRef[%s]: N3mb path failure towards NG-RAN [%s], but the AMF that gave "
+                    "the tunnel holds no context of the session", mbs_sess->mbs_session_ref, tunnel->ran_id);
+            continue;
+        }
+
+        param = ogs_calloc(1, sizeof(*param));
+        ogs_assert(param);
+        ran_ids = ogs_calloc(1, sizeof(*ran_ids));
+        ogs_assert(ran_ids);
+        ran_ids[0] = ogs_strdup(tunnel->ran_id);
+        ogs_assert(ran_ids[0]);
+        param->amf = amf;
+        param->no_n2_info_change_ind = true;
+        param->ran_ids = ran_ids;
+        param->num_ran_ids = 1;
+        param->n3mb_path_failure = true;
+        param->heap_owned = true;
+
+        ogs_warn("MBS session mbsSessionRef[%s]: N3mb path failure towards NG-RAN [%s]", mbs_sess->mbs_session_ref,
+                tunnel->ran_id);
+        /* see smf_mbs_sess_send_ngran_restoration() for the ownership of param */
+        if (smf_sbi_send_mbs_broadcast_context_update(mbs_sess, param) == OGS_OK)
+            sent++;
+        else
+            ogs_error("Failed to send MBS Broadcast ContextUpdate for an N3mb path failure");
+    }
+
+    return sent;
+}

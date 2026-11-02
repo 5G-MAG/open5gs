@@ -52,6 +52,13 @@ uint8_t smf_n4mb_handle_session_deletion_response(
         smf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
         ogs_pfcp_session_deletion_response_t *rsp);
 
+/* A PFCP Node Report Request of the MB-UPF (TS 29.244 V18.10.0 clause 6.2.9.3: "process the information being
+ * reported as appropriate and send a PFCP Node Report Response with the cause "success"; otherwise return an
+ * appropriate error cause value."). The User Plane Path Failure Report is the N3mb path failure of TS 23.527
+ * V18.6.0 clause 8.5. Returns the cause of the response; *offending_ie is set with a rejection. */
+uint8_t smf_n4mb_handle_node_report_request(
+        ogs_pfcp_node_t *node, ogs_pfcp_node_report_request_t *req, uint16_t *offending_ie);
+
 #ifdef __cplusplus
 }
 #endif

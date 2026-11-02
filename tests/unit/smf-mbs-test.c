@@ -12,6 +12,7 @@
 #include "ogs-sbi.h"
 #include "context.h"
 #include "n4mb-build.h"
+#include "n4mb-handler.h"
 #include "ngap-build.h"
 #include "namf-build.h"
 #include "namf-handler.h"
@@ -2317,6 +2318,7 @@ static int decode_transport_answer(smf_mbs_transport_answer_t *answer, ogs_tmgi_
 static void test_transport_requests(void)
 {
     smf_mbs_sess_t *mbs_sess = make_session(NULL, area_1_text);
+    smf_mbs_amf_t *amf_of_answer = NULL;
     smf_mbs_transport_answer_t answers[SMF_MBS_MAX_TRANSPORT_ANSWERS];
     smf_mbs_tunnel_changes_t changes;
     ogs_sbi_message_t message;
@@ -2328,6 +2330,7 @@ static void test_transport_requests(void)
 
     CHECK(mbs_sess != NULL);
     if (!mbs_sess) return;
+    amf_of_answer = smf_mbs_sess_amf_add(mbs_sess);
     memset(&foreign, 0, sizeof(foreign));
     foreign.mbs_service_id = ogs_strdup("FFFFFE");
     foreign.plmn_id = mbs_sess->tmgi->plmn_id;
@@ -2356,7 +2359,7 @@ static void test_transport_requests(void)
     OpenAPI_list_add(list, n2_info(OpenAPI_ngap_ie_type_MBS_SES_RSP, "n2-good", ran_a_text)); /* not a request */
 
     memset(answers, 0, sizeof(answers));
-    n = smf_mbs_sess_answer_transport_requests(mbs_sess, list, &message, &changes, answers,
+    n = smf_mbs_sess_answer_transport_requests(mbs_sess, amf_of_answer, list, &message, &changes, answers,
             SMF_MBS_MAX_TRANSPORT_ANSWERS);
 
     /* one answer for each request container, none for the other container */
@@ -2373,12 +2376,18 @@ static void test_transport_requests(void)
                 group == NGAP_Cause_PR_protocol && value == NGAP_CauseProtocol_transfer_syntax_error);
     }
     CHECK(ogs_list_count(&mbs_sess->dl_tunnel_list) == 1);
+    {
+        /* the tunnel keeps the AMF that gave it: a later ContextUpdate for the NG-RAN goes there */
+        smf_mbs_dl_tunnel_t *tunnel = ogs_list_first(&mbs_sess->dl_tunnel_list);
+
+        CHECK(tunnel && amf_of_answer && tunnel->amf_id == amf_of_answer->id);
+    }
     for (i = 0; i < n; i++)
         ogs_pkbuf_free(answers[i].transfer);
 
     /* the same request again changes nothing */
     memset(answers, 0, sizeof(answers));
-    n = smf_mbs_sess_answer_transport_requests(mbs_sess, list, &message, &changes, answers,
+    n = smf_mbs_sess_answer_transport_requests(mbs_sess, amf_of_answer, list, &message, &changes, answers,
             SMF_MBS_MAX_TRANSPORT_ANSWERS);
     CHECK(n == 4 && changes.count == 0);
     for (i = 0; i < n; i++)
@@ -2386,13 +2395,13 @@ static void test_transport_requests(void)
 
     /* more containers than answers fit: the rest get none, nothing overruns */
     memset(answers, 0, sizeof(answers));
-    n = smf_mbs_sess_answer_transport_requests(mbs_sess, list, &message, &changes, answers, 2);
+    n = smf_mbs_sess_answer_transport_requests(mbs_sess, amf_of_answer, list, &message, &changes, answers, 2);
     CHECK(n == 2);
     for (i = 0; i < n; i++)
         ogs_pkbuf_free(answers[i].transfer);
 
     /* no containers at all */
-    CHECK(smf_mbs_sess_answer_transport_requests(mbs_sess, NULL, &message, &changes, answers, 8) == 0);
+    CHECK(smf_mbs_sess_answer_transport_requests(mbs_sess, amf_of_answer, NULL, &message, &changes, answers, 8) == 0);
 
     {
         OpenAPI_lnode_t *node;
@@ -2936,6 +2945,115 @@ static void test_ngran_failure_events(void)
     smf_mbs_sess_release(mbs_sess);
 }
 
+/* TS 23.527 V18.6.0 clause 8.5, N3mb path failure: the PFCP Node Report Request of the MB-UPF with a User Plane
+ * Path Failure Report (TS 29.244 V18.10.0 clauses 7.4.5.1.2 and 8.2.70) and the PFCP Node Report Response. */
+static void test_node_report(void)
+{
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    smf_mbs_dl_tunnel_t *a, *b;
+    ogs_ip_t peer, addr;
+    bool changed;
+    /* flags: V4 (bit 2); address 10.20.30.40 */
+    static const uint8_t v4[] = { 0x02, 10, 20, 30, 40 };
+    /* flags: V6 (bit 1) */
+    static const uint8_t v6[] = { 0x01, 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 };
+    static const uint8_t none[] = { 0x00 };
+    static const uint8_t truncated[] = { 0x02, 10, 20 };
+    ogs_pfcp_node_t node, node_unused;
+    ogs_pfcp_node_report_request_t req;
+    uint8_t type_upfr = 0x01, type_upfr_uprr = 0x03, type_clock = 0x04;
+    uint16_t offending = 0;
+    ogs_pkbuf_t *pkbuf;
+    ogs_pfcp_message_t *msg;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+    memset(&node_unused, 0, sizeof(node_unused));
+    mbs_sess->pfcp_node = &node;
+
+    CHECK(smf_mbs_decode_remote_gtp_u_peer(v4, sizeof(v4), &peer) && peer.ipv4 && !peer.ipv6 &&
+            peer.addr == htonl(0x0a141e28));
+    CHECK(smf_mbs_decode_remote_gtp_u_peer(v6, sizeof(v6), &peer) && !peer.ipv4 && peer.ipv6 &&
+            peer.addr6[0] == 0x20 && peer.addr6[15] == 1);
+    CHECK(!smf_mbs_decode_remote_gtp_u_peer(none, sizeof(none), &peer));
+    CHECK(!smf_mbs_decode_remote_gtp_u_peer(truncated, sizeof(truncated), &peer));
+    CHECK(!smf_mbs_decode_remote_gtp_u_peer(NULL, 0, &peer));
+
+    CHECK(!smf_mbs_node_has_sessions(&node_unused) && smf_mbs_node_has_sessions(&node));
+    /* the NG-RAN is found by the address of its DL tunnel */
+    memset(&addr, 0, sizeof(addr));
+    addr.ipv4 = 1;
+    addr.len = OGS_IPV4_LEN;
+    addr.addr = htonl(0x0a141e28);
+    a = smf_mbs_sess_dl_tunnel_set(mbs_sess, "ran-a", &addr, 0x11, &changed);
+    addr.addr = htonl(0x0a141e29);
+    b = smf_mbs_sess_dl_tunnel_set(mbs_sess, "ran-b", &addr, 0x22, &changed);
+    CHECK(a && b);
+    smf_mbs_decode_remote_gtp_u_peer(v4, sizeof(v4), &peer);
+    CHECK(smf_mbs_sess_dl_tunnel_find_by_peer(mbs_sess, &peer) == a);
+    peer.addr = htonl(0x0a141e29);
+    CHECK(smf_mbs_sess_dl_tunnel_find_by_peer(mbs_sess, &peer) == b);
+    peer.addr = htonl(0x0a141e2a);
+    CHECK(smf_mbs_sess_dl_tunnel_find_by_peer(mbs_sess, &peer) == NULL);
+    smf_mbs_decode_remote_gtp_u_peer(v6, sizeof(v6), &peer);
+    CHECK(smf_mbs_sess_dl_tunnel_find_by_peer(mbs_sess, &peer) == NULL);
+
+    /* the handler: cause 1 for a report it can read, 66 and 69 with the offending IE for one it cannot */
+    memset(&node, 0, sizeof(node));
+    memset(&req, 0, sizeof(req));
+    CHECK(smf_n4mb_handle_node_report_request(&node, &req, &offending) == OGS_PFCP_CAUSE_MANDATORY_IE_MISSING &&
+            offending == OGS_PFCP_NODE_REPORT_TYPE_TYPE);
+    req.node_report_type.presence = 1;
+    req.node_report_type.data = &type_clock;
+    req.node_report_type.len = 1;
+    CHECK(smf_n4mb_handle_node_report_request(&node, &req, &offending) == OGS_PFCP_CAUSE_REQUEST_ACCEPTED &&
+            offending == 0);
+    req.node_report_type.data = &type_upfr;
+    CHECK(smf_n4mb_handle_node_report_request(&node, &req, &offending) == OGS_PFCP_CAUSE_MANDATORY_IE_MISSING &&
+            offending == OGS_PFCP_USER_PLANE_PATH_FAILURE_REPORT_TYPE);
+    req.user_plane_path_failure_report.presence = 1;
+    CHECK(smf_n4mb_handle_node_report_request(&node, &req, &offending) == OGS_PFCP_CAUSE_MANDATORY_IE_MISSING &&
+            offending == OGS_PFCP_REMOTE_GTP_U_PEER_TYPE);
+    req.user_plane_path_failure_report.remote_gtp_u_peer.presence = 1;
+    req.user_plane_path_failure_report.remote_gtp_u_peer.data = (void *)truncated;
+    req.user_plane_path_failure_report.remote_gtp_u_peer.len = sizeof(truncated);
+    CHECK(smf_n4mb_handle_node_report_request(&node, &req, &offending) == OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT &&
+            offending == OGS_PFCP_REMOTE_GTP_U_PEER_TYPE);
+    /* a peer none of the sessions of the node has a tunnel to: accepted, nothing sent */
+    req.user_plane_path_failure_report.remote_gtp_u_peer.data = (void *)v6;
+    req.user_plane_path_failure_report.remote_gtp_u_peer.len = sizeof(v6);
+    req.node_report_type.data = &type_upfr_uprr;
+    CHECK(smf_n4mb_handle_node_report_request(&node, &req, &offending) == OGS_PFCP_CAUSE_REQUEST_ACCEPTED);
+
+    /* the response: Node ID, Cause and, with a rejection, the Offending IE */
+    pkbuf = smf_n4mb_build_node_report_response(OGS_PFCP_CAUSE_MANDATORY_IE_MISSING, OGS_PFCP_NODE_REPORT_TYPE_TYPE);
+    CHECK(pkbuf != NULL);
+    if (pkbuf) {
+        ogs_pfcp_header_t h;
+
+        memset(&h, 0, sizeof(h));
+        h.version = 1;
+        h.type = OGS_PFCP_NODE_REPORT_RESPONSE_TYPE;
+        h.length = htobe16(pkbuf->len + OGS_PFCP_HEADER_LEN - 4 - 8);
+        ogs_pkbuf_push(pkbuf, OGS_PFCP_HEADER_LEN - 8);
+        memcpy(pkbuf->data, &h, OGS_PFCP_HEADER_LEN - 8);
+        msg = ogs_pfcp_parse_msg(pkbuf);
+        CHECK(msg != NULL);
+        if (msg) {
+            CHECK(msg->pfcp_node_report_response.node_id.presence);
+            CHECK(msg->pfcp_node_report_response.cause.presence &&
+                    msg->pfcp_node_report_response.cause.u8 == OGS_PFCP_CAUSE_MANDATORY_IE_MISSING);
+            CHECK(msg->pfcp_node_report_response.offending_ie.presence &&
+                    msg->pfcp_node_report_response.offending_ie.u16 == OGS_PFCP_NODE_REPORT_TYPE_TYPE);
+            ogs_pfcp_message_free(msg);
+        }
+        ogs_pkbuf_free(pkbuf);
+    }
+
+    mbs_sess->pfcp_node = NULL;
+    smf_mbs_sess_release(mbs_sess);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -2976,6 +3094,7 @@ int main(void)
     test_notification_routing();
     test_ngu_failure_indication();
     test_ngran_failure_events();
+    test_node_report();
 
     printf("smf-mbs: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;

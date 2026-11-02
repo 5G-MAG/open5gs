@@ -45,6 +45,9 @@ typedef struct smf_n4mb_modification_s {
 ogs_pkbuf_t *smf_n4mb_build_session_modification_request(
         smf_mbs_sess_t *mbs_sess, const smf_n4mb_modification_t *mod);
 
+/* The PFCP Node Report Response (TS 29.244 V18.10.0 table 7.4.5.2.1-1: Node ID, Cause, Offending IE) */
+ogs_pkbuf_t *smf_n4mb_build_node_report_response(uint8_t cause, uint16_t offending_ie);
+
 ogs_pkbuf_t *smf_n4mb_build_session_deletion_request(
         uint8_t type, smf_mbs_sess_t *mbs_sess);
 

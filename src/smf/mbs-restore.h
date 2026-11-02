@@ -80,6 +80,25 @@ void smf_mbs_ngran_restoration_remove_all(void);
  * Returns OGS_OK when the request was handed to the SBI. */
 int smf_mbs_sess_send_ngran_restoration(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf, const char *ran_id);
 
+/* The N3mb path failure (TS 23.527 V18.6.0 clause 8.5): the MB-UPF reports a user plane path failure in a PFCP Node
+ * Report Request, with the IP address of the remote GTP-U peer in the Remote GTP-U Peer IE (TS 29.244 V18.10.0
+ * clause 8.2.70). The MB-SMF determines the NG-RAN affected "based on the IP address of the remote GTP-U peer". */
+
+/* The address of a Remote GTP-U Peer IE (octet 5: flags V6 bit 1, V4 bit 2, DI bit 3, NI bit 4, RTS bit 5; then the
+ * IPv4 and IPv6 addresses when flagged). Returns false when it carries no address or is too short. */
+bool smf_mbs_decode_remote_gtp_u_peer(const uint8_t *data, int len, ogs_ip_t *peer);
+
+/* Whether any MBS session uses \p node for its N4mb PFCP session */
+bool smf_mbs_node_has_sessions(ogs_pfcp_node_t *node);
+
+/* The DL tunnel of the session that ends at \p peer; NULL if there is none */
+smf_mbs_dl_tunnel_t *smf_mbs_sess_dl_tunnel_find_by_peer(smf_mbs_sess_t *mbs_sess, const ogs_ip_t *peer);
+
+/* Clause 8.5 step 3: for each broadcast MBS session of \p node that has a DL tunnel ending at \p peer, a
+ * Namf_MBSBroadcast ContextUpdate with the NG-RAN ID of the NG-RAN and an N3mb path failure indication goes to the AMF
+ * that gave the tunnel. Returns the number of requests sent. */
+int smf_mbs_node_report_path_failure(ogs_pfcp_node_t *node, const ogs_ip_t *peer);
+
 #ifdef __cplusplus
 }
 #endif
