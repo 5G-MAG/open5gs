@@ -1262,65 +1262,111 @@ int16_t ogs_pfcp_build_multicast_transport_information(ogs_tlv_octet_t *octet,
     return octet->len;
 }
 
+/*
+ * Multicast Transport Information (TS 29.244 cl. 8.2.207). The octet string comes from a peer: a string that is too
+ * short, an address whose length does not match its type, an address type that is not IPv4 or IPv6, or octets left
+ * over are errors, reported by the return value (-1), not assertions.
+ */
 int16_t ogs_pfcp_parse_multicast_transport_information(
         ogs_pfcp_multicast_transport_information_t *multicast_transport_information, ogs_tlv_octet_t *octet)
 {
-    int16_t size = 0;
+    int size = 0;
 
     ogs_assert(multicast_transport_information);
     ogs_assert(octet);
 
     memset(multicast_transport_information, 0, sizeof(ogs_pfcp_multicast_transport_information_t));
 
-    // spare
+    if (!octet->data) {
+        ogs_error("No Multicast Transport Information");
+        return -1;
+    }
+
+    // spare, c_teid
+    if (size + sizeof(multicast_transport_information->spare) + sizeof(multicast_transport_information->c_teid) >
+            octet->len) {
+        ogs_error("Multicast Transport Information too short [%d]", octet->len);
+        return -1;
+    }
     multicast_transport_information->spare = ((uint8_t *)octet->data)[size];
     size += sizeof(multicast_transport_information->spare);
-
-    // c_teid
-    ogs_assert(size + sizeof(multicast_transport_information->c_teid) <= octet->len);
     memcpy(&multicast_transport_information->c_teid, (unsigned char *)octet->data + size,
             sizeof(multicast_transport_information->c_teid));
     size += sizeof(multicast_transport_information->c_teid);
 
     // ip_multicast_distribution_address
+    if (size + 1 > octet->len) {
+        ogs_error("Multicast Transport Information too short [%d]", octet->len);
+        return -1;
+    }
     multicast_transport_information->ip_multicast_distribution_address.flags = ((uint8_t *)octet->data)[size];
     size += sizeof(multicast_transport_information->ip_multicast_distribution_address.flags);
     if (multicast_transport_information->ip_multicast_distribution_address.address_type == 0) {
         // IPv4
-        ogs_assert(multicast_transport_information->ip_multicast_distribution_address.address_length == sizeof(multicast_transport_information->ip_multicast_distribution_address.ipv4_addr));
-        ogs_assert(size + sizeof(multicast_transport_information->ip_multicast_distribution_address.ipv4_addr) <= octet->len);
+        if (multicast_transport_information->ip_multicast_distribution_address.address_length !=
+                sizeof(multicast_transport_information->ip_multicast_distribution_address.ipv4_addr) ||
+                size + sizeof(multicast_transport_information->ip_multicast_distribution_address.ipv4_addr) >
+                octet->len) {
+            ogs_error("Multicast Transport Information: invalid IPv4 multicast distribution address");
+            return -1;
+        }
         memcpy(&multicast_transport_information->ip_multicast_distribution_address.ipv4_addr,
             (unsigned char *)octet->data + size,
             sizeof(multicast_transport_information->ip_multicast_distribution_address.ipv4_addr));
         size += sizeof(multicast_transport_information->ip_multicast_distribution_address.ipv4_addr);
     } else if (multicast_transport_information->ip_multicast_distribution_address.address_type == 1) {
         // IPv6
-        ogs_assert(multicast_transport_information->ip_multicast_distribution_address.address_length == OGS_IPV6_LEN);
-        ogs_assert(size + OGS_IPV6_LEN <= octet->len);
+        if (multicast_transport_information->ip_multicast_distribution_address.address_length != OGS_IPV6_LEN ||
+                size + OGS_IPV6_LEN > octet->len) {
+            ogs_error("Multicast Transport Information: invalid IPv6 multicast distribution address");
+            return -1;
+        }
         memcpy(&multicast_transport_information->ip_multicast_distribution_address.ipv6_addr, (unsigned char *)octet->data + size, OGS_IPV6_LEN);
         size += OGS_IPV6_LEN;
+    } else {
+        ogs_error("Multicast Transport Information: address type %d of the multicast distribution address",
+                multicast_transport_information->ip_multicast_distribution_address.address_type);
+        return -1;
     }
 
     // ip_source_address
+    if (size + 1 > octet->len) {
+        ogs_error("Multicast Transport Information too short [%d]", octet->len);
+        return -1;
+    }
     multicast_transport_information->ip_source_address.flags = ((uint8_t *)octet->data)[size];
     size += sizeof(multicast_transport_information->ip_source_address.flags);
     if (multicast_transport_information->ip_source_address.address_type == 0) {
         // IPv4
-        ogs_assert(multicast_transport_information->ip_source_address.address_length == sizeof(multicast_transport_information->ip_source_address.ipv4_addr));
-        ogs_assert(size + sizeof(multicast_transport_information->ip_source_address.ipv4_addr) <= octet->len);
+        if (multicast_transport_information->ip_source_address.address_length !=
+                sizeof(multicast_transport_information->ip_source_address.ipv4_addr) ||
+                size + sizeof(multicast_transport_information->ip_source_address.ipv4_addr) > octet->len) {
+            ogs_error("Multicast Transport Information: invalid IPv4 source address");
+            return -1;
+        }
         memcpy(&multicast_transport_information->ip_source_address.ipv4_addr,
             (unsigned char *)octet->data + size,
             sizeof(multicast_transport_information->ip_source_address.ipv4_addr));
         size += sizeof(multicast_transport_information->ip_source_address.ipv4_addr);
     } else if (multicast_transport_information->ip_source_address.address_type == 1) {
         // IPv6
-        ogs_assert(multicast_transport_information->ip_source_address.address_length == OGS_IPV6_LEN);
-        ogs_assert(size + OGS_IPV6_LEN <= octet->len);
+        if (multicast_transport_information->ip_source_address.address_length != OGS_IPV6_LEN ||
+                size + OGS_IPV6_LEN > octet->len) {
+            ogs_error("Multicast Transport Information: invalid IPv6 source address");
+            return -1;
+        }
         memcpy(&multicast_transport_information->ip_source_address.ipv6_addr, (unsigned char *)octet->data + size, OGS_IPV6_LEN);
         size += OGS_IPV6_LEN;
+    } else {
+        ogs_error("Multicast Transport Information: address type %d of the source address",
+                multicast_transport_information->ip_source_address.address_type);
+        return -1;
     }
 
-    ogs_assert(size == octet->len);
+    if (size != octet->len) {
+        ogs_error("Multicast Transport Information: %d octets, %d read", octet->len, size);
+        return -1;
+    }
 
     return size;
 }

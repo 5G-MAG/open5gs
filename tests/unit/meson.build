@@ -25,6 +25,7 @@ testunit_unit_sources = files('''
     sbi-message-test.c
     security-test.c
     crash-test.c
+    pfcp-types-test.c
 '''.split())
 
 testunit_unit_exe = executable('unit',
@@ -34,6 +35,7 @@ testunit_unit_exe = executable('unit',
                     libgtp_dep,
                     libngap_dep,
                     libnas_eps_dep,
+                    libpfcp_dep,
                     libsbi_dep])
 
 test('unit', testunit_unit_exe, is_parallel : false, suite: 'unit')
