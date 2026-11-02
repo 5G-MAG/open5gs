@@ -4144,6 +4144,83 @@ static void test_apply_action_drop(void)
     smf_mbs_sess_release(mbs_sess);
 }
 
+/* the Session Report Request as the MB-UPF sends it (src/upf/mbs-report.c: ogs_pfcp_build_session_report_request(), the
+ * header carrying the SEID of the MB-SMF), parsed again */
+static ogs_pfcp_message_t *parse_session_report(ogs_pkbuf_t *pkbuf)
+{
+    ogs_pfcp_header_t h;
+
+    memset(&h, 0, sizeof(h));
+    h.version = 1;
+    h.seid_presence = 1;
+    h.type = OGS_PFCP_SESSION_REPORT_REQUEST_TYPE;
+    h.length = htobe16(pkbuf->len + OGS_PFCP_HEADER_LEN - 4);
+    ogs_pkbuf_push(pkbuf, OGS_PFCP_HEADER_LEN);
+    memcpy(pkbuf->data, &h, OGS_PFCP_HEADER_LEN);
+    return ogs_pfcp_parse_msg(pkbuf);
+}
+
+/* TS 29.244 V18.10.0 clause 5.34.2.3 and table 7.5.8.1-1 (Report Type "M", Downlink Data Report with "PDR ID | M") */
+static void test_session_report_request(void)
+{
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    ogs_pfcp_user_plane_report_t report;
+    ogs_pfcp_message_t *msg;
+    ogs_pkbuf_t *pkbuf;
+    uint16_t offending = 0;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+
+    /* a Downlink Data Report with the PDR and the QFI, as the MB-UPF sends it */
+    memset(&report, 0, sizeof(report));
+    report.type.downlink_data_report = 1;
+    report.downlink_data.pdr_id = 3;
+    report.downlink_data.qfi = 5;
+    pkbuf = ogs_pfcp_build_session_report_request(OGS_PFCP_SESSION_REPORT_REQUEST_TYPE, &report);
+    CHECK(pkbuf != NULL);
+    msg = pkbuf ? parse_session_report(pkbuf) : NULL;
+    CHECK(msg && msg->pfcp_session_report_request.report_type.u8 == 0x01);
+    if (msg) {
+        CHECK(smf_n4mb_handle_session_report_request(mbs_sess, &msg->pfcp_session_report_request, &offending) ==
+                OGS_PFCP_CAUSE_REQUEST_ACCEPTED && offending == 0);
+        ogs_pfcp_message_free(msg);
+    }
+
+    /* a User Plane Inactivity Report */
+    memset(&report, 0, sizeof(report));
+    report.type.user_plane_inactivity_report = 1;
+    pkbuf = ogs_pfcp_build_session_report_request(OGS_PFCP_SESSION_REPORT_REQUEST_TYPE, &report);
+    msg = pkbuf ? parse_session_report(pkbuf) : NULL;
+    CHECK(msg && msg->pfcp_session_report_request.report_type.u8 == 0x08);
+    if (msg) {
+        CHECK(smf_n4mb_handle_session_report_request(mbs_sess, &msg->pfcp_session_report_request, &offending) ==
+                OGS_PFCP_CAUSE_REQUEST_ACCEPTED);
+        ogs_pfcp_message_free(msg);
+    }
+
+    /* malformed: no Report Type; DLDR without the Downlink Data Report; one without PDR ID */
+    {
+        ogs_pfcp_session_report_request_t req;
+
+        memset(&req, 0, sizeof(req));
+        CHECK(smf_n4mb_handle_session_report_request(mbs_sess, &req, &offending) ==
+                OGS_PFCP_CAUSE_MANDATORY_IE_MISSING && offending == OGS_PFCP_REPORT_TYPE_TYPE);
+        req.report_type.presence = 1;
+        req.report_type.u8 = 0x01;
+        CHECK(smf_n4mb_handle_session_report_request(mbs_sess, &req, &offending) ==
+                OGS_PFCP_CAUSE_MANDATORY_IE_MISSING && offending == OGS_PFCP_DOWNLINK_DATA_REPORT_TYPE);
+        req.downlink_data_report.presence = 1;
+        CHECK(smf_n4mb_handle_session_report_request(mbs_sess, &req, &offending) ==
+                OGS_PFCP_CAUSE_MANDATORY_IE_MISSING && offending == OGS_PFCP_PDR_ID_TYPE);
+        /* another type (a usage report): accepted, nothing done */
+        req.report_type.u8 = 0x02;
+        CHECK(smf_n4mb_handle_session_report_request(mbs_sess, &req, &offending) == OGS_PFCP_CAUSE_REQUEST_ACCEPTED);
+    }
+
+    smf_mbs_sess_release(mbs_sess);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -4195,6 +4272,7 @@ int main(void)
     test_relocation();
     test_multicast_transport_information_answer();
     test_node_report_several_peers();
+    test_session_report_request();
     test_local_ingress_tunnel_answer();
     test_mb_upf_selection();
     test_mbs_policy_control_config();

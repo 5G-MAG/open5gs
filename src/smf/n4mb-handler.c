@@ -755,3 +755,55 @@ uint8_t smf_n4mb_handle_session_restoration_response(
 
     return cause_value;
 }
+
+uint8_t smf_n4mb_handle_session_report_request(
+        smf_mbs_sess_t *mbs_sess, ogs_pfcp_session_report_request_t *req, uint16_t *offending_ie)
+{
+    ogs_pfcp_report_type_t type;
+
+    ogs_assert(mbs_sess);
+    ogs_assert(req);
+    ogs_assert(offending_ie);
+
+    *offending_ie = 0;
+
+    /* TS 29.244 V18.10.0 table 7.5.8.1-1: "Report Type | M" */
+    if (!req->report_type.presence) {
+        ogs_error("PFCP Session Report Request of mbsSessionRef[%s]: No Report Type", mbs_sess->mbs_session_ref);
+        *offending_ie = OGS_PFCP_REPORT_TYPE_TYPE;
+        return OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+    }
+    type.value = req->report_type.u8;
+
+    if (type.downlink_data_report) {
+        /* "Downlink Data Report | C | This IE shall be present if the Report Type indicates a Downlink Data Report";
+         * its "PDR ID | M" */
+        if (!req->downlink_data_report.presence) {
+            ogs_error("PFCP Session Report Request of mbsSessionRef[%s]: the Downlink Data Report is missing",
+                    mbs_sess->mbs_session_ref);
+            *offending_ie = OGS_PFCP_DOWNLINK_DATA_REPORT_TYPE;
+            return OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+        }
+        if (!req->downlink_data_report.pdr_id.presence) {
+            ogs_error("PFCP Session Report Request of mbsSessionRef[%s]: the Downlink Data Report has no PDR ID",
+                    mbs_sess->mbs_session_ref);
+            *offending_ie = OGS_PFCP_PDR_ID_TYPE;
+            return OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+        }
+        ogs_warn("MBS Session mbsSessionRef[%s]: downlink data arrived for PDR [%u] at the MB-UPF, which buffers it "
+                "and notifies; no action (the MB-SMF asked for nothing of the kind of a %s session)",
+                mbs_sess->mbs_session_ref, req->downlink_data_report.pdr_id.u16,
+                mbs_sess->service_type ? mbs_sess->service_type : "(unknown)");
+    }
+
+    if (type.user_plane_inactivity_report)
+        ogs_warn("MBS Session mbsSessionRef[%s]: the MB-UPF reports user plane inactivity; no action (the MB-SMF "
+                "deactivates only multicast MBS sessions, which this MB-SMF does not handle)",
+                mbs_sess->mbs_session_ref);
+
+    if (!type.downlink_data_report && !type.user_plane_inactivity_report)
+        ogs_info("MBS Session mbsSessionRef[%s]: Session Report of type [0x%02x] needs no action of the MB-SMF",
+                mbs_sess->mbs_session_ref, type.value);
+
+    return OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
+}

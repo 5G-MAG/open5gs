@@ -477,6 +477,18 @@ void smf_pfcp_state_associated(ogs_fsm_t *s, smf_event_t *e)
         case OGS_PFCP_SESSION_REPORT_REQUEST_TYPE:
             if (!message->h.seid_presence) ogs_error("No SEID");
 
+            /* the report of the MB-UPF on an MBS session (the SEID is that of the MB-SMF, found among the MBS
+             * sessions above); answered with the SEID the MB-UPF gave */
+            if (mbs_sess) {
+                uint16_t offending_ie = 0;
+                uint8_t cause = smf_n4mb_handle_session_report_request(
+                        mbs_sess, &message->pfcp_session_report_request, &offending_ie);
+
+                ogs_pfcp_send_error_message(xact, mbs_sess->upf_n4mb_seid, OGS_PFCP_SESSION_REPORT_RESPONSE_TYPE,
+                        cause, offending_ie);
+                break;
+            }
+
             if (!sess) {
                     ogs_error("No Session");
                     ogs_pfcp_send_error_message(xact, 0,

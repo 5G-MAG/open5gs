@@ -67,6 +67,17 @@ bool smf_n4mb_local_ingress_tunnel_is_valid(const ogs_tlv_octet_t *ie);
  * when the IE is malformed. */
 bool smf_n4mb_take_multicast_transport_information(smf_mbs_sess_t *mbs_sess, ogs_tlv_octet_t *octet);
 
+/* A PFCP Session Report Request of the MB-UPF for the MBS session \p mbs_sess (TS 29.244 V18.10.0 clause 5.34.2.3:
+ * a Downlink Data Report, report type DLDR, "identifying the PDR(s) for which downlink packets have been received",
+ * and "User plane inactivity detection and reporting for an MBS session shall be supported as specified in clause
+ * 5.11", report type UPIR). Returns the cause of the Session Report Response; *offending_ie is set with a refusal.
+ * Both reports serve the activation and deactivation of a multicast MBS session (clause 5.34.2.4, TS 23.247
+ * clauses 7.2.5.2 and 7.2.5.3), which this MB-SMF does not implement; a broadcast session is never given a
+ * User Plane Inactivity Timer or a FAR that buffers and notifies, so there is nothing to act on: the report is
+ * answered and logged. */
+uint8_t smf_n4mb_handle_session_report_request(
+        smf_mbs_sess_t *mbs_sess, ogs_pfcp_session_report_request_t *req, uint16_t *offending_ie);
+
 /* A PFCP Node Report Request of the MB-UPF (TS 29.244 V18.10.0 clause 6.2.9.3: "process the information being
  * reported as appropriate and send a PFCP Node Report Response with the cause "success"; otherwise return an
  * appropriate error cause value."). The User Plane Path Failure Report is the N3mb path failure of TS 23.527
