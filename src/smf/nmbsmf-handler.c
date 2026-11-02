@@ -724,6 +724,24 @@ bool smf_nmbsmf_handle_mbs_session_create(
         }
     }
 
+    /* TS 29.571 V18.12.0 MbsFsaId: pattern '^[A-Fa-f0-9]{6}$'. An entry of the list of MBS FSA IDs that is not six
+     * hexadecimal digits is rejected as the Update rejects it: TS 29.532 V18.6.0 table 6.2.7.3-1 is the table of the
+     * application errors, and ERROR_INPUT_PARAMETERS is the 400 this MB-SMF answers for an erroneous attribute. */
+    if (CreateReqData->mbs_session->mbs_fsa_id_list) {
+        OpenAPI_lnode_t *fsa_node;
+
+        OpenAPI_list_for_each(CreateReqData->mbs_session->mbs_fsa_id_list, fsa_node) {
+            if (!smf_mbs_fsa_id_is_valid(fsa_node->data)) {
+                ogs_error("MBS Session Create: an entry of mbsFsaIdList is not 6 hexadecimal digits");
+                ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST, message,
+                    "Invalid MBS FSA ID", "an entry of [mbsFsaIdList] is not 6 hexadecimal digits",
+                    NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
+                rv = OGS_ERROR;
+                goto cleanup;
+            }
+        }
+    }
+
     /* TS 29.532 V18.6.0 cl. 5.3.2.2.1 step 1: "an MBS session status subscription request, including the list of MBS
      * session events requested to be subscribed, a Notify Correlation ID, the Notification URI where to receive MBS
      * session status notifications and the NF instance ID of the subscribing NF". The Notification URI and the

@@ -3399,6 +3399,15 @@ static void test_node_report_several_peers(void)
     smf_mbs_sess_release(mbs_sess);
 }
 
+/* TS 29.571 V18.12.0 MbsFsaId, pattern '^[A-Fa-f0-9]{6}$' (Create and Update check the entries alike) */
+static void test_fsa_id_pattern(void)
+{
+    CHECK(smf_mbs_fsa_id_is_valid("000001") && smf_mbs_fsa_id_is_valid("aBcDeF") && smf_mbs_fsa_id_is_valid("0A1b2C"));
+    CHECK(!smf_mbs_fsa_id_is_valid(NULL) && !smf_mbs_fsa_id_is_valid("") && !smf_mbs_fsa_id_is_valid("00001") &&
+            !smf_mbs_fsa_id_is_valid("0000001") && !smf_mbs_fsa_id_is_valid("00000g") &&
+            !smf_mbs_fsa_id_is_valid("0000 1") && !smf_mbs_fsa_id_is_valid("0x0001"));
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -3418,6 +3427,7 @@ int main(void)
     test_nr_red_cap_ue_info_n2();
     test_context_status_notification_response_model();
     test_fsa_id_list();
+    test_fsa_id_pattern();
     test_context_create_optional_ids();
     test_date_time();
     test_service_info_validity();

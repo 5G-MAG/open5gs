@@ -468,7 +468,7 @@ static void qos_flows_free(ogs_list_t *flows)
 }
 
 /* TS 29.571 V18.12.0 MbsFsaId, pattern '^[A-Fa-f0-9]{6}$' */
-static bool fsa_id_is_valid(const char *id)
+bool smf_mbs_fsa_id_is_valid(const char *id)
 {
     int i;
 
@@ -659,7 +659,7 @@ smf_mbs_update_result_e smf_mbs_sess_update(smf_mbs_sess_t *mbs_sess, OpenAPI_li
         ogs_assert(fsa_ids);
         i = 0;
         cJSON_ArrayForEach(entry, member) {
-            if (!cJSON_IsString(entry) || !fsa_id_is_valid(entry->valuestring)) {
+            if (!cJSON_IsString(entry) || !smf_mbs_fsa_id_is_valid(entry->valuestring)) {
                 if (detail)
                     *detail = "an entry of [mbsFsaIdList] is not 6 hexadecimal digits";
                 result = SMF_MBS_UPDATE_ERROR_INPUT_PARAMETERS;

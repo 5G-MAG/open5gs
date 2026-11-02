@@ -50,6 +50,9 @@ typedef struct smf_mbs_update_s {
     bool n2_info_changed;       /* the N2 MBS Session Management information is another one: QoS flows, FSA IDs */
 } smf_mbs_update_t;
 
+/* Whether \p id is an MBS FSA ID: six hexadecimal digits (TS 29.571 V18.12.0 MbsFsaId, pattern '^[A-Fa-f0-9]{6}$') */
+bool smf_mbs_fsa_id_is_valid(const char *id);
+
 /* Whether the patch path names an attribute smf_mbs_sess_update() applies: the first segment is mbsServiceArea,
  * mbsServInfo, mbsFsaIdList, contactPcfInd or nrRedCapUeInfo. */
 bool smf_mbs_update_path_is_modifiable(const char *path);
