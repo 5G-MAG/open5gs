@@ -1661,12 +1661,9 @@ static int _check_apply_action(upf_mbs_sess_t *mbs_sess, const ogs_pfcp_tlv_upda
             *offending_ie_value = OGS_PFCP_MBS_MULTICAST_PARAMETERS_TYPE;
             return OGS_ERROR;
         }
-        if (!mbs_sess->ll_ssm || !far->gnode) {
-            ogs_error("FSSM for FAR %u, the session has no low layer SSM", far->id);
-            *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
-            *offending_ie_value = OGS_PFCP_APPLY_ACTION_TYPE;
-            return OGS_ERROR;
-        }
+        /* A session without a low layer SSM (no PLLSSM, no restoration) is not refused here, as the Create FAR with FSSM
+         * is not: TS 29.244 cl. 5.34.2.1A is silent on it. The FAR has no destination; the packets it gets are held in its
+         * buffer, which has a fixed size (OGS_MAX_NUM_OF_PACKET_BUFFER), and dropped beyond it. */
     }
 
     if (uf->apply_action.presence && (uf->apply_action.u16 & OGS_PFCP_APPLY_ACTION_MBSU) &&

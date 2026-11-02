@@ -1303,13 +1303,23 @@ def t_U08_modification_that_is_not_valid_changes_nothing():
         assert m and cause(m) == CAUSE_CONDITIONAL_MISSING and offending(m) == T_MBS_MC_PARAMS, '%s/%s' % (cause(m), offending(m))
     finally:
         U.delete(s)
-    # FSSM when the session has no low layer SSM (PLLSSM was not requested)
+    # FSSM when the session has no low layer SSM (PLLSSM was not requested): accepted as the Create FAR with FSSM is (cl. 5.34.2.1A is silent);
+    # the FAR has no destination, the packets are held in its fixed size buffer and dropped beyond it
     r, s = drop_session(0xe123, flags=0x00)
     try:
         m = modify(s, update_far(apply=APPLY_FSSM))
-        assert m and cause(m) == CAUSE_MANDATORY_INCORRECT and offending(m) == T_APPLY, '%s/%s' % (cause(m), offending(m))
+        assert m and cause(m) == CAUSE_ACCEPTED, '%s/%s' % (cause(m), offending(m))
+        for _ in range(80):
+            send_multicast('10.46.0.1', '232.1.1.1')
+        assert U.alive(), 'the daemon stopped with more packets than the buffer holds'
+        m = modify(s, update_far(apply=APPLY_DROP))
+        assert m and cause(m) == CAUSE_ACCEPTED
     finally:
         U.delete(s)
+    # the same with the Create FAR
+    r = U.establish(mc_request(0xe124, b'\x02' + V4G, None, flags=0x00))
+    s = accepted(r, 'Create FAR with FSSM, no low layer SSM')
+    U.delete(s)
 
 
 def add_unicast(uid, teid=0x1000, ip='127.0.0.41', dst_if=0, ohc=None, drop=(), extra=()):
