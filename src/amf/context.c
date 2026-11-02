@@ -93,6 +93,7 @@ void amf_mbs_context_involve_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *
         if (involved->gnb_id == gnb->id) {
             involved->awaiting = true;
             involved->update_setup = false;
+            involved->awaiting_modification = false;
             return;
         }
     }
@@ -143,6 +144,20 @@ ogs_time_t amf_mbs_context_earliest_reestablish(amf_mbs_context_t *amf_mbs_conte
     }
 
     return earliest;
+}
+
+/* What the gNB of the record \p involved still owes the AMF */
+amf_mbs_owes_e amf_mbs_gnb_owes(const amf_mbs_gnb_t *involved)
+{
+    ogs_assert(involved);
+
+    if (!involved->awaiting)
+        return AMF_MBS_OWES_NOTHING;
+    if (involved->restoring)
+        return AMF_MBS_OWES_RESTORATION_RESPONSE;
+    if (involved->awaiting_modification || involved->update_setup)
+        return AMF_MBS_OWES_UPDATE_RESPONSE;
+    return AMF_MBS_OWES_SETUP_RESPONSE;
 }
 
 /*

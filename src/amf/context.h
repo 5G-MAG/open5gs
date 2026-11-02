@@ -904,6 +904,8 @@ typedef struct amf_mbs_gnb_s {
     /* The request outstanding is a Broadcast Session Setup Request sent as part of a ContextUpdate (TS 23.527
      * V18.6.0 cl. 8.3.2.3 step 7), not of the ContextCreate: its response completes the update. */
     bool update_setup;
+    /* The request outstanding is a Broadcast Session Modification Request (not a Setup Request) */
+    bool awaiting_modification;
     /* The AMF has released the session in the gNB because it left the MBS service area (TS 23.247 V18.8.0 cl. 7.3.3
      * step 3), and area_release_pending is set until the gNB has answered that release. The gNB holds no session. */
     bool area_released;
@@ -1217,6 +1219,14 @@ amf_mbs_n2_info_t *amf_mbs_n2_info_create(amf_gnb_t *gnb,
 void amf_mbs_context_involve_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *gnb);
 amf_mbs_gnb_t *amf_mbs_context_find_involved_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *gnb);
 ogs_time_t amf_mbs_context_earliest_reestablish(amf_mbs_context_t *amf_mbs_context);
+/* What a gNB still owes: the response to the request outstanding at the gNB of the record */
+typedef enum {
+    AMF_MBS_OWES_NOTHING,
+    AMF_MBS_OWES_SETUP_RESPONSE,        /* to the Setup Request of the ContextCreate */
+    AMF_MBS_OWES_UPDATE_RESPONSE,       /* to a Modification Request, or to a Setup Request of a ContextUpdate */
+    AMF_MBS_OWES_RESTORATION_RESPONSE,  /* to the Setup Request that restores the session */
+} amf_mbs_owes_e;
+amf_mbs_owes_e amf_mbs_gnb_owes(const amf_mbs_gnb_t *involved);
 bool amf_mbs_gnb_holds_session(const amf_mbs_gnb_t *involved);
 bool amf_mbs_gnb_has_ran_id(const amf_mbs_gnb_t *involved, const amf_gnb_t *gnb);
 amf_mbs_gnb_t *amf_mbs_context_find_stale_involved_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *gnb);

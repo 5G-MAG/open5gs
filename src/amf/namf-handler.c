@@ -2991,6 +2991,8 @@ int amf_namf_handle_mbs_broadcast_context_update(
             mbs_context->gnb_request_count++;
             amf_mbs_context_involve_gnb(mbs_context, gnb);
             involved = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
+            if (involved && action == AMF_MBS_UPDATE_MODIFY)
+                involved->awaiting_modification = true;
             if (involved && action == AMF_MBS_UPDATE_SETUP) {
                 // The session is set up in the node again: it serves it, whatever it asked for or failed before.
                 involved->update_setup = true;
@@ -3259,26 +3261,48 @@ void amf_namf_handle_mbs_broadcast_ran_response(amf_mbs_context_t *mbs_context, 
  * over N3mb interface." Step 3: "The AMF sends Namf_MBSBroadcast_ContextStatusNotify Request message to the MB-SMF for each
  * affected MBS session including the MBS Session ID, the NG-RAN ID and an indication of the NG-RAN failure without restart
  * event." The sessions affected are those the node holds: it did not fail its Setup, did not ask for the release and was
- * not released for leaving the service area.
+ * not released for leaving the service area. Whatever the option, the answers the lost node still owes to a
+ * ContextCreate or ContextUpdate are taken as refusals, so that the operation ends.
  */
 void amf_namf_handle_mbs_broadcast_gnb_lost(amf_gnb_t *gnb)
 {
-    amf_mbs_context_t *mbs_context = NULL;
+    amf_mbs_context_t *mbs_context = NULL, *next = NULL;
 
     ogs_assert(gnb);
 
-    if (!amf_self()->mbs_report_ng_ran_failure)
-        return;
-
-    ogs_list_for_each(&amf_self()->amf_mbs_context_list, mbs_context) {
+    // The context may be removed while it is handled (a ContextCreate whose every NG-RAN has failed).
+    ogs_list_for_each_safe(&amf_self()->amf_mbs_context_list, next, mbs_context) {
         amf_mbs_gnb_t *involved = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
 
-        if (!involved || !amf_mbs_gnb_holds_session(involved))
+        if (!involved)
             continue;
 
-        ogs_info("MBS Broadcast [%s]: gNB %i failed, the MB-SMF is told", mbs_context->mbs_context_ref, gnb->gnb_id);
-        amf_sbi_send_mbs_broadcast_ngran_event(
-                mbs_context, gnb, OpenAPI_ngran_failure_indication_NG_RAN_FAILURE_WITHOUT_RESTART);
+        if (amf_self()->mbs_report_ng_ran_failure && amf_mbs_gnb_holds_session(involved)) {
+            ogs_info("MBS Broadcast [%s]: gNB %i failed, the MB-SMF is told", mbs_context->mbs_context_ref, gnb->gnb_id);
+            amf_sbi_send_mbs_broadcast_ngran_event(
+                    mbs_context, gnb, OpenAPI_ngran_failure_indication_NG_RAN_FAILURE_WITHOUT_RESTART);
+        }
+
+        // The answers the gNB owes will not come: the operation they belong to goes on as if the gNB had refused the
+        // request. TS 29.518 V18.14.0 cl. 5.6.2.2 and 5.6.2.3 name the outcome for NG-RANs that fail ("The AMF should respond
+        // success when it receives the first successful response from the NG-RAN(s)" and failure when every one failed,
+        // TS 23.247 V18.8.0 cl. 7.3.1 step 7: "if all NG-RAN(s) report failure, the AMF should respond failure"), and say
+        // nothing about a lost association.
+        involved->area_release_pending = false;
+        switch (amf_mbs_gnb_owes(involved)) {
+        case AMF_MBS_OWES_SETUP_RESPONSE:
+            amf_namf_handle_mbs_broadcast_ran_response(mbs_context, gnb, false, false, OpenAPI_ngap_ie_type_MBS_SES_FAIL, NULL);
+            break;
+        case AMF_MBS_OWES_UPDATE_RESPONSE:
+            amf_namf_handle_mbs_broadcast_ran_response(mbs_context, gnb, true, false, OpenAPI_ngap_ie_type_MBS_SES_FAIL, NULL);
+            break;
+        case AMF_MBS_OWES_RESTORATION_RESPONSE:
+            involved->awaiting = false;
+            involved->restoring = false;
+            break;
+        default:
+            break;
+        }
     }
 }
 

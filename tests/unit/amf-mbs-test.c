@@ -1055,6 +1055,46 @@ static void test_area_apply_undo(void)
     ogs_mbs_service_area_free(ctx.mbs_service_area);
 }
 
+/* The answers a lost gNB still owes: a gNB that has a request outstanding owes the answer to it, and the operation that
+ * waits for it must go on without it. */
+static void test_gnb_owes(void)
+{
+    amf_gnb_t *gnb = make_gnb(0x100, 22);
+    amf_mbs_context_t ctx = make_context();
+    amf_mbs_gnb_t *rec;
+
+    ogs_list_init(&ctx.involved_gnb_list);
+    gnb->id = 1;
+    amf_mbs_context_involve_gnb(&ctx, gnb);
+    rec = amf_mbs_context_find_involved_gnb(&ctx, gnb);
+    CHECK(rec != NULL);
+    if (rec) {
+        /* the Setup Request of a ContextCreate */
+        CHECK(amf_mbs_gnb_owes(rec) == AMF_MBS_OWES_SETUP_RESPONSE);
+        /* a Modification Request */
+        rec->awaiting_modification = true;
+        CHECK(amf_mbs_gnb_owes(rec) == AMF_MBS_OWES_UPDATE_RESPONSE);
+        /* a Setup Request of a ContextUpdate */
+        rec->awaiting_modification = false;
+        rec->update_setup = true;
+        CHECK(amf_mbs_gnb_owes(rec) == AMF_MBS_OWES_UPDATE_RESPONSE);
+        /* the Setup Request that restores the session */
+        rec->update_setup = false;
+        rec->restoring = true;
+        CHECK(amf_mbs_gnb_owes(rec) == AMF_MBS_OWES_RESTORATION_RESPONSE);
+        /* answered: nothing owed; a new request clears what the earlier one was */
+        rec->restoring = false;
+        rec->awaiting = false;
+        CHECK(amf_mbs_gnb_owes(rec) == AMF_MBS_OWES_NOTHING);
+        rec->awaiting_modification = true;
+        amf_mbs_context_involve_gnb(&ctx, gnb);
+        CHECK(amf_mbs_gnb_owes(rec) == AMF_MBS_OWES_SETUP_RESPONSE);
+    }
+
+    free_involved(&ctx);
+    ogs_free(gnb);
+}
+
 int main(int argc, const char *argv[])
 {
     ogs_pkbuf_config_t config;
@@ -1082,6 +1122,7 @@ int main(int argc, const char *argv[])
     test_earliest_reestablish();
     test_gnb_holds_session();
     test_area_apply_undo();
+    test_gnb_owes();
     test_update_action_enters_area();
     test_update_action_leaves_area();
     test_update_action_info_unchanged();
