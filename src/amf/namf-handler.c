@@ -2673,6 +2673,23 @@ static void amf_namf_send_mbs_broadcast_context_create_response(amf_mbs_context_
  * timer this handler does not yet start (same TODO as ContextCreate's own "start timer to wait for
  * reception").
  */
+/*
+ * The ContextUpdate is accepted: its service area stays, the container it carries becomes the last one received (TS 23.527
+ * V18.6.0 cl. 8.3.2.2 step 1: "The AMF stores the last N2 MBS SM container ... received from the MB-SMF during the
+ * establishment of the broadcast MBS session or during a broadcast MBS session update."), and the notification URI it
+ * carries replaces the earlier one (TS 29.518 V18.14.0 cl. 5.6.2.3: "if the NF Service Consumer wishes to modify the
+ * notification URI where to be notified about the status change of the broadcast MBS session context").
+ */
+static void amf_mbs_update_accept(amf_mbs_context_t *mbs_context, amf_mbs_area_undo_t *area_undo,
+        ogs_pkbuf_t *n2mbssmbuf, char *notify_uri)
+{
+    amf_mbs_context_keep_area(area_undo);
+    if (n2mbssmbuf && !amf_mbs_context_store_n2_container(mbs_context, n2mbssmbuf))
+        ogs_warn("MBS Broadcast ContextUpdate: the N2 MBS SM container could not be kept for restoration");
+    if (notify_uri)
+        amf_namf_set_mbs_context_notify_client(mbs_context, notify_uri, "ContextUpdate");
+}
+
 int amf_namf_handle_mbs_broadcast_context_update(
         ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg)
 {
@@ -2689,7 +2706,10 @@ int amf_namf_handle_mbs_broadcast_context_update(
     int released = 0;
     amf_gnb_t *gnb = NULL;
     amf_mbs_update_plan_t plan;
-    ogs_mbs_service_area_t *old_area = NULL;    /* the service area this update replaced, held until the nodes are chosen */
+    ogs_mbs_service_area_t *new_area = NULL;    /* the service area of the request, applied once it is accepted */
+    bool set_location_dependent = false;
+    uint16_t new_area_session_id = 0;
+    amf_mbs_area_undo_t area_undo;              /* what applying it replaced */
     bool has_service_area = false;
     int unaffected = 0;
     bool send_failed = false;
@@ -2701,6 +2721,7 @@ int amf_namf_handle_mbs_broadcast_context_update(
     ogs_assert(recvmsg);
 
     memset(&plan, 0, sizeof(plan));
+    memset(&area_undo, 0, sizeof(area_undo));
 
     mbs_context_ref = recvmsg->h.resource.component[1];
     if (!mbs_context_ref) {
@@ -2756,20 +2777,16 @@ int amf_namf_handle_mbs_broadcast_context_update(
     has_service_area = ContextUpdateReqData->mbs_service_area ||
         ContextUpdateReqData->mbs_service_area_info_list;
 
-        // The TAI list this Update carries is parsed and stored, not merely noted as present: without it
+        // The service area this Update carries is parsed here and applied only once the request has been accepted
+        // (see the apply below): an update that is refused leaves the service area as it was. Without it
         // ngap_build_broadcast_session_modification_request() has nothing real to send and falls back to every
         // connected gNB's own TAI. This Update's mbsServiceArea replaces whatever ContextCreate stored, being
         // this update's authoritative value.
     if (ContextUpdateReqData->mbs_service_area) {
-        ogs_mbs_service_area_t *new_service_area = NULL;
-        amf_namf_parse_mbs_service_area(&new_service_area, ContextUpdateReqData->mbs_service_area);
-        if (new_service_area) {
-            old_area = mbs_context->mbs_service_area;
-            mbs_context->mbs_service_area = new_service_area;
-        } else {
+        amf_namf_parse_mbs_service_area(&new_area, ContextUpdateReqData->mbs_service_area);
+        if (!new_area)
             ogs_warn("MBS Broadcast ContextUpdate: mbsServiceArea carried neither a TAI nor an NCGI; "
                     "NGAP will use whatever service area was previously stored, or fall back further");
-        }
     } else if (has_service_area && ContextUpdateReqData->mbs_service_area_info_list &&
             ContextUpdateReqData->mbs_service_area_info_list->count > 0) {
                 // mbsServiceAreaInfoList updates the stored service area rather than only warning.
@@ -2780,20 +2797,15 @@ int amf_namf_handle_mbs_broadcast_context_update(
         OpenAPI_lnode_t *info_node = ContextUpdateReqData->mbs_service_area_info_list->first;
         OpenAPI_mbs_service_area_info_t *api_info = (OpenAPI_mbs_service_area_info_t *)info_node->data;
 
-        mbs_context->location_dependent = true;
-        mbs_context->area_session_id = (uint16_t)api_info->area_session_id;
+        set_location_dependent = true;
+        new_area_session_id = (uint16_t)api_info->area_session_id;
 
         if (api_info->mbs_service_area) {
-            ogs_mbs_service_area_t *new_service_area = NULL;
-            amf_namf_parse_mbs_service_area(&new_service_area, api_info->mbs_service_area);
-            if (new_service_area) {
-                old_area = mbs_context->mbs_service_area;
-                mbs_context->mbs_service_area = new_service_area;
-            } else {
+            amf_namf_parse_mbs_service_area(&new_area, api_info->mbs_service_area);
+            if (!new_area)
                 ogs_warn("MBS Broadcast ContextUpdate: mbsServiceAreaInfoList's own mbsServiceArea "
                         "carried neither a TAI nor an NCGI; NGAP will use whatever service area was "
                         "previously stored, or fall back further");
-            }
         }
 
         if (ContextUpdateReqData->mbs_service_area_info_list->count > 1) {
@@ -2838,7 +2850,6 @@ int amf_namf_handle_mbs_broadcast_context_update(
     plan.no_ngap_signalling =
         ContextUpdateReqData->no_ngap_signalling_ind == OpenAPI_context_update_req_data_NONGAPSIGNALLINGIND__true;
     plan.n2_info_unchanged = ContextUpdateReqData->is_n2_mbs_info_change_ind && !ContextUpdateReqData->n2_mbs_info_change_ind;
-    plan.old_area = old_area ? old_area : mbs_context->mbs_service_area;
 
     if (!plan.no_ngap_signalling && ContextUpdateReqData->ran_id_list && ContextUpdateReqData->ran_id_list->count > 0) {
         if (!n2mbssmbuf) {
@@ -2852,16 +2863,11 @@ int amf_namf_handle_mbs_broadcast_context_update(
         plan.ran_id_list = ContextUpdateReqData->ran_id_list;
     }
 
-    // TS 23.527 V18.6.0 cl. 8.3.2.2 step 1: the AMF keeps the last N2 MBS SM container, from the establishment or
-    // from an update.
-    if (n2mbssmbuf && !amf_mbs_context_store_n2_container(mbs_context, n2mbssmbuf))
-        ogs_warn("MBS Broadcast ContextUpdate: the N2 MBS SM container could not be kept for restoration");
-
-    // notifyUri (O): "if the NF Service Consumer wishes to modify the notification URI".
-    if (ContextUpdateReqData->notify_uri) {
-        amf_namf_set_mbs_context_notify_client(
-                mbs_context, ContextUpdateReqData->notify_uri, "ContextUpdate");
-    }
+    // The request is valid: its service area is applied. Until amf_mbs_update_accept() keeps it, every exit that
+    // refuses the update puts the earlier service area back (all or none).
+    amf_mbs_context_apply_area(mbs_context, new_area, set_location_dependent, new_area_session_id, &area_undo);
+    new_area = NULL;
+    plan.old_area = area_undo.replaced ? area_undo.old_area : mbs_context->mbs_service_area;
 
     // noNgapSignallingInd: this AMF takes over the session (TS 23.527 V18.6.0 cl. 8.3.2.4 step 8: "...to request the
     // AMF2 to be the AMF for the Broadcast MBS Session to handle subsequent MBS session signaling and be responsible
@@ -2873,6 +2879,7 @@ int amf_namf_handle_mbs_broadcast_context_update(
         ogs_sbi_message_t sendmsg;
         ogs_sbi_response_t *response = NULL;
 
+        amf_mbs_update_accept(mbs_context, &area_undo, n2mbssmbuf, ContextUpdateReqData->notify_uri);
         memset(&sendmsg, 0, sizeof(sendmsg));
         response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
         ogs_assert(response);
@@ -2992,6 +2999,7 @@ int amf_namf_handle_mbs_broadcast_context_update(
         ogs_sbi_message_t sendmsg;
         ogs_sbi_response_t *response = NULL;
 
+        amf_mbs_update_accept(mbs_context, &area_undo, n2mbssmbuf, ContextUpdateReqData->notify_uri);
         memset(&sendmsg, 0, sizeof(sendmsg));
         response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
         ogs_assert(response);
@@ -3008,6 +3016,8 @@ int amf_namf_handle_mbs_broadcast_context_update(
         goto cleanup;
     }
 
+    amf_mbs_update_accept(mbs_context, &area_undo, n2mbssmbuf, ContextUpdateReqData->notify_uri);
+
     if (ContextUpdateReqData->is_max_response_time)
         amf_mbs_context_start_response_window(mbs_context, ContextUpdateReqData->max_response_time, true);
 
@@ -3018,8 +3028,10 @@ int amf_namf_handle_mbs_broadcast_context_update(
     mbs_context->stream_id = ogs_sbi_id_from_stream(stream);
 
 cleanup:
-    if (old_area)
-        ogs_mbs_service_area_free(old_area);
+    // An update that was refused leaves the service area as it was; one that was not applied frees its area.
+    amf_mbs_context_undo_area(mbs_context, &area_undo);
+    if (new_area)
+        ogs_mbs_service_area_free(new_area);
     if (rv == OGS_OK)
         return true;
     else

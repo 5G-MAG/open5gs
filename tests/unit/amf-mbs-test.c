@@ -999,6 +999,50 @@ static void test_gnb_holds_session(void)
     ogs_free(gnb);
 }
 
+/* An update that is refused must leave the service area as it was (all or none). The area of a request is applied once
+ * the request is accepted, and put back when a later step refuses it. */
+static void test_area_apply_undo(void)
+{
+    static const uint32_t t1[] = { 1 }, t2[] = { 2, 3 };
+    amf_mbs_context_t ctx = make_context();
+    amf_mbs_area_undo_t undo;
+    ogs_mbs_service_area_t *old_area = area_of(1, t1), *new_area = area_of(2, t2);
+
+    ctx.mbs_service_area = old_area;
+    ctx.location_dependent = false;
+    ctx.area_session_id = 0;
+
+    /* applied, then refused: the old area, and the old location dependence, are back; the new area is freed */
+    amf_mbs_context_apply_area(&ctx, new_area, true, 13, &undo);
+    CHECK(ctx.mbs_service_area == new_area);
+    CHECK(ctx.location_dependent && ctx.area_session_id == 13);
+    CHECK(undo.old_area == old_area);
+    amf_mbs_context_undo_area(&ctx, &undo);
+    CHECK(ctx.mbs_service_area == old_area);
+    CHECK(!ctx.location_dependent && ctx.area_session_id == 0);
+    CHECK(!undo.applied);
+    /* a second undo does nothing */
+    amf_mbs_context_undo_area(&ctx, &undo);
+    CHECK(ctx.mbs_service_area == old_area);
+
+    /* applied, then accepted: the new area stays and the old one is freed */
+    new_area = area_of(2, t2);
+    amf_mbs_context_apply_area(&ctx, new_area, false, 0, &undo);
+    amf_mbs_context_keep_area(&undo);
+    CHECK(ctx.mbs_service_area == new_area);
+    CHECK(!ctx.location_dependent);
+    amf_mbs_context_undo_area(&ctx, &undo);     /* nothing left to undo */
+    CHECK(ctx.mbs_service_area == new_area);
+
+    /* a request without an area changes none, and its undo changes none */
+    amf_mbs_context_apply_area(&ctx, NULL, false, 0, &undo);
+    CHECK(ctx.mbs_service_area == new_area);
+    amf_mbs_context_undo_area(&ctx, &undo);
+    CHECK(ctx.mbs_service_area == new_area);
+
+    ogs_mbs_service_area_free(ctx.mbs_service_area);
+}
+
 int main(int argc, const char *argv[])
 {
     ogs_pkbuf_config_t config;
@@ -1025,6 +1069,7 @@ int main(int argc, const char *argv[])
     test_gnb_record_ran_id();
     test_earliest_reestablish();
     test_gnb_holds_session();
+    test_area_apply_undo();
     test_update_action_enters_area();
     test_update_action_leaves_area();
     test_update_action_info_unchanged();

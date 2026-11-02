@@ -1221,6 +1221,22 @@ bool amf_mbs_gnb_holds_session(const amf_mbs_gnb_t *involved);
 bool amf_mbs_gnb_has_ran_id(const amf_mbs_gnb_t *involved, const amf_gnb_t *gnb);
 amf_mbs_gnb_t *amf_mbs_context_find_stale_involved_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *gnb);
 bool amf_mbs_context_store_n2_container(amf_mbs_context_t *amf_mbs_context, const ogs_pkbuf_t *container);
+/*
+ * The service area of a context as an update applies it, with what is needed to put the earlier one back: an update that
+ * is refused after the area was replaced must leave the area as it was (all or none).
+ */
+typedef struct amf_mbs_area_undo_s {
+    bool applied;                       /* amf_mbs_context_apply_area() has been called, and not undone or kept */
+    ogs_mbs_service_area_t *old_area;   /* the area replaced, owned here; NULL if none was replaced */
+    bool replaced;                      /* the area was replaced */
+    bool old_location_dependent;
+    uint16_t old_area_session_id;
+} amf_mbs_area_undo_t;
+
+void amf_mbs_context_apply_area(amf_mbs_context_t *amf_mbs_context, ogs_mbs_service_area_t *new_area,
+        bool set_location_dependent, uint16_t area_session_id, amf_mbs_area_undo_t *undo);
+void amf_mbs_context_undo_area(amf_mbs_context_t *amf_mbs_context, amf_mbs_area_undo_t *undo);
+void amf_mbs_context_keep_area(amf_mbs_area_undo_t *undo);
 void amf_mbs_n2_info_free(amf_mbs_n2_info_t *n2_info);
 void amf_mbs_n2_info_remove_all(ogs_list_t *n2_info_list);
 

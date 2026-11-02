@@ -189,6 +189,61 @@ amf_mbs_gnb_t *amf_mbs_context_find_stale_involved_gnb(amf_mbs_context_t *amf_mb
 }
 
 /*
+ * Makes \p new_area (when not NULL) the service area of the context, and, when \p set_location_dependent, the context
+ * a location dependent one with \p area_session_id. \p undo takes the earlier values; the caller ends with
+ * amf_mbs_context_undo_area() or amf_mbs_context_keep_area(). \p new_area is owned by the context from here.
+ */
+void amf_mbs_context_apply_area(amf_mbs_context_t *amf_mbs_context, ogs_mbs_service_area_t *new_area,
+        bool set_location_dependent, uint16_t area_session_id, amf_mbs_area_undo_t *undo)
+{
+    ogs_assert(amf_mbs_context);
+    ogs_assert(undo);
+
+    memset(undo, 0, sizeof(*undo));
+    undo->applied = true;
+    undo->old_location_dependent = amf_mbs_context->location_dependent;
+    undo->old_area_session_id = amf_mbs_context->area_session_id;
+
+    if (new_area) {
+        undo->old_area = amf_mbs_context->mbs_service_area;
+        undo->replaced = true;
+        amf_mbs_context->mbs_service_area = new_area;
+    }
+    if (set_location_dependent) {
+        amf_mbs_context->location_dependent = true;
+        amf_mbs_context->area_session_id = area_session_id;
+    }
+}
+
+/* Puts back what amf_mbs_context_apply_area() replaced, and frees the area that was applied */
+void amf_mbs_context_undo_area(amf_mbs_context_t *amf_mbs_context, amf_mbs_area_undo_t *undo)
+{
+    ogs_assert(amf_mbs_context);
+    ogs_assert(undo);
+
+    if (!undo->applied)
+        return;
+
+    if (undo->replaced) {
+        ogs_mbs_service_area_free(amf_mbs_context->mbs_service_area);
+        amf_mbs_context->mbs_service_area = undo->old_area;
+    }
+    amf_mbs_context->location_dependent = undo->old_location_dependent;
+    amf_mbs_context->area_session_id = undo->old_area_session_id;
+    memset(undo, 0, sizeof(*undo));
+}
+
+/* The update stays: the area it replaced is freed */
+void amf_mbs_context_keep_area(amf_mbs_area_undo_t *undo)
+{
+    ogs_assert(undo);
+
+    if (undo->old_area)
+        ogs_mbs_service_area_free(undo->old_area);
+    memset(undo, 0, sizeof(*undo));
+}
+
+/*
  * Keeps a copy of \p container as the last N2 MBS SM container of the context (TS 23.527 V18.6.0 cl. 8.3.2.2 step 1),
  * replacing the one held. Returns false, and keeps the one held, when the copy cannot be made.
  */
