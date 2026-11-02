@@ -63,6 +63,9 @@ int amf_namf_handle_mbs_broadcast_context_delete(
 int amf_namf_handle_mbs_broadcast_context_update(
         ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg);
 
+/* Whether \p notify_uri has a scheme and an address, so that notifications can be sent to it */
+bool amf_namf_notify_uri_is_valid(const char *notify_uri);
+
 /* Whether \p list, an mbsServiceAreaInfoList, has 1 to 256 items with distinct Area Session IDs in 0..65535 */
 bool amf_namf_area_info_list_is_valid(const OpenAPI_list_t *list);
 

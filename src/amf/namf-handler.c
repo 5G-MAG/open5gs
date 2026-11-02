@@ -1969,6 +1969,35 @@ int amf_namf_comm_handle_registration_status_update_response(
  * of amf_namf_handle_mbs_broadcast_context_create() (item B-3 needs the identical logic a second time, in
  * amf_namf_handle_mbs_broadcast_context_update(), below).
  */
+/*
+ * Whether \p notify_uri can be the target of the notifications: a URI with a scheme and an address. TS 29.518 V18.14.0
+ * Table 6.5.6.2.2-1: "notifyUri | Uri | M | 1 | This IE shall contain the notification URI where to be notified about the
+ * status change of the broadcast MBS session context." A session whose consumer cannot be notified is not created.
+ */
+bool amf_namf_notify_uri_is_valid(const char *notify_uri)
+{
+    bool rc;
+    OpenAPI_uri_scheme_e scheme = OpenAPI_uri_scheme_NULL;
+    char *fqdn = NULL;
+    uint16_t fqdn_port = 0;
+    ogs_sockaddr_t *addr = NULL, *addr6 = NULL;
+
+    if (!notify_uri || !*notify_uri)
+        return false;
+
+    rc = ogs_sbi_getaddr_from_uri(&scheme, &fqdn, &fqdn_port, &addr, &addr6, (char *)notify_uri);
+    if (rc == true && scheme != OpenAPI_uri_scheme_NULL && (addr || addr6 || fqdn))
+        rc = true;
+    else
+        rc = false;
+
+    ogs_free(fqdn);
+    ogs_freeaddrinfo(addr);
+    ogs_freeaddrinfo(addr6);
+
+    return rc;
+}
+
 static void amf_namf_set_mbs_context_notify_client(
         amf_mbs_context_t *mbs_context, char *notify_uri, const char *op_name)
 {
@@ -2534,6 +2563,14 @@ int amf_namf_handle_mbs_broadcast_context_create(
         goto cleanup;
     }
 
+    if (!amf_namf_notify_uri_is_valid(ContextCreateReqData->notify_uri)) {
+        ogs_error("MBS Broadcast ContextCreate: notifyUri [%s] cannot be used", ContextCreateReqData->notify_uri);
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request", "Requested MBS Broadcast ContextCreate failed, [notifyUri] is not a usable URI", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
     ogs_sbi_parse_tmgi(&tmgi, ContextCreateReqData->mbs_session_id->tmgi);
 
         // Remove any stale context for this TMGI first, so a retried or duplicate ContextCreate does not
@@ -2892,6 +2929,13 @@ int amf_namf_handle_mbs_broadcast_context_update(
         ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
             recvmsg, "Bad Request",
             "Requested MBS Broadcast ContextUpdate failed, [mbsServiceAreaInfoList] must hold 1 to 256 entries with distinct Area Session IDs", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+    if (ContextUpdateReqData->notify_uri && !amf_namf_notify_uri_is_valid(ContextUpdateReqData->notify_uri)) {
+        ogs_error("MBS Broadcast ContextUpdate: notifyUri [%s] cannot be used", ContextUpdateReqData->notify_uri);
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request", "Requested MBS Broadcast ContextUpdate failed, [notifyUri] is not a usable URI", NULL);
         rv = OGS_ERROR;
         goto cleanup;
     }

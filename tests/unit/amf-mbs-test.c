@@ -1457,6 +1457,20 @@ static void test_area_apply_replaces_state(void)
     amf_mbs_area_items_free(&ctx.area_items);
 }
 
+/* TS 29.518 V18.14.0 Table 6.5.6.2.2-1: "notifyUri | Uri | M | 1 | This IE shall contain the notification URI where to be notified
+ * about the status change of the broadcast MBS session context." A URI that cannot be used to send a notification is refused. */
+static void test_notify_uri_is_valid(void)
+{
+    CHECK(amf_namf_notify_uri_is_valid("http://127.0.0.30:9999/notify"));
+    CHECK(amf_namf_notify_uri_is_valid("http://[::1]:8080/a/b"));
+    CHECK(amf_namf_notify_uri_is_valid("https://127.0.0.1/x"));
+    CHECK(!amf_namf_notify_uri_is_valid(NULL));
+    CHECK(!amf_namf_notify_uri_is_valid(""));
+    CHECK(!amf_namf_notify_uri_is_valid("notauri"));
+    CHECK(!amf_namf_notify_uri_is_valid("/just/a/path"));
+    CHECK(!amf_namf_notify_uri_is_valid("ftp://127.0.0.1/x"));
+}
+
 int main(int argc, const char *argv[])
 {
     ogs_pkbuf_config_t config;
@@ -1484,6 +1498,7 @@ int main(int argc, const char *argv[])
     test_earliest_reestablish();
     test_gnb_holds_session();
     test_area_apply_undo();
+    test_notify_uri_is_valid();
     test_area_apply_replaces_state();
     test_gnb_owes();
     test_tmgi_is_valid();
