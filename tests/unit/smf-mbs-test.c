@@ -12,6 +12,7 @@
 #include "ogs-sbi.h"
 #include "context.h"
 #include "n4mb-build.h"
+#include "pfcp-path.h"
 #include "n4mb-handler.h"
 #include "ngap-build.h"
 #include "namf-build.h"
@@ -3159,6 +3160,47 @@ static void test_restoration_request(void)
     CHECK(ogs_list_count(&smf_self()->smf_mbs_sess_list) == i - 1);
 }
 
+/* TS 23.527 V18.6.0 clause 8.2.2: while the restoration of the PFCP session is pending, the MB-UPF has no session to
+ * modify: the N3mb DL tunnel changes wait (and the modification sender refuses, for it has no UP SEID). */
+static void test_changes_during_restoration(void)
+{
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    smf_mbs_tunnel_changes_t changes;
+    smf_n4mb_modification_t mod;
+    int i;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+
+    memset(&changes, 0, sizeof(changes));
+    changes.count = 1;
+    changes.change[0].has_add = true;
+    changes.change[0].add_teid = 0x77;
+    changes.change[0].add_id = 3;
+
+    mbs_sess->restoring = true;
+    mbs_sess->upf_n4mb_seid = 0;
+    CHECK(smf_mbs_sess_send_tunnel_changes(mbs_sess, &changes) == 0);
+    CHECK(mbs_sess->deferred_tunnel_changes.count == 1 && mbs_sess->deferred_tunnel_changes.change[0].add_id == 3);
+    changes.change[0].add_id = 4;
+    CHECK(smf_mbs_sess_send_tunnel_changes(mbs_sess, &changes) == 0);
+    CHECK(mbs_sess->deferred_tunnel_changes.count == 2 && mbs_sess->deferred_tunnel_changes.change[1].add_id == 4);
+
+    /* the bound is the size of the list of a change set; what does not fit is reported as not sent */
+    for (i = 0; i < SMF_MBS_MAX_TUNNEL_CHANGES; i++)
+        smf_mbs_sess_send_tunnel_changes(mbs_sess, &changes);
+    CHECK(mbs_sess->deferred_tunnel_changes.count == SMF_MBS_MAX_TUNNEL_CHANGES);
+    CHECK(smf_mbs_sess_send_tunnel_changes(mbs_sess, &changes) == 1);
+
+    /* a modification cannot be sent without the UP SEID */
+    memset(&mod, 0, sizeof(mod));
+    mod.tunnel = &changes.change[0];
+    CHECK(smf_5gc_pfcp_n4mb_send_session_modification_request(mbs_sess, &mod) == OGS_ERROR);
+
+    mbs_sess->restoring = false;
+    smf_mbs_sess_release(mbs_sess);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -3201,6 +3243,7 @@ int main(void)
     test_ngran_failure_events();
     test_node_report();
     test_restoration_request();
+    test_changes_during_restoration();
 
     printf("smf-mbs: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;

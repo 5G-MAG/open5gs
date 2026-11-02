@@ -480,6 +480,24 @@ int smf_mbs_sess_send_tunnel_changes(smf_mbs_sess_t *mbs_sess, const smf_mbs_tun
     ogs_assert(mbs_sess);
     ogs_assert(changes);
 
+    /* The PFCP session of an MBS session whose restoration after an MB-UPF restart is pending is not at the MB-UPF
+     * yet (TS 23.527 V18.6.0 clause 8.2.2: the MB-SMF "may start restoring the PFCP sessions ... by following PFCP
+     * requirements for establishing a PFCP session"), so the changes wait for it. */
+    if (mbs_sess->restoring) {
+        smf_mbs_tunnel_changes_t *deferred = &mbs_sess->deferred_tunnel_changes;
+
+        for (i = 0; i < changes->count; i++) {
+            if (deferred->count >= SMF_MBS_MAX_TUNNEL_CHANGES) {
+                ogs_error("mbsSessionRef[%s]: more than %d N3mb DL tunnel changes while the restoration at the MB-UPF "
+                        "is pending, [%d] of them are lost", mbs_sess->mbs_session_ref, SMF_MBS_MAX_TUNNEL_CHANGES,
+                        changes->count - i);
+                return changes->count - i;
+            }
+            deferred->change[deferred->count++] = changes->change[i];
+        }
+        return 0;
+    }
+
     for (i = 0; i < changes->count; i++) {
         const smf_mbs_tunnel_change_t *change = &changes->change[i];
         smf_n4mb_modification_t mod;

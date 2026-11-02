@@ -750,6 +750,9 @@ typedef struct smf_mbs_sess_s {
     /* The PFCP session of the MBS session is being restored at the MB-UPF after an MB-UPF restart (TS 23.527 V18.6.0
      * clause 8.2.2): the establishment request carries the MBS RESTI flag and what the session used before. */
     bool restoring;
+    /* the N3mb DL tunnel changes that came while the restoration was pending, for the MB-UPF to be given once the
+     * PFCP session is restored (smf_mbs_sess_send_tunnel_changes()) */
+    smf_mbs_tunnel_changes_t deferred_tunnel_changes;
 } smf_mbs_sess_t;
 
 // NOTE (borieher): Not defined in the specs, default to 2 extra hours

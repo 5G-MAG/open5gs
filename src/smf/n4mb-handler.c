@@ -620,17 +620,29 @@ uint8_t smf_n4mb_handle_session_restoration_response(
     }
 
     if (smf_mbs_sess_restoration_response(mbs_sess, cause_value) && cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED) {
-        /* the Create FAR holds SMF_N4MB_MAX_UNICAST_PARAMS tunnels: the others are given now */
+        /* the Create FAR holds SMF_N4MB_MAX_UNICAST_PARAMS tunnels: the others are given now, with the changes that
+         * came while the restoration was pending */
         smf_mbs_tunnel_changes_t changes;
         smf_mbs_dl_tunnel_t *tunnel = NULL;
         int n = 0;
 
         memset(&changes, 0, sizeof(changes));
+        changes = mbs_sess->deferred_tunnel_changes;
+        memset(&mbs_sess->deferred_tunnel_changes, 0, sizeof(mbs_sess->deferred_tunnel_changes));
         ogs_list_for_each(&mbs_sess->dl_tunnel_list, tunnel) {
             if (n++ < SMF_N4MB_MAX_UNICAST_PARAMS)
                 continue;
+            int k;
+            bool listed = false;
+
+            for (k = 0; k < changes.count; k++)     /* a deferred change gives it already */
+                if (changes.change[k].has_add && changes.change[k].add_id == tunnel->unicast_params_id)
+                    listed = true;
+            if (listed)
+                continue;
             if (changes.count >= SMF_MBS_MAX_TUNNEL_CHANGES)
                 break;
+            memset(&changes.change[changes.count], 0, sizeof(changes.change[changes.count]));
             changes.change[changes.count].has_add = true;
             changes.change[changes.count].add_addr = tunnel->addr;
             changes.change[changes.count].add_teid = tunnel->teid;
