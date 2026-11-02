@@ -1263,7 +1263,7 @@ typedef struct amf_mbs_area_item_s {
 } amf_mbs_area_item_t;
 
 void amf_mbs_area_items_free(ogs_list_t *items);
-void amf_mbs_context_apply_area(amf_mbs_context_t *amf_mbs_context, ogs_mbs_service_area_t *new_area,
+void amf_mbs_context_apply_area(amf_mbs_context_t *amf_mbs_context, bool carries_area, ogs_mbs_service_area_t *new_area,
         ogs_list_t *new_items, amf_mbs_area_undo_t *undo);
 void amf_mbs_context_undo_area(amf_mbs_context_t *amf_mbs_context, amf_mbs_area_undo_t *undo);
 void amf_mbs_context_keep_area(amf_mbs_area_undo_t *undo);

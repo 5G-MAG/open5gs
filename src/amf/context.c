@@ -237,12 +237,16 @@ void amf_mbs_area_items_free(ogs_list_t *items)
 }
 
 /*
- * Makes \p new_area (when not NULL) the service area of the context, and, when \p new_items is not empty, the items of
- * \p new_items its Area Session IDs (the items move to the context, the list is left empty) and the context a location
- * dependent one. \p undo takes the earlier values; the caller ends with amf_mbs_context_undo_area() or
- * amf_mbs_context_keep_area(). \p new_area is owned by the context from here.
+ * Applies the service area of an update. An update that \p carries_area replaces the state of the context completely:
+ * \p new_area (NULL when the request gave no cell or TAI) becomes the service area, and the session is a location
+ * dependent one with the Area Session IDs of \p new_items when that list is not empty (the items move to the context,
+ * the list is left empty), a location independent one otherwise. TS 29.518 V18.14.0 cl. 5.6.2.3: "updated MBS service area,
+ * for a Local broadcast MBS session." and "updated list of Area Session ID and related MBS service area, for a Location
+ * dependent broadcast MBS session." An update that carries no area changes none. \p undo takes the earlier values; the
+ * caller ends with amf_mbs_context_undo_area() or amf_mbs_context_keep_area(). \p new_area is owned by the context from
+ * here.
  */
-void amf_mbs_context_apply_area(amf_mbs_context_t *amf_mbs_context, ogs_mbs_service_area_t *new_area,
+void amf_mbs_context_apply_area(amf_mbs_context_t *amf_mbs_context, bool carries_area, ogs_mbs_service_area_t *new_area,
         ogs_list_t *new_items, amf_mbs_area_undo_t *undo)
 {
     ogs_assert(amf_mbs_context);
@@ -254,20 +258,28 @@ void amf_mbs_context_apply_area(amf_mbs_context_t *amf_mbs_context, ogs_mbs_serv
     undo->old_location_dependent = amf_mbs_context->location_dependent;
     undo->old_area_session_id = amf_mbs_context->area_session_id;
 
-    if (new_area) {
-        undo->old_area = amf_mbs_context->mbs_service_area;
-        undo->replaced = true;
-        amf_mbs_context->mbs_service_area = new_area;
+    if (!carries_area) {
+        ogs_assert(!new_area);
+        return;
     }
+
+    undo->old_area = amf_mbs_context->mbs_service_area;
+    undo->replaced = true;
+    amf_mbs_context->mbs_service_area = new_area;
+
+    undo->old_items = amf_mbs_context->area_items;
+    undo->items_replaced = true;
+    ogs_list_init(&amf_mbs_context->area_items);
     if (new_items && !ogs_list_empty(new_items)) {
         amf_mbs_area_item_t *first = (amf_mbs_area_item_t *)ogs_list_first(new_items);
 
-        undo->old_items = amf_mbs_context->area_items;
-        undo->items_replaced = true;
         amf_mbs_context->area_items = *new_items;
         ogs_list_init(new_items);
         amf_mbs_context->location_dependent = true;
         amf_mbs_context->area_session_id = first->area_session_id;
+    } else {
+        amf_mbs_context->location_dependent = false;
+        amf_mbs_context->area_session_id = 0;
     }
 }
 

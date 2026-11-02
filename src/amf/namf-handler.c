@@ -2907,7 +2907,7 @@ int amf_namf_handle_mbs_broadcast_context_update(
         amf_namf_parse_mbs_service_area(&new_area, ContextUpdateReqData->mbs_service_area);
         if (!new_area)
             ogs_warn("MBS Broadcast ContextUpdate: mbsServiceArea carried neither a TAI nor an NCGI; "
-                    "NGAP will use whatever service area was previously stored, or fall back further");
+                    "the service area becomes one that names none");
     } else if (has_service_area && ContextUpdateReqData->mbs_service_area_info_list &&
             ContextUpdateReqData->mbs_service_area_info_list->count > 0) {
                 // mbsServiceAreaInfoList replaces the Area Session IDs and their areas (TS 29.518 V18.14.0 cl. 5.6.2.3:
@@ -2966,7 +2966,7 @@ int amf_namf_handle_mbs_broadcast_context_update(
 
     // The request is valid: its service area is applied. Until amf_mbs_update_accept() keeps it, every exit that
     // refuses the update puts the earlier service area back (all or none).
-    amf_mbs_context_apply_area(mbs_context, new_area, &new_items, &area_undo);
+    amf_mbs_context_apply_area(mbs_context, has_service_area, new_area, &new_items, &area_undo);
     new_area = NULL;
     plan.old_area = area_undo.replaced ? area_undo.old_area : mbs_context->mbs_service_area;
 

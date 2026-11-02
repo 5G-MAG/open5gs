@@ -1033,7 +1033,7 @@ static void test_area_apply_undo(void)
         item->area_session_id = 13;
         ogs_list_init(&items);
         ogs_list_add(&items, item);
-        amf_mbs_context_apply_area(&ctx, new_area, &items, &undo);
+        amf_mbs_context_apply_area(&ctx, true, new_area, &items, &undo);
         CHECK(ogs_list_empty(&items));          /* the items moved to the context */
     }
     CHECK(ctx.mbs_service_area == new_area);
@@ -1051,7 +1051,7 @@ static void test_area_apply_undo(void)
 
     /* applied, then accepted: the new area stays and the old one is freed */
     new_area = area_of(2, t2);
-    amf_mbs_context_apply_area(&ctx, new_area, NULL, &undo);
+    amf_mbs_context_apply_area(&ctx, true, new_area, NULL, &undo);
     amf_mbs_context_keep_area(&undo);
     CHECK(ctx.mbs_service_area == new_area);
     CHECK(!ctx.location_dependent);
@@ -1059,7 +1059,7 @@ static void test_area_apply_undo(void)
     CHECK(ctx.mbs_service_area == new_area);
 
     /* a request without an area changes none, and its undo changes none */
-    amf_mbs_context_apply_area(&ctx, NULL, NULL, &undo);
+    amf_mbs_context_apply_area(&ctx, false, NULL, NULL, &undo);
     CHECK(ctx.mbs_service_area == new_area);
     amf_mbs_context_undo_area(&ctx, &undo);
     CHECK(ctx.mbs_service_area == new_area);
@@ -1410,6 +1410,53 @@ static void test_ngap_arm_several_areas(void)
     ogs_pkbuf_free(container);
 }
 
+/* TS 29.518 V18.14.0 cl. 5.6.2.3: "updated MBS service area, for a Local broadcast MBS session." and "updated list of Area
+ * Session ID and related MBS service area, for a Location dependent broadcast MBS session." An update that carries an area
+ * replaces the state completely: after a location dependent session, a plain mbsServiceArea makes it location independent
+ * with no Area Session ID left; an update that carries none changes nothing. */
+static void test_area_apply_replaces_state(void)
+{
+    static const uint32_t t1[] = { 1 }, t2[] = { 2 };
+    amf_mbs_context_t ctx = make_context();
+    amf_mbs_area_undo_t undo;
+    ogs_list_t items;
+    amf_mbs_area_item_t *item = ogs_calloc(1, sizeof(*item));
+    ogs_mbs_service_area_t *plain = area_of(1, t2);
+
+    ogs_list_init(&ctx.area_items);
+    ogs_list_init(&items);
+    item->area_session_id = 5;
+    item->area = area_of(1, t1);
+    ogs_list_add(&items, item);
+    ctx.mbs_service_area = area_of(1, t1);
+
+    /* location dependent */
+    amf_mbs_context_apply_area(&ctx, true, area_of(1, t1), &items, &undo);
+    amf_mbs_context_keep_area(&undo);
+    CHECK(ctx.location_dependent && ogs_list_count(&ctx.area_items) == 1 && ctx.area_session_id == 5);
+
+    /* a request without area: nothing changes */
+    amf_mbs_context_apply_area(&ctx, false, NULL, NULL, &undo);
+    CHECK(ctx.location_dependent && ogs_list_count(&ctx.area_items) == 1);
+    amf_mbs_context_keep_area(&undo);
+
+    /* a plain mbsServiceArea: location independent, no items, the new area */
+    amf_mbs_context_apply_area(&ctx, true, plain, NULL, &undo);
+    CHECK(!ctx.location_dependent && ogs_list_empty(&ctx.area_items) && ctx.area_session_id == 0);
+    CHECK(ctx.mbs_service_area == plain);
+    /* refused afterwards: the location dependent state is back */
+    amf_mbs_context_undo_area(&ctx, &undo);
+    CHECK(ctx.location_dependent && ogs_list_count(&ctx.area_items) == 1 && ctx.area_session_id == 5);
+    CHECK(ctx.mbs_service_area != plain);
+
+    /* a plain mbsServiceArea that names nothing: no area, location independent */
+    amf_mbs_context_apply_area(&ctx, true, NULL, NULL, &undo);
+    CHECK(!ctx.location_dependent && ogs_list_empty(&ctx.area_items) && ctx.mbs_service_area == NULL);
+    amf_mbs_context_keep_area(&undo);
+
+    amf_mbs_area_items_free(&ctx.area_items);
+}
+
 int main(int argc, const char *argv[])
 {
     ogs_pkbuf_config_t config;
@@ -1437,6 +1484,7 @@ int main(int argc, const char *argv[])
     test_earliest_reestablish();
     test_gnb_holds_session();
     test_area_apply_undo();
+    test_area_apply_replaces_state();
     test_gnb_owes();
     test_tmgi_is_valid();
     test_area_info_list_is_valid();
