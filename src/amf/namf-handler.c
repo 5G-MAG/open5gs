@@ -3135,7 +3135,8 @@ int amf_namf_handle_mbs_broadcast_context_update(
 
 cleanup:
     // An update that was refused leaves the service area as it was; one that was not applied frees its area.
-    amf_mbs_context_undo_area(mbs_context, &area_undo);
+    if (mbs_context)
+        amf_mbs_context_undo_area(mbs_context, &area_undo);
     if (new_area)
         ogs_mbs_service_area_free(new_area);
     amf_mbs_area_items_free(&new_items);
