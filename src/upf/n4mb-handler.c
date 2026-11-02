@@ -490,6 +490,23 @@ static int _setup_far_node(upf_mbs_sess_t *mbs_sess, ogs_pfcp_far_t *far)
 }
 
 /*
+ * Apply Action (TS 29.244 cl. 8.2.26): "One and only one of the DROP, FORW, BUFF, IPMA, IPMD and (FFSM and/or MBSU) flags shall be set to
+ * "1". Both the MBSU flag and the FSSM flag may be set to "1"". A value that is not so is semantically invalid (cl. 7.6.8: cause 69).
+ */
+static bool _apply_action_valid(uint16_t apply_action)
+{
+    int n = 0;
+
+    n += !!(apply_action & OGS_PFCP_APPLY_ACTION_DROP);
+    n += !!(apply_action & OGS_PFCP_APPLY_ACTION_FORW);
+    n += !!(apply_action & OGS_PFCP_APPLY_ACTION_BUFF);
+    n += !!(apply_action & OGS_PFCP_APPLY_ACTION_IPMA);
+    n += !!(apply_action & OGS_PFCP_APPLY_ACTION_IPMD);
+    n += !!(apply_action & (OGS_PFCP_APPLY_ACTION_FSSM | OGS_PFCP_APPLY_ACTION_MBSU));
+    return n == 1;
+}
+
+/*
  * MBS Multicast Parameters (TS 29.244 Table 7.5.2.3-5): Destination Interface "M" ("This IE shall identify the destination
  * interface of the outgoing packet.") and Outer Header Creation "M" ("This IE shall instruct the MB-UPF to create a GTP-U header
  * using the Low Layer SSM and the C-TEID allocated to the MBS session."). A missing mandatory member is answered with cause 66
@@ -626,6 +643,12 @@ bool upf_n4mb_check_session_establishment_request(
                 offending_ie_value = OGS_PFCP_MBS_MULTICAST_PARAMETERS_TYPE;
                 break;
             }
+            if (req->create_far[i].apply_action.presence && !_apply_action_valid(req->create_far[i].apply_action.u16)) {
+                ogs_error("Apply Action 0x%04x of Create FAR: not one and only one action", req->create_far[i].apply_action.u16);
+                cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+                offending_ie_value = OGS_PFCP_APPLY_ACTION_TYPE;
+                break;
+            }
             if (_check_mbs_multicast_parameters(&req->create_far[i].mbs_multicast_parameters,
                         &cause_value, &offending_ie_value) != OGS_OK) {
                 ogs_error("MBS Multicast Parameters of the N4mb Session Establishment Request are not valid");
@@ -660,6 +683,14 @@ bool upf_n4mb_check_session_establishment_request(
                 break;
             }
         }
+    }
+
+    /* Table 7.5.2.7-1, Traffic Endpoint ID: "M", "This IE shall uniquely identify the Traffic Endpoint for that PFCP session." */
+    if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED && req->create_traffic_endpoint.presence &&
+            (!req->create_traffic_endpoint.traffic_endpoint_id.presence || req->create_traffic_endpoint.traffic_endpoint_id.len < 1)) {
+        ogs_error("No Traffic Endpoint ID in the Create Traffic Endpoint of the N4mb Session Establishment Request");
+        cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+        offending_ie_value = OGS_PFCP_TRAFFIC_ENDPOINT_ID_TYPE;
     }
 
     if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED && req->create_traffic_endpoint.local_ingress_tunnel.presence) {
@@ -1392,6 +1423,8 @@ static int _check_flow_changes(upf_mbs_sess_t *mbs_sess, const ogs_pfcp_session_
                 FAIL(OGS_PFCP_CAUSE_RULE_CREATION_MODIFICATION_FAILURE, OGS_PFCP_FAR_ID_TYPE);
         if (!c->apply_action.presence)
             FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_MISSING, OGS_PFCP_APPLY_ACTION_TYPE);
+        if (!_apply_action_valid(c->apply_action.u16))
+            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_APPLY_ACTION_TYPE);
         if ((c->apply_action.u16 & OGS_PFCP_APPLY_ACTION_FSSM) && !c->mbs_multicast_parameters.presence)
             FAIL(OGS_PFCP_CAUSE_CONDITIONAL_IE_MISSING, OGS_PFCP_MBS_MULTICAST_PARAMETERS_TYPE);
         if (_check_mbs_multicast_parameters(&c->mbs_multicast_parameters, cause_value, offending_ie_value) != OGS_OK)
@@ -1604,6 +1637,12 @@ static ogs_pfcp_far_t *_find_update_far(upf_mbs_sess_t *mbs_sess, const ogs_pfcp
         *offending_ie_value = OGS_PFCP_FAR_ID_TYPE;
         return NULL;
     }
+    if (uf->apply_action.presence && !_apply_action_valid(uf->apply_action.u16)) {
+        ogs_error("Apply Action 0x%04x of Update FAR: not one and only one action", uf->apply_action.u16);
+        *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+        *offending_ie_value = OGS_PFCP_APPLY_ACTION_TYPE;
+        return NULL;
+    }
     return far;
 }
 
@@ -1750,6 +1789,8 @@ void upf_n4mb_handle_session_modification_request(
         ogs_pfcp_smreq_flags_t flags;
 
         flags.value = req->pfcpsmreq_flags.u8;
+        /* "Bit 8 – Spare, for future use, shall be set to "0" by the sender and discarded by the receiver." (cl. 8.2.31) */
+        flags.value &= 0x7f;
         if (flags.value & ~(uint8_t)(1 << 5)) {   /* bit 6, DETEID, is the only one supported */
             ogs_error("PFCPSMReq-Flags 0x%02x: only DETEID is supported", flags.value);
             cause_value = OGS_PFCP_CAUSE_SERVICE_NOT_SUPPORTED;

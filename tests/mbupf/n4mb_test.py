@@ -259,7 +259,7 @@ def n4mb_ctrl(mbs_id=None, flags=0x01, extra=()):
 
 def good(cp_seid=0x1000, flags=0x01):
     """Tunnel ingress (Create Traffic Endpoint with CHOOSE), FSSM forwarding, low layer SSM requested."""
-    return [node_id(), fseid(cp_seid), pdr(), far(), qer(), ie(T_CREATE_TE, [lit_choose()]), n4mb_ctrl(flags=flags)]
+    return [node_id(), fseid(cp_seid), pdr(), far(), qer(), ie(T_CREATE_TE, [ie(T_TE_ID, b'\x01'), lit_choose()]), n4mb_ctrl(flags=flags)]
 
 
 def cause(r):
@@ -442,7 +442,10 @@ def t_U03_2_pdr_without_precedence():
 
 
 def with_te(ies, *te_ies):
-    return replace_ie(ies, T_CREATE_TE, ie(T_CREATE_TE, list(te_ies)))
+    te_ies = list(te_ies)
+    if not any(struct.unpack('>H', i[:2])[0] == T_TE_ID for i in te_ies):
+        te_ies.insert(0, ie(T_TE_ID, b'\x01'))      # Traffic Endpoint ID, M (Table 7.5.2.7-1)
+    return replace_ie(ies, T_CREATE_TE, ie(T_CREATE_TE, te_ies))
 
 
 def created_te(r):
@@ -1808,7 +1811,7 @@ def t_U02_9_restoration_that_cannot_be_served():
     occ.bind(('127.0.0.31', 39300))
     try:
         lit = ie(T_LIT, b'\x01' + struct.pack('>H', 39300) + socket.inet_aton('127.0.0.31'))
-        r = U.establish(resti_request(0xe637, mti(7, ok_group, UPF_ADDR)) + [ie(T_CREATE_TE, [lit])])
+        r = U.establish(resti_request(0xe637, mti(7, ok_group, UPF_ADDR)) + [ie(T_CREATE_TE, [ie(T_TE_ID, b'\x01'), lit])])
         assert r and cause(r) == CAUSE_RESTORATION_FAILURE and offending(r) == T_LIT, 'ingress tunnel in use: %s/%s' % (cause(r) if r else None, offending(r) if r else None)
         # without RESTI the same bind failure is a system failure as before
         r = U.establish(with_te(good(cp_seid=0xe638), lit))
@@ -2418,7 +2421,7 @@ def t_session_without_room_for_another_rule_answers_cause_75():
     # establishment: five PDRs with five QERs (the fifth Create QER does not fit in the message either)
     pdrs = [pdr(pdr_id=n, precedence=10 * n, far_id=1, qer_id=n) for n in range(1, 6)]
     r = U.establish([node_id(), fseid(0xf4a2)] + pdrs + [far()] + [qer(qer_id=n, qfi=n) for n in range(1, 6)] +
-                    [ie(T_CREATE_TE, [lit_choose()]), n4mb_ctrl()])
+                    [ie(T_CREATE_TE, [ie(T_TE_ID, b'\x01'), lit_choose()]), n4mb_ctrl()])
     assert U.alive(), 'the daemon stopped for five QERs in an establishment'
     assert r is not None and cause(r) != CAUSE_ACCEPTED, 'five QERs: cause %s' % (cause(r) if r else None)
 
@@ -2949,13 +2952,13 @@ def t_create_pdr_without_far_id_is_refused():
     """Table 7.5.2.2-1, FAR ID: "shall be present if the Activate Predefined Rules IE is not included ... and if the MAR ID is not
     included" (neither applies to N4mb): cause Conditional IE missing, FAR ID."""
     for flags in (0x01, 0x00):
-        r = U.establish([node_id(), fseid(0xfa01), pdr(drop=(T_FAR_ID,)), far(), qer(), ie(T_CREATE_TE, [lit_choose()]), n4mb_ctrl(flags=flags)])
+        r = U.establish([node_id(), fseid(0xfa01), pdr(drop=(T_FAR_ID,)), far(), qer(), ie(T_CREATE_TE, [ie(T_TE_ID, b'\x01'), lit_choose()]), n4mb_ctrl(flags=flags)])
         assert U.alive(), 'the daemon stopped (flags %d)' % flags
         assert r is not None and cause(r) == CAUSE_CONDITIONAL_MISSING and offending(r) == T_FAR_ID, \
             'flags %d: cause %s offending %s' % (flags, cause(r) if r else None, offending(r) if r else None)
     # the second of two PDRs
     r = U.establish([node_id(), fseid(0xfa02), pdr(1), pdr(2, precedence=50, drop=(T_FAR_ID,)), far(), qer(),
-                     ie(T_CREATE_TE, [lit_choose()]), n4mb_ctrl()])
+                     ie(T_CREATE_TE, [ie(T_TE_ID, b'\x01'), lit_choose()]), n4mb_ctrl()])
     assert r is not None and cause(r) == CAUSE_CONDITIONAL_MISSING and offending(r) == T_FAR_ID
     # a modification: a Create PDR without FAR ID, and an Update PDR cannot take the FAR away (an IE of length 0 is not accepted)
     r = U.establish(smf_session(0xfa03))
@@ -2982,7 +2985,7 @@ def t_mbs_multicast_parameters_need_destination_interface_and_outer_header_creat
              ('empty', [], CAUSE_MANDATORY_MISSING, T_DST_IF),
              ('empty Outer Header Creation', [dst, ie(T_OHC, b'')], CAUSE_INVALID_LENGTH, T_OHC))
     for what, parts, c, o in cases:
-        r = U.establish([node_id(), fseid(0xfb01), pdr(), mc_far(1, parts), qer(), ie(T_CREATE_TE, [lit_choose()]), n4mb_ctrl()])
+        r = U.establish([node_id(), fseid(0xfb01), pdr(), mc_far(1, parts), qer(), ie(T_CREATE_TE, [ie(T_TE_ID, b'\x01'), lit_choose()]), n4mb_ctrl()])
         assert U.alive(), what + ': the daemon stopped'
         assert r is not None and cause(r) == c and offending(r) == o, '%s: cause %s offending %s' % (what, cause(r) if r else None, offending(r) if r else None)
     r = U.establish(smf_session(0xfb02))
@@ -3058,6 +3061,40 @@ def t_tmgi_mbs_service_id_is_stored_most_significant_octet_first():
     s = accepted(r, 'TMGI and SSM')
     assert 'MBS Service ID [ABCDEF]' in U.log_text()
     U.delete(s)
+
+
+@test
+def t_apply_action_is_one_and_only_one_and_other_request_details():
+    """TS 29.244 cl. 8.2.26: "One and only one of the DROP, FORW, BUFF, IPMA, IPMD and (FFSM and/or MBSU) flags shall be set to "1"" (cause 69,
+    cl. 7.6.8); cl. 8.2.31: bit 8 of the PFCPSMReq-Flags is spare, "discarded by the receiver"; Table 7.5.2.7-1: Traffic Endpoint ID is "M"."""
+    FORW = 0x0200
+    for what, v in (('FORW and MBSU', FORW | APPLY_MBSU), ('DROP and FSSM', APPLY_DROP | APPLY_FSSM), ('BUFF and DROP', APPLY_BUFF | APPLY_DROP), ('none', 0)):
+        r = U.establish(replace_ie(mc_request(0xff21, b'\x02' + V4G, None), T_CREATE_FAR, far(apply=v)))
+        assert U.alive(), what + ': the daemon stopped'
+        assert r is not None and cause(r) == CAUSE_MANDATORY_INCORRECT and offending(r) == T_APPLY, '%s: cause %s offending %s' % (
+            what, cause(r) if r else None, offending(r) if r else None)
+    r = U.establish(smf_session(0xff22))
+    s = accepted(r, 'session')
+    try:
+        for what, v in (('FORW and MBSU', FORW | APPLY_MBSU), ('none', 0)):
+            m = modify(s, update_far(apply=v))
+            assert U.alive() and m is not None and cause(m) == CAUSE_MANDATORY_INCORRECT and offending(m) == T_APPLY, 'Update FAR, ' + what
+            m = modify(s, flow_pdr(2, qfi=2), far(far_id=2, apply=v), qer(qer_id=2, qfi=2))
+            assert U.alive() and m is not None and cause(m) == CAUSE_MANDATORY_INCORRECT and offending(m) == T_APPLY, 'Create FAR, ' + what
+        assert tunnel_packet_qfi(r, 5000) == 1, 'a refused request changed the session'
+        # the spare bit 8 of the PFCPSMReq-Flags is discarded; bit 7 (HRSBOM) is not for N4mb
+        m = modify(s, update_far(apply=APPLY_FSSM), smreq_flags(0x80))
+        assert m and cause(m) == CAUSE_ACCEPTED, 'spare bit 8: %s' % (cause(m) if m else None)
+        m = modify(s, update_far(apply=APPLY_FSSM), smreq_flags(0xa0))
+        assert m and cause(m) == CAUSE_ACCEPTED, 'DETEID with the spare bit: %s' % (cause(m) if m else None)
+        m = modify(s, update_far(apply=APPLY_FSSM), smreq_flags(0x40))
+        assert m and cause(m) == CAUSE_SERVICE_NOT_SUPPORTED
+    finally:
+        U.delete(s)
+    # a Create Traffic Endpoint without its ID
+    r = U.establish([node_id(), fseid(0xff23), pdr(), far(), qer(), ie(T_CREATE_TE, [lit_choose()]), n4mb_ctrl()])
+    assert U.alive() and r is not None and cause(r) == CAUSE_MANDATORY_MISSING and offending(r) == T_TE_ID, 'no Traffic Endpoint ID: %s/%s' % (
+        cause(r) if r else None, offending(r) if r else None)
 
 
 # E-TESTS-BELOW
