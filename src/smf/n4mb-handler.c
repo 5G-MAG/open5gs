@@ -536,8 +536,6 @@ uint8_t smf_n4mb_handle_session_deletion_response(
 uint8_t smf_n4mb_handle_node_report_request(
         ogs_pfcp_node_t *node, ogs_pfcp_node_report_request_t *req, uint16_t *offending_ie)
 {
-    ogs_ip_t peer;
-
     ogs_assert(node);
     ogs_assert(req);
     ogs_assert(offending_ie);
@@ -566,19 +564,33 @@ uint8_t smf_n4mb_handle_node_report_request(
         return OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
     }
 
-    /* "Remote GTP-U Peer | M" in the report */
-    if (!req->user_plane_path_failure_report.remote_gtp_u_peer.presence ||
-            !smf_mbs_decode_remote_gtp_u_peer(req->user_plane_path_failure_report.remote_gtp_u_peer.data,
-                req->user_plane_path_failure_report.remote_gtp_u_peer.len, &peer)) {
-        /* TS 29.244 V18.10.0 clause 8.2.1, cause 69: "Mandatory IE incorrect"; and 66: "Mandatory IE missing" */
-        bool missing = !req->user_plane_path_failure_report.remote_gtp_u_peer.presence;
+    /* "Remote GTP-U Peer | M ... More than one IE with this type may be included to represent multiple remote GTP-U
+     * peers towards which a user plane path failure has been detected." All the peers are read before anything is
+     * done: one that cannot be read refuses the report. */
+    {
+        ogs_ip_t peers[OGS_PFCP_MAX_NUM_OF_REMOTE_GTP_U_PEER_IN_REPORT];
+        int n = 0, k;
 
-        ogs_error("PFCP Node Report Request: the Remote GTP-U Peer is %s", missing ? "missing" : "incorrect");
-        *offending_ie = OGS_PFCP_REMOTE_GTP_U_PEER_TYPE;
-        return missing ? OGS_PFCP_CAUSE_MANDATORY_IE_MISSING : OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+        for (k = 0; k < OGS_PFCP_MAX_NUM_OF_REMOTE_GTP_U_PEER_IN_REPORT &&
+                req->user_plane_path_failure_report.remote_gtp_u_peers[k].presence; k++) {
+            if (!smf_mbs_decode_remote_gtp_u_peer(req->user_plane_path_failure_report.remote_gtp_u_peers[k].data,
+                        req->user_plane_path_failure_report.remote_gtp_u_peers[k].len, &peers[n])) {
+                /* TS 29.244 V18.10.0 clause 8.2.1, cause 69: "Mandatory IE incorrect" */
+                ogs_error("PFCP Node Report Request: the Remote GTP-U Peer [%d] cannot be read", k);
+                *offending_ie = OGS_PFCP_REMOTE_GTP_U_PEER_TYPE;
+                return OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+            }
+            n++;
+        }
+        if (n == 0) {
+            /* cause 66: "Mandatory IE missing" */
+            ogs_error("PFCP Node Report Request: the Remote GTP-U Peer is missing");
+            *offending_ie = OGS_PFCP_REMOTE_GTP_U_PEER_TYPE;
+            return OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+        }
+        for (k = 0; k < n; k++)
+            smf_mbs_node_report_path_failure(node, &peers[k]);
     }
-
-    smf_mbs_node_report_path_failure(node, &peer);
     return OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
 }
 

@@ -21,6 +21,7 @@
 #define SMF_MBS_RESTORE_H
 
 #include "context.h"
+#include "namf-build.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -90,6 +91,9 @@ bool smf_mbs_decode_remote_gtp_u_peer(const uint8_t *data, int len, ogs_ip_t *pe
 
 /* Whether any MBS session uses \p node for its N4mb PFCP session */
 bool smf_mbs_node_has_sessions(ogs_pfcp_node_t *node);
+
+/* Replaces the sender of the ContextUpdates of the N3mb path failure (NULL: the SBI one), for tests */
+void smf_mbs_set_context_update_sender(int (*sender)(smf_mbs_sess_t *, smf_namf_context_update_param_t *));
 
 /* The DL tunnel of the session that ends at \p peer; NULL if there is none */
 smf_mbs_dl_tunnel_t *smf_mbs_sess_dl_tunnel_find_by_peer(smf_mbs_sess_t *mbs_sess, const ogs_ip_t *peer);

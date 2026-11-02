@@ -3309,6 +3309,96 @@ static void test_multicast_transport_information_answer(void)
     smf_mbs_sess_release(mbs_sess);
 }
 
+static int path_failure_updates;
+static char path_failure_rans[8][128];
+static bool path_failure_flag[8];
+
+static int count_context_update(smf_mbs_sess_t *mbs_sess, smf_namf_context_update_param_t *param)
+{
+    if (path_failure_updates < 8) {
+        snprintf(path_failure_rans[path_failure_updates], sizeof(path_failure_rans[0]), "%s", param->ran_ids[0]);
+        path_failure_flag[path_failure_updates] = param->n3mb_path_failure;
+    }
+    path_failure_updates++;
+    return OGS_OK;
+}
+
+/* TS 29.244 V18.10.0 table 7.4.5.1.2-1: "More than one IE with this type may be included to represent multiple remote
+ * GTP-U peers towards which a user plane path failure has been detected." The layout is the one the MB-UPF sends
+ * (src/upf/path-management.c): the IEs in remote_gtp_u_peers[], each flags octet 0x02 (V4) and the address. */
+static void test_node_report_several_peers(void)
+{
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    smf_mbs_amf_t *amf;
+    ogs_pfcp_node_t node;
+    ogs_pfcp_node_report_request_t req;
+    ogs_ip_t addr;
+    bool changed;
+    static const char *ran_names[3] = { "ran-1", "ran-2", "ran-3" };
+    static uint8_t peers[4][1 + OGS_IPV4_LEN] = {
+        { 0x02, 10, 20, 30, 41 }, { 0x02, 10, 20, 30, 99 }, { 0x02, 10, 20, 30, 43 }, { 0x02, 10, 20, 30, 42 } };
+    uint8_t type_upfr = 0x01;
+    uint16_t offending = 0;
+    int i;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+
+    memset(&node, 0, sizeof(node));
+    mbs_sess->pfcp_node = &node;
+    amf = smf_mbs_sess_amf_add(mbs_sess);
+    amf->mbs_context_ref = ogs_strdup("2");
+    memset(&addr, 0, sizeof(addr));
+    addr.ipv4 = 1;
+    addr.len = OGS_IPV4_LEN;
+    for (i = 0; i < 3; i++) {
+        smf_mbs_dl_tunnel_t *tunnel;
+
+        addr.addr = htonl(0x0a141e29 + i);          /* 10.20.30.41, .42, .43 */
+        tunnel = smf_mbs_sess_dl_tunnel_set(mbs_sess, ran_names[i], &addr, 0x100 + i, &changed);
+        if (tunnel) tunnel->amf_id = amf->id;
+    }
+
+    memset(&req, 0, sizeof(req));
+    req.node_report_type.presence = 1;
+    req.node_report_type.data = &type_upfr;
+    req.node_report_type.len = 1;
+    req.user_plane_path_failure_report.presence = 1;
+    /* .41, .99 (no tunnel), .43 */
+    for (i = 0; i < 3; i++) {
+        req.user_plane_path_failure_report.remote_gtp_u_peers[i].presence = 1;
+        req.user_plane_path_failure_report.remote_gtp_u_peers[i].data = peers[i];
+        req.user_plane_path_failure_report.remote_gtp_u_peers[i].len = sizeof(peers[i]);
+    }
+
+    smf_mbs_set_context_update_sender(count_context_update);
+    path_failure_updates = 0;
+    CHECK(smf_n4mb_handle_node_report_request(&node, &req, &offending) == OGS_PFCP_CAUSE_REQUEST_ACCEPTED);
+    /* the peers with a tunnel, one ContextUpdate each, in the order of the report, with the failure indication */
+    CHECK(path_failure_updates == 2);
+    CHECK(strstr(path_failure_rans[0], "ran-1") && strstr(path_failure_rans[1], "ran-3"));
+    CHECK(path_failure_flag[0] && path_failure_flag[1]);
+
+    /* three peers that all have a tunnel */
+    memcpy(peers[1], peers[3], sizeof(peers[1]));       /* .42 in the middle */
+    path_failure_updates = 0;
+    CHECK(smf_n4mb_handle_node_report_request(&node, &req, &offending) == OGS_PFCP_CAUSE_REQUEST_ACCEPTED);
+    CHECK(path_failure_updates == 3);
+    CHECK(strstr(path_failure_rans[0], "ran-1") && strstr(path_failure_rans[1], "ran-2") &&
+            strstr(path_failure_rans[2], "ran-3"));
+
+    /* one that cannot be read refuses the report and nothing is done */
+    peers[1][0] = 0x00;
+    path_failure_updates = 0;
+    CHECK(smf_n4mb_handle_node_report_request(&node, &req, &offending) == OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT &&
+            offending == OGS_PFCP_REMOTE_GTP_U_PEER_TYPE);
+    CHECK(path_failure_updates == 0);
+
+    smf_mbs_set_context_update_sender(NULL);
+    mbs_sess->pfcp_node = NULL;
+    smf_mbs_sess_release(mbs_sess);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -3354,6 +3444,7 @@ int main(void)
     test_changes_during_restoration();
     test_relocation();
     test_multicast_transport_information_answer();
+    test_node_report_several_peers();
 
     printf("smf-mbs: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;

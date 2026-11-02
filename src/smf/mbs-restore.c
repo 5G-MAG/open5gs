@@ -28,6 +28,15 @@
 
 static ogs_list_t pending_restorations;
 
+/* the ContextUpdate sender, replaceable for a test that has no SBI */
+static int (*context_update_sender)(smf_mbs_sess_t *, smf_namf_context_update_param_t *) =
+        smf_sbi_send_mbs_broadcast_context_update;
+
+void smf_mbs_set_context_update_sender(int (*sender)(smf_mbs_sess_t *, smf_namf_context_update_param_t *))
+{
+    context_update_sender = sender ? sender : smf_sbi_send_mbs_broadcast_context_update;
+}
+
 /* The DL tunnel of the NG-RAN node \p ran_id taken away, the change recorded for the MB-UPF. Returns 1 when there
  * was one. */
 static int remove_dl_tunnel_of(smf_mbs_sess_t *mbs_sess, const char *ran_id, smf_mbs_tunnel_changes_t *changes)
@@ -335,7 +344,7 @@ int smf_mbs_node_report_path_failure(ogs_pfcp_node_t *node, const ogs_ip_t *peer
 
         ogs_warn("MBS session mbsSessionRef[%s]: N3mb path failure towards NG-RAN [%s]", mbs_sess->mbs_session_ref,
                 tunnel->ran_id);
-        if (smf_sbi_send_mbs_broadcast_context_update(mbs_sess, &param) == OGS_OK)
+        if (context_update_sender(mbs_sess, &param) == OGS_OK)
             sent++;
         else
             ogs_error("Failed to send MBS Broadcast ContextUpdate for an N3mb path failure");
