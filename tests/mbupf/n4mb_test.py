@@ -3020,6 +3020,28 @@ def t_far_node_failure_is_not_a_success_cause():
         U.restart()
 
 
+@test
+def t_cp_fseid_without_an_address_is_refused():
+    """TS 29.244 cl. 8.2.37: "At least one of V4 and V6 shall be set to "1"" (cause 69, cl. 7.6.8); the length holds the SEID and the
+    addresses of the flags (cause 68, cl. 7.6.7). The daemon stops on an F-SEID without address if the request is let through."""
+    def with_fseid(v):
+        return replace_ie(good(0xff01), T_F_SEID, ie(T_F_SEID, v))
+
+    seid = struct.pack('>Q', 0xff01)
+    for what, v, c in (('neither V4 nor V6', b'\x00' + seid + socket.inet_aton('127.0.0.77'), CAUSE_MANDATORY_INCORRECT),
+                       ('neither, no address', b'\x00' + seid, CAUSE_MANDATORY_INCORRECT),
+                       ('V4 without its address', b'\x02' + seid, CAUSE_INVALID_LENGTH),
+                       ('V6 with an IPv4 address', b'\x01' + seid + socket.inet_aton('127.0.0.77'), CAUSE_INVALID_LENGTH),
+                       ('V4 and V6, IPv4 only', b'\x03' + seid + socket.inet_aton('127.0.0.77'), CAUSE_INVALID_LENGTH),
+                       ('shorter than the SEID', b'\x02\x00\x01', CAUSE_INVALID_LENGTH)):
+        r = U.establish(with_fseid(v))
+        assert U.alive(), what + ': the daemon stopped'
+        assert r is not None and cause(r) == c and offending(r) == T_F_SEID, '%s: cause %s offending %s' % (what, cause(r) if r else None, offending(r) if r else None)
+    # V4 and V6 together is valid
+    r = U.establish(with_fseid(b'\x03' + seid + socket.inet_aton('127.0.0.77') + socket.inet_pton(socket.AF_INET6, 'fd00::77')))
+    accepted_and_deleted(r, 'V4 and V6')
+
+
 # E-TESTS-BELOW
 
 

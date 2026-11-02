@@ -497,6 +497,32 @@ static int _check_mbs_multicast_parameters(const ogs_pfcp_tlv_mbs_multicast_para
 }
 
 /*
+ * F-SEID (TS 29.244 cl. 8.2.37): "At least one of V4 and V6 shall be set to "1", and both may be set to "1"." (otherwise
+ * "Mandatory IE incorrect", cl. 7.6.8) and the length is the flags, the SEID and each address the flags announce (cl. 7.6.7,
+ * "Invalid length"). The address is the part of the key of the session, so it has to be there before the session is added.
+ */
+static bool _cp_f_seid_valid(const ogs_pfcp_tlv_f_seid_t *ie_, uint8_t *cause_value)
+{
+    const ogs_pfcp_f_seid_t *f_seid = ie_->data;
+    uint32_t want;
+
+    if (!f_seid || ie_->len < 1 + sizeof(uint64_t)) {
+        *cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
+        return false;
+    }
+    if (!f_seid->ipv4 && !f_seid->ipv6) {
+        *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+        return false;
+    }
+    want = 1 + sizeof(uint64_t) + (f_seid->ipv4 ? OGS_IPV4_LEN : 0) + (f_seid->ipv6 ? OGS_IPV6_LEN : 0);
+    if (ie_->len < want) {
+        *cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
+        return false;
+    }
+    return true;
+}
+
+/*
  * Checks that the mandatory IEs of an N4mb Session Establishment Request are present. On a failure the
  * response has been sent and false is returned, and no session has been allocated.
  */
@@ -513,6 +539,9 @@ bool upf_n4mb_check_session_establishment_request(
     if (req->cp_f_seid.presence == 0 || req->cp_f_seid.data == NULL) {
         ogs_error("No CP F-SEID in N4mb Session Establishment Request");
         cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+        offending_ie_value = OGS_PFCP_F_SEID_TYPE;
+    } else if (!_cp_f_seid_valid(&req->cp_f_seid, &cause_value)) {
+        ogs_error("CP F-SEID of the N4mb Session Establishment Request is not valid");
         offending_ie_value = OGS_PFCP_F_SEID_TYPE;
     } else if (req->node_id.presence == 0) {
         ogs_error("No Node ID in N4mb Session Establishment Request");
