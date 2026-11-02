@@ -4214,8 +4214,8 @@ static void test_session_report_request(void)
         req.downlink_data_report.presence = 1;
         CHECK(smf_n4mb_handle_session_report_request(mbs_sess, &req, &offending) ==
                 OGS_PFCP_CAUSE_MANDATORY_IE_MISSING && offending == OGS_PFCP_PDR_ID_TYPE);
-        /* another type (a usage report): accepted, nothing done */
-        req.report_type.u8 = 0x02;
+        /* another type (an error indication report): accepted, nothing done */
+        req.report_type.u8 = 0x04;
         CHECK(smf_n4mb_handle_session_report_request(mbs_sess, &req, &offending) == OGS_PFCP_CAUSE_REQUEST_ACCEPTED);
     }
 
@@ -4298,6 +4298,135 @@ static void test_mbs_charging_urr(void)
     smf_mbs_sess_release(mbs_sess);
 }
 
+/* TS 29.244 V18.10.0 clause 5.34.2.5 and tables 7.5.8.3-1, 7.5.7.2-1, 7.5.5.2-1: the usage reports as the MB-UPF sends
+ * them (ogs_pfcp_build_session_report_request(), the builder src/upf uses): "URR ID | M", "UR-SEQN | M", "Usage Report
+ * Trigger | M" and the Volume Measurement */
+static void test_usage_reports(void)
+{
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    ogs_pfcp_node_t node;
+    ogs_pfcp_user_plane_report_t report;
+    ogs_pfcp_message_t *msg;
+    ogs_pkbuf_t *pkbuf;
+    ogs_pfcp_urr_t *urr;
+    uint16_t offending = 0;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+    memset(&node, 0, sizeof(node));
+    node.up_function_features.mbsch = 1;
+    mbs_sess->pfcp_node = &node;
+    CHECK(smf_mbs_charging_configure("true", "1000", "60"));
+    urr = smf_mbs_sess_charging_urr(mbs_sess);
+    CHECK(urr != NULL);
+    if (!urr) return;
+
+    /* a Session Report Request, Report Type USAR (bit 2) with a report of the periodic trigger */
+    memset(&report, 0, sizeof(report));
+    report.type.usage_report = 1;
+    report.num_of_usage_report = 2;
+    report.usage_report[0].id = urr->id;
+    report.usage_report[0].seqn = 7;
+    report.usage_report[0].rep_trigger.periodic_reporting = 1;
+    report.usage_report[0].start_time = 1000;
+    report.usage_report[0].end_time = 1060;
+    report.usage_report[0].vol_measurement.tovol = 1;
+    report.usage_report[0].vol_measurement.dlvol = 1;
+    report.usage_report[0].vol_measurement.total_volume = 600;
+    report.usage_report[0].vol_measurement.downlink_volume = 600;
+    report.usage_report[1] = report.usage_report[0];
+    report.usage_report[1].seqn = 8;
+    report.usage_report[1].vol_measurement.total_volume = 400;
+    report.usage_report[1].vol_measurement.downlink_volume = 400;
+    pkbuf = ogs_pfcp_build_session_report_request(OGS_PFCP_SESSION_REPORT_REQUEST_TYPE, &report);
+    CHECK(pkbuf != NULL);
+    msg = pkbuf ? parse_session_report(pkbuf) : NULL;
+    CHECK(msg && msg->pfcp_session_report_request.report_type.u8 == 0x02);
+    if (msg) {
+        CHECK(smf_n4mb_handle_session_report_request(mbs_sess, &msg->pfcp_session_report_request, &offending) ==
+                OGS_PFCP_CAUSE_REQUEST_ACCEPTED && offending == 0);
+        CHECK(mbs_sess->usage_reports == 2 && mbs_sess->usage_total_volume == 1000 &&
+                mbs_sess->usage_downlink_volume == 1000);
+        ogs_pfcp_message_free(msg);
+    }
+
+    /* USAR without a Usage Report; a report without UR-SEQN; one for a URR the MB-SMF did not provision (ignored) */
+    {
+        ogs_pfcp_session_report_request_t req;
+
+        memset(&req, 0, sizeof(req));
+        req.report_type.presence = 1;
+        req.report_type.u8 = 0x02;
+        CHECK(smf_n4mb_handle_session_report_request(mbs_sess, &req, &offending) ==
+                OGS_PFCP_CAUSE_MANDATORY_IE_MISSING && offending == OGS_PFCP_USAGE_REPORT_SESSION_REPORT_REQUEST_TYPE);
+        req.usage_report[0].presence = 1;
+        CHECK(smf_n4mb_handle_session_report_request(mbs_sess, &req, &offending) ==
+                OGS_PFCP_CAUSE_MANDATORY_IE_MISSING && offending == OGS_PFCP_URR_ID_TYPE);
+        req.usage_report[0].urr_id.presence = 1;
+        req.usage_report[0].urr_id.u32 = urr->id;
+        CHECK(smf_n4mb_handle_session_report_request(mbs_sess, &req, &offending) ==
+                OGS_PFCP_CAUSE_MANDATORY_IE_MISSING && offending == OGS_PFCP_UR_SEQN_TYPE);
+        req.usage_report[0].ur_seqn.presence = 1;
+        CHECK(smf_n4mb_handle_session_report_request(mbs_sess, &req, &offending) ==
+                OGS_PFCP_CAUSE_MANDATORY_IE_MISSING && offending == OGS_PFCP_USAGE_REPORT_TRIGGER_TYPE);
+        req.usage_report[0].usage_report_trigger.presence = 1;
+        req.usage_report[0].usage_report_trigger.u24 = 0x800000;
+        /* no Volume Measurement: nothing to add, accepted */
+        CHECK(smf_n4mb_handle_session_report_request(mbs_sess, &req, &offending) == OGS_PFCP_CAUSE_REQUEST_ACCEPTED);
+        CHECK(mbs_sess->usage_reports == 3 && mbs_sess->usage_total_volume == 1000);
+        req.usage_report[0].urr_id.u32 = urr->id + 5;
+        CHECK(smf_n4mb_handle_session_report_request(mbs_sess, &req, &offending) == OGS_PFCP_CAUSE_REQUEST_ACCEPTED);
+        CHECK(mbs_sess->usage_reports == 3);
+    }
+
+    /* the Session Deletion Response (TERMR) and the Session Modification Response (IMMER) carry the same IEs */
+    {
+        ogs_pfcp_session_deletion_response_t del;
+        ogs_pfcp_session_modification_response_t mod;
+        ogs_pfcp_volume_measurement_t vm;
+        uint8_t vmbuf[64];
+
+        memset(&vm, 0, sizeof(vm));
+        vm.tovol = 1;
+        vm.dlvol = 1;
+        vm.total_volume = 50;
+        vm.downlink_volume = 50;
+        memset(&del, 0, sizeof(del));
+        del.usage_report[0].presence = 1;
+        del.usage_report[0].urr_id.presence = 1;
+        del.usage_report[0].urr_id.u32 = urr->id;
+        del.usage_report[0].ur_seqn.presence = 1;
+        del.usage_report[0].usage_report_trigger.presence = 1;
+        del.usage_report[0].usage_report_trigger.u24 = 0x000800;
+        del.usage_report[0].volume_measurement.presence = 1;
+        ogs_pfcp_build_volume_measurement(&del.usage_report[0].volume_measurement, &vm, vmbuf, sizeof(vmbuf));
+        CHECK(smf_mbs_sess_take_usage_reports_of_deletion_response(mbs_sess, &del, &offending) ==
+                OGS_PFCP_CAUSE_REQUEST_ACCEPTED);
+        CHECK(mbs_sess->usage_reports == 4 && mbs_sess->usage_total_volume == 1050);
+
+        memset(&mod, 0, sizeof(mod));
+        mod.usage_report[0].presence = 1;
+        mod.usage_report[0].urr_id.presence = 1;
+        mod.usage_report[0].urr_id.u32 = urr->id;
+        mod.usage_report[0].ur_seqn.presence = 1;
+        mod.usage_report[0].usage_report_trigger.presence = 1;
+        mod.usage_report[0].usage_report_trigger.u24 = 0x800000;
+        mod.usage_report[0].volume_measurement.presence = 1;
+        ogs_pfcp_build_volume_measurement(&mod.usage_report[0].volume_measurement, &vm, vmbuf, sizeof(vmbuf));
+        CHECK(smf_mbs_sess_take_usage_reports_of_modification_response(mbs_sess, &mod, &offending) ==
+                OGS_PFCP_CAUSE_REQUEST_ACCEPTED);
+        CHECK(mbs_sess->usage_reports == 5 && mbs_sess->usage_total_volume == 1100);
+        /* a Volume Measurement that cannot be read */
+        mod.usage_report[0].volume_measurement.len = 1;
+        CHECK(smf_mbs_sess_take_usage_reports_of_modification_response(mbs_sess, &mod, &offending) ==
+                OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT && offending == OGS_PFCP_VOLUME_MEASUREMENT_TYPE);
+    }
+
+    CHECK(smf_mbs_charging_configure("false", NULL, NULL));
+    mbs_sess->pfcp_node = NULL;
+    smf_mbs_sess_release(mbs_sess);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -4351,6 +4480,7 @@ int main(void)
     test_node_report_several_peers();
     test_session_report_request();
     test_mbs_charging_urr();
+    test_usage_reports();
     test_local_ingress_tunnel_answer();
     test_mb_upf_selection();
     test_mbs_policy_control_config();

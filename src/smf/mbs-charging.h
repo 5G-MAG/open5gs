@@ -48,6 +48,27 @@ bool smf_mbs_charging_enabled(uint64_t *volume_threshold, uint32_t *period);
  * that charging was requested and the MB-UPF cannot do it. */
 ogs_pfcp_urr_t *smf_mbs_sess_charging_urr(smf_mbs_sess_t *mbs_sess);
 
+/* A Usage Report IE of the MB-UPF, from a Session Report Request (Report Type USAR, table 7.5.8.3-1), a Session Deletion
+ * Response (table 7.5.7.2-1, trigger TERMR) or a Session Modification Response (table 7.5.5.2-1, trigger IMMER of a Query
+ * URR): "URR ID | M", "UR-SEQN | M", "Usage Report Trigger | M", "Start Time | C", "End Time | C" and "Volume Measurement |
+ * C | ... if a volume measurement needs to be reported". The report is added to the session's usage and logged. Returns
+ * the PFCP cause: 66 with *offending_ie when a mandatory IE is missing, 69 for a Volume Measurement that cannot be
+ * read, else 1. */
+uint8_t smf_mbs_sess_take_usage_report(smf_mbs_sess_t *mbs_sess, const char *source, const ogs_pfcp_tlv_urr_id_t *urr_id,
+        const ogs_pfcp_tlv_ur_seqn_t *seqn, const ogs_pfcp_tlv_usage_report_trigger_t *trigger,
+        const ogs_pfcp_tlv_start_time_t *start, const ogs_pfcp_tlv_end_time_t *end,
+        const ogs_pfcp_tlv_volume_measurement_t *volume, uint16_t *offending_ie);
+
+/* The usage reports of a message: the Usage Report IEs of the Session Report Request, Session Deletion Response and
+ * Session Modification Response. Return the cause as smf_mbs_sess_take_usage_report() does for the first report that
+ * is not acceptable (the reports before it are taken in). */
+uint8_t smf_mbs_sess_take_usage_reports_of_report_request(smf_mbs_sess_t *mbs_sess,
+        const ogs_pfcp_session_report_request_t *req, uint16_t *offending_ie);
+uint8_t smf_mbs_sess_take_usage_reports_of_deletion_response(smf_mbs_sess_t *mbs_sess,
+        const ogs_pfcp_session_deletion_response_t *rsp, uint16_t *offending_ie);
+uint8_t smf_mbs_sess_take_usage_reports_of_modification_response(smf_mbs_sess_t *mbs_sess,
+        const ogs_pfcp_session_modification_response_t *rsp, uint16_t *offending_ie);
+
 #ifdef __cplusplus
 }
 #endif

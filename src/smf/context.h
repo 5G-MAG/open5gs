@@ -769,6 +769,12 @@ typedef struct smf_mbs_sess_s {
      * mid-teardown (or already freed, by the time a duplicate call is dispatched). */
     bool release_triggered;
 
+    /* What the usage reports of the MB-UPF added up to (TS 29.244 clause 5.34.2.5): the reports taken in and the
+     * volume of MBS data they measured, in octets; kept as data (no CHF client) */
+    uint32_t usage_reports;
+    uint64_t usage_total_volume;
+    uint64_t usage_downlink_volume;
+
     /* The PFCP session of the MBS session is being restored at the MB-UPF after an MB-UPF restart (TS 23.527 V18.6.0
      * clause 8.2.2): the establishment request carries the MBS RESTI flag and what the session used before. */
     bool restoring;

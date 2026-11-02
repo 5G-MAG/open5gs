@@ -26,6 +26,7 @@
 // NOTE (borieher): Needed for the SBI request
 #include "sbi-path.h"
 #include "mbs-restore.h"
+#include "mbs-charging.h"
 #include "mbs-n3mb.h"
 
 static const char *_pfcp_cause_to_problem_cause(uint8_t pfcp_cause);
@@ -467,6 +468,17 @@ uint8_t smf_n4mb_handle_session_modification_response(
         cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
     }
 
+    /* the usage reports of a Query URR (Usage Report Trigger IMMER) or of a removed URR (TS 29.244 V18.10.0 clause
+     * 5.2.2.3.1) */
+    if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED) {
+        uint16_t offending_ie = 0;
+
+        if (smf_mbs_sess_take_usage_reports_of_modification_response(mbs_sess, rsp, &offending_ie) !=
+                OGS_PFCP_CAUSE_REQUEST_ACCEPTED)
+            ogs_error("MBS Session mbsSessionRef[%s]: a usage report of the modification response is malformed "
+                    "(IE [%u])", mbs_sess->mbs_session_ref, offending_ie);
+    }
+
     /* A Local Ingress Tunnel the MB-UPF allocated for the modification (TS 29.244 V18.10.0 tables 7.5.3.2 and 7.5.3.5)
      * that is not the session's is a new ingress tunnel address: TS 29.532 V18.6.0 cl. 5.3.2.8.1 reports
      * "new ingress tunnel address used over the N6mb/Nmb9 reference point" (INGRESS_TUNNEL_ADD_CHANGE). */
@@ -524,6 +536,16 @@ uint8_t smf_n4mb_handle_session_deletion_response(
     } else {
         ogs_error("No Cause");
         cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+    }
+
+    /* the final usage of the session (Usage Report Trigger TERMR): TS 29.244 V18.10.0 clause 5.2.2.3.2 */
+    if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED) {
+        uint16_t offending_ie = 0;
+
+        if (smf_mbs_sess_take_usage_reports_of_deletion_response(mbs_sess, rsp, &offending_ie) !=
+                OGS_PFCP_CAUSE_REQUEST_ACCEPTED)
+            ogs_error("MBS Session mbsSessionRef[%s]: a usage report of the deletion response is malformed "
+                    "(IE [%u])", mbs_sess->mbs_session_ref, offending_ie);
     }
 
     if (cause_value != OGS_PFCP_CAUSE_REQUEST_ACCEPTED) {
@@ -796,12 +818,29 @@ uint8_t smf_n4mb_handle_session_report_request(
                 mbs_sess->service_type ? mbs_sess->service_type : "(unknown)");
     }
 
+    /* TS 29.244 V18.10.0 clause 5.34.2.5: the MB-UPF "shall measure and report the requested MBS data usage as defined in
+     * clause 5.2.2"; table 7.5.8.1-1: "Usage Report | C | This IE shall be present if the Report Type indicates a
+     * Usage Report" */
+    if (type.usage_report) {
+        uint8_t cause;
+
+        if (!req->usage_report[0].presence) {
+            ogs_error("PFCP Session Report Request of mbsSessionRef[%s]: Report Type USAR without a Usage Report",
+                    mbs_sess->mbs_session_ref);
+            *offending_ie = OGS_PFCP_USAGE_REPORT_SESSION_REPORT_REQUEST_TYPE;
+            return OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+        }
+        cause = smf_mbs_sess_take_usage_reports_of_report_request(mbs_sess, req, offending_ie);
+        if (cause != OGS_PFCP_CAUSE_REQUEST_ACCEPTED)
+            return cause;
+    }
+
     if (type.user_plane_inactivity_report)
         ogs_warn("MBS Session mbsSessionRef[%s]: the MB-UPF reports user plane inactivity; no action (the MB-SMF "
                 "deactivates only multicast MBS sessions, which this MB-SMF does not handle)",
                 mbs_sess->mbs_session_ref);
 
-    if (!type.downlink_data_report && !type.user_plane_inactivity_report)
+    if (!type.downlink_data_report && !type.user_plane_inactivity_report && !type.usage_report)
         ogs_info("MBS Session mbsSessionRef[%s]: Session Report of type [0x%02x] needs no action of the MB-SMF",
                 mbs_sess->mbs_session_ref, type.value);
 
