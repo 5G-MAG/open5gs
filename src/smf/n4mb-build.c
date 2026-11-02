@@ -20,6 +20,7 @@
 
 #include "context.h"
 #include "n4mb-build.h"
+#include "mbs-charging.h"
 
 /* TS 29.244 V18.10.0 clause 8.2.206: "The NID field shall be encoded with 11 hexadecimal digits, bit 8 to bit 5
  * of the octet "o" is the most significant digit and bit 8 to bit 5 of the octet "o+5" is the least significant
@@ -174,6 +175,16 @@ ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
         req->create_qer[i].qer_indications.data = &qer_indications;
         req->create_qer[i].qer_indications.len = sizeof(qer_indications);
         i++;
+    }
+
+    /* TS 29.244 V18.10.0 clause 5.34.2.5: with MBS charging "the MB-SMF shall provision URR(s) for the related PFCP
+     * session in the MB-UPF as defined in clause 5.4.10": a URR of the session, not of a PDR (table 7.5.2.4-1, N4mb
+     * column), volume measurement only, no quota. */
+    {
+        ogs_pfcp_urr_t *urr = smf_mbs_sess_charging_urr(mbs_sess);
+
+        if (urr)
+            ogs_pfcp_build_create_urr(&req->create_urr[0], 0, urr);
     }
 
     /* APN/DNN */

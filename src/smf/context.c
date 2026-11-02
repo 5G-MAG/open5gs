@@ -24,6 +24,7 @@
 #include "gtp-path.h"
 #include "pfcp-path.h"
 #include "mbs-restore.h"
+#include "mbs-charging.h"
 #include "mbs-pcf.h"
 
 static smf_context_t self;
@@ -1126,6 +1127,35 @@ int smf_context_parse_config(void)
                         ogs_error("`smf.mbsPolicyControl` [enabled: %s, failureAction: %s] is not acceptable: "
                                 "enabled is true or false; with true, failureAction is reject or allow",
                                 enabled ? enabled : "", failure_action ? failure_action : "");
+                        return OGS_ERROR;
+                    }
+                } else if (!strcmp(smf_key, "mbsCharging")) {
+                    /* TS 29.244 V18.10.0 cl. 5.34.2.5: MBS charging is optional ("the MB-SMF may request"). Off
+                     * unless `enabled: true`; the volume threshold (octets) and the period (seconds) of the URR
+                     * are the operator's and required with it: no clause names a value (rule 12). */
+                    ogs_yaml_iter_t charging_iter;
+                    const char *enabled = NULL, *volume = NULL, *period = NULL;
+
+                    ogs_yaml_iter_recurse(&smf_iter, &charging_iter);
+                    while (ogs_yaml_iter_next(&charging_iter)) {
+                        const char *charging_key = ogs_yaml_iter_key(&charging_iter);
+                        ogs_assert(charging_key);
+                        if (!strcmp(charging_key, "enabled")) {
+                            enabled = ogs_yaml_iter_value(&charging_iter);
+                        } else if (!strcmp(charging_key, "volumeThreshold")) {
+                            volume = ogs_yaml_iter_value(&charging_iter);
+                        } else if (!strcmp(charging_key, "period")) {
+                            period = ogs_yaml_iter_value(&charging_iter);
+                        } else {
+                            ogs_error("unknown key `smf.mbsCharging.%s`", charging_key);
+                            return OGS_ERROR;
+                        }
+                    }
+                    if (!smf_mbs_charging_configure(enabled, volume, period)) {
+                        ogs_error("`smf.mbsCharging` [enabled: %s, volumeThreshold: %s, period: %s] is not acceptable: "
+                                "enabled is true or false; with true, volumeThreshold (octets) and period (seconds) "
+                                "are positive numbers", enabled ? enabled : "", volume ? volume : "",
+                                period ? period : "");
                         return OGS_ERROR;
                     }
                 } else if (!strcmp(smf_key, "ngranRestoreDelay")) {

@@ -23,6 +23,7 @@
 #include "mbs-subsc.h"
 #include "mbs-n3mb.h"
 #include "mbs-restore.h"
+#include "mbs-charging.h"
 #include "mbs-pcf.h"
 #include "asn_internal.h"
 
@@ -4221,6 +4222,82 @@ static void test_session_report_request(void)
     smf_mbs_sess_release(mbs_sess);
 }
 
+/* TS 29.244 V18.10.0 clause 5.34.2.5: with MBS charging "the MB-SMF shall provision URR(s) ... no charging quotas ... Only
+ * volume-based measurement"; the MB-UPF "shall set the MBSCH feature flag"; the URR is as src/upf/mbs-charging.c checks it
+ * (Measurement Method volume 0x02, Reporting Triggers octet 5 PERIO 0x01 and VOLTH 0x02, Measurement Period, Volume
+ * Threshold) */
+static void test_mbs_charging_urr(void)
+{
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    ogs_pfcp_node_t node;
+    ogs_pfcp_message_t *msg;
+    uint64_t volume = 0;
+    uint32_t period = 0;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+    memset(&node, 0, sizeof(node));
+    mbs_sess->pfcp_node = &node;
+
+    /* the configuration: off by default; with enabled both values are required and positive */
+    CHECK(!smf_mbs_charging_enabled(&volume, &period));
+    CHECK(smf_mbs_charging_configure(NULL, NULL, NULL) && !smf_mbs_charging_enabled(NULL, NULL));
+    CHECK(smf_mbs_charging_configure("false", NULL, NULL) && !smf_mbs_charging_enabled(NULL, NULL));
+    CHECK(!smf_mbs_charging_configure("true", NULL, NULL) && !smf_mbs_charging_enabled(NULL, NULL));
+    CHECK(!smf_mbs_charging_configure("true", "1000", NULL));
+    CHECK(!smf_mbs_charging_configure("true", NULL, "60"));
+    CHECK(!smf_mbs_charging_configure("true", "0", "60") && !smf_mbs_charging_configure("true", "1000", "0"));
+    CHECK(!smf_mbs_charging_configure("true", "-5", "60") && !smf_mbs_charging_configure("true", "10x", "60"));
+    CHECK(!smf_mbs_charging_configure("yes", "1000", "60"));
+    CHECK(!smf_mbs_charging_enabled(NULL, NULL));
+
+    /* off: no URR, whatever the MB-UPF says */
+    node.up_function_features.mbsch = 1;
+    msg = build_and_parse_establishment(mbs_sess);
+    CHECK(msg && !msg->pfcp_session_establishment_request.create_urr[0].presence);
+    CHECK(ogs_list_empty(&mbs_sess->pfcp.urr_list));
+
+    CHECK(smf_mbs_charging_configure("true", "123456789012", "3600"));
+    CHECK(smf_mbs_charging_enabled(&volume, &period) && volume == 123456789012ULL && period == 3600);
+
+    /* on, MB-UPF without MBSCH: no URR (logged) */
+    node.up_function_features.mbsch = 0;
+    msg = build_and_parse_establishment(mbs_sess);
+    CHECK(msg && !msg->pfcp_session_establishment_request.create_urr[0].presence);
+    CHECK(ogs_list_empty(&mbs_sess->pfcp.urr_list));
+
+    /* on, MB-UPF with MBSCH: the Create URR */
+    node.up_function_features.mbsch = 1;
+    msg = build_and_parse_establishment(mbs_sess);
+    CHECK(msg != NULL);
+    if (msg) {
+        ogs_pfcp_tlv_create_urr_t *urr = &msg->pfcp_session_establishment_request.create_urr[0];
+        ogs_pfcp_volume_threshold_t vt;
+
+        CHECK(urr->presence && urr->urr_id.presence && urr->urr_id.u32 == 1);
+        CHECK(urr->measurement_method.presence && urr->measurement_method.u8 == 0x02);
+        CHECK(urr->reporting_triggers.presence && urr->reporting_triggers.u24 == 0x030000);
+        CHECK(urr->measurement_period.presence && urr->measurement_period.u32 == 3600);
+        CHECK(urr->volume_threshold.presence);
+        memset(&vt, 0, sizeof(vt));
+        CHECK(ogs_pfcp_parse_volume(&vt, &urr->volume_threshold) > 0 && vt.tovol && !vt.dlvol && !vt.ulvol &&
+                vt.total_volume == 123456789012ULL);
+        /* no quota, no time or event: nothing else of the URR */
+        CHECK(!urr->volume_quota.presence && !urr->time_quota.presence && !urr->time_threshold.presence &&
+                !urr->event_quota.presence && !urr->event_threshold.presence && !urr->linked_urr_id.presence);
+        CHECK(!msg->pfcp_session_establishment_request.create_urr[1].presence);
+    }
+    CHECK(ogs_list_count(&mbs_sess->pfcp.urr_list) == 1);
+    /* the same URR for a restoration or a move */
+    msg = build_and_parse_establishment(mbs_sess);
+    CHECK(msg && msg->pfcp_session_establishment_request.create_urr[0].urr_id.u32 == 1);
+    CHECK(ogs_list_count(&mbs_sess->pfcp.urr_list) == 1);
+
+    CHECK(smf_mbs_charging_configure("false", NULL, NULL));
+    mbs_sess->pfcp_node = NULL;
+    smf_mbs_sess_release(mbs_sess);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -4273,6 +4350,7 @@ int main(void)
     test_multicast_transport_information_answer();
     test_node_report_several_peers();
     test_session_report_request();
+    test_mbs_charging_urr();
     test_local_ingress_tunnel_answer();
     test_mb_upf_selection();
     test_mbs_policy_control_config();

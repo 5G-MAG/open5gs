@@ -19,6 +19,14 @@ smf:
 #  mbsPolicyControl:
 #    enabled: true
 #    failureAction: reject
+#  # MBS charging (TS 29.244 clause 5.34.2.5, "MBS charging is optional"): with enabled, the MB-SMF provisions a URR for
+#  # the volume of MBS data of each MBS session in an MB-UPF that sets the MBSCH feature (volume measurement only, no
+#  # quota). Off when absent. volumeThreshold (octets of MBS data) and period (seconds) are the reporting triggers
+#  # VOLTH and PERIO of that URR: both are required with enabled, there is no default.
+#  mbsCharging:
+#    enabled: true
+#    volumeThreshold: 1000000000
+#    period: 3600
   sbi:
     server:
       - address: 127.0.0.4
