@@ -214,3 +214,11 @@ uint8_t smf_mbs_sess_take_usage_reports_of_modification_response(smf_mbs_sess_t 
     TAKE_REPORTS(mbs_sess, "Session Modification Response", rsp->usage_report, offending_ie);
     return OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
 }
+
+bool smf_mbs_sess_has_charging_urr(smf_mbs_sess_t *mbs_sess)
+{
+    ogs_assert(mbs_sess);
+
+    return charging_on && !ogs_list_empty(&mbs_sess->pfcp.urr_list) && mbs_sess->pfcp_node &&
+        mbs_sess->pfcp_node->up_function_features.mbsch;
+}

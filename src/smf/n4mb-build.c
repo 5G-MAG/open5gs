@@ -450,6 +450,7 @@ ogs_pkbuf_t *smf_n4mb_build_session_modification_request(
     ogs_pfcp_message_t *pfcp_message = NULL;
     ogs_pfcp_session_modification_request_t *req = NULL;
     ogs_pkbuf_t *pkbuf = NULL;
+    ogs_pfcp_smreq_flags_t smreq_flags;
     uint8_t qer_indications = 0x01;    /* IQFISN */
     uint8_t traffic_endpoint_id = 1;
     int i;
@@ -552,6 +553,16 @@ ogs_pkbuf_t *smf_n4mb_build_session_modification_request(
         req->create_qer[i].qer_indications.presence = 1;
         req->create_qer[i].qer_indications.data = &qer_indications;
         req->create_qer[i].qer_indications.len = sizeof(qer_indications);
+    }
+
+    /* TS 29.244 V18.10.0 clause 5.34.2.5: "The MB-SMF may request the MB-UPF, in a PFCP Session Modification Request, to
+     * report its ongoing volume measurement for one or multiple URRs of the PFCP session, by including one or more
+     * Query URR IEs or by setting the QAURR (Query All URRs) flag, as defined in clause 5.2.2.3.1" */
+    if (mod->query_all_urrs) {
+        smreq_flags.value = 0;
+        smreq_flags.query_all_urrs = 1;
+        pfcp_message->pfcp_session_modification_request.pfcpsmreq_flags.presence = 1;
+        pfcp_message->pfcp_session_modification_request.pfcpsmreq_flags.u8 = smreq_flags.value;
     }
 
     pfcp_message->h.type = OGS_PFCP_SESSION_MODIFICATION_REQUEST_TYPE;

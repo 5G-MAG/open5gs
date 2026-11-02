@@ -20,6 +20,7 @@
 #include "context.h"
 #include "mbs-n3mb.h"
 #include "mbs-subsc.h"
+#include "mbs-charging.h"
 #include "n4mb-build.h"
 #include "ngap-build.h"
 #include "pfcp-path.h"
@@ -506,6 +507,16 @@ int smf_mbs_sess_send_tunnel_changes(smf_mbs_sess_t *mbs_sess, const smf_mbs_tun
 
         memset(&mod, 0, sizeof(mod));
         mod.tunnel = change;
+
+        /* A chargeable event: TS 32.279 V18.1.0 table 5.2.1.2-1 has "Connection established with NG-RAN" and "Connection
+         * released with NG-RAN" among the default triggers of the MB-SMF, and table 5.2.1.2-2 for them "Close the counts
+         * and start new counts with time stamps"; TS 29.244 V18.10.0 clause 5.34.2.5: the MB-SMF may request the report
+         * of the ongoing volume measurement "by setting the QAURR (Query All URRs) flag ... when a chargeable event
+         * requiring to close the counts and starts new counts occurs at the MB-SMF ... e.g. upon the occurrence of the
+         * Connection established with NG-RAN event." One request of the batch is enough: the MB-UPF reports before it
+         * applies the update. */
+        if (i == 0 && smf_mbs_sess_has_charging_urr(mbs_sess))
+            mod.query_all_urrs = true;
 
         /* TS 29.244 V18.10.0 cl. 5.34.2.2: "the MB-SMF shall send a PFCP Session Modification Request to change the
          * FAR by setting the Apply Action to "MBSU", together with one or more Add MBS Unicast Parameters". The flag

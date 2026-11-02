@@ -4427,6 +4427,57 @@ static void test_usage_reports(void)
     smf_mbs_sess_release(mbs_sess);
 }
 
+/* TS 29.244 V18.10.0 clause 5.34.2.5: the MB-SMF may request the report of the volume measurement "by setting the QAURR
+ * (Query All URRs) flag" when a chargeable event occurs (TS 32.279 V18.1.0 table 5.2.1.2-2: Connection established with
+ * NG-RAN, Connection released with NG-RAN: close the counts and start new counts) */
+static void test_query_all_urrs(void)
+{
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    ogs_pfcp_node_t node;
+    smf_n4mb_modification_t mod;
+    smf_mbs_tunnel_change_t change;
+    ogs_pfcp_message_t *msg;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+    memset(&node, 0, sizeof(node));
+    mbs_sess->pfcp_node = &node;
+    node.up_function_features.mbsch = 1;
+
+    memset(&change, 0, sizeof(change));
+    change.has_add = true;
+    change.add_addr.ipv4 = 1;
+    change.add_addr.len = OGS_IPV4_LEN;
+    change.add_addr.addr = htonl(0x0a141e28);
+    change.add_teid = 0x11;
+    change.add_id = 1;
+    memset(&mod, 0, sizeof(mod));
+    mod.tunnel = &change;
+
+    /* the flag is the one of the modification: PFCPSMReq-Flags, QAURR is bit 3 */
+    msg = build_and_parse_modification_of(mbs_sess, &mod);
+    CHECK(msg && !msg->pfcp_session_modification_request.pfcpsmreq_flags.presence);
+    mod.query_all_urrs = true;
+    msg = build_and_parse_modification_of(mbs_sess, &mod);
+    CHECK(msg && msg->pfcp_session_modification_request.pfcpsmreq_flags.presence &&
+            msg->pfcp_session_modification_request.pfcpsmreq_flags.u8 == 0x04);
+
+    /* the chargeable event asks for it only with a URR at the MB-UPF */
+    CHECK(!smf_mbs_sess_has_charging_urr(mbs_sess));
+    CHECK(smf_mbs_charging_configure("true", "1000", "60"));
+    CHECK(!smf_mbs_sess_has_charging_urr(mbs_sess));       /* on, no URR yet */
+    CHECK(smf_mbs_sess_charging_urr(mbs_sess) != NULL);
+    CHECK(smf_mbs_sess_has_charging_urr(mbs_sess));
+    node.up_function_features.mbsch = 0;
+    CHECK(!smf_mbs_sess_has_charging_urr(mbs_sess));       /* the MB-UPF of the session cannot */
+    node.up_function_features.mbsch = 1;
+    CHECK(smf_mbs_charging_configure("false", NULL, NULL));
+    CHECK(!smf_mbs_sess_has_charging_urr(mbs_sess));       /* off again */
+
+    mbs_sess->pfcp_node = NULL;
+    smf_mbs_sess_release(mbs_sess);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -4481,6 +4532,7 @@ int main(void)
     test_session_report_request();
     test_mbs_charging_urr();
     test_usage_reports();
+    test_query_all_urrs();
     test_local_ingress_tunnel_answer();
     test_mb_upf_selection();
     test_mbs_policy_control_config();

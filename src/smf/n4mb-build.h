@@ -44,6 +44,7 @@ typedef struct smf_n4mb_modification_s {
     const smf_mbs_flow_change_t *flows;         /* Create/Remove PDR, FAR, QER of the flows that came and went */
     const smf_mbs_tunnel_change_t *tunnel;      /* Update FAR: Add and Remove MBS Unicast Parameters */
     bool update_apply_action;                   /* with a tunnel change: the Update FARs carry the Apply Action */
+    bool query_all_urrs;                        /* the QAURR flag of the PFCPSMReq-Flags: the MB-UPF reports the usage of every URR */
 } smf_n4mb_modification_t;
 
 ogs_pkbuf_t *smf_n4mb_build_session_modification_request(

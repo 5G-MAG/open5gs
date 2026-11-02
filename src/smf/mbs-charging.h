@@ -48,6 +48,9 @@ bool smf_mbs_charging_enabled(uint64_t *volume_threshold, uint32_t *period);
  * that charging was requested and the MB-UPF cannot do it. */
 ogs_pfcp_urr_t *smf_mbs_sess_charging_urr(smf_mbs_sess_t *mbs_sess);
 
+/* Whether the session has a URR at its MB-UPF (provisioned with the establishment, at an MB-UPF that sets MBSCH) */
+bool smf_mbs_sess_has_charging_urr(smf_mbs_sess_t *mbs_sess);
+
 /* A Usage Report IE of the MB-UPF, from a Session Report Request (Report Type USAR, table 7.5.8.3-1), a Session Deletion
  * Response (table 7.5.7.2-1, trigger TERMR) or a Session Modification Response (table 7.5.5.2-1, trigger IMMER of a Query
  * URR): "URR ID | M", "UR-SEQN | M", "Usage Report Trigger | M", "Start Time | C", "End Time | C" and "Volume Measurement |
