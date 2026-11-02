@@ -965,6 +965,18 @@ static void test_status_notify_ngran_event(void)
         ogs_sbi_request_free(request);
     }
 
+    /* cl. 6.5.6.3.6: "NG_RAN_NOT_REACHABLE": "the AMF has failed to reach the NG-RAN when sending a NGAP MBS Session
+     * Setup/Modification/Release Request message." */
+    request = amf_namf_build_mbs_broadcast_context_status_notify_event(&ctx, &infos, OpenAPI_operation_status_NULL, false,
+            gnb, OpenAPI_ngran_failure_indication_NG_RAN_NOT_REACHABLE);
+    CHECK(request != NULL);
+    if (request) {
+        CHECK(strstr(body_of(request), "\"opEventType\":\"NG_RAN_EVENT\"") != NULL);
+        CHECK(strstr(body_of(request), "\"ngranFailureIndication\":\"NG_RAN_NOT_REACHABLE\"") != NULL);
+        CHECK(strstr(body_of(request), "\"gNBValue\":\"000400\"") != NULL);
+        ogs_sbi_request_free(request);
+    }
+
     ogs_free(gnb);
 }
 

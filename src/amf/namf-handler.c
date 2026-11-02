@@ -2308,6 +2308,19 @@ void amf_namf_handle_mbs_broadcast_response_timeout(uint32_t mbs_context_index)
                 OpenAPI_operation_status_MBS_SESSION_START_INCOMPLETE, false, NULL);
 }
 
+/*
+ * A Broadcast Session Setup, Modification or Release Request could not be sent to \p gnb. TS 29.518 V18.14.0 cl. 5.6.2.2:
+ * "The AMF may send one or more Namf_MBSBroadcast_ContextStatusNotify request including an operationEvents attribute to
+ * report the MB-SMF about failure to reach one or more NG-RANs."; cl. 6.5.6.3.6, NG_RAN_NOT_REACHABLE: "This value
+ * indicates that the AMF has failed to reach the NG-RAN when sending a NGAP MBS Session Setup/Modification/Release Request
+ * message." The other NG-RANs are still sent theirs.
+ */
+static void amf_mbs_context_gnb_not_reached(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb)
+{
+    ogs_error("MBS Broadcast [%s]: gNB %i could not be reached", mbs_context->mbs_context_ref, gnb->gnb_id);
+    amf_sbi_send_mbs_broadcast_ngran_event(mbs_context, gnb, OpenAPI_ngran_failure_indication_NG_RAN_NOT_REACHABLE);
+}
+
 int amf_namf_handle_mbs_broadcast_context_create(
         ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg)
 {
@@ -2514,13 +2527,15 @@ int amf_namf_handle_mbs_broadcast_context_create(
         ogs_pkbuf_t *n2msgreq_copy = ogs_pkbuf_copy(n2msgreq);
         if (!n2msgreq_copy) {
             ogs_error("ogs_pkbuf_copy() failed");
-            break;
+            amf_mbs_context_gnb_not_reached(mbs_context, gnb);
+            continue;
         }
         ogs_debug("Sending N2 MBS SM info to gNB %i", gnb->gnb_id);
         gnb_rv = ngap_send_to_gnb(gnb, n2msgreq_copy, NGAP_NON_UE_SIGNALLING);
         if (gnb_rv != OGS_OK) {
             ogs_error("ngap_send_to_gnb() failed");
-            break;
+            amf_mbs_context_gnb_not_reached(mbs_context, gnb);
+            continue;
         } else {
             ogs_debug("Sent to gnb [%i]", gnb->gnb_id);
             // B-2: how many gNBs the request actually reached, so ngap_handle_broadcast_session_setup_response()
@@ -2933,6 +2948,7 @@ int amf_namf_handle_mbs_broadcast_context_update(
                 ogs_error("MBS Broadcast ContextUpdate: the Broadcast Session Release Request could not be sent to gNB %i",
                         gnb->gnb_id);
                 send_failed = true;
+                amf_mbs_context_gnb_not_reached(mbs_context, gnb);
                 continue;
             }
             if (leaving) {
@@ -2959,14 +2975,16 @@ int amf_namf_handle_mbs_broadcast_context_update(
         if (!n2msgreq_copy) {
             ogs_error("ogs_pkbuf_copy() failed");
             send_failed = true;
-            break;
+            amf_mbs_context_gnb_not_reached(mbs_context, gnb);
+            continue;
         }
         ogs_debug("Sending N2 MBS SM info (ContextUpdate) to gNB %i", gnb->gnb_id);
         gnb_rv = ngap_send_to_gnb(gnb, n2msgreq_copy, NGAP_NON_UE_SIGNALLING);
         if (gnb_rv != OGS_OK) {
             ogs_error("ngap_send_to_gnb() failed");
             send_failed = true;
-            break;
+            amf_mbs_context_gnb_not_reached(mbs_context, gnb);
+            continue;
         } else {
             amf_mbs_gnb_t *involved = NULL;
 
@@ -3292,6 +3310,7 @@ static bool amf_mbs_context_restore_in_gnb(amf_mbs_context_t *mbs_context, amf_g
     if (ngap_send_to_gnb(gnb, n2msgreq, NGAP_NON_UE_SIGNALLING) != OGS_OK) {
         ogs_error("MBS Broadcast [%s]: the Broadcast Session Setup Request could not be sent to gNB %i",
                 mbs_context->mbs_context_ref, gnb->gnb_id);
+        amf_mbs_context_gnb_not_reached(mbs_context, gnb);
         return false;
     }
 
@@ -3497,13 +3516,15 @@ static int amf_mbs_context_send_release(amf_mbs_context_t *mbs_context)
         n2msgreq_copy = ogs_pkbuf_copy(n2msgreq);
         if (!n2msgreq_copy) {
             ogs_error("ogs_pkbuf_copy() failed");
-            break;
+            amf_mbs_context_gnb_not_reached(mbs_context, gnb);
+            continue;
         }
         ogs_debug("Sending N2 MBS Session Release to gNB %i", gnb->gnb_id);
         gnb_rv = ngap_send_to_gnb(gnb, n2msgreq_copy, NGAP_NON_UE_SIGNALLING);
         if (gnb_rv != OGS_OK) {
             ogs_error("ngap_send_to_gnb() failed");
-            break;
+            amf_mbs_context_gnb_not_reached(mbs_context, gnb);
+            continue;
         }
         reached++;
     }
@@ -3699,6 +3720,7 @@ void amf_namf_handle_mbs_broadcast_release_required(amf_mbs_context_t *mbs_conte
     if (!n2msgreq || ngap_send_to_gnb(gnb, n2msgreq, NGAP_NON_UE_SIGNALLING) != OGS_OK) {
         // No release response will come: the NG-RAN has asked for the release and counts as released.
         ogs_error("The Broadcast Session Release Request could not be sent to gNB %i", gnb->gnb_id);
+        amf_mbs_context_gnb_not_reached(mbs_context, gnb);
         involved->released = true;
         amf_mbs_context_required_release_done(mbs_context, gnb, NULL);
     }
