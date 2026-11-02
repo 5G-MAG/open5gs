@@ -1232,8 +1232,16 @@ static int _create_flows(upf_mbs_sess_t *mbs_sess, ogs_pfcp_session_modification
             return OGS_ERROR;
     }
     for (i = 0; i < OGS_ARRAY_SIZE(req->create_far) && req->create_far[i].presence; i++) {
-        ogs_pfcp_far_t *far = ogs_pfcp_handle_create_far(&mbs_sess->pfcp, &req->create_far[i],
-                cause_value, offending_ie_value);
+        ogs_pfcp_far_t *far;
+
+        /* The handler of the Create FAR finds the FAR that a Create PDR made; a FAR that no Create PDR of the request
+         * names (an Update PDR may name it, Table 7.5.4.2-1) is made here. _check_flow_changes() saw it did not exist. */
+        if (!ogs_pfcp_far_find_or_add(&mbs_sess->pfcp, req->create_far[i].far_id.u32)) {
+            *cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+            *offending_ie_value = OGS_PFCP_CREATE_FAR_TYPE;
+            return OGS_ERROR;
+        }
+        far = ogs_pfcp_handle_create_far(&mbs_sess->pfcp, &req->create_far[i], cause_value, offending_ie_value);
 
         if (!far)
             return OGS_ERROR;
@@ -1244,6 +1252,11 @@ static int _create_flows(upf_mbs_sess_t *mbs_sess, ogs_pfcp_session_modification
         }
     }
     for (i = 0; i < OGS_ARRAY_SIZE(req->create_qer) && req->create_qer[i].presence; i++) {
+        if (!ogs_pfcp_qer_find_or_add(&mbs_sess->pfcp, req->create_qer[i].qer_id.u32)) {
+            *cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+            *offending_ie_value = OGS_PFCP_CREATE_QER_TYPE;
+            return OGS_ERROR;
+        }
         if (!ogs_pfcp_handle_create_qer(&mbs_sess->pfcp, &req->create_qer[i], cause_value, offending_ie_value))
             return OGS_ERROR;
     }

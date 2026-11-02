@@ -2160,6 +2160,31 @@ def t_sdf_filter_that_cannot_be_compiled():
         U.delete(s)
 
 
+@test
+def t_create_far_and_qer_that_no_create_pdr_names():
+    """Table 7.5.4.1-1: Create FAR and Create QER are conditional on their own ("shall be present if the CP function
+    requests the UP function to create a new FAR"); a Create PDR need not name them (an Update PDR can)."""
+    r = U.establish(smf_session(0xf1f1))
+    s = accepted(r, 'session of the MB-SMF')
+    try:
+        m = modify(s, far(far_id=7), qer(qer_id=7, qfi=7))
+        assert m and cause(m) == CAUSE_ACCEPTED, 'Create FAR and QER alone: cause %s offending %s' % (cause(m) if m else None, offending(m) if m else None)
+        assert U.alive()
+        # they exist now: the identifiers are in use, and they can be removed
+        m = modify(s, far(far_id=7))
+        assert m and cause(m) == CAUSE_RULE_FAILURE and offending(m) == T_FAR_ID, 'second Create FAR 7: %s/%s' % (cause(m) if m else None, offending(m) if m else None)
+        m = modify(s, ie(T_REMOVE_FAR, [ie(T_FAR_ID, struct.pack('>I', 7))]), ie(T_REMOVE_QER, [ie(T_QER_ID, struct.pack('>I', 7))]))
+        assert m and cause(m) == CAUSE_ACCEPTED, 'Remove: %s/%s' % (cause(m) if m else None, offending(m) if m else None)
+        # a request that fails after the creation takes them out again
+        m = modify(s, far(far_id=7), qer(qer_id=7, qfi=7), ie(T_REMOVE_PDR, [ie(T_PDR_ID, struct.pack('>H', 99))]))
+        assert m and cause(m) == CAUSE_MANDATORY_INCORRECT
+        m = modify(s, far(far_id=7), qer(qer_id=7, qfi=7))
+        assert m and cause(m) == CAUSE_ACCEPTED, 'a failed request left the FAR or QER: %s/%s' % (cause(m) if m else None, offending(m) if m else None)
+        assert tunnel_packet_qfi(r, 5000) == 1
+    finally:
+        U.delete(s)
+
+
 # E-TESTS-BELOW
 
 
