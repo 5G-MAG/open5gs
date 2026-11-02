@@ -600,6 +600,34 @@ static void update_answered(smf_mbs_sess_t *mbs_sess, ogs_sbi_message_t *recvmsg
     free_patch_items(items);
 }
 
+/* The Delete */
+
+bool smf_mbs_pcf_delete_send(smf_mbs_sess_t *mbs_sess, ogs_sbi_stream_t *stream)
+{
+    ogs_assert(mbs_sess);
+    ogs_assert(mbs_sess->pcf_policy_id);
+
+    /* the release goes on without the PCF when it cannot be asked: the consumer is not kept waiting for it */
+    return pcf_send(mbs_sess, SMF_MBS_PCF_OP_DELETE, stream, smf_npcf_mbspolicycontrol_build_delete, NULL);
+}
+
+static void delete_answered(smf_mbs_sess_t *mbs_sess, ogs_sbi_message_t *recvmsg)
+{
+    smf_mbs_pcf_answer_t answer;
+    ogs_sbi_stream_t *stream = pcf_take_stream(mbs_sess);
+
+    smf_mbs_pcf_classify(SMF_MBS_PCF_OP_DELETE, recvmsg->res_status, problem_cause(recvmsg),
+            SMF_MBS_PCF_FAILURE_ACTION_NONE, &answer);
+    if (answer.outcome != SMF_MBS_PCF_OUTCOME_OK)
+        ogs_warn("MBS session mbsSessionRef[%s]: the PCF answered %d [%s] to the deletion of the MBS Policy Association; "
+                "the MBS session is released", mbs_sess->mbs_session_ref, recvmsg->res_status,
+                problem_cause(recvmsg) ? problem_cause(recvmsg) : "");
+
+    ogs_free(mbs_sess->pcf_policy_id);
+    mbs_sess->pcf_policy_id = NULL;
+    smf_nmbsmf_mbs_session_release_continue(mbs_sess, stream);
+}
+
 void smf_mbs_pcf_handle_response(smf_mbs_sess_t *mbs_sess, int xact_state, ogs_sbi_message_t *recvmsg)
 {
     ogs_assert(mbs_sess);
@@ -617,6 +645,9 @@ void smf_mbs_pcf_handle_response(smf_mbs_sess_t *mbs_sess, int xact_state, ogs_s
         break;
     case SMF_MBS_PCF_OP_UPDATE:
         update_answered(mbs_sess, recvmsg);
+        break;
+    case SMF_MBS_PCF_OP_DELETE:
+        delete_answered(mbs_sess, recvmsg);
         break;
     default:
         ogs_error("MBS session mbsSessionRef[%s]: unknown exchange with the PCF", mbs_sess->mbs_session_ref);
@@ -653,6 +684,12 @@ void smf_mbs_pcf_timeout(ogs_pool_id_t mbs_sess_id, int serial)
         if (stream)
             ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_GATEWAY_TIMEOUT, NULL, "Cannot receive SBI message",
                     "Requested MBS Session Update failed, the PCF did not answer", NULL);
+        break;
+    case SMF_MBS_PCF_OP_DELETE:
+        /* no answer: the MBS session is released, the association is left to the PCF */
+        ogs_free(mbs_sess->pcf_policy_id);
+        mbs_sess->pcf_policy_id = NULL;
+        smf_nmbsmf_mbs_session_release_continue(mbs_sess, stream);
         break;
     default:
         break;

@@ -120,6 +120,10 @@ bool smf_nmbsmf_handle_mbs_session_release(
  * Establishment, whose answer is the answer to the consumer on \p stream. */
 void smf_nmbsmf_mbs_session_create_continue(smf_mbs_sess_t *mbs_sess, ogs_sbi_stream_t *stream);
 
+/* The release of an MBS session once the MBS Policy Association is deleted (or none was made): the AMFs, the MB-UPF, and
+ * the answer to the consumer on \p stream, which is NULL when the consumer is gone. */
+void smf_nmbsmf_mbs_session_release_continue(smf_mbs_sess_t *mbs_sess, ogs_sbi_stream_t *stream);
+
 /* The Update applied to the session, the MB-UPF and the AMFs, answered on \p stream (message is for the problem
  * details and may be NULL). Returns false when the consumer was answered with an error. */
 bool smf_nmbsmf_mbs_session_patch_apply(smf_mbs_sess_t *mbs_sess, ogs_sbi_stream_t *stream,

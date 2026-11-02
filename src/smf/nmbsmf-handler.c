@@ -1222,38 +1222,14 @@ void smf_nmbsmf_mbs_session_create_continue(smf_mbs_sess_t *mbs_sess, ogs_sbi_st
     smf_5gc_pfcp_n4mb_send_session_establishment_request(mbs_sess, 0, stream);
 }
 
-/*
- * 3GPP TS 29.532 - Release 17.4.0
- * 5G System; 5G Multicast-Broadcast Session Management Services; Stage 3
- * Ch. 5.3.2.4 - Nmbsmf_MBSSession Service - MBS Session Release service operation
- */
-bool smf_nmbsmf_handle_mbs_session_release(
-    smf_mbs_sess_t *mbs_sess, ogs_sbi_stream_t *stream, ogs_sbi_message_t *message)
+/* The release of an MBS session once the MBS Policy Association is deleted (or none was made): the AMFs, the MB-UPF,
+ * and the answer to the consumer on \p stream (NULL when it is gone) */
+void smf_nmbsmf_mbs_session_release_continue(smf_mbs_sess_t *mbs_sess, ogs_sbi_stream_t *stream)
 {
-    // TODO (borieher): Not handling the 307 Temporary Redirect and 308 Permanent Redirect errors for now
-    ogs_debug("MBS Session release request received");
-
     ogs_sbi_message_t sendmsg;
     ogs_sbi_response_t *response = NULL;
 
-    ogs_assert(stream);
-    ogs_assert(message);
     ogs_assert(mbs_sess);
-
-        // Idempotent: only the first Release call triggers the AMF and UPF release chain, and a duplicate
-        // replies 204 without touching mbs_sess again, which may already be mid-teardown or freed by then.
-        // MBSF's delete-cascade can send up to three Nmbsmf_MBSSession Release requests for the same session
-        // at the same instant, and without this they run concurrently against one still-live mbs_sess.
-    if (mbs_sess->release_triggered) {
-        ogs_warn("MBS Session release requested again for an already-releasing session -- ignoring "
-                "duplicate (mbsSessionRef[%s])", mbs_sess->mbs_session_ref);
-        memset(&sendmsg, 0, sizeof(sendmsg));
-        response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
-        ogs_assert(response);
-        ogs_assert(true == ogs_sbi_server_send_response(stream, response));
-        return true;
-    }
-    mbs_sess->release_triggered = true;
 
     /* TS 29.532 V18.6.0 cl. 5.3.2.8.1: the subscribers are told "the new broadcast delivery status (e.g. the MBS
      * session has been STARTED or TERMINATED)" */
@@ -1291,6 +1267,10 @@ bool smf_nmbsmf_handle_mbs_session_release(
      * Send HTTP_STATUS_NO_CONTENT (/nmbsmf-mbssession/v1/mbs-sessions) to the consumer NF
      *********************************************************************/
 
+    /* the consumer may be gone while the PCF was asked */
+    if (!stream)
+        return;
+
     memset(&sendmsg, 0, sizeof(sendmsg));
 
     response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
@@ -1298,6 +1278,60 @@ bool smf_nmbsmf_handle_mbs_session_release(
     ogs_assert(response);
 
     ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+
+}
+
+/*
+ * 3GPP TS 29.532 - Release 17.4.0
+ * 5G System; 5G Multicast-Broadcast Session Management Services; Stage 3
+ * Ch. 5.3.2.4 - Nmbsmf_MBSSession Service - MBS Session Release service operation
+ */
+bool smf_nmbsmf_handle_mbs_session_release(
+    smf_mbs_sess_t *mbs_sess, ogs_sbi_stream_t *stream, ogs_sbi_message_t *message)
+{
+    // TODO (borieher): Not handling the 307 Temporary Redirect and 308 Permanent Redirect errors for now
+    ogs_debug("MBS Session release request received");
+
+    ogs_sbi_message_t sendmsg;
+    ogs_sbi_response_t *response = NULL;
+
+    ogs_assert(stream);
+    ogs_assert(message);
+    ogs_assert(mbs_sess);
+
+        // Idempotent: only the first Release call triggers the AMF and UPF release chain, and a duplicate
+        // replies 204 without touching mbs_sess again, which may already be mid-teardown or freed by then.
+        // MBSF's delete-cascade can send up to three Nmbsmf_MBSSession Release requests for the same session
+        // at the same instant, and without this they run concurrently against one still-live mbs_sess.
+    if (mbs_sess->release_triggered) {
+        ogs_warn("MBS Session release requested again for an already-releasing session -- ignoring "
+                "duplicate (mbsSessionRef[%s])", mbs_sess->mbs_session_ref);
+        memset(&sendmsg, 0, sizeof(sendmsg));
+        response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
+        ogs_assert(response);
+        ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+        return true;
+    }
+    /* The MBS Policy Association is being created or updated at the PCF: the release waits for the answer, which the
+     * consumer asks again for. TS 29.500 V18.10.0 table 5.2.7.2-1, row SYSTEM_FAILURE, "500 Internal Server Error": "The
+     * request is rejected due to generic error condition in the NF." (no clause names a cause for this case) */
+    if (mbs_sess->pcf_pending) {
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR, message,
+                "Internal Server Error", "Requested MBS Session Release failed, the MBS policy of the MBS session is "
+                "being negotiated with the PCF", NMBSMF_MBSSESSION_SYSTEM_FAILURE);
+        return false;
+    }
+
+    mbs_sess->release_triggered = true;
+
+    /* TS 23.247 V18.8.0 clause 7.1.1.5 (MBS Session Deletion with PCC): "The MB-SMF sends the Npcf_MBSPolicyControl_Delete
+     * Request to request the deletion of the SM Policy Association with the PCF.", then steps "Same as steps 5-14 in
+     * Figure 7.1.1.4-1": the release of the AMFs and the MB-UPF, and the answer to the consumer. The release goes on
+     * whatever the PCF answers. */
+    if (mbs_sess->pcf_policy_id && smf_mbs_pcf_delete_send(mbs_sess, stream))
+        return true;
+
+    smf_nmbsmf_mbs_session_release_continue(mbs_sess, stream);
 
     return true;
 }

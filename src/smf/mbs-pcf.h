@@ -78,6 +78,11 @@ bool smf_mbs_pcf_update_send(smf_mbs_sess_t *mbs_sess, ogs_sbi_stream_t *stream,
  * smf_mbs_pcf_handle_response(). */
 bool smf_mbs_pcf_create_send(smf_mbs_sess_t *mbs_sess, ogs_sbi_stream_t *stream);
 
+/* Starts Npcf_MBSPolicyControl_Delete for the session whose Release request waits on \p stream. The release goes on when
+ * the PCF has answered (or not, in time). Returns false when the exchange could not be started: nothing has been
+ * answered, the caller goes on with the release. */
+bool smf_mbs_pcf_delete_send(smf_mbs_sess_t *mbs_sess, ogs_sbi_stream_t *stream);
+
 /* The answer of the PCF to the request in flight of the session (the SBI response event) */
 void smf_mbs_pcf_handle_response(smf_mbs_sess_t *mbs_sess, int xact_state, ogs_sbi_message_t *recvmsg);
 

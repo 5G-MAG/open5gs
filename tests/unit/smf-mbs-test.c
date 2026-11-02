@@ -3963,6 +3963,25 @@ static void test_mbs_pcf_update(void)
     smf_mbs_sess_release(mbs_sess);
 }
 
+/* TS 23.247 V18.8.0 clause 7.1.1.5: the release of the MBS session goes on after the Npcf_MBSPolicyControl_Delete,
+ * also when the consumer that asked for it is gone (no stream to answer) */
+static void test_mbs_pcf_release_continue(void)
+{
+    smf_mbs_sess_t *mbs_sess = make_session(serv_info_2_text, area_1_text);
+    ogs_pool_id_t id;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+
+    id = mbs_sess->id;
+    mbs_sess->pfcp_node = NULL;
+    mbs_sess->pcf_policy_id = ogs_strdup("42");
+    mbs_sess->release_triggered = true;
+    CHECK(smf_mbs_sess_find_by_id(id) == mbs_sess);
+    smf_nmbsmf_mbs_session_release_continue(mbs_sess, NULL);
+    CHECK(smf_mbs_sess_find_by_id(id) == NULL);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -4018,6 +4037,7 @@ int main(void)
     test_mbs_pcf_classify();
     test_mbs_pcf_create_request();
     test_mbs_pcf_update();
+    test_mbs_pcf_release_continue();
 
     printf("smf-mbs: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
