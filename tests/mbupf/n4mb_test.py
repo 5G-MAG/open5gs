@@ -3010,6 +3010,60 @@ def t_far_node_failure_is_not_a_success_cause():
         U.restart()
 
 
+SHIM_C = r"""
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <sys/socket.h>
+/* The first N reads with MSG_DONTWAIT (N is MBUPF_FAIL_RECV) find nothing, as a read does when the kernel dropped the datagram
+ * after the wake-up of the poll: -1, EAGAIN. The datagram stays queued, so the poll wakes again. */
+ssize_t recv(int fd, void *buf, size_t len, int flags)
+{
+    static ssize_t (*real)(int, void *, size_t, int);
+    static int left = -1;
+    if (!real)
+        real = dlsym(RTLD_NEXT, "recv");
+    if (left < 0)
+        left = getenv("MBUPF_FAIL_RECV") ? atoi(getenv("MBUPF_FAIL_RECV")) : 0;
+    if ((flags & MSG_DONTWAIT) && left > 0) {
+        left--;
+        errno = EAGAIN;
+        return -1;
+    }
+    return real(fd, buf, len, flags);
+}
+"""
+
+
+@test
+def t_tunnel_read_that_returns_nothing_is_not_a_packet():
+    """A read of the N6mb tunnel socket that returns -1 (the datagram was dropped by the kernel after the wake-up of the poll) is not a
+    packet of length 2^64-1 (the length was kept in a size_t) and the buffer is given back."""
+    d = tempfile.mkdtemp(prefix='mbupf-shim-')
+    src, lib = os.path.join(d, 'shim.c'), os.path.join(d, 'shim.so')
+    open(src, 'w').write(SHIM_C)
+    subprocess.run(['gcc', '-shared', '-fPIC', '-o', lib, src, '-ldl'], check=True)
+    U.stop()
+    os.environ['LD_PRELOAD'] = lib
+    os.environ['MBUPF_FAIL_RECV'] = '3'
+    try:
+        U.start()
+    finally:
+        del os.environ['LD_PRELOAD']
+        del os.environ['MBUPF_FAIL_RECV']
+    try:
+        r = U.establish(smf_session(0xfd01))
+        s = accepted(r, 'session of the MB-SMF')
+        try:
+            assert tunnel_packet_qfi(r, 5000) == 1, 'the packet behind three reads that found nothing was lost'
+            assert U.alive(), 'the daemon stopped after a read that returned -1'
+        finally:
+            U.delete(s)
+    finally:
+        U.restart()
+
+
 # E-TESTS-BELOW
 
 

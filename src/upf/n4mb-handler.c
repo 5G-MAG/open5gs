@@ -1800,7 +1800,7 @@ static void _mbs_tunnel_poll_handler(short when, ogs_socket_t fd, void *data)
     upf_mbs_sess_t *mbs_sess = data;
     ogs_pkbuf_t *buf;
     void *data_buf;
-    size_t read_bytes;
+    ssize_t read_bytes;
 
     buf = ogs_pkbuf_alloc(mbs_sess->udp_tunnel_pkbuf_pool, mbs_sess->udp_tunnel_mtu + OGS_GTPV1U_5GC_HEADER_LEN);
     ogs_pkbuf_reserve(buf, OGS_GTPV1U_5GC_HEADER_LEN); /* reserve space to add GTP-U headers later */
@@ -1812,6 +1812,9 @@ static void _mbs_tunnel_poll_handler(short when, ogs_socket_t fd, void *data)
         ogs_pkbuf_trim(buf, read_bytes);
         /* call pkbuf processing routine for incoming N6mb/N9mb */
         upf_gtpv1_receive_buffer_for_mbs_sess(buf, mbs_sess);
+    } else {
+        /* nothing to read (the datagram was dropped by the kernel after the wake-up, e.g. a wrong checksum) or an error */
+        ogs_pkbuf_free(buf);
     }
 }
 
