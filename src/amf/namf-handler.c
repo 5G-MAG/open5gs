@@ -3602,10 +3602,8 @@ static int amf_mbs_context_send_release(amf_mbs_context_t *mbs_context)
 
     // NGAP BROADCAST SESSION RELEASE REQUEST message
     n2msgreq = ngap_build_broadcast_session_release_request(mbs_context);
-    if (!n2msgreq) {
+    if (!n2msgreq)
         ogs_error("The Broadcast Session Release Request could not be built");
-        return 0;
-    }
 
         // Each gNB gets its own copy and the shared template is freed once after the loop, for the ownership
         // reason given in amf_namf_handle_mbs_broadcast_context_create()'s send loop above.
@@ -3630,9 +3628,12 @@ static int amf_mbs_context_send_release(amf_mbs_context_t *mbs_context)
             continue;
         }
 
-        n2msgreq_copy = ogs_pkbuf_copy(n2msgreq);
+        // A request that cannot be built reaches none of the gNBs it was to be sent to (TS 29.518 V18.14.0 cl. 5.6.2.4:
+        // "The AMF may send one or more Namf_MBSBroadcast_ContextStatusNotify request including an operationEvents
+        // attribute to report the MB-SMF about failure to reach one or more NG-RANs.").
+        n2msgreq_copy = n2msgreq ? ogs_pkbuf_copy(n2msgreq) : NULL;
         if (!n2msgreq_copy) {
-            ogs_error("ogs_pkbuf_copy() failed");
+            ogs_error("The Broadcast Session Release Request for gNB %i could not be made", gnb->gnb_id);
             amf_mbs_context_gnb_not_reached(mbs_context, gnb);
             continue;
         }
@@ -3646,7 +3647,8 @@ static int amf_mbs_context_send_release(amf_mbs_context_t *mbs_context)
         involved->release_sent = true;
         reached++;
     }
-    ogs_pkbuf_free(n2msgreq);
+    if (n2msgreq)
+        ogs_pkbuf_free(n2msgreq);
 
     return reached;
 }
