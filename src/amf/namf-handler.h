@@ -63,6 +63,9 @@ int amf_namf_handle_mbs_broadcast_context_delete(
 int amf_namf_handle_mbs_broadcast_context_update(
         ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg);
 
+/* Whether \p list, an mbsServiceAreaInfoList, has 1 to 256 items with distinct Area Session IDs in 0..65535 */
+bool amf_namf_area_info_list_is_valid(const OpenAPI_list_t *list);
+
 /* Whether \p tmgi is present and has an MBS Service ID of six hexadecimal digits and a PLMN of 3 + 2 or 3 digits */
 bool amf_namf_tmgi_is_valid(const OpenAPI_tmgi_t *tmgi);
 

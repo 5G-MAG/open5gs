@@ -946,13 +946,15 @@ typedef struct amf_mbs_context_s {
     ogs_mbs_service_area_t *mbs_service_area; /* NULL if the request instead used mbsServiceAreaInfoList */
 
     /*
-     * mbsServiceAreaInfoList's own single entry -- this MB-SMF's northbound schema carries at most one
-     * Area Session ID per session (see that repo's own smf_nmbsmf_handle_mbs_session_create() comment,
-     * TS 29.532 cl.5.3.2.2.1), so at most one entry is ever forwarded here. location_dependent is false
-     * (and this is unused) when the request instead used mbsServiceArea.
+     * mbsServiceAreaInfoList of the request: the Area Session IDs and their MBS service areas of a location dependent
+     * session (TS 29.518 V18.14.0 Table 6.5.6.2.2-1: "List of MBS service areas and their related Area Session IDs", 1..N),
+     * kept in the order received; items are amf_mbs_area_item_t. location_dependent is false (and the list empty) when
+     * the request instead used mbsServiceArea. mbs_service_area is then the union of the areas of the items, which the
+     * choice of the NG-RANs uses. area_session_id is the ID of the first item.
      */
     bool location_dependent;
     uint16_t area_session_id;
+    ogs_list_t area_items;
 
     /*
      * BUG FIX: Namf_MBSBroadcast_ContextCreate used to send its 201 Created SBI response
@@ -1247,12 +1249,22 @@ typedef struct amf_mbs_area_undo_s {
     bool applied;                       /* amf_mbs_context_apply_area() has been called, and not undone or kept */
     ogs_mbs_service_area_t *old_area;   /* the area replaced, owned here; NULL if none was replaced */
     bool replaced;                      /* the area was replaced */
+    ogs_list_t old_items;               /* the items replaced, owned here */
+    bool items_replaced;
     bool old_location_dependent;
     uint16_t old_area_session_id;
 } amf_mbs_area_undo_t;
 
+/* One Area Session ID of a location dependent session and its MBS service area (NULL when the request gave none) */
+typedef struct amf_mbs_area_item_s {
+    ogs_lnode_t lnode;
+    uint16_t area_session_id;
+    ogs_mbs_service_area_t *area;
+} amf_mbs_area_item_t;
+
+void amf_mbs_area_items_free(ogs_list_t *items);
 void amf_mbs_context_apply_area(amf_mbs_context_t *amf_mbs_context, ogs_mbs_service_area_t *new_area,
-        bool set_location_dependent, uint16_t area_session_id, amf_mbs_area_undo_t *undo);
+        ogs_list_t *new_items, amf_mbs_area_undo_t *undo);
 void amf_mbs_context_undo_area(amf_mbs_context_t *amf_mbs_context, amf_mbs_area_undo_t *undo);
 void amf_mbs_context_keep_area(amf_mbs_area_undo_t *undo);
 void amf_mbs_n2_info_free(amf_mbs_n2_info_t *n2_info);

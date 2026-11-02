@@ -221,18 +221,35 @@ amf_mbs_gnb_t *amf_mbs_context_find_stale_involved_gnb(amf_mbs_context_t *amf_mb
     return NULL;
 }
 
+/* Frees the items of \p items and empties it */
+void amf_mbs_area_items_free(ogs_list_t *items)
+{
+    amf_mbs_area_item_t *item = NULL, *next = NULL;
+
+    ogs_assert(items);
+
+    ogs_list_for_each_safe(items, next, item) {
+        ogs_list_remove(items, item);
+        if (item->area)
+            ogs_mbs_service_area_free(item->area);
+        ogs_free(item);
+    }
+}
+
 /*
- * Makes \p new_area (when not NULL) the service area of the context, and, when \p set_location_dependent, the context
- * a location dependent one with \p area_session_id. \p undo takes the earlier values; the caller ends with
- * amf_mbs_context_undo_area() or amf_mbs_context_keep_area(). \p new_area is owned by the context from here.
+ * Makes \p new_area (when not NULL) the service area of the context, and, when \p new_items is not empty, the items of
+ * \p new_items its Area Session IDs (the items move to the context, the list is left empty) and the context a location
+ * dependent one. \p undo takes the earlier values; the caller ends with amf_mbs_context_undo_area() or
+ * amf_mbs_context_keep_area(). \p new_area is owned by the context from here.
  */
 void amf_mbs_context_apply_area(amf_mbs_context_t *amf_mbs_context, ogs_mbs_service_area_t *new_area,
-        bool set_location_dependent, uint16_t area_session_id, amf_mbs_area_undo_t *undo)
+        ogs_list_t *new_items, amf_mbs_area_undo_t *undo)
 {
     ogs_assert(amf_mbs_context);
     ogs_assert(undo);
 
     memset(undo, 0, sizeof(*undo));
+    ogs_list_init(&undo->old_items);
     undo->applied = true;
     undo->old_location_dependent = amf_mbs_context->location_dependent;
     undo->old_area_session_id = amf_mbs_context->area_session_id;
@@ -242,13 +259,19 @@ void amf_mbs_context_apply_area(amf_mbs_context_t *amf_mbs_context, ogs_mbs_serv
         undo->replaced = true;
         amf_mbs_context->mbs_service_area = new_area;
     }
-    if (set_location_dependent) {
+    if (new_items && !ogs_list_empty(new_items)) {
+        amf_mbs_area_item_t *first = (amf_mbs_area_item_t *)ogs_list_first(new_items);
+
+        undo->old_items = amf_mbs_context->area_items;
+        undo->items_replaced = true;
+        amf_mbs_context->area_items = *new_items;
+        ogs_list_init(new_items);
         amf_mbs_context->location_dependent = true;
-        amf_mbs_context->area_session_id = area_session_id;
+        amf_mbs_context->area_session_id = first->area_session_id;
     }
 }
 
-/* Puts back what amf_mbs_context_apply_area() replaced, and frees the area that was applied */
+/* Puts back what amf_mbs_context_apply_area() replaced, and frees what was applied */
 void amf_mbs_context_undo_area(amf_mbs_context_t *amf_mbs_context, amf_mbs_area_undo_t *undo)
 {
     ogs_assert(amf_mbs_context);
@@ -260,6 +283,10 @@ void amf_mbs_context_undo_area(amf_mbs_context_t *amf_mbs_context, amf_mbs_area_
     if (undo->replaced) {
         ogs_mbs_service_area_free(amf_mbs_context->mbs_service_area);
         amf_mbs_context->mbs_service_area = undo->old_area;
+    }
+    if (undo->items_replaced) {
+        amf_mbs_area_items_free(&amf_mbs_context->area_items);
+        amf_mbs_context->area_items = undo->old_items;
     }
     amf_mbs_context->location_dependent = undo->old_location_dependent;
     amf_mbs_context->area_session_id = undo->old_area_session_id;
@@ -273,6 +300,8 @@ void amf_mbs_context_keep_area(amf_mbs_area_undo_t *undo)
 
     if (undo->old_area)
         ogs_mbs_service_area_free(undo->old_area);
+    if (undo->items_replaced)
+        amf_mbs_area_items_free(&undo->old_items);
     memset(undo, 0, sizeof(*undo));
 }
 
@@ -3430,6 +3459,7 @@ void amf_mbs_context_remove(amf_mbs_context_t *amf_mbs_context)
         ogs_free(amf_mbs_context->mbs_context_ref);
     if (amf_mbs_context->mbs_service_area)
         ogs_mbs_service_area_free(amf_mbs_context->mbs_service_area);
+    amf_mbs_area_items_free(&amf_mbs_context->area_items);
     amf_mbs_n2_info_remove_all(&amf_mbs_context->pending_n2_info_list);
     if (amf_mbs_context->n2_mbs_sm_request)
         ogs_pkbuf_free(amf_mbs_context->n2_mbs_sm_request);

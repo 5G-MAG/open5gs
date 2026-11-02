@@ -2311,6 +2311,59 @@ void amf_namf_handle_mbs_broadcast_response_timeout(uint32_t mbs_context_index)
 }
 
 /*
+ * Whether \p list, the mbsServiceAreaInfoList of a request, can be applied: it has 1 to 256 items (TS 29.518 V18.14.0
+ * Table 6.5.6.2.2-1: "array(MbsServiceAreaInfo) ... 1..N"; TS 38.413 V18.11.0 clause 9.3.1.208: "maxnoofMBSServiceAreaInformation
+ * ... Value is 256" for the MBS Service Area Information Location Dependent List the AMF sends), each Area Session ID is in
+ * 0..65535 (TS 29.571 AreaSessionId, Uint16; TS 38.413 MBS-AreaSessionID ::= INTEGER (0..65535, ...)) and no ID is used twice
+ * (TS 23.247 V18.8.0 clause 6.2.3: "MB-SMF allocates Area Session ID for each MBS services area which is unique within the
+ * MBS session.").
+ */
+bool amf_namf_area_info_list_is_valid(const OpenAPI_list_t *list)
+{
+    OpenAPI_lnode_t *node = NULL, *other = NULL;
+
+    if (!list || list->count < 1 || list->count > 256)
+        return false;
+
+    OpenAPI_list_for_each(list, node) {
+        const OpenAPI_mbs_service_area_info_t *info = node->data;
+
+        if (!info || info->area_session_id < 0 || info->area_session_id > 65535)
+            return false;
+        for (other = node->next; other; other = other->next) {
+            const OpenAPI_mbs_service_area_info_t *o = other->data;
+
+            if (o && o->area_session_id == info->area_session_id)
+                return false;
+        }
+    }
+
+    return true;
+}
+
+/*
+ * Parses a validated mbsServiceAreaInfoList into \p items (an amf_mbs_area_item_t per entry, in order) and adds the
+ * areas of all its entries to \p union_area, which the choice of the NG-RANs uses.
+ */
+static void amf_namf_parse_area_info_list(const OpenAPI_list_t *list, ogs_list_t *items, ogs_mbs_service_area_t **union_area)
+{
+    OpenAPI_lnode_t *node = NULL;
+
+    OpenAPI_list_for_each(list, node) {
+        OpenAPI_mbs_service_area_info_t *info = node->data;
+        amf_mbs_area_item_t *item = ogs_calloc(1, sizeof(*item));
+
+        ogs_assert(item);
+        item->area_session_id = (uint16_t)info->area_session_id;
+        if (info->mbs_service_area) {
+            amf_namf_parse_mbs_service_area(&item->area, info->mbs_service_area);
+            amf_namf_parse_mbs_service_area(union_area, info->mbs_service_area);
+        }
+        ogs_list_add(items, item);
+    }
+}
+
+/*
  * Whether \p tmgi can be used as the TMGI of an MBS session: the MBS Service ID is six hexadecimal digits and the PLMN
  * is an MCC of three digits and an MNC of two or three. The OpenAPI model does not check that the object, or its members,
  * are present (TS 29.571 R17 TS29571_CommonData.yaml, Tmgi: "mbsServiceId" with pattern '^[A-Fa-f0-9]{6}$', both members
@@ -2463,6 +2516,16 @@ int amf_namf_handle_mbs_broadcast_context_create(
         goto cleanup;
     }
 
+    if (ContextCreateReqData->mbs_service_area_info_list &&
+            !amf_namf_area_info_list_is_valid(ContextCreateReqData->mbs_service_area_info_list)) {
+        ogs_error("MBS Broadcast ContextCreate: mbsServiceAreaInfoList is not valid");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request",
+            "Requested MBS Broadcast ContextCreate failed, [mbsServiceAreaInfoList] must hold 1 to 256 entries with distinct Area Session IDs", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
     if (!amf_namf_tmgi_is_valid(ContextCreateReqData->mbs_session_id->tmgi)) {
         ogs_error("MBS Broadcast ContextCreate: mbsSessionId carries no valid TMGI");
         ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
@@ -2515,24 +2578,15 @@ int amf_namf_handle_mbs_broadcast_context_create(
         if (!mbs_context->mbs_service_area)
             ogs_warn("MBS Broadcast ContextCreate: mbsServiceArea carried neither a TAI nor an NCGI; "
                     "NGAP will fall back to all connected gNBs");
-    } else if (ContextCreateReqData->mbs_service_area_info_list &&
-            ContextCreateReqData->mbs_service_area_info_list->count > 0) {
-                // At most one Area Session ID per session reaches here: this MB-SMF's northbound schema carries at
-                // most one (TS 29.532 cl.5.3.2.2.1), so the first entry is the only one.
-        OpenAPI_lnode_t *info_node = ContextCreateReqData->mbs_service_area_info_list->first;
-        OpenAPI_mbs_service_area_info_t *api_info = (OpenAPI_mbs_service_area_info_t *)info_node->data;
-
+    } else if (ContextCreateReqData->mbs_service_area_info_list) {
+                // TS 29.518 V18.14.0 cl. 5.6.2.2 lists, among the content of the POST request, "list of Area Session ID and
+                // related MBS service area, for a Location dependent broadcast MBS service". Every entry is kept (the
+                // list was validated above); the NG-RAN gets them all in one message (TS 23.247 V18.8.0 cl. 7.3.4: "which
+                // additionally includes the Area Session IDs and MBS service areas").
         mbs_context->location_dependent = true;
-        mbs_context->area_session_id = (uint16_t)api_info->area_session_id;
-
-        if (api_info->mbs_service_area)
-            amf_namf_parse_mbs_service_area(&mbs_context->mbs_service_area, api_info->mbs_service_area);
-
-        if (ContextCreateReqData->mbs_service_area_info_list->count > 1) {
-            ogs_warn("MBS Broadcast ContextCreate: mbsServiceAreaInfoList carries more than one entry "
-                    "(%ld); this AMF only supports one Area Session ID per session, using the first",
-                    ContextCreateReqData->mbs_service_area_info_list->count);
-        }
+        amf_namf_parse_area_info_list(ContextCreateReqData->mbs_service_area_info_list,
+                &mbs_context->area_items, &mbs_context->mbs_service_area);
+        mbs_context->area_session_id = ((amf_mbs_area_item_t *)ogs_list_first(&mbs_context->area_items))->area_session_id;
     }
 
     // TS 23.527 V18.6.0 cl. 8.3.2.2 step 1: the AMF keeps the last N2 MBS SM container, for the restoration of the
@@ -2765,8 +2819,7 @@ int amf_namf_handle_mbs_broadcast_context_update(
     amf_gnb_t *gnb = NULL;
     amf_mbs_update_plan_t plan;
     ogs_mbs_service_area_t *new_area = NULL;    /* the service area of the request, applied once it is accepted */
-    bool set_location_dependent = false;
-    uint16_t new_area_session_id = 0;
+    ogs_list_t new_items;                       /* its Area Session IDs, when it carries the list */
     amf_mbs_area_undo_t area_undo;              /* what applying it replaced */
     bool has_service_area = false;
     int unaffected = 0;
@@ -2780,6 +2833,7 @@ int amf_namf_handle_mbs_broadcast_context_update(
 
     memset(&plan, 0, sizeof(plan));
     memset(&area_undo, 0, sizeof(area_undo));
+    ogs_list_init(&new_items);
 
     mbs_context_ref = recvmsg->h.resource.component[1];
     if (!mbs_context_ref) {
@@ -2832,6 +2886,15 @@ int amf_namf_handle_mbs_broadcast_context_update(
         rv = OGS_ERROR;
         goto cleanup;
     }
+    if (ContextUpdateReqData->mbs_service_area_info_list &&
+            !amf_namf_area_info_list_is_valid(ContextUpdateReqData->mbs_service_area_info_list)) {
+        ogs_error("MBS Broadcast ContextUpdate: mbsServiceAreaInfoList is not valid");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request",
+            "Requested MBS Broadcast ContextUpdate failed, [mbsServiceAreaInfoList] must hold 1 to 256 entries with distinct Area Session IDs", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
     has_service_area = ContextUpdateReqData->mbs_service_area ||
         ContextUpdateReqData->mbs_service_area_info_list;
 
@@ -2847,30 +2910,10 @@ int amf_namf_handle_mbs_broadcast_context_update(
                     "NGAP will use whatever service area was previously stored, or fall back further");
     } else if (has_service_area && ContextUpdateReqData->mbs_service_area_info_list &&
             ContextUpdateReqData->mbs_service_area_info_list->count > 0) {
-                // mbsServiceAreaInfoList updates the stored service area rather than only warning.
-                // TS 29.518 V18.14.0 cl.5.6.2.3 lets the NF Service Consumer change the MBS Service Area through
-                // ContextUpdate, and this IE is one of the two mutually-exclusive ways to carry it (see the check
-                // above). Handled as ContextCreate handles the same IE, under the same one-entry northbound-schema
-                // constraint.
-        OpenAPI_lnode_t *info_node = ContextUpdateReqData->mbs_service_area_info_list->first;
-        OpenAPI_mbs_service_area_info_t *api_info = (OpenAPI_mbs_service_area_info_t *)info_node->data;
-
-        set_location_dependent = true;
-        new_area_session_id = (uint16_t)api_info->area_session_id;
-
-        if (api_info->mbs_service_area) {
-            amf_namf_parse_mbs_service_area(&new_area, api_info->mbs_service_area);
-            if (!new_area)
-                ogs_warn("MBS Broadcast ContextUpdate: mbsServiceAreaInfoList's own mbsServiceArea "
-                        "carried neither a TAI nor an NCGI; NGAP will use whatever service area was "
-                        "previously stored, or fall back further");
-        }
-
-        if (ContextUpdateReqData->mbs_service_area_info_list->count > 1) {
-            ogs_warn("MBS Broadcast ContextUpdate: mbsServiceAreaInfoList carries more than one entry "
-                    "(%ld); this AMF only supports one Area Session ID per session, using the first",
-                    ContextUpdateReqData->mbs_service_area_info_list->count);
-        }
+                // mbsServiceAreaInfoList replaces the Area Session IDs and their areas (TS 29.518 V18.14.0 cl. 5.6.2.3:
+                // "updated list of Area Session ID and related MBS service area, for a Location dependent broadcast MBS
+                // session."), as ContextCreate takes the list; it was validated above.
+        amf_namf_parse_area_info_list(ContextUpdateReqData->mbs_service_area_info_list, &new_items, &new_area);
     } else if (has_service_area) {
         // mbsServiceAreaInfoList present but empty -- genuinely nothing to apply, distinct from the
         // real forwarding case just above.
@@ -2923,7 +2966,7 @@ int amf_namf_handle_mbs_broadcast_context_update(
 
     // The request is valid: its service area is applied. Until amf_mbs_update_accept() keeps it, every exit that
     // refuses the update puts the earlier service area back (all or none).
-    amf_mbs_context_apply_area(mbs_context, new_area, set_location_dependent, new_area_session_id, &area_undo);
+    amf_mbs_context_apply_area(mbs_context, new_area, &new_items, &area_undo);
     new_area = NULL;
     plan.old_area = area_undo.replaced ? area_undo.old_area : mbs_context->mbs_service_area;
 
@@ -3095,6 +3138,7 @@ cleanup:
     amf_mbs_context_undo_area(mbs_context, &area_undo);
     if (new_area)
         ogs_mbs_service_area_free(new_area);
+    amf_mbs_area_items_free(&new_items);
     if (rv == OGS_OK)
         return true;
     else

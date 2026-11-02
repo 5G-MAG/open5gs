@@ -1026,13 +1026,24 @@ static void test_area_apply_undo(void)
     ctx.area_session_id = 0;
 
     /* applied, then refused: the old area, and the old location dependence, are back; the new area is freed */
-    amf_mbs_context_apply_area(&ctx, new_area, true, 13, &undo);
+    {
+        ogs_list_t items;
+        amf_mbs_area_item_t *item = ogs_calloc(1, sizeof(*item));
+
+        item->area_session_id = 13;
+        ogs_list_init(&items);
+        ogs_list_add(&items, item);
+        amf_mbs_context_apply_area(&ctx, new_area, &items, &undo);
+        CHECK(ogs_list_empty(&items));          /* the items moved to the context */
+    }
     CHECK(ctx.mbs_service_area == new_area);
     CHECK(ctx.location_dependent && ctx.area_session_id == 13);
+    CHECK(ogs_list_count(&ctx.area_items) == 1);
     CHECK(undo.old_area == old_area);
     amf_mbs_context_undo_area(&ctx, &undo);
     CHECK(ctx.mbs_service_area == old_area);
     CHECK(!ctx.location_dependent && ctx.area_session_id == 0);
+    CHECK(ogs_list_empty(&ctx.area_items));
     CHECK(!undo.applied);
     /* a second undo does nothing */
     amf_mbs_context_undo_area(&ctx, &undo);
@@ -1040,7 +1051,7 @@ static void test_area_apply_undo(void)
 
     /* applied, then accepted: the new area stays and the old one is freed */
     new_area = area_of(2, t2);
-    amf_mbs_context_apply_area(&ctx, new_area, false, 0, &undo);
+    amf_mbs_context_apply_area(&ctx, new_area, NULL, &undo);
     amf_mbs_context_keep_area(&undo);
     CHECK(ctx.mbs_service_area == new_area);
     CHECK(!ctx.location_dependent);
@@ -1048,7 +1059,7 @@ static void test_area_apply_undo(void)
     CHECK(ctx.mbs_service_area == new_area);
 
     /* a request without an area changes none, and its undo changes none */
-    amf_mbs_context_apply_area(&ctx, NULL, false, 0, &undo);
+    amf_mbs_context_apply_area(&ctx, NULL, NULL, &undo);
     CHECK(ctx.mbs_service_area == new_area);
     amf_mbs_context_undo_area(&ctx, &undo);
     CHECK(ctx.mbs_service_area == new_area);
@@ -1274,6 +1285,131 @@ static void test_release_answered(void)
     ogs_free(c);
 }
 
+/* TS 29.518 V18.14.0 Table 6.5.6.2.2-1: "mbsServiceAreaInfoList | array(MbsServiceAreaInfo) | C | 1..N | List of MBS service areas
+ * and their related Area Session IDs. This IE shall be present if this is a Location dependent broadcast MBS service."; TS 23.247
+ * V18.8.0 cl. 6.2.3: "MB-SMF allocates Area Session ID for each MBS services area which is unique within the MBS session." */
+static void test_area_info_list_is_valid(void)
+{
+    OpenAPI_mbs_service_area_info_t infos[3];
+    OpenAPI_list_t *list = OpenAPI_list_create();
+    int i;
+
+    memset(infos, 0, sizeof(infos));
+    CHECK(!amf_namf_area_info_list_is_valid(NULL));
+    CHECK(!amf_namf_area_info_list_is_valid(list));        /* none: 1..N */
+    for (i = 0; i < 3; i++) {
+        infos[i].area_session_id = 10 + i;
+        OpenAPI_list_add(list, &infos[i]);
+    }
+    CHECK(amf_namf_area_info_list_is_valid(list));
+    infos[2].area_session_id = 10;                          /* used twice */
+    CHECK(!amf_namf_area_info_list_is_valid(list));
+    infos[2].area_session_id = 65536;                       /* Uint16 */
+    CHECK(!amf_namf_area_info_list_is_valid(list));
+    infos[2].area_session_id = -1;
+    CHECK(!amf_namf_area_info_list_is_valid(list));
+    infos[2].area_session_id = 65535;
+    CHECK(amf_namf_area_info_list_is_valid(list));
+    OpenAPI_list_free(list);
+
+    /* 256 items are the most the NGAP list takes */
+    {
+        OpenAPI_mbs_service_area_info_t many[257];
+
+        memset(many, 0, sizeof(many));
+        list = OpenAPI_list_create();
+        for (i = 0; i < 256; i++) {
+            many[i].area_session_id = i;
+            OpenAPI_list_add(list, &many[i]);
+        }
+        CHECK(amf_namf_area_info_list_is_valid(list));
+        many[256].area_session_id = 256;
+        OpenAPI_list_add(list, &many[256]);
+        CHECK(!amf_namf_area_info_list_is_valid(list));
+        OpenAPI_list_free(list);
+    }
+}
+
+/* TS 38.413 cl. 9.3.1.208: the MBS Service Area of a location dependent session is a list of MBS Service Area Information
+ * items, each with its MBS Area Session ID; every Area Session ID of the request is sent, with its own area. */
+static void test_ngap_arm_several_areas(void)
+{
+    static const uint32_t t1[] = { 1 }, t2[] = { 2, 3 }, t3[] = { 4 };
+    amf_mbs_context_t ctx = make_context();
+    ogs_pkbuf_t *container = ogs_pkbuf_alloc(NULL, 4), *request;
+    ogs_ngap_message_t message;
+    const uint32_t *tacs[3] = { t1, t2, t3 };
+    int counts[3] = { 1, 2, 1 }, ids[3] = { 7, 300, 65535 }, i;
+
+    ogs_pkbuf_put_data(container, "\x01\x02\x03\x04", 4);
+    ogs_list_init(&ctx.area_items);
+    ctx.location_dependent = true;
+    for (i = 0; i < 3; i++) {
+        amf_mbs_area_item_t *item = ogs_calloc(1, sizeof(*item));
+
+        item->area_session_id = ids[i];
+        item->area = area_of(counts[i], tacs[i]);
+        ogs_list_add(&ctx.area_items, item);
+    }
+
+    request = ngap_build_broadcast_session_setup_request(&ctx, container);
+    CHECK(request != NULL);
+    if (request) {
+        memset(&message, 0, sizeof(message));
+        CHECK(ogs_ngap_decode(&message, request) == OGS_OK);
+        if (message.present == NGAP_NGAP_PDU_PR_initiatingMessage) {
+            NGAP_BroadcastSessionSetupRequest_t *r =
+                &message.choice.initiatingMessage->value.choice.BroadcastSessionSetupRequest;
+            bool found = false;
+
+            for (i = 0; i < r->protocolIEs.list.count; i++) {
+                NGAP_BroadcastSessionSetupRequestIEs_t *ie = r->protocolIEs.list.array[i];
+
+                if (ie->id != NGAP_ProtocolIE_ID_id_MBS_ServiceArea)
+                    continue;
+                found = true;
+                CHECK(ie->value.choice.MBS_ServiceArea.present == NGAP_MBS_ServiceArea_PR_locationdependent);
+                if (ie->value.choice.MBS_ServiceArea.present == NGAP_MBS_ServiceArea_PR_locationdependent) {
+                    NGAP_MBS_ServiceAreaInformationList_t *l = ie->value.choice.MBS_ServiceArea.choice.locationdependent;
+
+                    CHECK(l->list.count == 3);
+                    for (i = 0; i < l->list.count && i < 3; i++) {
+                        NGAP_MBS_ServiceAreaInformationItem_t *it = l->list.array[i];
+
+                        CHECK((int)it->mBS_AreaSessionID == ids[i]);
+                        CHECK(it->mBS_ServiceAreaInformation.mBS_ServiceAreaTAIList &&
+                              it->mBS_ServiceAreaInformation.mBS_ServiceAreaTAIList->list.count == counts[i]);
+                    }
+                }
+                break;
+            }
+            CHECK(found);
+        } else {
+            CHECK(false);
+        }
+        ogs_ngap_free(&message);
+        ogs_pkbuf_free(request);
+    }
+
+    /* with several Area Session IDs a notification cannot name one: areaSessionId (0..1) is left out */
+    {
+        ogs_list_t infos;
+        ogs_sbi_request_t *notify;
+
+        ogs_list_init(&infos);
+        ctx.notify_uri = (char *)"http://127.0.0.30:9999/notify";
+        notify = amf_namf_build_mbs_broadcast_context_status_notify(&ctx, &infos, OpenAPI_operation_status_NULL, false, NULL);
+        CHECK(notify != NULL);
+        if (notify) {
+            CHECK(strstr(body_of(notify), "areaSessionId") == NULL);
+            ogs_sbi_request_free(notify);
+        }
+    }
+
+    amf_mbs_area_items_free(&ctx.area_items);
+    ogs_pkbuf_free(container);
+}
+
 int main(int argc, const char *argv[])
 {
     ogs_pkbuf_config_t config;
@@ -1303,6 +1439,8 @@ int main(int argc, const char *argv[])
     test_area_apply_undo();
     test_gnb_owes();
     test_tmgi_is_valid();
+    test_area_info_list_is_valid();
+    test_ngap_arm_several_areas();
     test_release_answered();
     test_encode_large_cell_list();
     test_notify_response_any_uri();

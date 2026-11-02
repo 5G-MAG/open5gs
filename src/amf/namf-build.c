@@ -366,7 +366,9 @@ ogs_sbi_request_t *amf_namf_build_mbs_broadcast_context_status_notify_event(
 
     /* TS 29.518 Table 6.5.6.2.4-1, areaSessionId: "This IE shall be present if this is a Location dependent
      * broadcast MBS service." */
-    if (mbs_context->location_dependent) {
+    // The attribute holds one Area Session ID (cardinality 0..1): it is set when the session has one. With several, the
+    // notification cannot name one, and none is set (see the commit that introduced the list of Area Session IDs).
+    if (mbs_context->location_dependent && ogs_list_count(&mbs_context->area_items) <= 1) {
         ContextStatusNotification.is_area_session_id = true;
         ContextStatusNotification.area_session_id = mbs_context->area_session_id;
     }

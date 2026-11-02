@@ -2811,6 +2811,47 @@ static void mbs_service_area_information_set(
     }
 }
 
+/*
+ * Fills the MBS Service Area IE \p mBS_ServiceArea of a Broadcast Session Setup or Modification Request from \p mbs_context.
+ * A session with an mbsServiceAreaInfoList takes the "locationdependent" arm with one item for each Area Session ID and its
+ * MBS service area, in the order received (TS 38.413 V18.11.0 cl. 9.3.1.208: "maxnoofMBSServiceAreaInformation ... Value is
+ * 256" items; TS 23.247 V18.8.0 cl. 7.3.4: "which additionally includes the Area Session IDs and MBS service areas"); any other
+ * takes "locationindependent" with the one MBS service area.
+ */
+static void mbs_service_area_arm_set(NGAP_MBS_ServiceArea_t *mBS_ServiceArea, amf_mbs_context_t *mbs_context)
+{
+    ogs_assert(mBS_ServiceArea);
+    ogs_assert(mbs_context);
+
+    if (mbs_context->location_dependent && !ogs_list_empty(&mbs_context->area_items)) {
+        NGAP_MBS_ServiceAreaInformationList_t *service_area_info_list =
+                CALLOC(1, sizeof(NGAP_MBS_ServiceAreaInformationList_t));
+        amf_mbs_area_item_t *item = NULL;
+
+        ogs_assert(service_area_info_list);
+        mBS_ServiceArea->present = NGAP_MBS_ServiceArea_PR_locationdependent;
+        mBS_ServiceArea->choice.locationdependent = service_area_info_list;
+
+        ogs_list_for_each(&mbs_context->area_items, item) {
+            NGAP_MBS_ServiceAreaInformationItem_t *service_area_info_item =
+                    CALLOC(1, sizeof(NGAP_MBS_ServiceAreaInformationItem_t));
+
+            ogs_assert(service_area_info_item);
+            ASN_SEQUENCE_ADD(service_area_info_list, service_area_info_item);
+            service_area_info_item->mBS_AreaSessionID = item->area_session_id;
+            mbs_service_area_information_set(&service_area_info_item->mBS_ServiceAreaInformation, item->area);
+        }
+    } else {
+        NGAP_MBS_ServiceAreaInformation_t *mBS_ServiceAreaInformation =
+                CALLOC(1, sizeof(NGAP_MBS_ServiceAreaInformation_t));
+
+        ogs_assert(mBS_ServiceAreaInformation);
+        mBS_ServiceArea->present = NGAP_MBS_ServiceArea_PR_locationindependent;
+        mBS_ServiceArea->choice.locationindependent = mBS_ServiceAreaInformation;
+        mbs_service_area_information_set(mBS_ServiceAreaInformation, mbs_context->mbs_service_area);
+    }
+}
+
 ogs_pkbuf_t *ngap_build_broadcast_session_setup_request(amf_mbs_context_t *mbs_context, ogs_pkbuf_t *pkbuf)
 {
     /*
@@ -2834,7 +2875,6 @@ ogs_pkbuf_t *ngap_build_broadcast_session_setup_request(amf_mbs_context_t *mbs_c
     // MBS Service Area
     NGAP_MBS_ServiceArea_t *mBS_ServiceArea = NULL;
     // MBS Service Area Information
-    NGAP_MBS_ServiceAreaInformation_t *mBS_ServiceAreaInformation = NULL;
 
     // MBS Session Setup Request Transfer
     OCTET_STRING_t *oCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer = NULL;
@@ -2902,35 +2942,7 @@ ogs_pkbuf_t *ngap_build_broadcast_session_setup_request(amf_mbs_context_t *mbs_c
 
     mBS_ServiceArea = &ie->value.choice.MBS_ServiceArea;
 
-        // The CHOICE arm follows mbs_context->location_dependent, which records which of the two
-        // mutually-exclusive request schemas the consumer used (mbsServiceArea or mbsServiceAreaInfoList; see
-        // amf_namf_handle_mbs_broadcast_context_create()). Always claiming "locationdependent"
-        // (TS 38.413 cl.9.3.1.208's other arm) would need a real per-area MBS Area Session ID, which
-        // TS29571_CommonData.yaml's MbsServiceAreaInfo makes mandatory per entry, and none exists for a
-        // location-independent request. The real area_session_id is used where one exists.
-    if (mbs_context->location_dependent) {
-        NGAP_MBS_ServiceAreaInformationList_t *service_area_info_list =
-                CALLOC(1, sizeof(NGAP_MBS_ServiceAreaInformationList_t));
-        NGAP_MBS_ServiceAreaInformationItem_t *service_area_info_item =
-                CALLOC(1, sizeof(NGAP_MBS_ServiceAreaInformationItem_t));
-        ogs_assert(service_area_info_list);
-        ogs_assert(service_area_info_item);
-
-        mBS_ServiceArea->present = NGAP_MBS_ServiceArea_PR_locationdependent;
-        mBS_ServiceArea->choice.locationdependent = service_area_info_list;
-
-        ASN_SEQUENCE_ADD(service_area_info_list, service_area_info_item);
-        service_area_info_item->mBS_AreaSessionID = mbs_context->area_session_id;
-        mBS_ServiceAreaInformation = &service_area_info_item->mBS_ServiceAreaInformation;
-    } else {
-        mBS_ServiceAreaInformation = CALLOC(1, sizeof(NGAP_MBS_ServiceAreaInformation_t));
-        ogs_assert(mBS_ServiceAreaInformation);
-
-        mBS_ServiceArea->present = NGAP_MBS_ServiceArea_PR_locationindependent;
-        mBS_ServiceArea->choice.locationindependent = mBS_ServiceAreaInformation;
-    }
-
-    mbs_service_area_information_set(mBS_ServiceAreaInformation, mbs_context->mbs_service_area);
+    mbs_service_area_arm_set(mBS_ServiceArea, mbs_context);
 
     // MBS Session Setup Request Transfer - OCTET STRING (SIZE(3)) (M)
     ie = CALLOC(1, sizeof(NGAP_BroadcastSessionSetupRequestIEs_t));
@@ -3050,7 +3062,6 @@ ogs_pkbuf_t *ngap_build_broadcast_session_modification_request(
 
     // MBS Service Area
     NGAP_MBS_ServiceArea_t *mBS_ServiceArea = NULL;
-    NGAP_MBS_ServiceAreaInformation_t *mBS_ServiceAreaInformation = NULL;
 
     // MBS Session Modification Request Transfer
     OCTET_STRING_t *oCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer = NULL;
@@ -3097,32 +3108,7 @@ ogs_pkbuf_t *ngap_build_broadcast_session_modification_request(
 
         mBS_ServiceArea = &ie->value.choice.MBS_ServiceArea;
 
-                // Uses mbs_context's location_dependent and area_session_id, as
-                // ngap_build_broadcast_session_setup_request() does. LIMITATION: both are set at ContextCreate
-                // time and this AMF's ContextUpdate handler does not yet let a client change either.
-        if (mbs_context->location_dependent) {
-            NGAP_MBS_ServiceAreaInformationList_t *service_area_info_list =
-                    CALLOC(1, sizeof(NGAP_MBS_ServiceAreaInformationList_t));
-            NGAP_MBS_ServiceAreaInformationItem_t *service_area_info_item =
-                    CALLOC(1, sizeof(NGAP_MBS_ServiceAreaInformationItem_t));
-            ogs_assert(service_area_info_list);
-            ogs_assert(service_area_info_item);
-
-            mBS_ServiceArea->present = NGAP_MBS_ServiceArea_PR_locationdependent;
-            mBS_ServiceArea->choice.locationdependent = service_area_info_list;
-
-            ASN_SEQUENCE_ADD(service_area_info_list, service_area_info_item);
-            service_area_info_item->mBS_AreaSessionID = mbs_context->area_session_id;
-            mBS_ServiceAreaInformation = &service_area_info_item->mBS_ServiceAreaInformation;
-        } else {
-            mBS_ServiceAreaInformation = CALLOC(1, sizeof(NGAP_MBS_ServiceAreaInformation_t));
-            ogs_assert(mBS_ServiceAreaInformation);
-
-            mBS_ServiceArea->present = NGAP_MBS_ServiceArea_PR_locationindependent;
-            mBS_ServiceArea->choice.locationindependent = mBS_ServiceAreaInformation;
-        }
-
-        mbs_service_area_information_set(mBS_ServiceAreaInformation, mbs_context->mbs_service_area);
+        mbs_service_area_arm_set(mBS_ServiceArea, mbs_context);
     }
 
     // MBS Session Modification Request Transfer - OCTET STRING (O)
