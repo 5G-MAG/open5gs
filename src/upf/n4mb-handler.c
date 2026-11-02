@@ -1404,6 +1404,35 @@ static void _update_pdrs(upf_mbs_sess_t *mbs_sess, ogs_pfcp_session_modification
     }
 }
 
+/*
+ * The packets that the FAR buffered when its Apply Action stops being BUFF. TS 29.244 cl. 5.2.4.2: "The UP function shall
+ * stop applying buffering when new instruction is received from the CP function. The buffered packets shall be either
+ * dropped or forwarded following the packet forwarding model specified in clause 5.2.1 and taking into consideration
+ * that the buffered Packets have been already processed earlier." The PDR that matched a packet is the one that held it
+ * when it came: with FSSM or MBSU the packet is forwarded by it, with DROP it is discarded (as it is when it arrives).
+ */
+static void _release_buffered_packets(upf_mbs_sess_t *mbs_sess, ogs_pfcp_far_t *far)
+{
+    uint32_t i;
+
+    for (i = 0; i < far->num_of_buffered_packet; i++) {
+        ogs_pkbuf_t *buf = far->buffered_packet[i];
+        ogs_pfcp_pdr_t *pdr = ogs_pfcp_pdr_find(&mbs_sess->pfcp, far->buffered_packet_pdr_id[i]);
+
+        if (pdr && pdr->far == far && (far->apply_action & (OGS_PFCP_APPLY_ACTION_FSSM | OGS_PFCP_APPLY_ACTION_MBSU))) {
+            ogs_gtp2_header_desc_t sendhdr;
+
+            memset(&sendhdr, 0, sizeof(sendhdr));
+            sendhdr.type = OGS_GTPU_MSGTYPE_GPDU;
+            ogs_pfcp_send_g_pdu_mbs(pdr, &sendhdr, buf);
+        } else {
+            ogs_pkbuf_free(buf);
+        }
+        far->buffered_packet[i] = NULL;
+    }
+    far->num_of_buffered_packet = 0;
+}
+
 /* The Update QER of a request that has been checked. */
 static void _update_qers(upf_mbs_sess_t *mbs_sess, ogs_pfcp_session_modification_request_t *req)
 {
@@ -1659,6 +1688,14 @@ void upf_n4mb_handle_session_modification_request(
 
     _update_pdrs(mbs_sess, req);
     _update_qers(mbs_sess, req);
+
+    /* buffering that this request ends: the packets held are forwarded or dropped */
+    for (i = 0; i < OGS_MAX_NUM_OF_FAR && req->update_far[i].presence; i++) {
+        far = ogs_pfcp_far_find(&mbs_sess->pfcp, req->update_far[i].far_id.u32);
+        if (req->update_far[i].apply_action.presence && !(far->apply_action & OGS_PFCP_APPLY_ACTION_BUFF))
+            _release_buffered_packets(mbs_sess, far);
+    }
+
     _remove_flows(mbs_sess, req);
 
     ogs_assert(OGS_OK == upf_pfcp_n4mb_send_session_modification_response(xact, mbs_sess));

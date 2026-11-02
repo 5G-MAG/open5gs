@@ -284,6 +284,7 @@ typedef struct ogs_pfcp_far_s {
 
     uint32_t                num_of_buffered_packet;
     ogs_pkbuf_t             *buffered_packet[OGS_MAX_NUM_OF_PACKET_BUFFER];
+    ogs_pfcp_pdr_id_t       buffered_packet_pdr_id[OGS_MAX_NUM_OF_PACKET_BUFFER];   /* the PDR that matched it */
 
     struct {
         bool prepared;

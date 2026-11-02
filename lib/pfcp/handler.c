@@ -308,6 +308,7 @@ bool ogs_pfcp_up_handle_pdr(
         }
 
         if (far->num_of_buffered_packet < OGS_MAX_NUM_OF_PACKET_BUFFER) {
+            far->buffered_packet_pdr_id[far->num_of_buffered_packet] = pdr->id;
             far->buffered_packet[far->num_of_buffered_packet++] = sendbuf;
         } else {
             ogs_pkbuf_free(sendbuf);

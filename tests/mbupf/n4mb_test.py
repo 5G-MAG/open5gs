@@ -2449,6 +2449,84 @@ def t_several_flows_added_in_one_request():
         U.delete(s)
 
 
+def buff_session(cp_seid):
+    """A session whose FAR buffers (cl. 5.34.2.4: "BUFF" after the deactivation of the session), with the multicast parameters."""
+    r = U.establish(replace_ie(mc_request(cp_seid, b'\x02' + V4G, None), T_CREATE_FAR, far(apply=APPLY_BUFF)))
+    return r, accepted(r, 'BUFF session')
+
+
+@test
+def t_buffered_packets_follow_the_new_apply_action():
+    """TS 29.244 cl. 5.2.4.2: "The UP function shall stop applying buffering when new instruction is received from the CP
+    function. The buffered packets shall be either dropped or forwarded following the packet forwarding model specified in
+    clause 5.2.1 and taking into consideration that the buffered Packets have been already processed earlier."
+    """
+    def payloads(pk):
+        out = []
+        for p in pk:
+            t = gtpu_parse(p)['tpdu']
+            out.append(t[28:])      # IPv4 header 20, UDP header 8
+        return out
+
+    # BUFF to FSSM: the packets that were received while buffering are forwarded, in order
+    r, s = buff_session(0xf501)
+    lst = N3mbListener(mc_group_of(r))
+    try:
+        for n in (1, 2, 3):
+            send_multicast('10.46.0.1', '232.1.1.1', payload=b'buffered-%d' % n)
+        assert not lst.packets(), 'forwarded while buffering'
+        m = modify(s, update_far(apply=APPLY_FSSM))
+        assert m and cause(m) == CAUSE_ACCEPTED
+        assert payloads(lst.packets()) == [b'buffered-1', b'buffered-2', b'buffered-3'], 'the buffered packets were not forwarded'
+        # forwarded once only: a second change forwards nothing more
+        assert modify(s, update_far(apply=APPLY_BUFF))
+        assert modify(s, update_far(apply=APPLY_FSSM))
+        assert not lst.packets(), 'the buffered packets were forwarded twice'
+        # the PDR matching is the one that matched when they were buffered (one flow here); data after the change flows directly
+        send_multicast('10.46.0.1', '232.1.1.1', payload=b'live')
+        assert payloads(lst.packets()) == [b'live']
+    finally:
+        lst.close()
+        U.delete(s)
+    # BUFF to DROP: the buffered packets are dropped, they do not come out when forwarding starts later
+    r, s = buff_session(0xf502)
+    lst = N3mbListener(mc_group_of(r))
+    try:
+        for n in (1, 2):
+            send_multicast('10.46.0.1', '232.1.1.1', payload=b'dropped-%d' % n)
+        assert modify(s, update_far(apply=APPLY_DROP))
+        assert not lst.packets()
+        assert modify(s, update_far(apply=APPLY_FSSM))
+        assert not lst.packets(), 'packets that were buffered before a DROP came out later'
+    finally:
+        lst.close()
+        U.delete(s)
+    # BUFF to MBSU: each remote peer gets the buffered packets
+    r, s = buff_session(0xf503)
+    peer = GtpuPeer('127.0.0.41')
+    try:
+        send_multicast('10.46.0.1', '232.1.1.1', payload=b'for-peer')
+        m = modify(s, update_far(apply=APPLY_MBSU, extra=(add_unicast(1, 0x4141, '127.0.0.41'),)))
+        assert m and cause(m) == CAUSE_ACCEPTED, '%s/%s' % (cause(m) if m else None, offending(m) if m else None)
+        got = peer.packets()
+        assert payloads(got) == [b'for-peer'] and gtpu_parse(got[0])['teid'] == 0x4141, 'the peer did not get the buffered packet'
+    finally:
+        peer.close()
+        U.delete(s)
+    # an Update FAR that does not change the Apply Action keeps what is buffered
+    r, s = buff_session(0xf504)
+    lst = N3mbListener(mc_group_of(r))
+    try:
+        send_multicast('10.46.0.1', '232.1.1.1', payload=b'kept')
+        assert modify(s, update_far())
+        assert not lst.packets()
+        assert modify(s, update_far(apply=APPLY_FSSM))
+        assert payloads(lst.packets()) == [b'kept']
+    finally:
+        lst.close()
+        U.delete(s)
+
+
 # E-TESTS-BELOW
 
 
