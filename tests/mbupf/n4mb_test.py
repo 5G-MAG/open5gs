@@ -2303,6 +2303,73 @@ def t_update_pdr_that_is_not_valid_changes_nothing():
         U.delete(s)
 
 
+def update_qer(n, gate=None, qfi=None, mbr=False, drop=()):
+    parts = [ie(T_QER_ID, struct.pack('>I', n))]
+    if gate is not None:
+        parts.append(ie(T_GATE, bytes([gate])))
+    if mbr:
+        parts.append(ie(T_MBR, b'\x00\x00\x00\x03\xe8' * 2))
+    if qfi is not None:
+        parts.append(ie(T_QFI, bytes([qfi])))
+    return ie(T_UPDATE_QER, [x for x in parts if struct.unpack('>H', x[:2])[0] not in drop])
+
+
+@test
+def t_update_qer_changes_gate_status_bitrate_and_qfi():
+    """TS 29.244 Table 7.5.4.1-1 (Update QER, N4mb "X") and Table 7.5.4.5-1: QER ID (M), Gate Status, Maximum Bitrate,
+    Guaranteed Bitrate and QFI are "X" for N4mb."""
+    r = U.establish(smf_session(0xf301))
+    s = accepted(r, 'session of the MB-SMF')
+    try:
+        assert tunnel_packet_qfi(r, 5000) == 1
+        m = modify(s, update_qer(1, gate=0x01))      # DL gate closed
+        assert m and cause(m) == CAUSE_ACCEPTED, 'Gate Status: cause %s offending %s' % (cause(m) if m else None, offending(m) if m else None)
+        assert tunnel_packet_qfi(r, 5000) is None, 'a closed downlink gate forwards'
+        m = modify(s, update_qer(1, gate=0x00))
+        assert m and cause(m) == CAUSE_ACCEPTED
+        assert tunnel_packet_qfi(r, 5000) == 1, 'an open downlink gate does not forward'
+        m = modify(s, update_qer(1, qfi=9))
+        assert m and cause(m) == CAUSE_ACCEPTED, 'QFI: %s/%s' % (cause(m) if m else None, offending(m) if m else None)
+        assert tunnel_packet_qfi(r, 5000) == 9, 'the QFI is not the updated one'
+        # an IE that is not present keeps its value: the gate stays open, the QFI stays 9
+        m = modify(s, update_qer(1, mbr=True))
+        assert m and cause(m) == CAUSE_ACCEPTED, 'Maximum Bitrate: %s/%s' % (cause(m) if m else None, offending(m) if m else None)
+        assert tunnel_packet_qfi(r, 5000) == 9
+        # an Update QER with the QER ID only changes nothing; two QERs in one request
+        m = modify(s, *flow_rules(2, 2, precedence=200))
+        assert m and cause(m) == CAUSE_ACCEPTED
+        m = modify(s, update_qer(1), update_qer(2, gate=0x01, qfi=3), update_pdr(1, precedence=300), update_pdr(2, precedence=1))
+        assert m and cause(m) == CAUSE_ACCEPTED, '%s/%s' % (cause(m) if m else None, offending(m) if m else None)
+        assert tunnel_packet_qfi(r, 5000) is None, 'the closed gate of QER 2'
+        # a flow and its QER created and updated by requests
+        m = modify(s, update_pdr(2, qer_id=1), update_qer(2, gate=0x00))
+        assert m and cause(m) == CAUSE_ACCEPTED
+        assert tunnel_packet_qfi(r, 5000) == 9
+    finally:
+        U.delete(s)
+
+
+@test
+def t_update_qer_that_is_not_valid_changes_nothing():
+    r = U.establish(smf_session(0xf311))
+    s = accepted(r, 'session of the MB-SMF')
+    try:
+        def bad(what, cause_want, off_want, *ies):
+            m = modify(s, *ies)
+            assert m and cause(m) == cause_want and offending(m) == off_want, '%s: cause %s offending %s, wanted %s/%s' % (
+                what, cause(m) if m else None, offending(m) if m else None, cause_want, off_want)
+            assert tunnel_packet_qfi(r, 5000) == 1, what + ': the request changed the session'
+
+        bad('no QER ID', CAUSE_MANDATORY_MISSING, T_QER_ID, update_qer(1, gate=0x01, drop=(T_QER_ID,)))
+        bad('unknown QER', CAUSE_MANDATORY_INCORRECT, T_QER_ID, update_qer(9, gate=0x01))
+        bad('QER that the request removes', CAUSE_MANDATORY_INCORRECT, T_QER_ID, update_qer(1, gate=0x01), *removal(1)[2:])
+        bad('same QER twice', CAUSE_MANDATORY_INCORRECT, T_QER_ID, update_qer(1, gate=0x01), update_qer(1, qfi=4))
+        bad('the second Update QER is not valid', CAUSE_MANDATORY_INCORRECT, T_QER_ID, update_qer(1, gate=0x01), update_qer(9, gate=0x01))
+        bad('Update QER and a failing Update FAR', CAUSE_CONDITIONAL_MISSING, T_ADD_UNICAST, update_qer(1, gate=0x01), update_far(apply=APPLY_MBSU))
+    finally:
+        U.delete(s)
+
+
 # E-TESTS-BELOW
 
 

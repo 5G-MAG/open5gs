@@ -1550,6 +1550,13 @@ ogs_pfcp_qer_t *ogs_pfcp_handle_update_qer(ogs_pfcp_sess_t *sess,
         return NULL;
     }
 
+    /* TS 29.244 Table 7.5.4.5-1: "This IE shall be present if the Gate Status needs to be modified", "This IE shall
+     * be present if it needs to be modified" (QFI); the IEs that are not present keep their values */
+    if (message->gate_status.presence)
+        qer->gate_status.value = message->gate_status.u8;
+    if (message->qos_flow_identifier.presence)
+        qer->qfi = message->qos_flow_identifier.u8;
+
     if (message->maximum_bitrate.presence)
         ogs_pfcp_parse_bitrate(&qer->mbr, &message->maximum_bitrate);
     if (message->guaranteed_bitrate.presence)

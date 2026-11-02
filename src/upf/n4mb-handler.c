@@ -1001,7 +1001,6 @@ static bool _modification_ie_not_supported(const ogs_pfcp_session_modification_r
         { offsetof(ogs_pfcp_session_modification_request_t, create_traffic_endpoint),
             OGS_PFCP_CREATE_TRAFFIC_ENDPOINT_TYPE },
         { offsetof(ogs_pfcp_session_modification_request_t, update_urr), OGS_PFCP_UPDATE_URR_TYPE },
-        { offsetof(ogs_pfcp_session_modification_request_t, update_qer), OGS_PFCP_UPDATE_QER_TYPE },
         { offsetof(ogs_pfcp_session_modification_request_t, update_traffic_endpoint),
             OGS_PFCP_UPDATE_TRAFFIC_ENDPOINT_TYPE },
         { offsetof(ogs_pfcp_session_modification_request_t, query_urr), OGS_PFCP_QUERY_URR_TYPE },
@@ -1203,6 +1202,20 @@ static int _check_flow_changes(upf_mbs_sess_t *mbs_sess, const ogs_pfcp_session_
         }
     }
 
+    /* Update QER (Table 7.5.4.5-1): QER ID, M; Gate Status, Maximum Bitrate, Guaranteed Bitrate and QFI are "X" for N4mb,
+     * the others are "-" and are not read. */
+    for (i = 0; i < OGS_ARRAY_SIZE(req->update_qer) && req->update_qer[i].presence; i++) {
+        const ogs_pfcp_tlv_update_qer_t *u = &req->update_qer[i];
+
+        if (!u->qer_id.presence)
+            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_MISSING, OGS_PFCP_QER_ID_TYPE);
+        if (!ogs_pfcp_qer_find(&mbs_sess->pfcp, u->qer_id.u32) || _removes_qer(req, u->qer_id.u32))
+            FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_QER_ID_TYPE);
+        for (j = 0; j < i; j++)
+            if (req->update_qer[j].qer_id.u32 == u->qer_id.u32)
+                FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_QER_ID_TYPE);
+    }
+
     /* A FAR or a QER that is removed is not used by a PDR that stays (after its Update PDR) */
     ogs_list_for_each(&mbs_sess->pfcp.pdr_list, pdr) {
         const ogs_pfcp_tlv_update_pdr_t *u;
@@ -1388,6 +1401,20 @@ static void _update_pdrs(upf_mbs_sess_t *mbs_sess, ogs_pfcp_session_modification
             pdr->outer_header_removal_len = ogs_min(u->outer_header_removal.len, sizeof(pdr->outer_header_removal));
             memcpy(&pdr->outer_header_removal, u->outer_header_removal.data, pdr->outer_header_removal_len);
         }
+    }
+}
+
+/* The Update QER of a request that has been checked. */
+static void _update_qers(upf_mbs_sess_t *mbs_sess, ogs_pfcp_session_modification_request_t *req)
+{
+    size_t i;
+
+    for (i = 0; i < OGS_ARRAY_SIZE(req->update_qer) && req->update_qer[i].presence; i++) {
+        uint8_t cause_value = OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
+        uint16_t offending_ie_value = 0;
+
+        /* checked: the QER exists */
+        ogs_assert(ogs_pfcp_handle_update_qer(&mbs_sess->pfcp, &req->update_qer[i], &cause_value, &offending_ie_value));
     }
 }
 
@@ -1631,6 +1658,7 @@ void upf_n4mb_handle_session_modification_request(
     }
 
     _update_pdrs(mbs_sess, req);
+    _update_qers(mbs_sess, req);
     _remove_flows(mbs_sess, req);
 
     ogs_assert(OGS_OK == upf_pfcp_n4mb_send_session_modification_response(xact, mbs_sess));
