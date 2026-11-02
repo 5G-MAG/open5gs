@@ -3982,6 +3982,69 @@ static void test_mbs_pcf_release_continue(void)
     CHECK(smf_mbs_sess_find_by_id(id) == NULL);
 }
 
+/* TS 29.532 V18.6.0 clause 5.3.2.2.1 step 2b: the reduced area is the part of the requested area that is within the
+ * MB-SMF service area: a cell list is within it when the TAI it belongs to is (TS 29.571 NcgiTai) */
+static void test_reduced_area_cells(void)
+{
+    ogs_mbs_service_area_t *saved = smf_self()->mbs_service_area;
+    ogs_mbs_service_area_t *coverage = area_of_tacs("1", "2");
+    ogs_mbs_service_area_t *requested, *reduced = NULL;
+    ogs_ncgi_tai_t *nt;
+    ogs_ncgi_t *cell;
+    ogs_tai_t *tai;
+    OpenAPI_mbs_service_area_t *api;
+    int i;
+
+    smf_self()->mbs_service_area = coverage;
+
+    /* TAIs 1 (covered) and 9, cells of TAI 1 and of TAI 9 */
+    requested = area_of_tacs("1", "9");
+    requested->ncgi_tai_list = ogs_calloc(1, sizeof(*requested->ncgi_tai_list));
+    for (i = 0; i < 2; i++) {
+        nt = ogs_calloc(1, sizeof(*nt));
+        ogs_plmn_id_build(&nt->tai.plmn_id, 1, 1, 2);
+        nt->tai.tac = ogs_strdup(i == 0 ? "1" : "9");
+        cell = ogs_calloc(1, sizeof(*cell));
+        ogs_plmn_id_build(&cell->plmn_id, 1, 1, 2);
+        cell->nr_cell_id = ogs_strdup(i == 0 ? "000000001" : "000000009");
+        ogs_list_add(&nt->cell_list, cell);
+        ogs_list_add(requested->ncgi_tai_list, nt);
+    }
+    CHECK(smf_mbs_service_area_reduce(requested, &reduced) && reduced);
+    if (reduced) {
+        CHECK(reduced->tai_list && ogs_list_count(reduced->tai_list) == 1);
+        tai = reduced->tai_list ? ogs_list_first(reduced->tai_list) : NULL;
+        CHECK(tai && strcmp(tai->tac, "1") == 0);
+        /* the cells of the covered TAI stay, those of the other go: both lists are in the answer */
+        CHECK(reduced->ncgi_tai_list && ogs_list_count(reduced->ncgi_tai_list) == 1);
+        nt = reduced->ncgi_tai_list ? ogs_list_first(reduced->ncgi_tai_list) : NULL;
+        CHECK(nt && strcmp(nt->tai.tac, "1") == 0 && ogs_list_count(&nt->cell_list) == 1);
+        cell = nt ? ogs_list_first(&nt->cell_list) : NULL;
+        CHECK(cell && strcmp(cell->nr_cell_id, "000000001") == 0);
+        api = ogs_sbi_build_mbs_service_area(reduced);
+        CHECK(api && api->tai_list && api->tai_list->count == 1 && api->ncgi_list && api->ncgi_list->count == 1);
+        if (api) OpenAPI_mbs_service_area_free(api);
+        ogs_mbs_service_area_free(reduced);
+        reduced = NULL;
+    }
+    ogs_mbs_service_area_free(requested);
+
+    /* only cells, one of them of an uncovered TAI: reduced to the covered TAI's cells, no TAI list entry */
+    requested = ogs_calloc(1, sizeof(*requested));
+    requested->ncgi_tai_list = ogs_calloc(1, sizeof(*requested->ncgi_tai_list));
+    nt = ogs_calloc(1, sizeof(*nt));
+    ogs_plmn_id_build(&nt->tai.plmn_id, 1, 1, 2);
+    nt->tai.tac = ogs_strdup("9");
+    ogs_list_add(requested->ncgi_tai_list, nt);
+    CHECK(smf_mbs_service_area_reduce(requested, &reduced) && reduced);
+    CHECK(reduced && !reduced->ncgi_tai_list);
+    if (reduced) ogs_mbs_service_area_free(reduced);
+    ogs_mbs_service_area_free(requested);
+
+    smf_self()->mbs_service_area = saved;
+    ogs_mbs_service_area_free(coverage);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -3997,6 +4060,7 @@ int main(void)
     test_tmgi_index_after_refresh();
     test_create_outcomes();
     test_reduced_area_is_used();
+    test_reduced_area_cells();
     test_nr_red_cap_ue_info_model();
     test_nr_red_cap_ue_info_n2();
     test_context_status_notification_response_model();

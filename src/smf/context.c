@@ -5001,21 +5001,32 @@ static bool smf_mbs_sess_service_areas_overlap(smf_mbs_sess_t *a, smf_mbs_sess_t
  * (rule 12), so absent configuration means no restriction: every requested TAI is accepted
  * unreduced, exactly as before this option existed.
  *
- * Scope limit (S12): checks TAI-list coverage only. A requested area expressed only as an NCGI list,
- * or a configured coverage with no tai_list, cannot be compared without a cell-to-TAI mapping this
- * codebase does not have -- such requests are passed through unreduced (not guessed at) rather than
- * silently accepted or rejected.
+ * Coverage is a TAI list (smf.yaml mbsServiceArea.taiList): no configuration of cells exists. An NcgiTai of the
+ * requested area (TS 29.571 NcgiTai: "tai" and "cellList") names the TAI its cells belong to, so a cell list is within
+ * the coverage when its TAI is: an NcgiTai whose TAI is outside is left out with its cells, one whose TAI is inside
+ * keeps all its cells. A coverage with no tai_list, or none configured, restricts nothing.
  *
- * Returns true only if `requested` carries at least one TAI outside the configured coverage, and in
- * that case allocates *reduced (caller frees with ogs_mbs_service_area_free()) containing exactly the
- * requested TAIs that are within it. Returns false, leaving *reduced untouched, if unconfigured, if
- * `requested` has no tai_list, or if every requested TAI is already covered.
+ * Returns true only if `requested` carries at least one TAI, or one NcgiTai, outside the configured coverage, and in
+ * that case allocates *reduced (caller frees with ogs_mbs_service_area_free()) containing exactly the requested TAIs
+ * and NcgiTai that are within it. Returns false, leaving *reduced untouched, if unconfigured, if `requested` has
+ * neither list, or if all of it is already covered.
  */
+static bool tai_in_coverage(const ogs_tai_t *tai, ogs_mbs_service_area_t *own)
+{
+    ogs_tai_t *own_tai;
+
+    ogs_list_for_each(own->tai_list, own_tai)
+        if (smf_tai_equal(tai, own_tai))
+            return true;
+    return false;
+}
+
 bool smf_mbs_service_area_reduce(
         ogs_mbs_service_area_t *requested, ogs_mbs_service_area_t **reduced)
 {
     ogs_mbs_service_area_t *own;
     ogs_tai_t *req_tai;
+    ogs_ncgi_tai_t *req_nt;
     bool any_uncovered = false;
 
     ogs_assert(requested);
@@ -5023,34 +5034,51 @@ bool smf_mbs_service_area_reduce(
 
     own = smf_self()->mbs_service_area;
     if (!own || !own->tai_list) return false;
-    if (!requested->tai_list) return false;
+    if (!requested->tai_list && !requested->ncgi_tai_list) return false;
 
-    ogs_list_for_each(requested->tai_list, req_tai) {
-        ogs_tai_t *own_tai;
-        bool covered = false;
-        ogs_list_for_each(own->tai_list, own_tai) {
-            if (smf_tai_equal(req_tai, own_tai)) { covered = true; break; }
-        }
-        if (!covered) { any_uncovered = true; break; }
-    }
+    if (requested->tai_list)
+        ogs_list_for_each(requested->tai_list, req_tai)
+            if (!tai_in_coverage(req_tai, own)) { any_uncovered = true; break; }
+    if (!any_uncovered && requested->ncgi_tai_list)
+        ogs_list_for_each(requested->ncgi_tai_list, req_nt)
+            if (!tai_in_coverage(&req_nt->tai, own)) { any_uncovered = true; break; }
     if (!any_uncovered) return false;
 
     *reduced = ogs_calloc(1, sizeof(**reduced));
     (*reduced)->tai_list = ogs_calloc(1, sizeof(*(*reduced)->tai_list));
-    ogs_list_for_each(requested->tai_list, req_tai) {
-        ogs_tai_t *own_tai;
-        bool covered = false;
-        ogs_list_for_each(own->tai_list, own_tai) {
-            if (smf_tai_equal(req_tai, own_tai)) { covered = true; break; }
+    if (requested->tai_list)
+        ogs_list_for_each(requested->tai_list, req_tai) {
+            if (tai_in_coverage(req_tai, own)) {
+                ogs_tai_t *copy = ogs_calloc(1, sizeof(*copy));
+                copy->plmn_id = req_tai->plmn_id;
+                copy->tac = ogs_strdup(req_tai->tac);
+                if (req_tai->nid) copy->nid = ogs_strdup(req_tai->nid);
+                ogs_list_add((*reduced)->tai_list, copy);
+            }
         }
-        if (covered) {
-            ogs_tai_t *copy = ogs_calloc(1, sizeof(*copy));
-            copy->plmn_id = req_tai->plmn_id;
-            copy->tac = ogs_strdup(req_tai->tac);
-            if (req_tai->nid) copy->nid = ogs_strdup(req_tai->nid);
-            ogs_list_add((*reduced)->tai_list, copy);
+    if (requested->ncgi_tai_list)
+        ogs_list_for_each(requested->ncgi_tai_list, req_nt) {
+            ogs_ncgi_tai_t *copy;
+            ogs_ncgi_t *cell;
+
+            if (!tai_in_coverage(&req_nt->tai, own))
+                continue;
+            if (!(*reduced)->ncgi_tai_list)
+                (*reduced)->ncgi_tai_list = ogs_calloc(1, sizeof(*(*reduced)->ncgi_tai_list));
+            copy = ogs_calloc(1, sizeof(*copy));
+            copy->tai.plmn_id = req_nt->tai.plmn_id;
+            copy->tai.tac = ogs_strdup(req_nt->tai.tac);
+            if (req_nt->tai.nid) copy->tai.nid = ogs_strdup(req_nt->tai.nid);
+            ogs_list_for_each(&req_nt->cell_list, cell) {
+                ogs_ncgi_t *cell_copy = ogs_calloc(1, sizeof(*cell_copy));
+
+                cell_copy->plmn_id = cell->plmn_id;
+                if (cell->nr_cell_id) cell_copy->nr_cell_id = ogs_strdup(cell->nr_cell_id);
+                if (cell->nid) cell_copy->nid = ogs_strdup(cell->nid);
+                ogs_list_add(&copy->cell_list, cell_copy);
+            }
+            ogs_list_add((*reduced)->ncgi_tai_list, copy);
         }
-    }
     return true;
 }
 

@@ -1691,14 +1691,13 @@ OpenAPI_ssm_t *ogs_sbi_build_ssm(ogs_ssm_t *ssm)
     return Ssm;
 }
 
-/* TAI-list-only: this codebase's own MBS-service-area-reduction use (TS 29.532 V18.6.0
- * cl.5.3.2.3.1 step 2b) never carries an ncgi_tai_list -- MB-SMF coverage is configured as a TAI
- * list only (see smf_mbs_service_area_reduce()'s own scope note) -- so this does not build one.
- * The existing, separate NCGI-list conversion in src/smf/namf-build.c is not consolidated into
- * this helper; that path has its own caller and is out of scope for this addition. */
+/* The MBS service area of the model: its TAI list and its cells (NcgiTai: a TAI and its cells). Used for the reduced
+ * MBS service area (TS 29.532 V18.6.0 cl. 5.3.2.2.1 and 5.3.2.3.1 step 2b). The conversion of the Namf requests in
+ * src/smf/namf-build.c is not consolidated into this helper.
+ */
 OpenAPI_mbs_service_area_t *ogs_sbi_build_mbs_service_area(ogs_mbs_service_area_t *area)
 {
-    OpenAPI_list_t *tai_list = NULL;
+    OpenAPI_list_t *tai_list = NULL, *ncgi_list = NULL;
     ogs_tai_t *tai = NULL;
 
     ogs_assert(area);
@@ -1715,5 +1714,30 @@ OpenAPI_mbs_service_area_t *ogs_sbi_build_mbs_service_area(ogs_mbs_service_area_
         }
     }
 
-    return OpenAPI_mbs_service_area_create(NULL, tai_list);
+    /* the cells of the area (TS 29.571 MbsServiceArea: ncgiList of NcgiTai, each a TAI and its cells) */
+    if (area->ncgi_tai_list) {
+        ogs_ncgi_tai_t *ncgi_tai = NULL;
+
+        ncgi_list = OpenAPI_list_create();
+        ogs_list_for_each(area->ncgi_tai_list, ncgi_tai) {
+            OpenAPI_list_t *cell_list = OpenAPI_list_create();
+            ogs_ncgi_t *ncgi = NULL;
+
+            ogs_list_for_each(&ncgi_tai->cell_list, ncgi)
+                OpenAPI_list_add(cell_list, OpenAPI_ncgi_create(
+                        OpenAPI_plmn_id_create(ogs_plmn_id_mcc_string(&ncgi->plmn_id),
+                            ogs_plmn_id_mnc_string(&ncgi->plmn_id)),
+                        ncgi->nr_cell_id ? ogs_strdup(ncgi->nr_cell_id) : NULL,
+                        ncgi->nid ? ogs_strdup(ncgi->nid) : NULL));
+            OpenAPI_list_add(ncgi_list, OpenAPI_ncgi_tai_create(
+                    OpenAPI_tai_create(
+                        OpenAPI_plmn_id_create(ogs_plmn_id_mcc_string(&ncgi_tai->tai.plmn_id),
+                            ogs_plmn_id_mnc_string(&ncgi_tai->tai.plmn_id)),
+                        ncgi_tai->tai.tac ? ogs_strdup(ncgi_tai->tai.tac) : NULL,
+                        ncgi_tai->tai.nid ? ogs_strdup(ncgi_tai->tai.nid) : NULL),
+                    cell_list));
+        }
+    }
+
+    return OpenAPI_mbs_service_area_create(ncgi_list, tai_list);
 }
