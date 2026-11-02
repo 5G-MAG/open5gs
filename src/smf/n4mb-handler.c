@@ -63,6 +63,38 @@ static bool _set_ingress_tunnel(smf_mbs_sess_t *mbs_sess, ogs_pfcp_local_ingress
     return changed;
 }
 
+/* TS 29.244 V18.10.0 clause 8.2.209: the Local Ingress Tunnel IE is the flags octet (spare, CH, V6, V4), the UDP Port
+ * (2 octets) and the IPv4 and IPv6 addresses the flags name. An answer carries the address the MB-UPF allocated: the
+ * IE is refused when it is shorter or longer than its flags say, or names no address. */
+bool smf_n4mb_local_ingress_tunnel_is_valid(const ogs_tlv_octet_t *ie)
+{
+    const uint8_t *data = ie ? ie->data : NULL;
+    int expected;
+
+    if (!data || ie->len < 1)
+        return false;
+    if (!(data[0] & 0x03))
+        return false;
+    expected = 1 + 2 + ((data[0] & 0x02) ? OGS_IPV4_LEN : 0) + ((data[0] & 0x01) ? OGS_IPV6_LEN : 0);
+    return ie->len == expected;
+}
+
+/* Takes the ingress tunnel of an answer in, if the IE is valid; *changed (if given) tells whether it is another one */
+static bool _take_ingress_tunnel(smf_mbs_sess_t *mbs_sess, const ogs_tlv_octet_t *ie, bool *changed)
+{
+    bool c;
+
+    if (!smf_n4mb_local_ingress_tunnel_is_valid(ie)) {
+        ogs_error("MBS session mbsSessionRef[%s]: the Local Ingress Tunnel of the answer is malformed (length [%d])",
+                mbs_sess->mbs_session_ref, ie ? ie->len : -1);
+        return false;
+    }
+    c = _set_ingress_tunnel(mbs_sess, ie->data);
+    if (changed)
+        *changed = c;
+    return true;
+}
+
 // The northbound request of a session that cannot be established has been answered with an error: the session must
 // not stay in the tables. A MB-UPF that accepted the request holds a session the MB-SMF will not use, so it is deleted
 // (the deletion response releases the local session); otherwise the session is released now.
@@ -175,12 +207,14 @@ uint8_t smf_n4mb_handle_session_establishment_response(
     if (rsp->created_traffic_endpoint.presence &&
             rsp->created_traffic_endpoint.local_ingress_tunnel.presence) {
         ogs_debug("Got Local Ingress Tunnel in the Created Traffic Endpoint");
-        _set_ingress_tunnel(mbs_sess, rsp->created_traffic_endpoint.local_ingress_tunnel.data);
+        if (!_take_ingress_tunnel(mbs_sess, &rsp->created_traffic_endpoint.local_ingress_tunnel, NULL))
+            cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
     } else {
         for (i = 0; i < OGS_MAX_NUM_OF_PDR && rsp->created_pdr[i].presence; i++) {
             if (rsp->created_pdr[i].local_ingress_tunnel.presence) {
                 ogs_debug("Got Local Ingress Tunnel in a Created PDR");
-                _set_ingress_tunnel(mbs_sess, rsp->created_pdr[i].local_ingress_tunnel.data);
+                if (!_take_ingress_tunnel(mbs_sess, &rsp->created_pdr[i].local_ingress_tunnel, NULL))
+                    cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
                 break;
             }
         }
@@ -235,45 +269,13 @@ uint8_t smf_n4mb_handle_session_establishment_response(
     if (rsp->mbs_session_n4mb_information.presence) {
         // Multicast Transport Information for MBS Session N4mb Information
         if (rsp->mbs_session_n4mb_information.multicast_transport_information.presence) {
-            ogs_pfcp_multicast_transport_information_t multicast_transport_information;
-
-            /* TS 29.244 V18.10.0 clause 8.2.207: the octets of the IE are laid out as the clause says; one that is
-             * not is a malformed IE (the parser returns -1), and the answer is refused: the MB-UPF holds a session
-             * the MB-SMF does not use, and it is deleted. */
-            if (ogs_pfcp_parse_multicast_transport_information(&multicast_transport_information,
-                    &rsp->mbs_session_n4mb_information.multicast_transport_information) < 0) {
-                ogs_error("MBS Session N4mb Information: the Multicast Transport Information is malformed");
+            if (!smf_n4mb_take_multicast_transport_information(mbs_sess,
+                    &rsp->mbs_session_n4mb_information.multicast_transport_information)) {
                 ogs_assert(true == ogs_sbi_server_send_error(sbi_stream, 500, NULL, "Unable to establish MBS session",
                         "MBS Session establishment with UPF failed, the Multicast Transport Information is malformed",
                         _pfcp_cause_to_problem_cause(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT)));
                 _abandon_failed_establishment(mbs_sess, rsp);
                 return OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
-            }
-
-            if (multicast_transport_information.ip_multicast_distribution_address.address_type == 0) {
-                mbs_sess->ll_ssm.dest_ip_addr.ipv4 = 1;
-                mbs_sess->ll_ssm.dest_ip_addr.len = OGS_IPV4_LEN;
-                mbs_sess->ll_ssm.dest_ip_addr.addr = multicast_transport_information.ip_multicast_distribution_address.ipv4_addr;
-            } else if (multicast_transport_information.ip_multicast_distribution_address.address_type == 1) {
-                mbs_sess->ll_ssm.dest_ip_addr.ipv6 = 1;
-                mbs_sess->ll_ssm.dest_ip_addr.len = OGS_IPV6_LEN;
-                memcpy(mbs_sess->ll_ssm.dest_ip_addr.addr6, multicast_transport_information.ip_multicast_distribution_address.ipv6_addr, OGS_IPV6_LEN);
-            }
-
-            if (multicast_transport_information.ip_source_address.address_type == 0) {
-                mbs_sess->ll_ssm.src_ip_addr.ipv4 = 1;
-                mbs_sess->ll_ssm.src_ip_addr.len = OGS_IPV4_LEN;
-                mbs_sess->ll_ssm.src_ip_addr.addr = multicast_transport_information.ip_source_address.ipv4_addr;
-            } else if (multicast_transport_information.ip_source_address.address_type == 1) {
-                mbs_sess->ll_ssm.src_ip_addr.ipv6 = 1;
-                mbs_sess->ll_ssm.src_ip_addr.len = OGS_IPV6_LEN;
-                memcpy(mbs_sess->ll_ssm.src_ip_addr.addr6, multicast_transport_information.ip_source_address.ipv6_addr, OGS_IPV6_LEN);
-            }
-
-            if (multicast_transport_information.c_teid) {
-                // The parser leaves the field as received (network order, like the addresses next to it); the
-                // session holds the TEID as a number, as the NGAP and PFCP builders expect.
-                mbs_sess->c_teid = be32toh(multicast_transport_information.c_teid);
             }
         }
     }
@@ -473,11 +475,13 @@ uint8_t smf_n4mb_handle_session_modification_response(
 
         if (rsp->created_updated_traffic_endpoint.presence &&
                 rsp->created_updated_traffic_endpoint.local_ingress_tunnel.presence) {
-            changed = _set_ingress_tunnel(mbs_sess, rsp->created_updated_traffic_endpoint.local_ingress_tunnel.data);
+            if (!_take_ingress_tunnel(mbs_sess, &rsp->created_updated_traffic_endpoint.local_ingress_tunnel, &changed))
+                cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
         } else {
             for (i = 0; i < OGS_MAX_NUM_OF_PDR && rsp->created_pdr[i].presence; i++) {
                 if (rsp->created_pdr[i].local_ingress_tunnel.presence) {
-                    changed = _set_ingress_tunnel(mbs_sess, rsp->created_pdr[i].local_ingress_tunnel.data);
+                    if (!_take_ingress_tunnel(mbs_sess, &rsp->created_pdr[i].local_ingress_tunnel, &changed))
+                        cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
                     break;
                 }
             }
@@ -608,6 +612,15 @@ bool smf_n4mb_take_multicast_transport_information(smf_mbs_sess_t *mbs_sess, ogs
         return false;
     }
 
+    /* "Address Type 0 and Address Length 4 shall be used when Address is an IPv4 address. Address Type 1 and Address
+     * Length 16 shall be used when Address is an IPv6 address. Other combinations of values are not valid." Both the
+     * IP Multicast Distribution Address and the IP Source Address are in the IE: with another type the IE is not
+     * valid, and nothing is taken (the NGAP builder needs both addresses of the LL SSM). */
+    if (mti.ip_multicast_distribution_address.address_type > 1 || mti.ip_source_address.address_type > 1) {
+        ogs_error("MBS Session N4mb Information: the Multicast Transport Information has an address of another type");
+        return false;
+    }
+
     if (mti.ip_multicast_distribution_address.address_type == 0) {
         mbs_sess->ll_ssm.dest_ip_addr.ipv4 = 1;
         mbs_sess->ll_ssm.dest_ip_addr.len = OGS_IPV4_LEN;
@@ -670,11 +683,13 @@ uint8_t smf_n4mb_handle_session_restoration_response(
         /* the ingress tunnel is the address the request gave (the MB-UPF "shall allocate the same ... ingress tunnel
          * address if possible"); what it returns is taken in as at the establishment */
         if (rsp->created_traffic_endpoint.presence && rsp->created_traffic_endpoint.local_ingress_tunnel.presence) {
-            ingress_changed = _set_ingress_tunnel(mbs_sess, rsp->created_traffic_endpoint.local_ingress_tunnel.data);
+            if (!_take_ingress_tunnel(mbs_sess, &rsp->created_traffic_endpoint.local_ingress_tunnel, &ingress_changed))
+                cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
         } else {
             for (i = 0; i < OGS_MAX_NUM_OF_PDR && rsp->created_pdr[i].presence; i++) {
                 if (rsp->created_pdr[i].local_ingress_tunnel.presence) {
-                    ingress_changed = _set_ingress_tunnel(mbs_sess, rsp->created_pdr[i].local_ingress_tunnel.data);
+                    if (!_take_ingress_tunnel(mbs_sess, &rsp->created_pdr[i].local_ingress_tunnel, &ingress_changed))
+                        cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
                     break;
                 }
             }

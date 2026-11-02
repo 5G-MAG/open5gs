@@ -59,6 +59,10 @@ uint8_t smf_n4mb_handle_session_restoration_response(
         smf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
         ogs_pfcp_session_establishment_response_t *rsp);
 
+/* Whether a Local Ingress Tunnel IE of an answer is as long as its flags say and names an address (TS 29.244 V18.10.0
+ * clause 8.2.209) */
+bool smf_n4mb_local_ingress_tunnel_is_valid(const ogs_tlv_octet_t *ie);
+
 /* The LL SSM and C-TEID of a Multicast Transport Information IE of an answer, taken in. Returns false, taking nothing,
  * when the IE is malformed. */
 bool smf_n4mb_take_multicast_transport_information(smf_mbs_sess_t *mbs_sess, ogs_tlv_octet_t *octet);

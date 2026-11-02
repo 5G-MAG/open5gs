@@ -3298,6 +3298,19 @@ static void test_multicast_transport_information_answer(void)
     CHECK(mbs_sess->ll_ssm.dest_ip_addr.ipv4 && mbs_sess->ll_ssm.dest_ip_addr.addr == htonl(0xe8010203) &&
             mbs_sess->ll_ssm.src_ip_addr.addr == htonl(0x0a000001) && mbs_sess->c_teid == 0x0a0b0c0d);
 
+    /* an address of another type (clause 8.2.207: "Other combinations of values are not valid"): refused */
+    {
+        static const uint8_t bad_type[] = { 0x00, 0x01, 0x02, 0x03, 0x04, 0x84, 0xe8, 0x01, 0x02, 0x03,
+            0x04, 0x0a, 0x00, 0x00, 0x01 };
+
+        memset(&octet, 0, sizeof(octet));
+        octet.presence = 1;
+        octet.data = (void *)bad_type;
+        octet.len = sizeof(bad_type);
+        CHECK(!smf_n4mb_take_multicast_transport_information(mbs_sess, &octet));
+        CHECK(mbs_sess->c_teid == 0x0a0b0c0d);
+    }
+
     /* a truncated IE: refused, and the session keeps what it had */
     memset(&octet, 0, sizeof(octet));
     octet.presence = 1;
@@ -3408,6 +3421,38 @@ static void test_fsa_id_pattern(void)
             !smf_mbs_fsa_id_is_valid("0000 1") && !smf_mbs_fsa_id_is_valid("0x0001"));
 }
 
+/* TS 29.244 V18.10.0 clause 8.2.209: flags (CH, V6, V4), UDP Port, the addresses the flags name */
+static void test_local_ingress_tunnel_answer(void)
+{
+    static const uint8_t v4[] = { 0x02, 0x0f, 0xa0, 10, 9, 9, 9 };
+    static const uint8_t v6[] = { 0x01, 0x0f, 0xa0, 0x20, 0x01, 0xd, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 };
+    static const uint8_t both[] = { 0x03, 0x0f, 0xa0, 10, 9, 9, 9, 0x20, 0x01, 0xd, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 };
+    static const uint8_t short_v4[] = { 0x02, 0x0f, 0xa0, 10, 9 };
+    static const uint8_t long_v4[] = { 0x02, 0x0f, 0xa0, 10, 9, 9, 9, 0 };
+    static const uint8_t no_addr[] = { 0x04, 0x0f, 0xa0 };
+    static const uint8_t flags_only[] = { 0x02 };
+    ogs_tlv_octet_t ie;
+
+    memset(&ie, 0, sizeof(ie));
+    ie.presence = 1;
+    ie.data = (void *)v4; ie.len = sizeof(v4);
+    CHECK(smf_n4mb_local_ingress_tunnel_is_valid(&ie));
+    ie.data = (void *)v6; ie.len = sizeof(v6);
+    CHECK(smf_n4mb_local_ingress_tunnel_is_valid(&ie));
+    ie.data = (void *)both; ie.len = sizeof(both);
+    CHECK(smf_n4mb_local_ingress_tunnel_is_valid(&ie));
+    ie.data = (void *)short_v4; ie.len = sizeof(short_v4);
+    CHECK(!smf_n4mb_local_ingress_tunnel_is_valid(&ie));
+    ie.data = (void *)long_v4; ie.len = sizeof(long_v4);
+    CHECK(!smf_n4mb_local_ingress_tunnel_is_valid(&ie));
+    ie.data = (void *)no_addr; ie.len = sizeof(no_addr);
+    CHECK(!smf_n4mb_local_ingress_tunnel_is_valid(&ie));
+    ie.data = (void *)flags_only; ie.len = sizeof(flags_only);
+    CHECK(!smf_n4mb_local_ingress_tunnel_is_valid(&ie));
+    ie.data = NULL; ie.len = 0;
+    CHECK(!smf_n4mb_local_ingress_tunnel_is_valid(&ie) && !smf_n4mb_local_ingress_tunnel_is_valid(NULL));
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -3455,6 +3500,7 @@ int main(void)
     test_relocation();
     test_multicast_transport_information_answer();
     test_node_report_several_peers();
+    test_local_ingress_tunnel_answer();
 
     printf("smf-mbs: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
