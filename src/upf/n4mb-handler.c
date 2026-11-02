@@ -1002,8 +1002,12 @@ void upf_n4mb_handle_session_establishment_request(
     ogs_list_for_each(&mbs_sess->pfcp.far_list, far) {
         if (!mbs_sess->ll_ssm)
             break;
-        if (_setup_far_node(mbs_sess, far) != OGS_OK)
+        if (_setup_far_node(mbs_sess, far) != OGS_OK) {
+            /* "Rule creation/modification Failure: This cause shall be used by the UP function if a received Rule failed to be stored and be applied in the UP function." */
+            cause_value = OGS_PFCP_CAUSE_RULE_CREATION_MODIFICATION_FAILURE;
+            offending_ie_value = OGS_PFCP_FAR_ID_TYPE;
             goto cleanup;
+        }
     }
 
     /* JMBSSM: the MB-UPF "shall join the multicast tree towards the Source Specific Multicast (SSM) address

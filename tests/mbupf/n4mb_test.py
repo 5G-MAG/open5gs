@@ -73,8 +73,8 @@ class Upf:
         self.pre_net()
         self.start()
 
-    def write_config(self, port_yaml, extra_upf='', gtpu_port=None, gtpu6=None):
-        open(self.cfg, 'w').write("""logger:
+    def write_config(self, port_yaml, extra_upf='', gtpu_port=None, gtpu6=None, gtpu_only6=False):
+        text = ("""logger:
   level: debug
   file:
     path: %s
@@ -95,10 +95,13 @@ upf:
       address: 127.0.0.31
       port: %s
 %s""" % (self.log, '        port: %d\n' % gtpu_port if gtpu_port else '', '      - address: %s\n' % gtpu6 if gtpu6 else '', port_yaml, extra_upf))
+        if gtpu_only6:
+            text = text.replace('  gtpu:\n    server:\n      - address: 127.0.0.31\n', '  gtpu:\n    server:\n      - address: fd00::31\n')
+        open(self.cfg, 'w').write(text)
 
-    def restart(self, port_yaml='0', extra_upf='', gtpu_port=None, gtpu6=None):
+    def restart(self, port_yaml='0', extra_upf='', gtpu_port=None, gtpu6=None, gtpu_only6=False):
         self.stop()
-        self.write_config(port_yaml, extra_upf, gtpu_port, gtpu6)
+        self.write_config(port_yaml, extra_upf, gtpu_port, gtpu6, gtpu_only6)
         self.start()
 
     def start(self):
@@ -2991,6 +2994,20 @@ def t_mbs_multicast_parameters_need_destination_interface_and_outer_header_creat
         assert m and cause(m) == CAUSE_ACCEPTED
     finally:
         U.delete(s)
+
+
+@test
+def t_far_node_failure_is_not_a_success_cause():
+    """Rule creation/modification Failure (cl. 8.2.1): "if a received Rule failed to be stored and be applied in the UP function"."""
+    U.restart(gtpu_only6=True)       # IPv6 GTP-U only: the allocated IPv4 low layer SSM has no socket to send from
+    try:
+        r = U.establish(good(0xfc01))
+        assert U.alive()
+        assert r is not None and cause(r) not in (None, CAUSE_ACCEPTED), 'the rejection carries cause %s' % (cause(r) if r else None)
+        assert cause(r) == CAUSE_RULE_FAILURE and offending(r) == T_FAR_ID, 'cause %s offending %s' % (cause(r), offending(r))
+        assert upf_seid(r) is None, 'a rejected establishment returned an UP F-SEID'
+    finally:
+        U.restart()
 
 
 # E-TESTS-BELOW
