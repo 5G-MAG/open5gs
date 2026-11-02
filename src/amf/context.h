@@ -130,6 +130,10 @@ typedef struct amf_context_s {
     bool            mbs_reestablish;
     uint32_t        mbs_reestablish_after;
 
+    /* amf.mbs.report_ng_ran_failure: report an NG-RAN whose association is lost to the MB-SMF for each Broadcast MBS
+     * session it served (TS 23.527 V18.6.0 cl. 8.3.3, optional to support); false unless configured. */
+    bool            mbs_report_ng_ran_failure;
+
     /* Generator for unique identification */
     uint64_t        amf_ue_ngap_id; /* amf_ue_ngap_id generator */
 
@@ -1213,6 +1217,7 @@ amf_mbs_n2_info_t *amf_mbs_n2_info_create(amf_gnb_t *gnb,
 void amf_mbs_context_involve_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *gnb);
 amf_mbs_gnb_t *amf_mbs_context_find_involved_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *gnb);
 ogs_time_t amf_mbs_context_earliest_reestablish(amf_mbs_context_t *amf_mbs_context);
+bool amf_mbs_gnb_holds_session(const amf_mbs_gnb_t *involved);
 bool amf_mbs_gnb_has_ran_id(const amf_mbs_gnb_t *involved, const amf_gnb_t *gnb);
 amf_mbs_gnb_t *amf_mbs_context_find_stale_involved_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *gnb);
 bool amf_mbs_context_store_n2_container(amf_mbs_context_t *amf_mbs_context, const ogs_pkbuf_t *container);

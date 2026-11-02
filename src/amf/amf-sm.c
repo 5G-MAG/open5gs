@@ -950,6 +950,7 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
             ogs_info("gNB-N2[%s] connection refused!!!", OGS_ADDR(addr, buf));
             amf_sbi_send_deactivate_all_ue_in_gnb(
                     gnb, AMF_REMOVE_S1_CONTEXT_BY_LO_CONNREFUSED);
+            amf_namf_handle_mbs_broadcast_gnb_lost(gnb);
             amf_gnb_remove(gnb);
         } else {
             ogs_warn("gNB-N2[%s] connection refused, Already Removed!",

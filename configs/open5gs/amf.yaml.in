@@ -249,6 +249,10 @@ amf:
 #    up again with the last N2 MBS SM container the MB-SMF gave it (clause 8.3.2.2). `mb-smf`: the AMF reports the
 #    event to the MB-SMF, which restores the session (clause 8.3.2.3). Default: none.
 #
+#  o Broadcast MBS sessions: when the association with an NG-RAN is lost, report it to the MB-SMF for each session the
+#    NG-RAN served, as an operation event NG_RAN_FAILURE_WITHOUT_RESTART (TS 23.527 clause 8.3.3, optional to support;
+#    default: false)
+#
 #  o Broadcast MBS sessions: when an NG-RAN has asked for the release of a session, the AMF sets it up again in that
 #    NG-RAN after this many seconds (TS 29.518 clause 5.6.2.5: "after some operator configurable time", by the
 #    procedure of TS 23.527 clause 8.3.2.2). No document gives a value: without it the AMF does not set the session up
@@ -257,3 +261,4 @@ amf:
 #    report_required_release: true
 #    restoration: amf
 #    reestablish_after: 60    # an example, not a default
+#    report_ng_ran_failure: true

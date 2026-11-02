@@ -968,6 +968,37 @@ static void test_status_notify_ngran_event(void)
     ogs_free(gnb);
 }
 
+/* TS 23.527 V18.6.0 cl. 8.3.3: the MB-SMF is told of the "MBS session(s) affected by this failure": the sessions the NG-RAN
+ * holds. */
+static void test_gnb_holds_session(void)
+{
+    amf_gnb_t *gnb = make_gnb(0x100, 22);
+    amf_mbs_context_t ctx = make_context();
+    amf_mbs_gnb_t *rec;
+
+    ogs_list_init(&ctx.involved_gnb_list);
+    gnb->id = 1;
+    amf_mbs_context_involve_gnb(&ctx, gnb);
+    rec = amf_mbs_context_find_involved_gnb(&ctx, gnb);
+    CHECK(rec != NULL);
+    if (rec) {
+        CHECK(amf_mbs_gnb_holds_session(rec));
+        rec->setup_failed = true;
+        CHECK(!amf_mbs_gnb_holds_session(rec));
+        rec->setup_failed = false;
+        rec->release_required = true;
+        CHECK(!amf_mbs_gnb_holds_session(rec));
+        rec->release_required = false;
+        rec->area_released = true;
+        CHECK(!amf_mbs_gnb_holds_session(rec));
+        rec->area_released = false;
+        CHECK(amf_mbs_gnb_holds_session(rec));
+    }
+
+    free_involved(&ctx);
+    ogs_free(gnb);
+}
+
 int main(int argc, const char *argv[])
 {
     ogs_pkbuf_config_t config;
@@ -993,6 +1024,7 @@ int main(int argc, const char *argv[])
     test_update_action_ran_id_list();
     test_gnb_record_ran_id();
     test_earliest_reestablish();
+    test_gnb_holds_session();
     test_update_action_enters_area();
     test_update_action_leaves_area();
     test_update_action_info_unchanged();

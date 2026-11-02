@@ -126,6 +126,12 @@ int amf_namf_mbs_transport_answers(const amf_gnb_t *gnb, const ogs_tmgi_t *tmgi,
  */
 void amf_namf_handle_mbs_broadcast_ng_setup(amf_gnb_t *gnb);
 
+/*
+ * The association with NG-RAN node \p gnb is lost (it is about to be removed): when amf.mbs.report_ng_ran_failure is set,
+ * the MB-SMF is told for each Broadcast MBS session the node served (TS 23.527 V18.6.0 cl. 8.3.3).
+ */
+void amf_namf_handle_mbs_broadcast_gnb_lost(amf_gnb_t *gnb);
+
 bool amf_namf_handle_mbs_broadcast_area_release_response(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb,
         const OCTET_STRING_t *transfer);
 bool amf_namf_handle_mbs_broadcast_required_release_response(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb,

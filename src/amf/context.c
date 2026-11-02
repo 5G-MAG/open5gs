@@ -145,6 +145,17 @@ ogs_time_t amf_mbs_context_earliest_reestablish(amf_mbs_context_t *amf_mbs_conte
     return earliest;
 }
 
+/*
+ * Whether the gNB of the record \p involved holds the session: it did not fail its Setup, did not ask for the release
+ * and was not released for leaving the service area.
+ */
+bool amf_mbs_gnb_holds_session(const amf_mbs_gnb_t *involved)
+{
+    ogs_assert(involved);
+
+    return !involved->setup_failed && !involved->release_required && !involved->area_released;
+}
+
 /* Whether the record \p involved was made for a gNB with the Global RAN Node ID of \p gnb */
 bool amf_mbs_gnb_has_ran_id(const amf_mbs_gnb_t *involved, const amf_gnb_t *gnb)
 {
@@ -426,6 +437,8 @@ int amf_context_parse_config(void)
                         ogs_assert(mbs_key);
                         if (!strcmp(mbs_key, "report_required_release"))
                             self.mbs_report_required_release = ogs_yaml_iter_bool(&mbs_iter);
+                        else if (!strcmp(mbs_key, "report_ng_ran_failure"))
+                            self.mbs_report_ng_ran_failure = ogs_yaml_iter_bool(&mbs_iter);
                         else if (!strcmp(mbs_key, "restoration")) {
                             const char *v = ogs_yaml_iter_value(&mbs_iter);
 

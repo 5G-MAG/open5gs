@@ -2223,8 +2223,7 @@ amf_mbs_update_action_e amf_namf_mbs_update_action(
         // TS 23.247 V18.8.0 cl. 7.3.3 step 3: "the AMF may send ... MBS Session Resource Release to some other NG-RANs in
         // old MBS service area": a node that holds the session, served the old service area and does not serve the new
         // one leaves it.
-        if (involved && !involved->setup_failed && !involved->release_required && !involved->area_released &&
-                amf_namf_gnb_serves_tai_list(gnb, plan->old_area))
+        if (involved && amf_mbs_gnb_holds_session(involved) && amf_namf_gnb_serves_tai_list(gnb, plan->old_area))
             return AMF_MBS_UPDATE_RELEASE;
         return AMF_MBS_UPDATE_SKIP;
     }
@@ -3221,6 +3220,36 @@ void amf_namf_handle_mbs_broadcast_ran_response(amf_mbs_context_t *mbs_context, 
     // ContextUpdate that failed does not end the session.
     if (!update)
         amf_mbs_context_remove(mbs_context);
+}
+
+/*
+ * TS 23.527 V18.6.0 cl. 8.3.3: "When the AMF detects NG-RAN failure without restart, e.g. using SCTP path failure
+ * detection mechanism, it shall report such event to the MB-SMF for each of MBS session(s) affected by this failure, to
+ * enable the MB-SMF to remove the DL F-TEID allocated by the failed NG-RAN in the MB-UPF when unicast transport is used
+ * over N3mb interface." Step 3: "The AMF sends Namf_MBSBroadcast_ContextStatusNotify Request message to the MB-SMF for each
+ * affected MBS session including the MBS Session ID, the NG-RAN ID and an indication of the NG-RAN failure without restart
+ * event." The sessions affected are those the node holds: it did not fail its Setup, did not ask for the release and was
+ * not released for leaving the service area.
+ */
+void amf_namf_handle_mbs_broadcast_gnb_lost(amf_gnb_t *gnb)
+{
+    amf_mbs_context_t *mbs_context = NULL;
+
+    ogs_assert(gnb);
+
+    if (!amf_self()->mbs_report_ng_ran_failure)
+        return;
+
+    ogs_list_for_each(&amf_self()->amf_mbs_context_list, mbs_context) {
+        amf_mbs_gnb_t *involved = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
+
+        if (!involved || !amf_mbs_gnb_holds_session(involved))
+            continue;
+
+        ogs_info("MBS Broadcast [%s]: gNB %i failed, the MB-SMF is told", mbs_context->mbs_context_ref, gnb->gnb_id);
+        amf_sbi_send_mbs_broadcast_ngran_event(
+                mbs_context, gnb, OpenAPI_ngran_failure_indication_NG_RAN_FAILURE_WITHOUT_RESTART);
+    }
 }
 
 /*
