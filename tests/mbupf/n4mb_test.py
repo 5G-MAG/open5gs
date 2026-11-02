@@ -10,6 +10,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 UPFD = sys.argv[1]
@@ -2670,6 +2671,232 @@ def t_U02_9_restoration_with_pllssm_and_jmbssm_flags():
             U.delete(s)
     finally:
         U.restart()
+
+
+PATH_CFG = """    gtpu_path:
+      echo_interval: 60
+      t3_response: 1
+      n3_requests: 2
+"""
+
+
+def echo_request_seq(p):
+    """Checks an Echo Request of TS 29.281 (version 1, PT, S flag, type 1, TEID 0) and returns its sequence number."""
+    assert len(p) >= 12 and p[0] == 0x32 and p[1] == 1, 'not an Echo Request: %s' % p.hex()
+    assert p[4:8] == b'\x00\x00\x00\x00', 'TEID of the Echo Request is not zero'
+    assert struct.unpack('>H', p[2:4])[0] == len(p) - 8, 'length field'
+    return struct.unpack('>H', p[8:10])[0]
+
+
+class EchoPeer(GtpuPeer):
+    """A GTP-U peer that counts the Echo Requests it gets and answers them (cl. 7.2.2) when it is told to."""
+    def __init__(self, ip, answer):
+        GtpuPeer.__init__(self, ip)
+        self.answer = answer
+        self.sock.settimeout(0.2)
+        self.requests = []
+
+    def serve_in_background(self, seconds):
+        t = threading.Thread(target=self.serve, args=(seconds,))
+        t.start()
+        return t
+
+    def serve(self, seconds):
+        end = time.time() + seconds
+        while time.time() < end:
+            try:
+                data, addr = self.sock.recvfrom(65535)
+            except socket.timeout:
+                continue
+            if len(data) >= 2 and data[1] == 1:
+                seq = echo_request_seq(data)
+                self.requests.append((seq, addr))
+                if self.answer:
+                    self.sock.sendto(bytes([0x32, 2, 0, 6, 0, 0, 0, 0]) + struct.pack('>H', seq) + b'\x00\x00\x0e\x00', addr)
+
+
+def node_report(timeout):
+    """Waits for a PFCP Node Report Request on the CP socket, answers it, returns its IEs (None if none came)."""
+    end = time.time() + timeout
+    U.sock.settimeout(0.3)
+    try:
+        while time.time() < end:
+            try:
+                d, addr = U.sock.recvfrom(65535)
+            except socket.timeout:
+                continue
+            if d[1] == 1:       # Heartbeat Request
+                U.sock.sendto(msg(2, int.from_bytes(d[4:7], 'big'), ie(96, struct.pack('>I', 3900000000))), addr)
+                continue
+            if d[1] != 12:
+                continue
+            ies = parse_ies(d[8:])
+            body = ie(T_NODE_ID, b'\x00' + socket.inet_aton('127.0.0.77')) + ie(T_CAUSE, b'\x01')
+            U.sock.sendto(msg(13, int.from_bytes(d[4:7], 'big'), body), addr)
+            return ies
+        return None
+    finally:
+        U.sock.settimeout(2.0)
+
+
+def failed_peers(ies):
+    """The addresses in the Remote GTP-U Peer IEs of the User Plane Path Failure Report."""
+    rep = [v for t, v in ies if t == 102]
+    assert len(rep) == 1, 'User Plane Path Failure Reports: %d' % len(rep)
+    out = []
+    for t, v in parse_ies(rep[0]):
+        assert t == 103, 'IE %d in the report' % t
+        assert v[0] & 0x02 and not v[0] & 0x01, 'flags %02x' % v[0]
+        out.append(socket.inet_ntoa(v[1:5]))
+    return out
+
+
+@test
+def t_gtpu_path_failure_is_reported_in_a_node_report():
+    """TS 29.244 cl. 5.10A, 6.2.9.2, Table 7.4.5.1.2-1 and TS 29.281 cl. 7.2, 11, 12 (see src/upf/path-management.c)."""
+    U.restart('0', PATH_CFG)
+    try:
+        r, s = drop_session(0xf801)
+        silent = EchoPeer('127.0.0.41', answer=False)
+        alive = EchoPeer('127.0.0.42', answer=True)
+        threads = []
+        try:
+            threads = [silent.serve_in_background(13), alive.serve_in_background(13)]
+            m = modify(s, update_far(apply=APPLY_MBSU, extra=(add_unicast(1, 0x1111, '127.0.0.41'), add_unicast(2, 0x2222, '127.0.0.42'))))
+            assert m and cause(m) == CAUSE_ACCEPTED
+            # T3-RESPONSE 1 s, N3-REQUESTS 2: the second attempt is 1 s after the first, the failure 1 s after the second
+            ies = node_report(8)
+            assert ies is not None, 'no Node Report Request for the silent peer'
+            assert find({'ies': ies}, T_NODE_ID) is not None, 'no Node ID'
+            assert find({'ies': ies}, 101) == b'\x01', 'Node Report Type %s' % find({'ies': ies}, 101)
+            assert failed_peers(ies) == ['127.0.0.41'], 'failed peers %s' % failed_peers(ies)
+            assert [q[0] for q in silent.requests] == [silent.requests[0][0]] * 2, 'Echo Requests of the silent peer: %s' % [q[0] for q in silent.requests]
+            assert len(alive.requests) == 1, 'Echo Requests of the answering peer: %d' % len(alive.requests)
+            assert node_report(3) is None, 'a second report, or one for the peer that answers'
+            assert U.alive()
+        finally:
+            for t in threads:
+                t.join()
+            silent.close()
+            alive.close()
+            U.delete(s)
+    finally:
+        U.restart()
+
+
+@test
+def t_gtpu_path_management_is_off_unless_configured_and_for_multicast_only():
+    # not configured: a unicast peer gets no Echo Request
+    r, s = drop_session(0xf811)
+    peer = EchoPeer('127.0.0.41', answer=False)
+    try:
+        assert modify(s, update_far(apply=APPLY_MBSU, extra=(add_unicast(1, 0x1111, '127.0.0.41'),)))
+        peer.serve(2.5)
+        assert not peer.requests, 'Echo Request without upf.mbs.gtpu_path'
+        assert node_report(1) is None
+    finally:
+        peer.close()
+        U.delete(s)
+    # configured: a session that only forwards to the multicast group has no path
+    U.restart('0', PATH_CFG)
+    try:
+        r, s = drop_session(0xf812)
+        assert modify(s, update_far(apply=APPLY_FSSM))
+        assert node_report(4) is None, 'a report for multicast transport'
+        U.delete(s)
+        # a peer that is removed before it fails is not reported
+        r, s = drop_session(0xf813)
+        peer = EchoPeer('127.0.0.41', answer=False)
+        try:
+            assert modify(s, update_far(apply=APPLY_MBSU, extra=(add_unicast(1, 0x1111, '127.0.0.41'),)))
+            peer.serve(0.5)
+            assert len(peer.requests) == 1
+            assert modify(s, update_far(extra=(remove_unicast(1),)))
+            assert node_report(4) is None, 'a report for a peer that no session uses'
+        finally:
+            peer.close()
+            U.delete(s)
+    finally:
+        U.restart()
+
+
+def refuses_to_start(extra, why):
+    """The daemon, started on its own configuration while the one of the harness is stopped, exits and says `why`."""
+    U.stop()
+    try:
+        u = Upf.__new__(Upf)
+        u.dir = tempfile.mkdtemp(prefix='mbupf-cfg-')
+        u.cfg = os.path.join(u.dir, 'upf.yaml')
+        u.log = os.path.join(u.dir, 'upf.log')
+        u.write_config('0', extra)
+        p = subprocess.Popen([UPFD, '-c', u.cfg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            time.sleep(1.5)
+            exited = p.poll() is not None
+        finally:
+            if p.poll() is None:
+                p.terminate()
+                p.wait(5)
+        text = open(u.log, errors='replace').read() if os.path.exists(u.log) else ''
+        return exited and why in text
+    finally:
+        U.start()
+
+
+def starts(extra):
+    U.stop()
+    try:
+        u = Upf.__new__(Upf)
+        u.dir = tempfile.mkdtemp(prefix='mbupf-cfg-')
+        u.cfg = os.path.join(u.dir, 'upf.yaml')
+        u.log = os.path.join(u.dir, 'upf.log')
+        u.write_config('0', extra)
+        p = subprocess.Popen([UPFD, '-c', u.cfg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            time.sleep(1.5)
+            return p.poll() is None
+        finally:
+            if p.poll() is None:
+                p.terminate()
+                p.wait(5)
+    finally:
+        U.start()
+
+
+@test
+def t_gtpu_path_configuration_is_checked():
+    """cl. 7.2.1: "an Echo Request shall not be sent more often than every 60 s on each path"; cl. 12.2: no value for T3-RESPONSE."""
+    assert refuses_to_start("    gtpu_path:\n      echo_interval: 30\n      t3_response: 1\n", 'not less than 60'), 'echo_interval 30 accepted'
+    assert refuses_to_start("    gtpu_path:\n      echo_interval: 60\n", 'No upf.mbs.gtpu_path.t3_response'), 'no t3_response accepted'
+    assert refuses_to_start("    gtpu_path:\n      t3_response: 3\n", 'without echo_interval'), 't3_response without echo_interval accepted'
+    assert refuses_to_start("    gtpu_path:\n      echo_interval: abc\n      t3_response: 1\n", 'must be a positive number'), 'not a number accepted'
+    assert starts("    gtpu_path:\n      echo_interval: 60\n      t3_response: 3\n"), 'a valid configuration is refused'
+
+
+@test
+def t_gtpu_path_echo_is_repeated_and_the_daemon_ends_cleanly_with_paths():
+    """cl. 7.2.1: an Echo Request goes on each path in use, not more often than every 60 s (here exactly the configured 60 s), with
+    a new sequence number; a peer that answers is not reported. The peers come with the establishment (Create FAR)."""
+    U.restart('0', PATH_CFG)
+    peer = EchoPeer('127.0.0.41', answer=True)
+    cfar = ie(T_CREATE_FAR, [ie(T_FAR_ID, struct.pack('>I', 1)), ie(T_APPLY, struct.pack('>H', APPLY_MBSU)),
+                             add_unicast(1, 0x1111, '127.0.0.41')])
+    r = U.establish(replace_ie(mc_request(0xf821, b'\x02' + V4G, None), T_CREATE_FAR, cfar))
+    s = accepted(r, 'session with a peer in the Create FAR')
+    t = peer.serve_in_background(66)
+    t0 = time.time()
+    try:
+        assert node_report(66) is None, 'a report for a peer that answers'
+        t.join()
+        assert len(peer.requests) == 2, 'Echo Requests in 66 s: %d' % len(peer.requests)
+        assert (peer.requests[1][0] - peer.requests[0][0]) & 0xffff == 1, 'sequence numbers %s' % [q[0] for q in peer.requests]
+    finally:
+        t.join()
+        peer.close()
+    # the daemon ends with the session and its path in place
+    U.stop()
+    assert U.proc.returncode == 0, 'upfd exit status %s' % U.proc.returncode
+    U.restart()
 
 
 # E-TESTS-BELOW

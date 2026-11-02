@@ -18,6 +18,7 @@
  */
 
 #include "context.h"
+#include "path-management.h"
 
 #if HAVE_NETINET_IP_H
 #include <netinet/ip.h>
@@ -403,6 +404,30 @@ static void _gtpv1_u_recv_cb(short when, ogs_socket_t fd, void *data)
                         "ogs_sendto() failed");
             }
             ogs_pkbuf_free(echo_rsp);
+        }
+        goto cleanup;
+    }
+    if (header_desc.type == OGS_GTPU_MSGTYPE_ECHO_RSP) {
+        /* the answer to an Echo Request of the path management of the MBS unicast peers (TS 29.281 cl. 7.2.2): handled by the
+         * state machine; the S flag is set (cl. 5.1), the sequence number is the first two octets after the TEID */
+        if (upf_gtpu_path_enabled() && (gtp_h->flags & 0x02) && pkbuf->len >= 10) {
+            upf_event_t *e = upf_event_new(UPF_EVT_GTPU_ECHO_RESPONSE);
+            ogs_sockaddr_t *peer = &from;
+
+            e->sequence_number = (((uint8_t *)pkbuf->data)[8] << 8) | ((uint8_t *)pkbuf->data)[9];
+            if (peer->ogs_sa_family == AF_INET) {
+                e->peer_ip.ipv4 = 1;
+                e->peer_ip.addr = peer->sin.sin_addr.s_addr;
+                e->peer_ip.len = OGS_IPV4_LEN;
+            } else if (peer->ogs_sa_family == AF_INET6) {
+                e->peer_ip.ipv6 = 1;
+                memcpy(e->peer_ip.addr6, &peer->sin6.sin6_addr, OGS_IPV6_LEN);
+                e->peer_ip.len = OGS_IPV6_LEN;
+            }
+            if (ogs_queue_push(ogs_app()->queue, e) != OGS_OK) {
+                ogs_error("ogs_queue_push() failed");
+                upf_event_free(e);
+            }
         }
         goto cleanup;
     }

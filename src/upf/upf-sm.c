@@ -22,6 +22,7 @@
 #include "event.h"
 #include "pfcp-path.h"
 #include "gtp-path.h"
+#include "path-management.h"
 
 void upf_state_initial(ogs_fsm_t *s, upf_event_t *e)
 {
@@ -103,6 +104,12 @@ void upf_state_operational(ogs_fsm_t *s, upf_event_t *e)
         ogs_assert(OGS_FSM_STATE(&node->sm));
 
         ogs_fsm_dispatch(&node->sm, e);
+        break;
+    case UPF_EVT_GTPU_PATH_TIMER:
+        upf_gtpu_path_handle_timer(e->timer_id, e->path_id);
+        break;
+    case UPF_EVT_GTPU_ECHO_RESPONSE:
+        upf_gtpu_path_handle_echo_response(&e->peer_ip, e->sequence_number);
         break;
     default:
         ogs_error("No handler for event %s", upf_event_get_name(e));

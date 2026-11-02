@@ -19,6 +19,7 @@
 #include <inttypes.h>
 
 #include "context.h"
+#include "path-management.h"
 #include "pfcp-path.h"
 #include "multicastrouter/multicastrouter.h"
 
@@ -100,6 +101,7 @@ void upf_context_final(void)
 {
     ogs_assert(context_initialized == 1);
 
+    upf_gtpu_path_final();
     upf_sess_remove_all();
     upf_mbs_sess_remove_all();
 
@@ -152,6 +154,24 @@ static int upf_context_validation(void)
     }
     if (ogs_list_first(&ogs_pfcp_self()->subnet_list) == NULL) {
         ogs_error("No upf.session.subnet: in '%s'", ogs_app()->file);
+        return OGS_ERROR;
+    }
+    /* TS 29.281 cl. 7.2.1: an Echo Request is not sent "more often than every 60 s on each path"; cl. 12.2: T3-RESPONSE has
+     * no value in the specification, and cl. 12.3 gives 5 as the recommended N3-REQUESTS */
+    if (self.mbs_path_echo_interval) {
+        if (self.mbs_path_echo_interval < 60) {
+            ogs_error("upf.mbs.gtpu_path.echo_interval is %u: not less than 60 s (TS 29.281 7.2.1) in '%s'",
+                    self.mbs_path_echo_interval, ogs_app()->file);
+            return OGS_ERROR;
+        }
+        if (self.mbs_path_t3_response == 0) {
+            ogs_error("No upf.mbs.gtpu_path.t3_response in '%s' (TS 29.281 gives no value)", ogs_app()->file);
+            return OGS_ERROR;
+        }
+        if (self.mbs_path_n3_requests == 0)
+            self.mbs_path_n3_requests = 5;
+    } else if (self.mbs_path_t3_response || self.mbs_path_n3_requests) {
+        ogs_error("upf.mbs.gtpu_path.t3_response and n3_requests without echo_interval in '%s'", ogs_app()->file);
         return OGS_ERROR;
     }
     return OGS_OK;
@@ -412,6 +432,32 @@ int upf_context_parse_config(void)
                                 }
                             }
 
+                        } else if (!strcmp(upf_mbs_key, "gtpu_path")) {
+                            ogs_yaml_iter_t upf_mbs_path_iter;
+                            ogs_yaml_iter_recurse(&upf_mbs_iter, &upf_mbs_path_iter);
+                            while (ogs_yaml_iter_next(&upf_mbs_path_iter)) {
+                                const char *upf_mbs_path_key = ogs_yaml_iter_key(&upf_mbs_path_iter);
+                                const char *value = ogs_yaml_iter_value(&upf_mbs_path_iter);
+                                char *end = NULL;
+                                unsigned long number;
+
+                                ogs_assert(upf_mbs_path_key);
+                                number = value ? strtoul(value, &end, 10) : 0;
+                                if (!value || !*value || *end || number == 0 || number > 0xffffff) {
+                                    ogs_error("upf/mbs/gtpu_path/%s must be a positive number of seconds or times, not `%s`",
+                                            upf_mbs_path_key, value ? value : "");
+                                    return OGS_ERROR;
+                                }
+                                if (!strcmp(upf_mbs_path_key, "echo_interval")) {
+                                    self.mbs_path_echo_interval = number;
+                                } else if (!strcmp(upf_mbs_path_key, "t3_response")) {
+                                    self.mbs_path_t3_response = number;
+                                } else if (!strcmp(upf_mbs_path_key, "n3_requests")) {
+                                    self.mbs_path_n3_requests = number;
+                                } else {
+                                    ogs_warn("unknown key `%s` in upf/mbs/gtpu_path section", upf_mbs_path_key);
+                                }
+                            }
                         } else {
                             ogs_warn("unknown key `%s` in upf/mbs section", upf_mbs_key);
                         }

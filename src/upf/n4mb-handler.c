@@ -30,6 +30,7 @@
 #include <unistd.h>
 
 #include "context.h"
+#include "path-management.h"
 #include "gtp-path.h"
 #include "pfcp-path.h"
 #include "n4mb-handler.h"
@@ -971,7 +972,7 @@ void upf_n4mb_handle_session_establishment_request(
     ogs_assert(OGS_OK ==
             upf_pfcp_n4mb_send_session_establishment_response(
                 xact, mbs_sess, created_pdr, num_of_created_pdr));
-
+    upf_gtpu_path_sync();
 
     return;
 
@@ -1702,6 +1703,7 @@ void upf_n4mb_handle_session_modification_request(
     _remove_flows(mbs_sess, req);
 
     ogs_assert(OGS_OK == upf_pfcp_n4mb_send_session_modification_response(xact, mbs_sess));
+    upf_gtpu_path_sync();
     return;
 
 rollback_flows:
@@ -1741,6 +1743,7 @@ void upf_n4mb_handle_session_deletion_request(
     upf_pfcp_n4mb_send_session_deletion_response(xact, mbs_sess);
 
     upf_mbs_sess_remove(mbs_sess);
+    upf_gtpu_path_sync();
 }
 
 static void _mbs_tunnel_poll_handler(short when, ogs_socket_t fd, void *data)

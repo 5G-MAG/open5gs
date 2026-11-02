@@ -76,6 +76,11 @@ typedef struct upf_context_s {
     bool mbs_multicastrouter_activate; /* Activate the multicast router */
     char mbs_multicastrouter_input_interface[IFNAMSIZ]; /* Name of the input interface of the multicast router */
     char mbs_multicastrouter_output_interface[IFNAMSIZ]; /* Name of the output interface of the multicast router */
+
+    /* GTP-U path management of the unicast N3mb peers (upf.mbs.gtpu_path), see path-management.c */
+    uint32_t mbs_path_echo_interval;    /* seconds between Echo Requests on a path, 0: no Echo Request */
+    uint32_t mbs_path_t3_response;      /* T3-RESPONSE in seconds */
+    uint32_t mbs_path_n3_requests;      /* N3-REQUESTS */
 } upf_context_t;
 
 /* trie mapping from IP framed routes to session. */

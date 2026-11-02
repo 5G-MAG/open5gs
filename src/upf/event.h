@@ -37,6 +37,8 @@ typedef enum {
     UPF_EVT_N4_MESSAGE,
     UPF_EVT_N4_TIMER,
     UPF_EVT_N4_NO_HEARTBEAT,
+    UPF_EVT_GTPU_PATH_TIMER,      /* timer_id, path_id */
+    UPF_EVT_GTPU_ECHO_RESPONSE,   /* peer_ip, sequence_number */
 
     UPF_EVT_TOP,
 
@@ -51,6 +53,10 @@ typedef struct upf_event_s {
     ogs_pfcp_node_t *pfcp_node;
     ogs_pool_id_t pfcp_xact_id;
     ogs_pfcp_message_t *pfcp_message;
+
+    ogs_pool_id_t path_id;      /* GTP-U path management */
+    ogs_ip_t peer_ip;
+    uint16_t sequence_number;
 } upf_event_t;
 
 OGS_STATIC_ASSERT(OGS_EVENT_SIZE >= sizeof(upf_event_t));

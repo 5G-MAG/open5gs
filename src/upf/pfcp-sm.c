@@ -338,6 +338,17 @@ void upf_pfcp_state_associated(ogs_fsm_t *s, upf_event_t *e)
             upf_n4_handle_session_report_response(
                 sess, xact, &message->pfcp_session_report_response);
             break;
+        case OGS_PFCP_NODE_REPORT_RESPONSE_TYPE:
+            /* the answer to a Node Report Request (TS 29.244 cl. 6.2.9.2: "the UP function shall consider the information
+             * successfully delivered to the CP function" when the cause is success) */
+            ogs_assert(xact);
+            ogs_pfcp_xact_commit(xact);
+            if (!message->pfcp_node_report_response.cause.presence ||
+                    message->pfcp_node_report_response.cause.u8 != OGS_PFCP_CAUSE_REQUEST_ACCEPTED)
+                ogs_error("PFCP Node Report Response: cause %d, not accepted",
+                        message->pfcp_node_report_response.cause.presence ?
+                        message->pfcp_node_report_response.cause.u8 : -1);
+            break;
         default:
             ogs_error("Not implemented PFCP message type[%d]",
                     message->h.type);

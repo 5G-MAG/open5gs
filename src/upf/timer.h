@@ -32,6 +32,8 @@ typedef enum {
 
     UPF_TIMER_ASSOCIATION,
     UPF_TIMER_NO_HEARTBEAT,
+    UPF_TIMER_GTPU_ECHO,        /* the next Echo Request of a GTP-U path */
+    UPF_TIMER_GTPU_T3_RESPONSE, /* T3-RESPONSE of an Echo Request */
 
     MAX_NUM_OF_UPF_TIMER,
 
@@ -41,6 +43,8 @@ const char *upf_timer_get_name(upf_timer_e id);
 
 void upf_timer_association(void *data);
 void upf_timer_no_heartbeat(void *data);
+void upf_timer_gtpu_echo(void *data);          /* data: the path id */
+void upf_timer_gtpu_t3_response(void *data);   /* data: the path id */
 
 #ifdef __cplusplus
 }
