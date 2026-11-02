@@ -2560,6 +2560,8 @@ cleanup:
 }
 
 static void amf_mbs_context_release(amf_mbs_context_t *mbs_context);
+static void amf_mbs_context_restoration_response(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb, bool success,
+        const OCTET_STRING_t *transfer);
 
 /*
  * Builds and sends the deferred Namf_MBSBroadcast_ContextCreate response (OGS_SBI_HTTP_STATUS_CREATED),
@@ -3116,6 +3118,14 @@ void amf_namf_handle_mbs_broadcast_ran_response(amf_mbs_context_t *mbs_context, 
         involved->awaiting = false;
         update_setup = involved->update_setup;
 
+        // The answer to the Setup Request that restores the session in a gNB that restarted is not one of the answers a
+        // ContextCreate or ContextUpdate waits for.
+        if (involved->restoring) {
+            involved->restoring = false;
+            amf_mbs_context_restoration_response(mbs_context, gnb, success, transfer);
+            return;
+        }
+
         // A failed Setup means the node does not serve the session (it is then not one of "all the NG-RANs serving
         // the Broadcast MBS session", TS 29.518 cl. 5.6.2.5); any success, or a failure of a Modification, leaves
         // it as it was.
@@ -3211,6 +3221,115 @@ void amf_namf_handle_mbs_broadcast_ran_response(amf_mbs_context_t *mbs_context, 
     // ContextUpdate that failed does not end the session.
     if (!update)
         amf_mbs_context_remove(mbs_context);
+}
+
+/*
+ * Restores the session of \p mbs_context in \p gnb, which restarted or is new (TS 23.527 V18.6.0 cl. 8.3.2.2 step 4:
+ * "The AMF re-establishes the broadcast MBS session in the restarted NG-RAN, by sending an NGAP Broadcast Session Setup
+ * Request including the last N2 (NGAP) MBS Session Setup or Modification Request Transfer IE that was stored."). Its
+ * response is handled by amf_mbs_context_restoration_response(). Returns false when nothing was sent.
+ */
+static bool amf_mbs_context_restore_in_gnb(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb)
+{
+    ogs_pkbuf_t *n2msgreq = NULL;
+    amf_mbs_gnb_t *involved = NULL;
+
+    ogs_assert(mbs_context);
+    ogs_assert(gnb);
+
+    if (!mbs_context->n2_mbs_sm_request) {
+        ogs_warn("MBS Broadcast [%s]: no N2 MBS SM container is held, the session is not restored in gNB %i",
+                mbs_context->mbs_context_ref, gnb->gnb_id);
+        return false;
+    }
+
+    n2msgreq = ngap_build_broadcast_session_setup_request(mbs_context, mbs_context->n2_mbs_sm_request);
+    if (!n2msgreq) {
+        ogs_error("MBS Broadcast [%s]: the Broadcast Session Setup Request could not be built", mbs_context->mbs_context_ref);
+        return false;
+    }
+    if (ngap_send_to_gnb(gnb, n2msgreq, NGAP_NON_UE_SIGNALLING) != OGS_OK) {
+        ogs_error("MBS Broadcast [%s]: the Broadcast Session Setup Request could not be sent to gNB %i",
+                mbs_context->mbs_context_ref, gnb->gnb_id);
+        return false;
+    }
+
+    // The same gNB, connected anew, keeps its record; a gNB the session has not been sent to gets one.
+    involved = amf_mbs_context_find_stale_involved_gnb(mbs_context, gnb);
+    if (involved) {
+        involved->gnb_id = gnb->id;
+        involved->awaiting = true;
+    } else {
+        amf_mbs_context_involve_gnb(mbs_context, gnb);
+        involved = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
+    }
+    if (involved) {
+        involved->restoring = true;
+        involved->update_setup = false;
+        involved->release_required = false;
+        involved->released = false;
+        involved->setup_failed = false;
+        involved->area_released = false;
+        involved->area_release_pending = false;
+    }
+
+    ogs_info("MBS Broadcast [%s]: the session is restored in gNB %i", mbs_context->mbs_context_ref, gnb->gnb_id);
+    return true;
+}
+
+/*
+ * The answer of \p gnb to the Setup Request that restores the session. TS 23.527 V18.6.0 cl. 8.3.2.2 step 5: "If an N2
+ * MBS SM Container (i.e. N2 (NGAP) MBS Session Setup or Modification Response Transfer IE) was received from the NG-RAN
+ * in step 4, the AMF sends an Namf_MBSBroadcast_ContextStatusNotify Request to the MB-SMF including the N2 MBS SM
+ * Container and the RAN-ID of the NG-RAN." The answer is not one of the responses a ContextCreate or ContextUpdate waits
+ * for. A failure is only logged: the clause says nothing to send for it.
+ */
+static void amf_mbs_context_restoration_response(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb, bool success,
+        const OCTET_STRING_t *transfer)
+{
+    amf_mbs_n2_info_t *n2_info = NULL;
+    ogs_list_t n2_info_list;
+
+    if (!success) {
+        amf_mbs_gnb_t *involved = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
+
+        ogs_warn("MBS Broadcast [%s]: gNB %i did not take the restored session", mbs_context->mbs_context_ref, gnb->gnb_id);
+        if (involved)
+            involved->setup_failed = true;
+        return;
+    }
+
+    if (!transfer || transfer->size == 0)
+        return;
+
+    n2_info = amf_mbs_n2_info_create(gnb, OpenAPI_ngap_ie_type_MBS_SES_RSP, transfer->buf, transfer->size);
+    if (!n2_info)
+        return;
+    ogs_list_init(&n2_info_list);
+    ogs_list_add(&n2_info_list, n2_info);
+    amf_sbi_send_mbs_broadcast_context_status_notify(
+            mbs_context, &n2_info_list, OpenAPI_operation_status_NULL, false, NULL);
+    amf_mbs_n2_info_remove_all(&n2_info_list);
+}
+
+void amf_namf_handle_mbs_broadcast_ng_setup(amf_gnb_t *gnb)
+{
+    amf_mbs_context_t *mbs_context = NULL;
+
+    ogs_assert(gnb);
+
+    if (amf_self()->mbs_restoration == AMF_MBS_RESTORATION_NONE)
+        return;
+
+    // TS 23.527 V18.6.0 cl. 8.3.2.2 step 3: the NG-RAN "serves at least one TAI or one cell being part of the MBS service
+    // area of an existing MBS session". A session that is being released is not restored.
+    ogs_list_for_each(&amf_self()->amf_mbs_context_list, mbs_context) {
+        if (mbs_context->release_pending || !amf_gnb_takes_mbs_session(gnb, mbs_context))
+            continue;
+
+        if (amf_self()->mbs_restoration == AMF_MBS_RESTORATION_BY_AMF)
+            amf_mbs_context_restore_in_gnb(mbs_context, gnb);
+    }
 }
 
 /*

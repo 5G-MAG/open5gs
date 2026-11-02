@@ -119,6 +119,13 @@ void amf_namf_send_transport_failure(amf_gnb_t *gnb, const ogs_tmgi_t *tmgi, NGA
  */
 int amf_namf_mbs_transport_answers(const amf_gnb_t *gnb, const ogs_tmgi_t *tmgi, ogs_sbi_message_t *message,
         ogs_pkbuf_t **out, int max);
+/*
+ * The NG-RAN node \p gnb has completed NG Setup (it restarted, or it is new): the Broadcast MBS sessions whose service
+ * area it serves are restored in it as amf.mbs.restoration says (TS 23.527 V18.6.0 cl. 8.3.2). Does nothing when the
+ * option is not set.
+ */
+void amf_namf_handle_mbs_broadcast_ng_setup(amf_gnb_t *gnb);
+
 bool amf_namf_handle_mbs_broadcast_area_release_response(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb,
         const OCTET_STRING_t *transfer);
 bool amf_namf_handle_mbs_broadcast_required_release_response(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb,

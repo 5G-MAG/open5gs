@@ -417,6 +417,10 @@ void ngap_handle_ng_setup_request(amf_gnb_t *gnb, ogs_ngap_message_t *message)
     r = ngap_send_ng_setup_response(gnb);
     ogs_expect(r == OGS_OK);
     ogs_assert(r != OGS_ERROR);
+
+    /* TS 23.527 V18.6.0 cl. 8.3.2.2 step 3: "The AMF detects that the NG-RAN has restarted (e.g. upon receiving NG Setup
+     * Request message)" */
+    amf_namf_handle_mbs_broadcast_ng_setup(gnb);
 }
 
 void ngap_handle_initial_ue_message(amf_gnb_t *gnb, ogs_ngap_message_t *message)

@@ -866,6 +866,37 @@ static void test_update_action_info_unchanged(void)
     ogs_free(c);
 }
 
+/* TS 23.527 V18.6.0 cl. 8.3.2.2 step 3: "The AMF detects that the NG-RAN has restarted (e.g. upon receiving NG Setup
+ * Request message) and that it serves at least one TAI or one cell being part of the MBS service area of an existing MBS
+ * session". The gNB that connects anew is the one the session was sent to when its Global RAN Node ID is the same. */
+static void test_gnb_record_ran_id(void)
+{
+    amf_gnb_t *gnb = make_gnb(0x100, 22), *other = make_gnb(0x200, 22), *longer = make_gnb(0x100, 24);
+    amf_gnb_t *again = make_gnb(0x100, 22);
+    amf_mbs_context_t ctx = make_context();
+    amf_mbs_gnb_t *rec;
+
+    ogs_list_init(&ctx.involved_gnb_list);
+    gnb->id = 1;
+    amf_mbs_context_involve_gnb(&ctx, gnb);
+    rec = amf_mbs_context_find_involved_gnb(&ctx, gnb);
+    CHECK(rec != NULL);
+    if (rec) {
+        /* the record keeps the Global RAN Node ID: the same gNB connected anew (another id) matches, others do not */
+        CHECK(amf_mbs_gnb_has_ran_id(rec, again));
+        CHECK(!amf_mbs_gnb_has_ran_id(rec, other));
+        CHECK(!amf_mbs_gnb_has_ran_id(rec, longer));
+        ogs_plmn_id_build(&again->plmn_id, 999, 71, 2);
+        CHECK(!amf_mbs_gnb_has_ran_id(rec, again));
+    }
+
+    free_involved(&ctx);
+    ogs_free(gnb);
+    ogs_free(other);
+    ogs_free(longer);
+    ogs_free(again);
+}
+
 int main(int argc, const char *argv[])
 {
     ogs_pkbuf_config_t config;
@@ -888,6 +919,7 @@ int main(int argc, const char *argv[])
     test_transport_relay();
     test_store_n2_container();
     test_update_action_ran_id_list();
+    test_gnb_record_ran_id();
     test_update_action_enters_area();
     test_update_action_leaves_area();
     test_update_action_info_unchanged();

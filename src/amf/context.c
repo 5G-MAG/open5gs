@@ -104,6 +104,9 @@ void amf_mbs_context_involve_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *
     }
     involved->gnb_id = gnb->id;
     involved->awaiting = true;
+    involved->ran_plmn_id = gnb->plmn_id;
+    memcpy(involved->ran_gnb_id_buf, gnb->gnb_id_buf, sizeof(involved->ran_gnb_id_buf));
+    involved->ran_gnb_id_bit_length = gnb->gnb_id_bit_length;
     ogs_list_add(&amf_mbs_context->involved_gnb_list, involved);
 }
 
@@ -117,6 +120,38 @@ amf_mbs_gnb_t *amf_mbs_context_find_involved_gnb(amf_mbs_context_t *amf_mbs_cont
 
     ogs_list_for_each(&amf_mbs_context->involved_gnb_list, involved) {
         if (involved->gnb_id == gnb->id)
+            return involved;
+    }
+
+    return NULL;
+}
+
+/* Whether the record \p involved was made for a gNB with the Global RAN Node ID of \p gnb */
+bool amf_mbs_gnb_has_ran_id(const amf_mbs_gnb_t *involved, const amf_gnb_t *gnb)
+{
+    ogs_assert(involved);
+    ogs_assert(gnb);
+
+    return involved->ran_gnb_id_bit_length == gnb->gnb_id_bit_length &&
+        memcmp(&involved->ran_plmn_id, &gnb->plmn_id, sizeof(ogs_plmn_id_t)) == 0 &&
+        memcmp(involved->ran_gnb_id_buf, gnb->gnb_id_buf, sizeof(gnb->gnb_id_buf)) == 0;
+}
+
+/*
+ * The record of a gNB that was involved in the context, is not connected any more, and has the Global RAN Node ID of
+ * \p gnb: the same gNB, connected anew. NULL if there is none.
+ */
+amf_mbs_gnb_t *amf_mbs_context_find_stale_involved_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *gnb)
+{
+    amf_mbs_gnb_t *involved = NULL;
+
+    ogs_assert(amf_mbs_context);
+    ogs_assert(gnb);
+
+    ogs_list_for_each(&amf_mbs_context->involved_gnb_list, involved) {
+        if (amf_gnb_find_by_id(involved->gnb_id))
+            continue;
+        if (amf_mbs_gnb_has_ran_id(involved, gnb))
             return involved;
     }
 
@@ -372,7 +407,17 @@ int amf_context_parse_config(void)
                         ogs_assert(mbs_key);
                         if (!strcmp(mbs_key, "report_required_release"))
                             self.mbs_report_required_release = ogs_yaml_iter_bool(&mbs_iter);
-                        else
+                        else if (!strcmp(mbs_key, "restoration")) {
+                            const char *v = ogs_yaml_iter_value(&mbs_iter);
+
+                            if (v && !strcmp(v, "amf"))
+                                self.mbs_restoration = AMF_MBS_RESTORATION_BY_AMF;
+                            else {
+                                ogs_error("Invalid amf.mbs.restoration `%s` in '%s': `amf`",
+                                        v ? v : "", ogs_app()->file);
+                                return OGS_ERROR;
+                            }
+                        } else
                             ogs_warn("unknown key `%s`", mbs_key);
                     }
                 } else if (!strcmp(amf_key, "ngap")) {

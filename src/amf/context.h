@@ -112,6 +112,15 @@ typedef struct amf_context_s {
      * unless configured. */
     bool            mbs_report_required_release;
 
+    /* amf.mbs.restoration: how a Broadcast MBS session is restored in an NG-RAN that restarts or that gets into
+     * service to serve a TAI of its service area (TS 23.527 V18.6.0 cl. 8.3.2: "may be restored by the AMF as specified
+     * in clause 8.3.2.2 or by the MB-SMF as specified in clause 8.3.2.3"; cl. 8.3.1: "Restoration procedures for NG-RAN
+     * failure with or without restart are optional to support."). None unless configured. */
+    enum {
+        AMF_MBS_RESTORATION_NONE = 0,
+        AMF_MBS_RESTORATION_BY_AMF,
+    }               mbs_restoration;
+
     /* Generator for unique identification */
     uint64_t        amf_ue_ngap_id; /* amf_ue_ngap_id generator */
 
@@ -886,6 +895,15 @@ typedef struct amf_mbs_gnb_s {
      * step 3), and area_release_pending is set until the gNB has answered that release. The gNB holds no session. */
     bool area_released;
     bool area_release_pending;
+    /* The outstanding Setup Request restores the session in a gNB that restarted (TS 23.527 V18.6.0 cl. 8.3.2.2 step
+     * 4): its response is not one of the responses of a ContextCreate or ContextUpdate. */
+    bool restoring;
+
+    /* The Global RAN Node ID of the gNB, kept as the gNB had it, to find the record again when the gNB connects anew
+     * (amf_gnb_t.id then differs) */
+    ogs_plmn_id_t ran_plmn_id;
+    uint8_t ran_gnb_id_buf[4];
+    uint8_t ran_gnb_id_bit_length;
 } amf_mbs_gnb_t;
 
 typedef struct amf_mbs_context_s {
@@ -1180,6 +1198,8 @@ amf_mbs_n2_info_t *amf_mbs_n2_info_create(amf_gnb_t *gnb,
         OpenAPI_ngap_ie_type_e ngap_ie_type, const uint8_t *transfer, size_t transfer_len);
 void amf_mbs_context_involve_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *gnb);
 amf_mbs_gnb_t *amf_mbs_context_find_involved_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *gnb);
+bool amf_mbs_gnb_has_ran_id(const amf_mbs_gnb_t *involved, const amf_gnb_t *gnb);
+amf_mbs_gnb_t *amf_mbs_context_find_stale_involved_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *gnb);
 bool amf_mbs_context_store_n2_container(amf_mbs_context_t *amf_mbs_context, const ogs_pkbuf_t *container);
 void amf_mbs_n2_info_free(amf_mbs_n2_info_t *n2_info);
 void amf_mbs_n2_info_remove_all(ogs_list_t *n2_info_list);
