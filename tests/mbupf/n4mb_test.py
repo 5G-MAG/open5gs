@@ -2899,6 +2899,45 @@ def t_gtpu_path_echo_is_repeated_and_the_daemon_ends_cleanly_with_paths():
     U.restart()
 
 
+@test
+def t_ipv6_groups_that_share_their_first_eight_octets():
+    """Two IPv6 groups that differ only in the last octets are two groups: a packet reaches the session of its own group."""
+    U.restart('0', ROUTER)
+    try:
+        for cmd in (['ip', 'addr', 'add', 'fd99::1/64', 'dev', 'v0', 'nodad'], ['ip', 'addr', 'add', 'fd99::2/64', 'dev', 'v1', 'nodad'],
+                    ['ip', 'route', 'add', 'ff3e::/16', 'dev', 'v1'],
+                    ['sysctl', '-q', '-w', 'net.ipv6.conf.all.accept_local=1', 'net.ipv6.conf.v0.accept_local=1',
+                     'net.ipv6.conf.all.forwarding=1']):
+            subprocess.run(cmd, stderr=subprocess.DEVNULL)
+        g1 = bytes.fromhex('ff3e0000000000000000000000001234')
+        g2 = bytes.fromhex('ff3e0000000000000000000000005678')
+        r1 = U.establish(mc_request(0xf901, b'\x01' + g1, None, flags=0x03))
+        s1 = accepted(r1, 'first IPv6 group')
+        r2 = U.establish(mc_request(0xf902, b'\x01' + g2, None, flags=0x03))
+        s2 = accepted(r2, 'second IPv6 group')
+        l1, l2 = N3mbListener(mc_group_of(r1)), N3mbListener(mc_group_of(r2))
+        try:
+            routed_sender6(dst='ff3e::1234', payload=b'to-first')
+            p1, p2 = l1.packets(), l2.packets()
+            assert inner_payload_seen(p1, b'to-first') and not p2, 'ff3e::1234: first %d second %d' % (len(p1), len(p2))
+            routed_sender6(dst='ff3e::5678', payload=b'to-second')
+            p1, p2 = l1.packets(), l2.packets()
+            assert inner_payload_seen(p2, b'to-second') and not p1, 'ff3e::5678: first %d second %d' % (len(p1), len(p2))
+            # the first leaves: the second keeps its group
+            U.delete(s1)
+            s1 = None
+            routed_sender6(dst='ff3e::5678', payload=b'still')
+            assert inner_payload_seen(l2.packets(), b'still')
+        finally:
+            l1.close()
+            l2.close()
+            for s_ in (s1, s2):
+                if s_:
+                    U.delete(s_)
+    finally:
+        U.restart()
+
+
 # E-TESTS-BELOW
 
 

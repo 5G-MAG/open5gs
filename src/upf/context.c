@@ -1281,15 +1281,15 @@ void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess)
     }
     if (upf_mbs_sess->ssm.dest_ip_addr.ipv6 && !upf_mbs_sess->ssm_dest_any && !upf_mbs_sess->ssm_dest_range &&
             ogs_hash_get(self.mbs_ipv6_hash, upf_mbs_sess->ssm.dest_ip_addr.addr6,
-                OGS_IPV6_DEFAULT_PREFIX_LEN >> 3) == upf_mbs_sess) {
+                OGS_IPV6_LEN) == upf_mbs_sess) {
         upf_mbs_sess_t *it;
 
         ogs_hash_set(self.mbs_ipv6_hash, upf_mbs_sess->ssm.dest_ip_addr.addr6,
-                OGS_IPV6_DEFAULT_PREFIX_LEN >> 3, NULL);
+                OGS_IPV6_LEN, NULL);
         ogs_list_for_each(&self.upf_mbs_sess_list, it) {
             if (upf_mbs_sess_same_group(it, 6, upf_mbs_sess->ssm.dest_ip_addr.addr6)) {
                 ogs_hash_set(self.mbs_ipv6_hash, it->ssm.dest_ip_addr.addr6,
-                        OGS_IPV6_DEFAULT_PREFIX_LEN >> 3, it);
+                        OGS_IPV6_LEN, it);
                 break;
             }
         }
@@ -1439,7 +1439,7 @@ upf_mbs_sess_t *upf_mbs_sess_find_by_ipv6(uint32_t *addr6)
     ogs_assert(addr6);
 
     return ogs_hash_get(
-            self.mbs_ipv6_hash, addr6, OGS_IPV6_DEFAULT_PREFIX_LEN >> 3);
+            self.mbs_ipv6_hash, addr6, OGS_IPV6_LEN);
 }
 
 /* True if the session receives exactly the group dst of the IP version (not a range, not any group). */
@@ -1472,11 +1472,11 @@ void upf_mbs_sess_set_ssm(upf_mbs_sess_t *mbs_sess)
 
     if (mbs_sess->ssm.dest_ip_addr.ipv6) {
         upf_mbs_sess_t *other = ogs_hash_get(self.mbs_ipv6_hash,
-                &mbs_sess->ssm.dest_ip_addr.addr6, OGS_IPV6_DEFAULT_PREFIX_LEN >> 3);
+                &mbs_sess->ssm.dest_ip_addr.addr6, OGS_IPV6_LEN);
 
         if (!other || other == mbs_sess)
             ogs_hash_set(self.mbs_ipv6_hash,
-                &mbs_sess->ssm.dest_ip_addr.addr6, OGS_IPV6_DEFAULT_PREFIX_LEN >> 3, mbs_sess);
+                &mbs_sess->ssm.dest_ip_addr.addr6, OGS_IPV6_LEN, mbs_sess);
     }
 }
 

@@ -157,6 +157,10 @@ upf_mbs_sess_t *upf_mbs_sess_find_by_ssm(ogs_pkbuf_t *pkbuf)
         return NULL;
     }
 
+    /* A hit of the hash is a session of that group, and the group is the whole address: a session of another group is not one */
+    if (mbs_sess && !upf_mbs_sess_same_group(mbs_sess, ip_version, dst))
+        mbs_sess = NULL;
+
     /* The group is only half of the channel: the packet has to come from the session's source, too. */
     if (mbs_sess && !source_matches(mbs_sess, ip_version, src)) {
         ogs_debug("Multicast packet to a group of an MBS session, from a source it does not receive from");
