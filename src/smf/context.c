@@ -1101,6 +1101,32 @@ int smf_context_parse_config(void)
                     }
                     self.has_mbs_max_response_time = true;
                     self.mbs_max_response_time = (int)seconds;
+                } else if (!strcmp(smf_key, "mbsPolicyControl")) {
+                    /* TS 23.247 V18.8.0 cl. 7.1.1.3: "Deployment of dynamic PCC is optional." Off unless
+                     * `enabled: true`; `failureAction` (reject or allow) is required with it, no clause names a
+                     * default (rule 12). */
+                    ogs_yaml_iter_t pcf_iter;
+                    const char *enabled = NULL, *failure_action = NULL;
+
+                    ogs_yaml_iter_recurse(&smf_iter, &pcf_iter);
+                    while (ogs_yaml_iter_next(&pcf_iter)) {
+                        const char *pcf_key = ogs_yaml_iter_key(&pcf_iter);
+                        ogs_assert(pcf_key);
+                        if (!strcmp(pcf_key, "enabled")) {
+                            enabled = ogs_yaml_iter_value(&pcf_iter);
+                        } else if (!strcmp(pcf_key, "failureAction")) {
+                            failure_action = ogs_yaml_iter_value(&pcf_iter);
+                        } else {
+                            ogs_error("unknown key `smf.mbsPolicyControl.%s`", pcf_key);
+                            return OGS_ERROR;
+                        }
+                    }
+                    if (!smf_mbs_policy_control_configure(enabled, failure_action)) {
+                        ogs_error("`smf.mbsPolicyControl` [enabled: %s, failureAction: %s] is not acceptable: "
+                                "enabled is true or false; with true, failureAction is reject or allow",
+                                enabled ? enabled : "", failure_action ? failure_action : "");
+                        return OGS_ERROR;
+                    }
                 } else if (!strcmp(smf_key, "ngranRestoreDelay")) {
                     /* TS 29.518 V18.14.0 cl. 5.6.2.5: on a report of the release required by NG-RANs "the MB-SMF
                      * may attempt to re-establish the MBS session after some operator configurable time in these
@@ -3525,6 +3551,41 @@ bool smf_mbs_max_response_time(int *seconds)
     if (!self.has_mbs_max_response_time)
         return false;
     *seconds = self.mbs_max_response_time;
+    return true;
+}
+
+bool smf_mbs_policy_control_enabled(smf_mbs_pcf_failure_action_e *action)
+{
+    if (action)
+        *action = self.mbs_pcf_failure_action;
+    return self.mbs_pcf_enabled;
+}
+
+bool smf_mbs_policy_control_configure(const char *enabled, const char *failure_action)
+{
+    bool on = false;
+    smf_mbs_pcf_failure_action_e act = SMF_MBS_PCF_FAILURE_ACTION_NONE;
+
+    if (enabled) {
+        if (!strcmp(enabled, "true"))
+            on = true;
+        else if (strcmp(enabled, "false"))
+            return false;
+    }
+    if (failure_action) {
+        if (!strcmp(failure_action, "reject"))
+            act = SMF_MBS_PCF_FAILURE_ACTION_REJECT;
+        else if (!strcmp(failure_action, "allow"))
+            act = SMF_MBS_PCF_FAILURE_ACTION_ALLOW;
+        else
+            return false;
+    }
+    /* TS 29.537 V18.x cl. 5.2.2.2.2 leaves the action to "the internally configured failure actions": no default */
+    if (on && act == SMF_MBS_PCF_FAILURE_ACTION_NONE)
+        return false;
+
+    self.mbs_pcf_enabled = on;
+    self.mbs_pcf_failure_action = act;
     return true;
 }
 

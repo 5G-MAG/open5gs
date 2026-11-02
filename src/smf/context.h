@@ -75,6 +75,13 @@ typedef struct smf_mbs_sess_lnode_s {
     smf_mbs_sess_t *mbs_session; // weak link, not freed with node
 } smf_mbs_sess_lnode_t;
 
+/* What the MB-SMF does with an MBS session for which the PCF answered MBS_POLICY_CONTEXT_DENIED */
+typedef enum smf_mbs_pcf_failure_action_e {
+    SMF_MBS_PCF_FAILURE_ACTION_NONE = 0,   /* not configured */
+    SMF_MBS_PCF_FAILURE_ACTION_REJECT,
+    SMF_MBS_PCF_FAILURE_ACTION_ALLOW,
+} smf_mbs_pcf_failure_action_e;
+
 typedef struct smf_context_s {
     smf_ctf_config_t    ctf_config;
     const char*         diam_conf_path;   /* SMF Diameter conf path */
@@ -143,6 +150,11 @@ typedef struct smf_context_s {
      * release (smf.yaml `ngranRestoreDelay`); unset when not configured, and then the MB-SMF does not. */
     bool has_mbs_ngran_restore_delay;
     int mbs_ngran_restore_delay;
+
+    /* Whether the MB-SMF requests MBS policies of a PCF (smf.yaml `mbsPolicyControl`), and what it does with an
+     * MBS session the PCF denies (`failureAction`). Off unless configured. */
+    bool mbs_pcf_enabled;
+    smf_mbs_pcf_failure_action_e mbs_pcf_failure_action;
 } smf_context_t;
 
 typedef struct smf_gtp_node_s {
@@ -881,6 +893,12 @@ smf_mbs_nr_red_cap_e smf_mbs_nr_red_cap_from_string(const char *value);
 const char *smf_own_nid(void);
 bool smf_mbs_max_response_time(int *seconds);
 bool smf_mbs_ngran_restore_delay(int *seconds);
+/* Whether the MB-SMF requests MBS policies of a PCF; *action is then the configured failure action. */
+bool smf_mbs_policy_control_enabled(smf_mbs_pcf_failure_action_e *action);
+/* The configuration smf.mbsPolicyControl: \p enabled and \p failure_action are the texts of its two keys (NULL when
+ * absent). Returns false, changing nothing, when they are not acceptable: enabled is "true" or "false"; with
+ * enabled the failure action is "reject" or "allow" and has no default. */
+bool smf_mbs_policy_control_configure(const char *enabled, const char *failure_action);
 ogs_tmgi_t *smf_tmgi_allocate(char *expiration_time);
 char *smf_tmgi_pick_mbs_service_id(
         ogs_list_t *tmgi_list, const ogs_plmn_id_t *plmn_id, uint32_t start);

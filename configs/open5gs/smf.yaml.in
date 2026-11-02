@@ -12,6 +12,13 @@ global:
 #      mbs_sessions: 20
 
 smf:
+#  # MBS policy control (TS 23.247 clause 7.1.1.3, "Deployment of dynamic PCC is optional."): with enabled, the MB-SMF
+#  # creates, updates and deletes an MBS Policy Association at a PCF discovered through the NRF
+#  # (Npcf_MBSPolicyControl, TS 29.537). Off when absent. failureAction is what the MB-SMF does with an MBS session
+#  # the PCF answers MBS_POLICY_CONTEXT_DENIED ("may reject or allow"): reject or allow; it is required with enabled.
+#  mbsPolicyControl:
+#    enabled: true
+#    failureAction: reject
   sbi:
     server:
       - address: 127.0.0.4

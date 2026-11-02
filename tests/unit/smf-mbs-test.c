@@ -3573,6 +3573,33 @@ static void test_mb_upf_selection(void)
     smf_mbs_sess_release(b);
 }
 
+/* TS 23.247 V18.8.0 cl. 7.1.1.3: "Deployment of dynamic PCC is optional." The MB-SMF contacts a PCF only when the
+ * operator enables it, and the action for MBS_POLICY_CONTEXT_DENIED has no default (TS 29.537 cl. 5.2.2.2.2: "based
+ * on the internally configured failure actions"). */
+static void test_mbs_policy_control_config(void)
+{
+    smf_mbs_pcf_failure_action_e action = SMF_MBS_PCF_FAILURE_ACTION_ALLOW;
+
+    CHECK(!smf_mbs_policy_control_enabled(&action));
+    CHECK(action == SMF_MBS_PCF_FAILURE_ACTION_NONE);
+
+    CHECK(!smf_mbs_policy_control_configure("true", NULL));
+    CHECK(!smf_mbs_policy_control_configure("true", "retry"));
+    CHECK(!smf_mbs_policy_control_configure("yes", "reject"));
+    CHECK(!smf_mbs_policy_control_enabled(NULL));
+
+    CHECK(smf_mbs_policy_control_configure("true", "reject"));
+    CHECK(smf_mbs_policy_control_enabled(&action) && action == SMF_MBS_PCF_FAILURE_ACTION_REJECT);
+    CHECK(!smf_mbs_policy_control_configure("true", NULL));
+    CHECK(smf_mbs_policy_control_enabled(&action) && action == SMF_MBS_PCF_FAILURE_ACTION_REJECT);
+    CHECK(smf_mbs_policy_control_configure("true", "allow"));
+    CHECK(smf_mbs_policy_control_enabled(&action) && action == SMF_MBS_PCF_FAILURE_ACTION_ALLOW);
+    CHECK(smf_mbs_policy_control_configure("false", NULL));
+    CHECK(!smf_mbs_policy_control_enabled(NULL));
+    CHECK(smf_mbs_policy_control_configure(NULL, NULL));
+    CHECK(!smf_mbs_policy_control_enabled(NULL));
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -3623,6 +3650,7 @@ int main(void)
     test_node_report_several_peers();
     test_local_ingress_tunnel_answer();
     test_mb_upf_selection();
+    test_mbs_policy_control_config();
 
     printf("smf-mbs: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
