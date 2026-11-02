@@ -3600,6 +3600,153 @@ static void test_mbs_policy_control_config(void)
     CHECK(!smf_mbs_policy_control_enabled(NULL));
 }
 
+/* The Npcf_MBSPolicyControl service (TS 29.537 clause 6.1): its service type is a PCF service named "npcf-mbspolicycontrol",
+ * MbsPolicyCtxtData and MbsPolicyCtxtDataUpdate are what the MB-SMF sends, MbsPolicyData what the 201 and 200 answers
+ * carry, and the body of a 403 may carry the AcceptableMbsServInfo. */
+static ogs_sbi_response_t *pcf_response(int status, const char *method, const char *path, const char *content_type,
+        const char *body, const char *location)
+{
+    ogs_sbi_response_t *response = ogs_sbi_response_new();
+    char uri[200];
+
+    ogs_assert(response);
+    response->status = status;
+    response->h.method = ogs_strdup(method);
+    snprintf(uri, sizeof(uri), "http://127.0.93.20:7777/npcf-mbspolicycontrol/v1%s", path);
+    response->h.uri = ogs_strdup(uri);
+    if (content_type)
+        ogs_sbi_header_set(response->http.headers, "Content-Type", content_type);
+    if (location)
+        ogs_sbi_header_set(response->http.headers, "Location", location);
+    if (body)
+        response->http.content = ogs_strdup(body);
+    return response;
+}
+
+static void test_npcf_mbspolicycontrol_messages(void)
+{
+    ogs_sbi_service_type_e type = ogs_sbi_service_type_from_name("npcf-mbspolicycontrol");
+    ogs_sbi_message_t message;
+    ogs_sbi_response_t *response;
+    ogs_sbi_request_t *request;
+    OpenAPI_mbs_policy_ctxt_data_t *ctxt;
+    OpenAPI_mbs_policy_ctxt_data_update_t *update;
+    OpenAPI_mbs_session_id_t *session_id;
+    OpenAPI_list_t *pcrts;
+    cJSON *json;
+    int rv;
+
+    CHECK(type == OGS_SBI_SERVICE_TYPE_NPCF_MBSPOLICYCONTROL);
+    CHECK(type != OGS_SBI_SERVICE_TYPE_NULL &&
+            ogs_sbi_service_type_to_nf_type(type) == OpenAPI_nf_type_PCF &&
+            !strcmp(ogs_sbi_service_type_to_name(type), OGS_SBI_SERVICE_NAME_NPCF_MBSPOLICYCONTROL));
+
+    /* MbsPolicyCtxtData: mbsSessionId is required; dnn, snssai, areaSessPolId, mbsServInfo, suppFeat are the others */
+    session_id = OpenAPI_mbs_session_id_create(
+            OpenAPI_tmgi_create(ogs_strdup("000001"), OpenAPI_plmn_id_create(ogs_strdup("001"), ogs_strdup("01"))),
+            NULL, NULL);
+    ctxt = OpenAPI_mbs_policy_ctxt_data_create(session_id, ogs_strdup("internet"),
+            OpenAPI_snssai_create(1, ogs_strdup("000001")), true, 7, NULL, ogs_strdup("1"));
+    memset(&message, 0, sizeof(message));
+    message.h.method = (char *)OGS_SBI_HTTP_METHOD_POST;
+    message.h.service.name = (char *)OGS_SBI_SERVICE_NAME_NPCF_MBSPOLICYCONTROL;
+    message.h.api.version = (char *)OGS_SBI_API_V1;
+    message.h.resource.component[0] = (char *)OGS_SBI_RESOURCE_NAME_MBS_POLICIES;
+    message.MbsPolicyCtxtData = ctxt;
+    request = ogs_sbi_build_request(&message);
+    CHECK(request != NULL);
+    if (request) {
+        CHECK(request->http.content && strstr(request->http.content, "\"mbsSessionId\":{\"tmgi\":{\"mbsServiceId\":\"000001\"") != NULL);
+        CHECK(request->http.content && strstr(request->http.content, "\"dnn\":\"internet\"") != NULL);
+        CHECK(request->http.content && strstr(request->http.content, "\"areaSessPolId\":7") != NULL);
+        CHECK(request->http.content && strstr(request->http.content, "\"suppFeat\":\"1\"") != NULL);
+        CHECK(request->h.resource.component[0] && !strcmp(request->h.resource.component[0], "mbs-policies"));
+        json = cJSON_Parse(request->http.content);
+        if (json) {
+            OpenAPI_mbs_policy_ctxt_data_t *back = OpenAPI_mbs_policy_ctxt_data_parseFromJSON(json);
+
+            CHECK(back && back->is_area_sess_pol_id && back->area_sess_pol_id == 7 && back->snssai &&
+                    back->snssai->sst == 1 && back->mbs_session_id && back->mbs_session_id->tmgi);
+            OpenAPI_mbs_policy_ctxt_data_free(back);
+            cJSON_Delete(json);
+        }
+        ogs_sbi_request_free(request);
+    }
+    OpenAPI_mbs_policy_ctxt_data_free(ctxt);
+
+    /* MbsPolicyCtxtDataUpdate: the trigger MBS_SESSION_UPDATE */
+    pcrts = OpenAPI_list_create();
+    OpenAPI_list_add(pcrts, ogs_strdup("MBS_SESSION_UPDATE"));
+    update = OpenAPI_mbs_policy_ctxt_data_update_create(NULL, pcrts);
+    memset(&message, 0, sizeof(message));
+    message.h.method = (char *)OGS_SBI_HTTP_METHOD_POST;
+    message.h.service.name = (char *)OGS_SBI_SERVICE_NAME_NPCF_MBSPOLICYCONTROL;
+    message.h.api.version = (char *)OGS_SBI_API_V1;
+    message.h.resource.component[0] = (char *)OGS_SBI_RESOURCE_NAME_MBS_POLICIES;
+    message.h.resource.component[1] = (char *)"42";
+    message.h.resource.component[2] = (char *)OGS_SBI_RESOURCE_NAME_UPDATE;
+    message.MbsPolicyCtxtDataUpdate = update;
+    request = ogs_sbi_build_request(&message);
+    CHECK(request != NULL);
+    if (request) {
+        CHECK(request->http.content && !strcmp(request->http.content, "{\"mbsPcrts\":[\"MBS_SESSION_UPDATE\"]}"));
+        CHECK(request->h.resource.component[1] && !strcmp(request->h.resource.component[1], "42") &&
+                request->h.resource.component[2] && !strcmp(request->h.resource.component[2], "update"));
+        ogs_sbi_request_free(request);
+    }
+    OpenAPI_mbs_policy_ctxt_data_update_free(update);
+
+    /* the 201 of Create: MbsPolicyData with the policy decision as it came, and the Location */
+    response = pcf_response(201, "POST", "/mbs-policies", "application/json",
+            "{\"mbsPolicyCtxtData\":{\"mbsSessionId\":{\"tmgi\":{\"mbsServiceId\":\"000001\",\"plmnId\":{\"mcc\":\"001\","
+            "\"mnc\":\"01\"}}}},\"mbsPolicies\":{\"mbsSessDecs\":{\"x\":{}}},\"suppFeat\":\"1\"}",
+            "http://127.0.93.20:7777/npcf-mbspolicycontrol/v1/mbs-policies/42");
+    rv = ogs_sbi_parse_response(&message, response);
+    CHECK(rv == OGS_OK);
+    CHECK(message.MbsPolicyData && message.MbsPolicyData->mbs_policy_ctxt_data &&
+            message.MbsPolicyData->mbs_policies &&
+            cJSON_GetObjectItemCaseSensitive(message.MbsPolicyData->mbs_policies, "mbsSessDecs") &&
+            message.MbsPolicyData->supp_feat && !strcmp(message.MbsPolicyData->supp_feat, "1"));
+    CHECK(message.http.location && strstr(message.http.location, "/mbs-policies/42"));
+    ogs_sbi_message_free(&message);
+    ogs_sbi_response_free(response);
+
+    /* the 200 of Update */
+    response = pcf_response(200, "POST", "/mbs-policies/42/update", "application/json",
+            "{\"mbsPolicyCtxtData\":{\"mbsSessionId\":{\"tmgi\":{\"mbsServiceId\":\"000001\",\"plmnId\":{\"mcc\":\"001\","
+            "\"mnc\":\"01\"}}}}}", NULL);
+    rv = ogs_sbi_parse_response(&message, response);
+    CHECK(rv == OGS_OK && message.MbsPolicyData && !message.MbsPolicyData->mbs_policies);
+    ogs_sbi_message_free(&message);
+    ogs_sbi_response_free(response);
+
+    /* the 403 of Create: cause and AcceptableMbsServInfo */
+    response = pcf_response(403, "POST", "/mbs-policies", "application/problem+json",
+            "{\"status\":403,\"cause\":\"MBS_SERVICE_INFO_NOT_AUTHORIZED\",\"accMaxMbsBw\":\"2 Mbps\"}", NULL);
+    rv = ogs_sbi_parse_response(&message, response);
+    CHECK(rv == OGS_OK && message.ProblemDetails && message.ProblemDetails->cause &&
+            !strcmp(message.ProblemDetails->cause, "MBS_SERVICE_INFO_NOT_AUTHORIZED"));
+    CHECK(message.AcceptableMbsServInfo &&
+            cJSON_GetObjectItemCaseSensitive(message.AcceptableMbsServInfo, "accMaxMbsBw"));
+    ogs_sbi_message_free(&message);
+    ogs_sbi_response_free(response);
+
+    /* a problem without it */
+    response = pcf_response(403, "POST", "/mbs-policies", "application/problem+json",
+            "{\"status\":403,\"cause\":\"MBS_POLICY_CONTEXT_DENIED\"}", NULL);
+    rv = ogs_sbi_parse_response(&message, response);
+    CHECK(rv == OGS_OK && message.ProblemDetails && !message.AcceptableMbsServInfo);
+    ogs_sbi_message_free(&message);
+    ogs_sbi_response_free(response);
+
+    /* the 204 of Delete has no body */
+    response = pcf_response(204, "DELETE", "/mbs-policies/42", NULL, NULL, NULL);
+    rv = ogs_sbi_parse_response(&message, response);
+    CHECK(rv == OGS_OK && message.res_status == 204);
+    ogs_sbi_message_free(&message);
+    ogs_sbi_response_free(response);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -3651,6 +3798,7 @@ int main(void)
     test_local_ingress_tunnel_answer();
     test_mb_upf_selection();
     test_mbs_policy_control_config();
+    test_npcf_mbspolicycontrol_messages();
 
     printf("smf-mbs: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;

@@ -245,6 +245,15 @@ void ogs_sbi_message_free(ogs_sbi_message_t *message)
     if (message->MbsN2MessageTransferRspData)
         OpenAPI_mbs_n2_message_transfer_rsp_data_free(
                 message->MbsN2MessageTransferRspData);
+    if (message->MbsPolicyCtxtData)
+        OpenAPI_mbs_policy_ctxt_data_free(message->MbsPolicyCtxtData);
+    if (message->MbsPolicyCtxtDataUpdate)
+        OpenAPI_mbs_policy_ctxt_data_update_free(
+                message->MbsPolicyCtxtDataUpdate);
+    if (message->MbsPolicyData)
+        OpenAPI_mbs_policy_data_free(message->MbsPolicyData);
+    if (message->AcceptableMbsServInfo)
+        cJSON_Delete(message->AcceptableMbsServInfo);
 
     /* HTTP Part */
     for (i = 0; i < message->num_of_part; i++) {
@@ -1545,6 +1554,18 @@ static char *build_json(ogs_sbi_message_t *message)
         item = OpenAPI_mbs_n2_message_transfer_rsp_data_convertToJSON(
                 message->MbsN2MessageTransferRspData);
         ogs_assert(item);
+    } else if (message->MbsPolicyCtxtData) {
+        item = OpenAPI_mbs_policy_ctxt_data_convertToJSON(
+                message->MbsPolicyCtxtData);
+        ogs_assert(item);
+    } else if (message->MbsPolicyCtxtDataUpdate) {
+        item = OpenAPI_mbs_policy_ctxt_data_update_convertToJSON(
+                message->MbsPolicyCtxtDataUpdate);
+        ogs_assert(item);
+    } else if (message->MbsPolicyData) {
+        item = OpenAPI_mbs_policy_data_convertToJSON(
+                message->MbsPolicyData);
+        ogs_assert(item);
     }
 
     if (item) {
@@ -1584,6 +1605,22 @@ static int parse_json(ogs_sbi_message_t *message,
         !strncmp(content_type, OGS_SBI_CONTENT_PROBLEM_TYPE,
             strlen(OGS_SBI_CONTENT_PROBLEM_TYPE))) {
         message->ProblemDetails = OpenAPI_problem_details_parseFromJSON(item);
+        /* TS 29.537 MbsExtProblemDetails: ProblemDetails with AcceptableMbsServInfo (accMbsServInfo or accMaxMbsBw) */
+        if (cJSON_GetObjectItemCaseSensitive(item, "accMbsServInfo") ||
+                cJSON_GetObjectItemCaseSensitive(item, "accMaxMbsBw")) {
+            cJSON *member;
+
+            message->AcceptableMbsServInfo = cJSON_CreateObject();
+            ogs_assert(message->AcceptableMbsServInfo);
+            member = cJSON_GetObjectItemCaseSensitive(item, "accMbsServInfo");
+            if (member)
+                cJSON_AddItemToObject(message->AcceptableMbsServInfo, "accMbsServInfo",
+                        cJSON_Duplicate(member, 1));
+            member = cJSON_GetObjectItemCaseSensitive(item, "accMaxMbsBw");
+            if (member)
+                cJSON_AddItemToObject(message->AcceptableMbsServInfo, "accMaxMbsBw",
+                        cJSON_Duplicate(member, 1));
+        }
     } else if (content_type &&
                 !strncmp(content_type, OGS_SBI_CONTENT_PATCH_TYPE,
                     strlen(OGS_SBI_CONTENT_PATCH_TYPE))) {
@@ -2907,6 +2944,58 @@ static int parse_json(ogs_sbi_message_t *message,
                     rv = OGS_ERROR;
                     ogs_error("Unknown method [%s]", message->h.method);
                 END
+                break;
+
+            DEFAULT
+                rv = OGS_ERROR;
+                ogs_error("Unknown resource name [%s]",
+                        message->h.resource.component[0]);
+            END
+            break;
+
+        CASE(OGS_SBI_SERVICE_NAME_NPCF_MBSPOLICYCONTROL)
+            /* TS 29.537 clause 6.1.3: POST /mbs-policies (Create), POST /mbs-policies/{mbsPolicyId}/update (Update),
+             * DELETE /mbs-policies/{mbsPolicyId}. A body of an error response is a problem details, parsed above. */
+            SWITCH(message->h.resource.component[0])
+            CASE(OGS_SBI_RESOURCE_NAME_MBS_POLICIES)
+                if (!message->h.resource.component[1]) {
+                    if (message->res_status == 0) {
+                        message->MbsPolicyCtxtData =
+                            OpenAPI_mbs_policy_ctxt_data_parseFromJSON(item);
+                        if (!message->MbsPolicyCtxtData) {
+                            rv = OGS_ERROR;
+                            ogs_error("JSON parse error");
+                        }
+                    } else if (message->res_status ==
+                            OGS_SBI_HTTP_STATUS_CREATED) {
+                        message->MbsPolicyData =
+                            OpenAPI_mbs_policy_data_parseFromJSON(item);
+                        if (!message->MbsPolicyData) {
+                            rv = OGS_ERROR;
+                            ogs_error("JSON parse error");
+                        }
+                    }
+                } else if (message->h.resource.component[2] &&
+                        !strcmp(message->h.resource.component[2],
+                            OGS_SBI_RESOURCE_NAME_UPDATE)) {
+                    if (message->res_status == 0) {
+                        message->MbsPolicyCtxtDataUpdate =
+                            OpenAPI_mbs_policy_ctxt_data_update_parseFromJSON(
+                                    item);
+                        if (!message->MbsPolicyCtxtDataUpdate) {
+                            rv = OGS_ERROR;
+                            ogs_error("JSON parse error");
+                        }
+                    } else if (message->res_status ==
+                            OGS_SBI_HTTP_STATUS_OK) {
+                        message->MbsPolicyData =
+                            OpenAPI_mbs_policy_data_parseFromJSON(item);
+                        if (!message->MbsPolicyData) {
+                            rv = OGS_ERROR;
+                            ogs_error("JSON parse error");
+                        }
+                    }
+                }
                 break;
 
             DEFAULT

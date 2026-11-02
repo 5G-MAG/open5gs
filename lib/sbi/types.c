@@ -90,6 +90,7 @@ static struct service_desc_s service_desc[] = {
     { OpenAPI_nf_type_MBSF, OGS_SBI_SERVICE_NAME_NMBSF_MBS_US },
     { OpenAPI_nf_type_MBSF, OGS_SBI_SERVICE_NAME_NMBSF_MBS_UD_INGEST },
     { OpenAPI_nf_type_MBSTF, OGS_SBI_SERVICE_NAME_NMBSTF_DISTSESSION },
+    { OpenAPI_nf_type_PCF, OGS_SBI_SERVICE_NAME_NPCF_MBSPOLICYCONTROL },
 };
 
 OpenAPI_nf_type_e ogs_sbi_service_type_to_nf_type(ogs_sbi_service_type_e type)

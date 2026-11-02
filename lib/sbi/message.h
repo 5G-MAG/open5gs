@@ -150,6 +150,7 @@ extern "C" {
 
 #define OGS_SBI_RESOURCE_NAME_TMGI                  "tmgi"
 #define OGS_SBI_RESOURCE_NAME_MBS_SESSIONS          "mbs-sessions"
+#define OGS_SBI_RESOURCE_NAME_MBS_POLICIES          "mbs-policies"
 #define OGS_SBI_RESOURCE_NAME_MBS_CONTEXTS          "mbs-contexts"
 #define OGS_SBI_RESOURCE_NAME_N2_MESSAGES           "n2-messages"
 /* This SMF's own callback resource for Namf_MBSBroadcast_ContextStatusNotify (TS 29.518 cl.5.6.2.5) --
@@ -590,6 +591,12 @@ typedef struct ogs_sbi_message_s {
     OpenAPI_context_update_rsp_data_t *ContextUpdateRspData;
     OpenAPI_mbs_n2_message_transfer_req_data_t *MbsN2MessageTransferReqData;
     OpenAPI_mbs_n2_message_transfer_rsp_data_t *MbsN2MessageTransferRspData;
+    OpenAPI_mbs_policy_ctxt_data_t *MbsPolicyCtxtData;
+    OpenAPI_mbs_policy_ctxt_data_update_t *MbsPolicyCtxtDataUpdate;
+    OpenAPI_mbs_policy_data_t *MbsPolicyData;
+    /* The AcceptableMbsServInfo members (accMbsServInfo, accMaxMbsBw) of a problem details body of
+     * Npcf_MBSPolicyControl (TS 29.537 MbsExtProblemDetails), as the JSON object; NULL when it has none. */
+    cJSON *AcceptableMbsServInfo;
 
     ogs_sbi_links_t *links;
 
