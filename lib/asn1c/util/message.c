@@ -36,13 +36,35 @@ ogs_pkbuf_t *ogs_asn_encode(const asn_TYPE_descriptor_t *td, void *sptr)
 
     enc_ret = aper_encode_to_buffer(td, NULL,
                     sptr, pkbuf->data, OGS_MAX_SDU_LEN);
-    ogs_asn_free(td, sptr);
 
     if (enc_ret.encoded < 0) {
-        ogs_error("Failed to encode ASN-PDU [%d]", (int)enc_ret.encoded);
+        /* The encoding may be longer than OGS_MAX_SDU_LEN (an NGAP message with a long list of cells, for example):
+         * it is made again into a buffer of the size it needs. A message that cannot be encoded at all fails here as
+         * well. */
+        void *buffer = NULL;
+        ssize_t size = aper_encode_to_new_buffer(td, NULL, sptr, &buffer);
+
         ogs_pkbuf_free(pkbuf);
-        return NULL;
+        pkbuf = NULL;
+
+        if (size > 0 && buffer) {
+            pkbuf = ogs_pkbuf_alloc(NULL, size);
+            if (pkbuf) {
+                ogs_pkbuf_put_data(pkbuf, buffer, size);
+            } else {
+                ogs_error("ogs_pkbuf_alloc(%d) failed", (int)size);
+            }
+        } else {
+            ogs_error("Failed to encode ASN-PDU [%d]", (int)enc_ret.encoded);
+        }
+        if (buffer)
+            FREEMEM(buffer);
+
+        ogs_asn_free(td, sptr);
+        return pkbuf;
     }
+
+    ogs_asn_free(td, sptr);
 
     ogs_pkbuf_trim(pkbuf, ((enc_ret.encoded + 7) >> 3));
 

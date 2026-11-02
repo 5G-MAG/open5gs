@@ -1171,6 +1171,65 @@ static void test_notify_response_any_uri(void)
     }
 }
 
+/* TS 38.413 V18.8.0 cl. 9.3.1.209: the MBS Service Area Cell List holds 0..<maxnoofCellsforMBS> NR CGIs (8192): the
+ * message that carries the largest legal list is longer than the buffer the encoder used to have (OGS_MAX_SDU_LEN, 32768
+ * bytes) and must be encoded, not refused. One cell more is not legal and is refused. */
+static ogs_mbs_service_area_t *area_with_cells(int n)
+{
+    ogs_mbs_service_area_t *area = ogs_calloc(1, sizeof(*area));
+    ogs_ncgi_tai_t *ncgi_tai = ogs_calloc(1, sizeof(*ncgi_tai));
+    int i;
+
+    area->ncgi_tai_list = ogs_calloc(1, sizeof(*area->ncgi_tai_list));
+    ogs_list_init(area->ncgi_tai_list);
+    ogs_list_init(&ncgi_tai->cell_list);
+    ogs_plmn_id_build(&ncgi_tai->tai.plmn_id, 999, 70, 2);
+    ncgi_tai->tai.tac = ogs_strdup("000001");
+    ogs_list_add(area->ncgi_tai_list, ncgi_tai);
+    for (i = 0; i < n; i++) {
+        ogs_ncgi_t *ncgi = ogs_calloc(1, sizeof(*ncgi));
+
+        ogs_plmn_id_build(&ncgi->plmn_id, 999, 70, 2);
+        ncgi->nr_cell_id = ogs_msprintf("%09x", 0x100000 + i);
+        ogs_list_add(&ncgi_tai->cell_list, ncgi);
+    }
+    return area;
+}
+
+static void test_encode_large_cell_list(void)
+{
+    amf_mbs_context_t ctx = make_context();
+    ogs_pkbuf_t *container = ogs_pkbuf_alloc(NULL, 4), *request;
+
+    ogs_pkbuf_put_data(container, "\x01\x02\x03\x04", 4);
+
+    ctx.mbs_service_area = area_with_cells(8192);
+    request = ngap_build_broadcast_session_setup_request(&ctx, container);
+    CHECK(request != NULL);
+    if (request) {
+        CHECK(request->len > 32768);
+        ogs_pkbuf_free(request);
+    }
+    ogs_mbs_service_area_free(ctx.mbs_service_area);
+
+    ctx.mbs_service_area = area_with_cells(8193);
+    request = ngap_build_broadcast_session_setup_request(&ctx, container);
+    CHECK(request == NULL);
+    if (request)
+        ogs_pkbuf_free(request);
+    ogs_mbs_service_area_free(ctx.mbs_service_area);
+
+    /* a small list is encoded as before */
+    ctx.mbs_service_area = area_with_cells(3);
+    request = ngap_build_broadcast_session_setup_request(&ctx, container);
+    CHECK(request != NULL && request->len < 200);
+    if (request)
+        ogs_pkbuf_free(request);
+    ogs_mbs_service_area_free(ctx.mbs_service_area);
+
+    ogs_pkbuf_free(container);
+}
+
 int main(int argc, const char *argv[])
 {
     ogs_pkbuf_config_t config;
@@ -1200,6 +1259,7 @@ int main(int argc, const char *argv[])
     test_area_apply_undo();
     test_gnb_owes();
     test_tmgi_is_valid();
+    test_encode_large_cell_list();
     test_notify_response_any_uri();
     test_update_action_enters_area();
     test_update_action_leaves_area();
