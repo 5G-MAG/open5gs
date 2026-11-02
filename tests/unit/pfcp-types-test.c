@@ -163,12 +163,44 @@ static void path_failure_report_peers_func(abts_case *tc, void *data)
     ogs_pkbuf_free(with_header);
 }
 
+/* UP Function Features (TS 29.244 cl. 8.2.25): the octets up to 15 are read and kept: "14/1 MBSCH", "12/8 EML4S", "13/1 PDUSM", "15/3 ULM" */
+static void up_function_features_func(abts_case *tc, void *data)
+{
+    ogs_pfcp_up_function_features_t f;
+    uint8_t octets[11];     /* octets 5 to 15 of the IE */
+
+    ABTS_INT_EQUAL(tc, 11, (int)sizeof(f));
+
+    memset(octets, 0, sizeof(octets));
+    octets[14 - 5] = 0x01;
+    memcpy(&f, octets, sizeof(f));
+    ABTS_INT_EQUAL(tc, 1, f.mbsch);
+    ABTS_INT_EQUAL(tc, 0, f.octet12 | f.octet13 | f.octet15);
+
+    memset(octets, 0, sizeof(octets));
+    octets[12 - 5] = 0x80;
+    octets[13 - 5] = 0x01;
+    octets[15 - 5] = 0x04;
+    memcpy(&f, octets, sizeof(f));
+    ABTS_INT_EQUAL(tc, 1, f.eml4s);
+    ABTS_INT_EQUAL(tc, 1, f.pdusm);
+    ABTS_INT_EQUAL(tc, 1, f.ulm);
+    ABTS_INT_EQUAL(tc, 0, f.mbsch);
+
+    /* the flag set in the structure is the bit of the octet */
+    memset(&f, 0, sizeof(f));
+    f.mbsch = 1;
+    ABTS_INT_EQUAL(tc, 0x01, f.octet14);
+    ABTS_INT_EQUAL(tc, 0, f.octet5 | f.octet11 | f.octet12 | f.octet13 | f.octet15);
+}
+
 abts_suite *test_pfcp_types(abts_suite *suite)
 {
     suite = ADD_SUITE(suite)
 
     abts_run_test(suite, multicast_transport_information_func, NULL);
     abts_run_test(suite, path_failure_report_peers_func, NULL);
+    abts_run_test(suite, up_function_features_func, NULL);
 
     return suite;
 }

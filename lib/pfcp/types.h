@@ -364,6 +364,55 @@ ED7(uint8_t spare:2;,
         };
         uint8_t octet11;
     };
+    /* Octets 12 to 15 (TS 29.244 V18.10.0 Table 8.2.25-1): the bits named here are those of the table */
+    union {
+        struct {
+/* 12/8 EML4S, 12/7 DETNET, 12/6 QMCON, 12/5 N6JEDB, 12/4 DRTSC, 12/3 TSCTS, 12/2 DBDM, 12/1 REDSM */
+ED8(uint8_t eml4s:1;,
+    uint8_t detnet:1;,
+    uint8_t qmcon:1;,
+    uint8_t n6jedb:1;,
+    uint8_t drtsc:1;,
+    uint8_t tscts:1;,
+    uint8_t dbdm:1;,
+    uint8_t redsm:1;)
+        };
+        uint8_t octet12;
+    };
+    union {
+        struct {
+/* 13/8 UN6TU, 13/7 UMN6IP, 13/6 UPSBIES, 13/5 MT-SDT, 13/4 EDBNC, 13/3 QMDRM, 13/2 CN-TL, 13/1 PDUSM */
+ED8(uint8_t un6tu:1;,
+    uint8_t umn6ip:1;,
+    uint8_t upsbies:1;,
+    uint8_t mtsdt:1;,
+    uint8_t edbnc:1;,
+    uint8_t qmdrm:1;,
+    uint8_t cntl:1;,
+    uint8_t pdusm:1;)
+        };
+        uint8_t octet13;
+    };
+    union {
+        struct {
+/*
+ * 14/1 MBSCH N4mb
+ *   MB-UPF support of MBS charging (see clause 5.34.2.5).
+ */
+ED2(uint8_t spare14:7;,
+    uint8_t mbsch:1;)
+        };
+        uint8_t octet14;
+    };
+    union {
+        struct {
+/* 15/3 ULM N4: UE Level measurement (see clause 5.15A) */
+ED3(uint8_t spare15a:5;,
+    uint8_t ulm:1;,
+    uint8_t spare15b:2;)
+        };
+        uint8_t octet15;
+    };
 } __attribute__ ((packed)) ogs_pfcp_up_function_features_t;
 
 /*
