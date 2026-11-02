@@ -290,8 +290,28 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
                                         // amf_namf_handle_mbs_broadcast_context_create() would reject a genuine ContextUpdate
                                         // there for carrying the wrong body shape.
                     if (sbi_message.h.resource.component[1]) {
-                        amf_namf_handle_mbs_broadcast_context_update(
-                                stream, &sbi_message);
+                        // TS 29.518 V18.14.0 Table 6.5.3.1-1: the only POST on an individual resource is
+                        // "/mbs-contexts/{mbsContextRef}/update", the ContextUpdate; "/mbs-contexts/{mbsContextRef}" takes
+                        // DELETE only. The status codes are not in the clause (TS 29.500 was not read): 405 for the
+                        // resource that has no POST, 404 for a path that names no resource.
+                        if (!sbi_message.h.resource.component[2]) {
+                            ogs_error("MBS Broadcast: POST on /mbs-contexts/%s, which has no POST",
+                                    sbi_message.h.resource.component[1]);
+                            ogs_assert(true ==
+                                ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_METHOD_NOT_ALLOWED,
+                                    &sbi_message, "Method Not Allowed",
+                                    "POST is only defined on /mbs-contexts and /mbs-contexts/{mbsContextRef}/update", NULL));
+                        } else if (strcmp(sbi_message.h.resource.component[2], OGS_SBI_RESOURCE_NAME_UPDATE) != 0 ||
+                                sbi_message.h.resource.component[3]) {
+                            ogs_error("MBS Broadcast: no resource /mbs-contexts/%s/%s",
+                                    sbi_message.h.resource.component[1], sbi_message.h.resource.component[2]);
+                            ogs_assert(true ==
+                                ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_NOT_FOUND,
+                                    &sbi_message, "Not Found", sbi_message.h.resource.component[2], NULL));
+                        } else {
+                            amf_namf_handle_mbs_broadcast_context_update(
+                                    stream, &sbi_message);
+                        }
                     } else {
                         amf_namf_handle_mbs_broadcast_context_create(
                                 stream, &sbi_message);
