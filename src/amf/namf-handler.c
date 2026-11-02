@@ -17,6 +17,8 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <ctype.h>
+
 #include "namf-handler.h"
 #include "nsmf-handler.h"
 
@@ -2309,6 +2311,39 @@ void amf_namf_handle_mbs_broadcast_response_timeout(uint32_t mbs_context_index)
 }
 
 /*
+ * Whether \p tmgi can be used as the TMGI of an MBS session: the MBS Service ID is six hexadecimal digits and the PLMN
+ * is an MCC of three digits and an MNC of two or three. The OpenAPI model does not check that the object, or its members,
+ * are present (TS 29.571 R17 TS29571_CommonData.yaml, Tmgi: "mbsServiceId" with pattern '^[A-Fa-f0-9]{6}$', both members
+ * required; PlmnId: mcc and mnc required), and ogs_sbi_parse_tmgi() asserts on what it is given.
+ */
+bool amf_namf_tmgi_is_valid(const OpenAPI_tmgi_t *tmgi)
+{
+    const char *id = NULL, *mcc = NULL, *mnc = NULL;
+    size_t i;
+
+    if (!tmgi || !tmgi->mbs_service_id || !tmgi->plmn_id)
+        return false;
+
+    id = tmgi->mbs_service_id;
+    mcc = tmgi->plmn_id->mcc;
+    mnc = tmgi->plmn_id->mnc;
+    if (!mcc || !mnc || strlen(id) != 6 || strlen(mcc) != 3 || (strlen(mnc) != 2 && strlen(mnc) != 3))
+        return false;
+
+    for (i = 0; i < 6; i++)
+        if (!isxdigit((unsigned char)id[i]))
+            return false;
+    for (i = 0; i < 3; i++)
+        if (!isdigit((unsigned char)mcc[i]))
+            return false;
+    for (i = 0; mnc[i]; i++)
+        if (!isdigit((unsigned char)mnc[i]))
+            return false;
+
+    return true;
+}
+
+/*
  * A Broadcast Session Setup, Modification or Release Request could not be sent to \p gnb. TS 29.518 V18.14.0 cl. 5.6.2.2:
  * "The AMF may send one or more Namf_MBSBroadcast_ContextStatusNotify request including an operationEvents attribute to
  * report the MB-SMF about failure to reach one or more NG-RANs."; cl. 6.5.6.3.6, NG_RAN_NOT_REACHABLE: "This value
@@ -2424,6 +2459,14 @@ int amf_namf_handle_mbs_broadcast_context_create(
         ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
             recvmsg, "Bad Request",
             "Requested MBS Broadcast ContextCreate failed, [mbsServiceArea] and [mbsServiceAreaInfoList] are mutually exclusive", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    if (!amf_namf_tmgi_is_valid(ContextCreateReqData->mbs_session_id->tmgi)) {
+        ogs_error("MBS Broadcast ContextCreate: mbsSessionId carries no valid TMGI");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request", "Requested MBS Broadcast ContextCreate failed, no valid TMGI in mbsSessionId", NULL);
         rv = OGS_ERROR;
         goto cleanup;
     }
@@ -3949,7 +3992,7 @@ int amf_namf_mbs_comm_handle_n2_message_transfer(
     }
 
     if (!MbsN2MessageTransferReqData->mbs_session_id ||
-            !MbsN2MessageTransferReqData->mbs_session_id->tmgi) {
+            !amf_namf_tmgi_is_valid(MbsN2MessageTransferReqData->mbs_session_id->tmgi)) {
         ogs_error("N2MessageTransfer: mbsSessionId not present");
         // TS 29.518 cl.5.7.2.2 step 1: "The MbsN2MessageTransferReqData shall contain: - MBS Session ID"
         ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,

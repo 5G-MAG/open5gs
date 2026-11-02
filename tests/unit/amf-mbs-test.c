@@ -1095,6 +1095,43 @@ static void test_gnb_owes(void)
     ogs_free(gnb);
 }
 
+/* TS 29.571 R17 TS29571_CommonData.yaml, Tmgi: "mbsServiceId" "pattern: '^[A-Fa-f0-9]{6}$'", "required: - mbsServiceId - plmnId"; a
+ * request that carries less must be refused, not end the AMF in an assertion. */
+static void test_tmgi_is_valid(void)
+{
+    OpenAPI_tmgi_t t;
+    OpenAPI_plmn_id_t plmn;
+    char *id = (char *)"00A1fF", *mcc = (char *)"999", *mnc = (char *)"70";
+
+    memset(&t, 0, sizeof(t));
+    memset(&plmn, 0, sizeof(plmn));
+    CHECK(!amf_namf_tmgi_is_valid(NULL));
+    CHECK(!amf_namf_tmgi_is_valid(&t));
+    t.mbs_service_id = id;
+    CHECK(!amf_namf_tmgi_is_valid(&t));         /* no PLMN */
+    t.plmn_id = &plmn;
+    CHECK(!amf_namf_tmgi_is_valid(&t));         /* no MCC, MNC */
+    plmn.mcc = mcc;
+    plmn.mnc = mnc;
+    CHECK(amf_namf_tmgi_is_valid(&t));
+    plmn.mnc = (char *)"070";
+    CHECK(amf_namf_tmgi_is_valid(&t));
+    plmn.mnc = (char *)"7";
+    CHECK(!amf_namf_tmgi_is_valid(&t));
+    plmn.mnc = mnc;
+    plmn.mcc = (char *)"99x";
+    CHECK(!amf_namf_tmgi_is_valid(&t));
+    plmn.mcc = mcc;
+    t.mbs_service_id = (char *)"00A1f";         /* five digits */
+    CHECK(!amf_namf_tmgi_is_valid(&t));
+    t.mbs_service_id = (char *)"00A1fFF";       /* seven */
+    CHECK(!amf_namf_tmgi_is_valid(&t));
+    t.mbs_service_id = (char *)"00G1fF";        /* not hexadecimal */
+    CHECK(!amf_namf_tmgi_is_valid(&t));
+    t.mbs_service_id = id;
+    CHECK(amf_namf_tmgi_is_valid(&t));
+}
+
 int main(int argc, const char *argv[])
 {
     ogs_pkbuf_config_t config;
@@ -1123,6 +1160,7 @@ int main(int argc, const char *argv[])
     test_gnb_holds_session();
     test_area_apply_undo();
     test_gnb_owes();
+    test_tmgi_is_valid();
     test_update_action_enters_area();
     test_update_action_leaves_area();
     test_update_action_info_unchanged();
