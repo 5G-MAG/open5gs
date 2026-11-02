@@ -2964,6 +2964,35 @@ def t_create_pdr_without_far_id_is_refused():
         U.delete(s)
 
 
+@test
+def t_mbs_multicast_parameters_need_destination_interface_and_outer_header_creation():
+    """Table 7.5.2.3-5: Destination Interface (M) and Outer Header Creation (M) of the MBS Multicast Parameters."""
+    def mc_far(far_id, parts):
+        return ie(T_CREATE_FAR, [ie(T_FAR_ID, struct.pack('>I', far_id)), ie(T_APPLY, struct.pack('>H', 0x0008)), ie(T_MBS_MC_PARAMS, parts)])
+
+    dst, ohc = ie(T_DST_IF, b'\x00'), ie(T_OHC, b'\x00\x04')
+    cases = (('no Destination Interface', [ohc], CAUSE_MANDATORY_MISSING, T_DST_IF),
+             ('no Outer Header Creation', [dst], CAUSE_MANDATORY_MISSING, T_OHC),
+             ('empty', [], CAUSE_MANDATORY_MISSING, T_DST_IF),
+             ('empty Outer Header Creation', [dst, ie(T_OHC, b'')], CAUSE_INVALID_LENGTH, T_OHC))
+    for what, parts, c, o in cases:
+        r = U.establish([node_id(), fseid(0xfb01), pdr(), mc_far(1, parts), qer(), ie(T_CREATE_TE, [lit_choose()]), n4mb_ctrl()])
+        assert U.alive(), what + ': the daemon stopped'
+        assert r is not None and cause(r) == c and offending(r) == o, '%s: cause %s offending %s' % (what, cause(r) if r else None, offending(r) if r else None)
+    r = U.establish(smf_session(0xfb02))
+    s = accepted(r, 'session of the MB-SMF')
+    try:
+        for what, parts, c, o in cases:
+            m = modify(s, flow_pdr(2, qfi=2), mc_far(2, parts), qer(qer_id=2, qfi=2))
+            assert U.alive(), what + ' (modification): the daemon stopped'
+            assert m is not None and cause(m) == c and offending(m) == o, '%s (modification): cause %s offending %s' % (what, cause(m) if m else None, offending(m) if m else None)
+        assert tunnel_packet_qfi(r, 5000) == 1, 'a refused request changed the session'
+        m = modify(s, flow_pdr(2, qfi=2), mc_far(2, [dst, ohc]), qer(qer_id=2, qfi=2))
+        assert m and cause(m) == CAUSE_ACCEPTED
+    finally:
+        U.delete(s)
+
+
 # E-TESTS-BELOW
 
 

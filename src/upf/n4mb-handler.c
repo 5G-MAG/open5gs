@@ -468,6 +468,35 @@ static int _setup_far_node(upf_mbs_sess_t *mbs_sess, ogs_pfcp_far_t *far)
 }
 
 /*
+ * MBS Multicast Parameters (TS 29.244 Table 7.5.2.3-5): Destination Interface "M" ("This IE shall identify the destination
+ * interface of the outgoing packet.") and Outer Header Creation "M" ("This IE shall instruct the MB-UPF to create a GTP-U header
+ * using the Low Layer SSM and the C-TEID allocated to the MBS session."). A missing mandatory member is answered with cause 66
+ * and its type (cl. 7.6.6). The Outer Header Creation is also refused if it is empty, which the FAR handler would not survive.
+ */
+static int _check_mbs_multicast_parameters(const ogs_pfcp_tlv_mbs_multicast_parameters_t *mp,
+        uint8_t *cause_value, uint16_t *offending_ie_value)
+{
+    if (!mp->presence)
+        return OGS_OK;
+    if (!mp->destination_interface.presence) {
+        *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+        *offending_ie_value = OGS_PFCP_DESTINATION_INTERFACE_TYPE;
+        return OGS_ERROR;
+    }
+    if (!mp->outer_header_creation.presence) {
+        *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+        *offending_ie_value = OGS_PFCP_OUTER_HEADER_CREATION_TYPE;
+        return OGS_ERROR;
+    }
+    if (mp->outer_header_creation.len == 0 || !mp->outer_header_creation.data) {
+        *cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
+        *offending_ie_value = OGS_PFCP_OUTER_HEADER_CREATION_TYPE;
+        return OGS_ERROR;
+    }
+    return OGS_OK;
+}
+
+/*
  * Checks that the mandatory IEs of an N4mb Session Establishment Request are present. On a failure the
  * response has been sent and false is returned, and no session has been allocated.
  */
@@ -544,6 +573,11 @@ bool upf_n4mb_check_session_establishment_request(
                 ogs_error("Apply Action FSSM without MBS Multicast Parameters");
                 cause_value = OGS_PFCP_CAUSE_CONDITIONAL_IE_MISSING;
                 offending_ie_value = OGS_PFCP_MBS_MULTICAST_PARAMETERS_TYPE;
+                break;
+            }
+            if (_check_mbs_multicast_parameters(&req->create_far[i].mbs_multicast_parameters,
+                        &cause_value, &offending_ie_value) != OGS_OK) {
+                ogs_error("MBS Multicast Parameters of the N4mb Session Establishment Request are not valid");
                 break;
             }
             /* Table 7.5.2.3-1, Add MBS Unicast Parameters: "This IE shall be present when the Apply Action is set to "MBSU"." */
@@ -1287,6 +1321,8 @@ static int _check_flow_changes(upf_mbs_sess_t *mbs_sess, const ogs_pfcp_session_
             FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_MISSING, OGS_PFCP_APPLY_ACTION_TYPE);
         if ((c->apply_action.u16 & OGS_PFCP_APPLY_ACTION_FSSM) && !c->mbs_multicast_parameters.presence)
             FAIL(OGS_PFCP_CAUSE_CONDITIONAL_IE_MISSING, OGS_PFCP_MBS_MULTICAST_PARAMETERS_TYPE);
+        if (_check_mbs_multicast_parameters(&c->mbs_multicast_parameters, cause_value, offending_ie_value) != OGS_OK)
+            return OGS_ERROR;
         if ((c->apply_action.u16 & OGS_PFCP_APPLY_ACTION_MBSU) && !c->add_mbs_unicast_parameters[0].presence)
             FAIL(OGS_PFCP_CAUSE_CONDITIONAL_IE_MISSING, OGS_PFCP_ADD_MBS_UNICAST_PARAMETERS_TYPE);
     }
