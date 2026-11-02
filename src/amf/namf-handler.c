@@ -3329,6 +3329,15 @@ void amf_namf_handle_mbs_broadcast_ng_setup(amf_gnb_t *gnb)
 
         if (amf_self()->mbs_restoration == AMF_MBS_RESTORATION_BY_AMF)
             amf_mbs_context_restore_in_gnb(mbs_context, gnb);
+        else if (amf_self()->mbs_restoration == AMF_MBS_RESTORATION_BY_MBSMF) {
+            // TS 23.527 V18.6.0 cl. 8.3.2.3 step 3: "The AMF sends Namf_MBSBroadcast_ContextStatusNotify Request message to
+            // the MB-SMF for each affected MBS session including the MBS Session ID, the NG-RAN ID and an indication of
+            // the event, either NG-RAN restart, or NG-RAN failure without restart, or a (new) NG-RAN getting into
+            // service to serve a TAI that is part of the MBS session service area." The MB-SMF then restores the session
+            // with a ContextUpdate that names the NG-RAN in ranIdList (step 6).
+            ogs_info("MBS Broadcast [%s]: gNB %i (re)started, the MB-SMF is told", mbs_context->mbs_context_ref, gnb->gnb_id);
+            amf_sbi_send_mbs_broadcast_ngran_event(mbs_context, gnb, OpenAPI_ngran_failure_indication_NG_RAN_RESTART_OR_START);
+        }
     }
 }
 

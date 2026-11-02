@@ -331,6 +331,19 @@ ogs_sbi_request_t *amf_namf_build_mbs_broadcast_context_status_notify(
         amf_mbs_context_t *mbs_context, ogs_list_t *n2_info_list, OpenAPI_operation_status_e operation_status,
         bool released_ind, const amf_gnb_t *required_release_gnb)
 {
+    return amf_namf_build_mbs_broadcast_context_status_notify_event(mbs_context, n2_info_list, operation_status,
+            released_ind, required_release_gnb, OpenAPI_ngran_failure_indication_NG_RAN_REQUIRED_RELEASE);
+}
+
+/*
+ * As amf_namf_build_mbs_broadcast_context_status_notify(), with the NG-RAN event \p ngran_gnb reported as \p indication
+ * (the operation event is NG_RAN_EVENT with one ngranFailureEvent, TS 29.518 V18.14.0 Table 6.5.6.2.9-1: "ngranId ...
+ * The IE shall contain the gNB ID." and "ngranFailureIndication ... information related to the NG-RAN failure").
+ */
+ogs_sbi_request_t *amf_namf_build_mbs_broadcast_context_status_notify_event(
+        amf_mbs_context_t *mbs_context, ogs_list_t *n2_info_list, OpenAPI_operation_status_e operation_status,
+        bool released_ind, const amf_gnb_t *required_release_gnb, OpenAPI_ngran_failure_indication_e indication)
+{
     ogs_sbi_message_t message;
     ogs_sbi_request_t *request = NULL;
 
@@ -376,8 +389,7 @@ ogs_sbi_request_t *amf_namf_build_mbs_broadcast_context_status_notify(
             OpenAPI_list_t *events = OpenAPI_list_create();
             OpenAPI_list_t *failure_events = OpenAPI_list_create();
 
-            OpenAPI_list_add(failure_events, OpenAPI_ngran_failure_event_create(ran_id,
-                        OpenAPI_ngran_failure_indication_NG_RAN_REQUIRED_RELEASE));
+            OpenAPI_list_add(failure_events, OpenAPI_ngran_failure_event_create(ran_id, indication));
             OpenAPI_list_add(events, OpenAPI_operation_event_create(
                         OpenAPI_op_event_type_NG_RAN_EVENT, NULL, failure_events));
             ContextStatusNotification.operation_events = events;

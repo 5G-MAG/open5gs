@@ -611,9 +611,9 @@ bool amf_sbi_send_n1_n2_failure_notify(
  * Transfer IE in the notification, which this fork never sends), the same response client_notify_cb
  * already expects for N1N2MessageTransferFailureNotify.
  */
-bool amf_sbi_send_mbs_broadcast_context_status_notify(
+static bool send_mbs_broadcast_context_status_notify(
         amf_mbs_context_t *mbs_context, ogs_list_t *n2_info_list, OpenAPI_operation_status_e operation_status,
-        bool released_ind, const amf_gnb_t *required_release_gnb)
+        bool released_ind, const amf_gnb_t *ngran_gnb, OpenAPI_ngran_failure_indication_e indication)
 {
     bool rc;
     ogs_sbi_request_t *request = NULL;
@@ -625,10 +625,10 @@ bool amf_sbi_send_mbs_broadcast_context_status_notify(
         return false;
     }
 
-    request = amf_namf_build_mbs_broadcast_context_status_notify(
-            mbs_context, n2_info_list, operation_status, released_ind, required_release_gnb);
+    request = amf_namf_build_mbs_broadcast_context_status_notify_event(
+            mbs_context, n2_info_list, operation_status, released_ind, ngran_gnb, indication);
     if (!request) {
-        ogs_error("amf_namf_build_mbs_broadcast_context_status_notify() failed");
+        ogs_error("amf_namf_build_mbs_broadcast_context_status_notify_event() failed");
         return false;
     }
 
@@ -639,6 +639,24 @@ bool amf_sbi_send_mbs_broadcast_context_status_notify(
     ogs_sbi_request_free(request);
 
     return rc;
+}
+
+bool amf_sbi_send_mbs_broadcast_context_status_notify(
+        amf_mbs_context_t *mbs_context, ogs_list_t *n2_info_list, OpenAPI_operation_status_e operation_status,
+        bool released_ind, const amf_gnb_t *required_release_gnb)
+{
+    return send_mbs_broadcast_context_status_notify(mbs_context, n2_info_list, operation_status, released_ind,
+            required_release_gnb, OpenAPI_ngran_failure_indication_NG_RAN_REQUIRED_RELEASE);
+}
+
+bool amf_sbi_send_mbs_broadcast_ngran_event(
+        amf_mbs_context_t *mbs_context, const amf_gnb_t *ngran_gnb, OpenAPI_ngran_failure_indication_e indication)
+{
+    ogs_list_t n2_info_list;
+
+    ogs_list_init(&n2_info_list);
+    return send_mbs_broadcast_context_status_notify(
+            mbs_context, &n2_info_list, OpenAPI_operation_status_NULL, false, ngran_gnb, indication);
 }
 
 /* What the answer of the MB-SMF to a Broadcast Session Transport Request needs: the NG-RAN node that asked and the

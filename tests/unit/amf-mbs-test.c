@@ -930,6 +930,44 @@ static void test_earliest_reestablish(void)
     ogs_free(c);
 }
 
+/* TS 23.527 V18.6.0 cl. 8.3.2.3 step 3: "The AMF sends Namf_MBSBroadcast_ContextStatusNotify Request message to the MB-SMF for
+ * each affected MBS session including the MBS Session ID, the NG-RAN ID and an indication of the event, either NG-RAN
+ * restart, or NG-RAN failure without restart, or a (new) NG-RAN getting into service to serve a TAI that is part of the MBS
+ * session service area."; TS 29.518 V18.14.0 cl. 6.5.6.3.6: "NG_RAN_RESTART_OR_START" "This value indicates that the AMF has
+ * detected a (re)start of a NG-RAN." */
+static void test_status_notify_ngran_event(void)
+{
+    amf_gnb_t *gnb = make_gnb(0x100, 22);
+    amf_mbs_context_t ctx = make_context();
+    ogs_list_t infos;
+    ogs_sbi_request_t *request;
+
+    ogs_list_init(&infos);
+
+    request = amf_namf_build_mbs_broadcast_context_status_notify_event(&ctx, &infos, OpenAPI_operation_status_NULL, false,
+            gnb, OpenAPI_ngran_failure_indication_NG_RAN_RESTART_OR_START);
+    CHECK(request != NULL);
+    if (request) {
+        CHECK(strstr(body_of(request), "\"mbsServiceId\":\"000001\"") != NULL);
+        CHECK(strstr(body_of(request), "\"opEventType\":\"NG_RAN_EVENT\"") != NULL);
+        CHECK(strstr(body_of(request), "\"ngranFailureIndication\":\"NG_RAN_RESTART_OR_START\"") != NULL);
+        CHECK(strstr(body_of(request), "\"gNBValue\":\"000400\"") != NULL);
+        CHECK(strstr(body_of(request), "NG_RAN_REQUIRED_RELEASE") == NULL);
+        CHECK(strstr(body_of(request), "operationStatus") == NULL);
+        ogs_sbi_request_free(request);
+    }
+
+    request = amf_namf_build_mbs_broadcast_context_status_notify_event(&ctx, &infos, OpenAPI_operation_status_NULL, false,
+            gnb, OpenAPI_ngran_failure_indication_NG_RAN_FAILURE_WITHOUT_RESTART);
+    CHECK(request != NULL);
+    if (request) {
+        CHECK(strstr(body_of(request), "\"ngranFailureIndication\":\"NG_RAN_FAILURE_WITHOUT_RESTART\"") != NULL);
+        ogs_sbi_request_free(request);
+    }
+
+    ogs_free(gnb);
+}
+
 int main(int argc, const char *argv[])
 {
     ogs_pkbuf_config_t config;
@@ -948,6 +986,7 @@ int main(int argc, const char *argv[])
     test_n2_mbs_sm_info_ran_id_key();
     test_n2_info_list_limit();
     test_status_notify();
+    test_status_notify_ngran_event();
     test_transport_messages();
     test_transport_relay();
     test_store_n2_container();

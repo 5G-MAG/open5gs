@@ -101,6 +101,10 @@ bool amf_sbi_send_mbs_broadcast_context_status_notify(
         amf_mbs_context_t *mbs_context, ogs_list_t *n2_info_list, OpenAPI_operation_status_e operation_status,
         bool released_ind, const amf_gnb_t *required_release_gnb);
 
+/* The same, reporting the NG-RAN \p ngran_gnb as \p indication in the operation event */
+bool amf_sbi_send_mbs_broadcast_ngran_event(
+        amf_mbs_context_t *mbs_context, const amf_gnb_t *ngran_gnb, OpenAPI_ngran_failure_indication_e indication);
+
 /*
  * A ContextStatusNotify that carries the Broadcast Session Transport Request Transfer \p transfer of NG-RAN node
  * \p gnb (TS 29.518 V18.14.0 clause 5.6.2.5); the answer of the MB-SMF is turned into the NGAP answer to \p gnb when it

@@ -246,7 +246,8 @@ amf:
 #
 #  o Broadcast MBS sessions: how a session is restored in an NG-RAN that restarts, or that gets into service to serve
 #    a TAI of its service area (TS 23.527 clause 8.3.2, optional to support). `amf`: the AMF sets the session
-#    up again with the last N2 MBS SM container the MB-SMF gave it (clause 8.3.2.2). Default: none.
+#    up again with the last N2 MBS SM container the MB-SMF gave it (clause 8.3.2.2). `mb-smf`: the AMF reports the
+#    event to the MB-SMF, which restores the session (clause 8.3.2.3). Default: none.
 #
 #  o Broadcast MBS sessions: when an NG-RAN has asked for the release of a session, the AMF sets it up again in that
 #    NG-RAN after this many seconds (TS 29.518 clause 5.6.2.5: "after some operator configurable time", by the

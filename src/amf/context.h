@@ -119,6 +119,7 @@ typedef struct amf_context_s {
     enum {
         AMF_MBS_RESTORATION_NONE = 0,
         AMF_MBS_RESTORATION_BY_AMF,
+        AMF_MBS_RESTORATION_BY_MBSMF,
     }               mbs_restoration;
 
     /* amf.mbs.reestablish_after: seconds after which the AMF sets a Broadcast MBS session up again in an NG-RAN that

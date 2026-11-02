@@ -431,8 +431,10 @@ int amf_context_parse_config(void)
 
                             if (v && !strcmp(v, "amf"))
                                 self.mbs_restoration = AMF_MBS_RESTORATION_BY_AMF;
+                            else if (v && !strcmp(v, "mb-smf"))
+                                self.mbs_restoration = AMF_MBS_RESTORATION_BY_MBSMF;
                             else {
-                                ogs_error("Invalid amf.mbs.restoration `%s` in '%s': `amf`",
+                                ogs_error("Invalid amf.mbs.restoration `%s` in '%s': `amf` or `mb-smf`",
                                         v ? v : "", ogs_app()->file);
                                 return OGS_ERROR;
                             }
