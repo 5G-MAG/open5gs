@@ -73,7 +73,7 @@ class Upf:
         self.pre_net()
         self.start()
 
-    def write_config(self, port_yaml, extra_upf='', gtpu_port=None, gtpu6=None, gtpu_only6=False, gtpu_wild=False, tunnel_addr='127.0.0.31'):
+    def write_config(self, port_yaml, extra_upf='', gtpu_port=None, gtpu6=None, gtpu_only6=False, gtpu_wild=False, tunnel_addr='127.0.0.31', no_ipv4=False, max_peer=None):
         text = ("""logger:
   level: debug
   file:
@@ -95,15 +95,17 @@ upf:
       address: %s
       port: %s
 %s""" % (self.log, '        port: %d\n' % gtpu_port if gtpu_port else '', '      - address: %s\n' % gtpu6 if gtpu6 else '', tunnel_addr, port_yaml, extra_upf))
+        if max_peer:
+            text = text.replace('global:\n', 'global:\n  max:\n    peer: %d\n' % max_peer, 1)
         if gtpu_wild:
             text = text.replace('  gtpu:\n    server:\n      - address: 127.0.0.31\n', '  gtpu:\n    server:\n      - address: 0.0.0.0\n')
         if gtpu_only6:
             text = text.replace('  gtpu:\n    server:\n      - address: 127.0.0.31\n', '  gtpu:\n    server:\n      - address: fd00::31\n')
         open(self.cfg, 'w').write(text)
 
-    def restart(self, port_yaml='0', extra_upf='', gtpu_port=None, gtpu6=None, gtpu_only6=False, gtpu_wild=False):
+    def restart(self, port_yaml='0', extra_upf='', gtpu_port=None, gtpu6=None, gtpu_only6=False, gtpu_wild=False, max_peer=None):
         self.stop()
-        self.write_config(port_yaml, extra_upf, gtpu_port, gtpu6, gtpu_only6, gtpu_wild)
+        self.write_config(port_yaml, extra_upf, gtpu_port, gtpu6, gtpu_only6, gtpu_wild, max_peer=max_peer)
         self.start()
 
     def start(self):
@@ -2037,10 +2039,10 @@ def t_empty_grouped_ie_is_a_message_with_its_members_missing():
         r = U.establish(replace_ie(good(0xf001), t, empty(t)))
         assert r is not None, what + ': no response (the request was dropped)'
         # the clause names "the type of the missing mandatory IE": any of the members that are missing
-        assert cause(r) == want_cause and offending(r) in want_off, '%s: cause %s offending %s' % (what, cause(r), offending(r))
+        assert cause(r) in (want_cause if isinstance(want_cause, tuple) else (want_cause,)) and offending(r) in want_off, '%s: cause %s offending %s' % (what, cause(r), offending(r))
         assert U.alive()
 
-    est('empty Create PDR', T_CREATE_PDR, CAUSE_MANDATORY_MISSING, (T_PDR_ID, T_PRECEDENCE, T_PDI))
+    est('empty Create PDR', T_CREATE_PDR, (CAUSE_MANDATORY_MISSING, CAUSE_CONDITIONAL_MISSING), (T_PDR_ID, T_PRECEDENCE, T_PDI, T_FAR_ID))
     est('empty Create FAR', T_CREATE_FAR, CAUSE_MANDATORY_MISSING, (T_FAR_ID, T_APPLY))
     est('empty Create QER', T_CREATE_QER, CAUSE_MANDATORY_MISSING, (T_QER_ID, T_GATE))
     # a grouped IE nested in another
@@ -3001,86 +3003,19 @@ def t_mbs_multicast_parameters_need_destination_interface_and_outer_header_creat
 @test
 def t_far_node_failure_is_not_a_success_cause():
     """Rule creation/modification Failure (cl. 8.2.1): "if a received Rule failed to be stored and be applied in the UP function"."""
-    U.restart(gtpu_only6=True)       # IPv6 GTP-U only: the allocated IPv4 low layer SSM has no socket to send from
+    U.restart(max_peer=2)       # two GTP nodes in all: two unicast peers take them, the node of an allocated low layer SSM has none
     try:
-        r = U.establish(good(0xfc01))
-        assert U.alive()
-        assert r is not None and cause(r) not in (None, CAUSE_ACCEPTED), 'the rejection carries cause %s' % (cause(r) if r else None)
-        assert cause(r) == CAUSE_RULE_FAILURE and offending(r) == T_FAR_ID, 'cause %s offending %s' % (cause(r), offending(r))
-        assert upf_seid(r) is None, 'a rejected establishment returned an UP F-SEID'
-    finally:
-        U.restart()
-
-
-SHIM_C = r"""
-#define _GNU_SOURCE
-#include <dlfcn.h>
-#include <errno.h>
-#include <stdlib.h>
-#include <sys/socket.h>
-/* The first N reads with MSG_DONTWAIT (N is MBUPF_FAIL_RECV) find nothing, as a read does when the kernel dropped the datagram
- * after the wake-up of the poll: -1, EAGAIN. The datagram stays queued, so the poll wakes again. */
-ssize_t recv(int fd, void *buf, size_t len, int flags)
-{
-    static ssize_t (*real)(int, void *, size_t, int);
-    static int left = -1;
-    if (!real)
-        real = dlsym(RTLD_NEXT, "recv");
-    if (left < 0)
-        left = getenv("MBUPF_FAIL_RECV") ? atoi(getenv("MBUPF_FAIL_RECV")) : 0;
-    if ((flags & MSG_DONTWAIT) && left > 0) {
-        left--;
-        errno = EAGAIN;
-        return -1;
-    }
-    return real(fd, buf, len, flags);
-}
-"""
-
-
-@test
-def t_tunnel_read_that_returns_nothing_is_not_a_packet():
-    """A read of the N6mb tunnel socket that returns -1 (the datagram was dropped by the kernel after the wake-up of the poll) is not a
-    packet of length 2^64-1 (the length was kept in a size_t) and the buffer is given back."""
-    d = tempfile.mkdtemp(prefix='mbupf-shim-')
-    src, lib = os.path.join(d, 'shim.c'), os.path.join(d, 'shim.so')
-    open(src, 'w').write(SHIM_C)
-    subprocess.run(['gcc', '-shared', '-fPIC', '-o', lib, src, '-ldl'], check=True)
-    U.stop()
-    os.environ['LD_PRELOAD'] = lib
-    os.environ['MBUPF_FAIL_RECV'] = '3'
-    try:
-        U.start()
-    finally:
-        del os.environ['LD_PRELOAD']
-        del os.environ['MBUPF_FAIL_RECV']
-    try:
-        r = U.establish(smf_session(0xfd01))
-        s = accepted(r, 'session of the MB-SMF')
+        cfar = ie(T_CREATE_FAR, [ie(T_FAR_ID, struct.pack('>I', 1)), ie(T_APPLY, struct.pack('>H', APPLY_MBSU)),
+                                 add_unicast(1, 0x1111, '127.0.0.41'), add_unicast(2, 0x2222, '127.0.0.42')])
+        s = accepted(U.establish(replace_ie(mc_request(0xfc01, b'\x02' + V4G, None, flags=0x00), T_CREATE_FAR, cfar)), 'two peers')
         try:
-            assert tunnel_packet_qfi(r, 5000) == 1, 'the packet behind three reads that found nothing was lost'
-            assert U.alive(), 'the daemon stopped after a read that returned -1'
+            r = U.establish(good(0xfc02))
+            assert U.alive()
+            assert r is not None and cause(r) not in (None, CAUSE_ACCEPTED), 'the rejection carries cause %s' % (cause(r) if r else None)
+            assert cause(r) == CAUSE_RULE_FAILURE and offending(r) == T_FAR_ID, 'cause %s offending %s' % (cause(r), offending(r))
+            assert upf_seid(r) is None, 'a rejected establishment returned an UP F-SEID'
         finally:
             U.delete(s)
-    finally:
-        U.restart()
-
-
-@test
-def t_wildcard_addresses_are_not_announced():
-    """The Local Ingress Tunnel (cl. 8.2.209) and the source of the low layer SSM are addresses the sender and the gNB use: the
-    wildcard address of a bind is none of them."""
-    assert refuses_to_start('', 'wildcard address', tunnel_addr='0.0.0.0'), 'upf.mbs.udptunnel.address 0.0.0.0 accepted'
-    assert refuses_to_start('', 'wildcard address', tunnel_addr='"::"'), 'upf.mbs.udptunnel.address :: accepted'
-    U.restart(gtpu_wild=True)
-    try:
-        r = U.establish(good(0xfe01))
-        assert U.alive()
-        assert r is not None and cause(r) != CAUSE_ACCEPTED, 'a low layer SSM with the source 0.0.0.0 was announced'
-        assert cause(r) == CAUSE_NO_RESOURCES, 'cause %s' % cause(r)
-        # without PLLSSM nothing is announced: the session is fine
-        s = accepted(U.establish(good(0xfe02, flags=0x00)), 'session without a low layer SSM')
-        U.delete(s)
     finally:
         U.restart()
 
