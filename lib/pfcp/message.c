@@ -3570,6 +3570,7 @@ ogs_tlv_desc_t ogs_pfcp_tlv_desc_user_plane_path_failure_report =
     sizeof(ogs_pfcp_tlv_user_plane_path_failure_report_t),
     {
         &ogs_pfcp_tlv_desc_remote_gtp_u_peer,
+        &ogs_tlv_desc_more8,
         NULL,
     }
 };

@@ -1543,9 +1543,16 @@ typedef struct ogs_pfcp_tlv_error_indication_report_s {
     ogs_pfcp_tlv_f_teid_t remote_f_teid;
 } ogs_pfcp_tlv_error_indication_report_t;
 
+#define OGS_PFCP_MAX_NUM_OF_REMOTE_GTP_U_PEER_IN_REPORT 8
+
+/* TS 29.244 Table 7.4.5.1.2-1: "More than one IE with this type may be included to represent multiple remote GTP-U
+ * peers towards which a user plane path failure has been detected." The first peer is also named remote_gtp_u_peer. */
 typedef struct ogs_pfcp_tlv_user_plane_path_failure_report_s {
     ogs_tlv_presence_t presence;
-    ogs_pfcp_tlv_remote_gtp_u_peer_t remote_gtp_u_peer;
+    union {
+        ogs_pfcp_tlv_remote_gtp_u_peer_t remote_gtp_u_peer;
+        ogs_pfcp_tlv_remote_gtp_u_peer_t remote_gtp_u_peers[OGS_PFCP_MAX_NUM_OF_REMOTE_GTP_U_PEER_IN_REPORT];
+    };
 } ogs_pfcp_tlv_user_plane_path_failure_report_t;
 
 typedef struct ogs_pfcp_tlv_create_traffic_endpoint_s {
