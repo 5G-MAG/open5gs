@@ -116,6 +116,22 @@ int smf_mbs_sess_restore_n4mb(smf_mbs_sess_t *mbs_sess);
  * is attempted. Returns true when the session was restored. */
 bool smf_mbs_sess_restoration_response(smf_mbs_sess_t *mbs_sess, uint8_t cause);
 
+/* The MB-UPF \p failed without restart (no PFCP heartbeat answer, TS 23.527 V18.6.0 clause 8.1A: "an MB-SMF and
+ * MB-UPF shall utilize the PFCP Heartbeat Request and Heartbeat Response messages to detect a peer PFCP entity
+ * failure or restart"). Clause 8.2.3: "the MB-SMF may restore the MBS sessions that were served by the failed MB-UPF by
+ * selecting an alternative MB-UPF and by restoring the PFCP sessions of the MBS sessions in the alternative
+ * MB-UPF". Each broadcast session of the node moves to an alternative: another associated PFCP peer, taken as the
+ * MB-SMF takes it for a new session (the next one of the peer list). A session with no alternative stays where it
+ * is. Returns the number of sessions whose establishment at an alternative was sent. */
+int smf_mbs_node_failed(ogs_pfcp_node_t *failed);
+
+/* The alternative MB-UPF for sessions of \p failed: an associated peer other than it; NULL if there is none */
+ogs_pfcp_node_t *smf_mbs_alternative_upf(ogs_pfcp_node_t *failed);
+
+/* Sends the establishment of \p mbs_sess to \p alternative. The LL SSM, the C-TEID and the N3mb address of the failed
+ * MB-UPF are forgotten: the alternative assigns new ones. */
+int smf_mbs_sess_relocate_n4mb(smf_mbs_sess_t *mbs_sess, ogs_pfcp_node_t *alternative);
+
 /* The MBS session is lost with the MB-UPF (no restoration, or it failed): the subscribers are told the broadcast has
  * ended, every AMF is told to release its context, and the session is released. */
 void smf_mbs_sess_release_lost(smf_mbs_sess_t *mbs_sess);

@@ -24,6 +24,7 @@
 #include "event.h"
 #include "mbs-subsc.h"
 #include "pfcp-path.h"
+#include "smf-sm.h"
 
 static ogs_list_t pending_restorations;
 
@@ -386,6 +387,7 @@ bool smf_mbs_sess_restoration_response(smf_mbs_sess_t *mbs_sess, uint8_t cause)
     ogs_assert(mbs_sess);
 
     mbs_sess->restoring = false;
+    mbs_sess->relocating = false;
 
     if (cause == OGS_PFCP_CAUSE_REQUEST_ACCEPTED) {
         ogs_info("MBS Session mbsSessionRef[%s] restored at the MB-UPF", mbs_sess->mbs_session_ref);
@@ -402,4 +404,79 @@ bool smf_mbs_sess_restoration_response(smf_mbs_sess_t *mbs_sess, uint8_t cause)
 
     smf_mbs_sess_release_lost(mbs_sess);
     return false;
+}
+
+ogs_pfcp_node_t *smf_mbs_alternative_upf(ogs_pfcp_node_t *failed)
+{
+    ogs_pfcp_node_t *node = NULL;
+
+    ogs_list_for_each(&ogs_pfcp_self()->pfcp_peer_list, node)
+        if (node != failed && OGS_FSM_CHECK(&node->sm, smf_pfcp_state_associated))
+            return node;
+    return NULL;
+}
+
+int smf_mbs_sess_relocate_n4mb(smf_mbs_sess_t *mbs_sess, ogs_pfcp_node_t *alternative)
+{
+    ogs_assert(mbs_sess);
+    ogs_assert(alternative);
+
+    /* "the MB-SMF shall request the alternative MB-UPF to allocate a new N3mb and/or N19mb LL SSM address and C-TEID,
+     * if multicast transport is used over N3mb and/or N19mb" (cl. 8.2.3): what the failed MB-UPF gave is forgotten */
+    memset(&mbs_sess->ll_ssm, 0, sizeof(mbs_sess->ll_ssm));
+    mbs_sess->c_teid = 0;
+    if (mbs_sess->upf_n3mb_addr) {
+        ogs_freeaddrinfo(mbs_sess->upf_n3mb_addr);
+        mbs_sess->upf_n3mb_addr = NULL;
+    }
+    if (mbs_sess->upf_n3mb_addr6) {
+        ogs_freeaddrinfo(mbs_sess->upf_n3mb_addr6);
+        mbs_sess->upf_n3mb_addr6 = NULL;
+    }
+    mbs_sess->upf_n4mb_seid = 0;
+    OGS_SETUP_PFCP_NODE(mbs_sess, alternative);
+    /* the N3mb address of the session is the address of its MB-UPF, as at the creation */
+    if (alternative->addr.ogs_sa_family == AF_INET)
+        ogs_assert(OGS_OK == ogs_copyaddrinfo(&mbs_sess->upf_n3mb_addr, &alternative->addr));
+    else if (alternative->addr.ogs_sa_family == AF_INET6)
+        ogs_assert(OGS_OK == ogs_copyaddrinfo(&mbs_sess->upf_n3mb_addr6, &alternative->addr));
+    mbs_sess->relocating = true;
+
+    ogs_info("MBS Session mbsSessionRef[%s]: establishing its PFCP session at an alternative MB-UPF",
+            mbs_sess->mbs_session_ref);
+    if (smf_5gc_pfcp_n4mb_send_session_establishment_request(mbs_sess, 0, NULL) != OGS_OK) {
+        mbs_sess->relocating = false;
+        return OGS_ERROR;
+    }
+    return OGS_OK;
+}
+
+int smf_mbs_node_failed(ogs_pfcp_node_t *failed)
+{
+    smf_mbs_sess_t *mbs_sess = NULL, *next = NULL;
+    ogs_pfcp_node_t *alternative = NULL;
+    int sent = 0;
+
+    ogs_assert(failed);
+
+    ogs_list_for_each_safe(&smf_self()->smf_mbs_sess_list, next, mbs_sess) {
+        if (mbs_sess->pfcp_node != failed || mbs_sess->release_triggered || mbs_sess->restoring ||
+                mbs_sess->relocating)
+            continue;
+        if (ogs_strcasecmp(mbs_sess->service_type, "BROADCAST") != 0)
+            continue;
+
+        alternative = smf_mbs_alternative_upf(failed);
+        if (!alternative) {
+            ogs_warn("MBS Session mbsSessionRef[%s]: its MB-UPF failed and there is no alternative MB-UPF",
+                    mbs_sess->mbs_session_ref);
+            continue;
+        }
+        if (smf_mbs_sess_relocate_n4mb(mbs_sess, alternative) == OGS_OK)
+            sent++;
+        else
+            smf_mbs_sess_release_lost(mbs_sess);
+    }
+
+    return sent;
 }

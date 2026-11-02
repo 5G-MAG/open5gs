@@ -1301,7 +1301,7 @@ bool smf_nmbsmf_handle_mbs_session_patch(smf_mbs_sess_t *mbs_sess,
      * 8.2.2) and is not there to be told of a change of the QoS flows: the update is refused instead of being applied
      * to the MB-SMF alone. TS 29.500 V18.10.0 table 5.2.7.2-1, row SYSTEM_FAILURE, "500 Internal Server Error": "The
      * request is rejected due to generic error condition in the NF." (no clause names a cause for this case) */
-    if (mbs_sess->restoring) {
+    if (mbs_sess->restoring || mbs_sess->relocating) {
         ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR, message,
                 "Internal Server Error", "Requested MBS Session Update failed, the MBS session is being restored at "
                 "the MB-UPF", NMBSMF_MBSSESSION_SYSTEM_FAILURE);

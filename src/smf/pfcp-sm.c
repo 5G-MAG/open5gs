@@ -127,7 +127,7 @@ void smf_pfcp_state_will_associate(ogs_fsm_t *s, smf_event_t *e)
             if (e->mbs_sess_id >= OGS_MIN_POOL_ID && e->mbs_sess_id <= OGS_MAX_POOL_ID) {
                 smf_mbs_sess_t *lost = smf_mbs_sess_find_by_id(e->mbs_sess_id);
 
-                if (lost && lost->restoring) {
+                if (lost && (lost->restoring || lost->relocating)) {
                     smf_mbs_sess_restoration_response(lost, OGS_PFCP_CAUSE_REQUEST_REJECTED);
                     break;
                 }
@@ -362,7 +362,7 @@ void smf_pfcp_state_associated(ogs_fsm_t *s, smf_event_t *e)
             if (mbs_sess) {
                 // mbs_sess was already resolved from the same SEID at the top of this function, by the
                 // same two-way lookup, and nothing reassigns it in between.
-                if (mbs_sess->restoring)    /* the restoration after an MB-UPF restart has no consumer waiting */
+                if (mbs_sess->restoring || mbs_sess->relocating)    /* no consumer waits for these answers */
                     smf_n4mb_handle_session_restoration_response(mbs_sess, xact,
                         &message->pfcp_session_establishment_response);
                 else
@@ -508,7 +508,7 @@ void smf_pfcp_state_associated(ogs_fsm_t *s, smf_event_t *e)
             if (e->mbs_sess_id >= OGS_MIN_POOL_ID && e->mbs_sess_id <= OGS_MAX_POOL_ID) {
                 smf_mbs_sess_t *lost = smf_mbs_sess_find_by_id(e->mbs_sess_id);
 
-                if (lost && lost->restoring) {
+                if (lost && (lost->restoring || lost->relocating)) {
                     smf_mbs_sess_restoration_response(lost, OGS_PFCP_CAUSE_REQUEST_REJECTED);
                     break;
                 }
@@ -546,6 +546,8 @@ void smf_pfcp_state_associated(ogs_fsm_t *s, smf_event_t *e)
          */
         node = e->pfcp_node;
         ogs_assert(node);
+        /* the broadcast MBS sessions of the node go to an alternative MB-UPF (TS 23.527 V18.6.0 clause 8.2.3) */
+        smf_mbs_node_failed(node);
         reselect_upf(node);
 
         OGS_FSM_TRAN(s, smf_pfcp_state_will_associate);

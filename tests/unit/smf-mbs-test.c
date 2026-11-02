@@ -3201,6 +3201,77 @@ static void test_changes_during_restoration(void)
     smf_mbs_sess_release(mbs_sess);
 }
 
+/* TS 23.527 V18.6.0 clause 8.2.3, MB-UPF failure without restart: the alternative MB-UPF is asked for new addresses
+ * (PLLSSM, a CHOOSE ingress tunnel, no RESTI, no Multicast Transport Information) and is given the DL tunnels. */
+static void test_relocation(void)
+{
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    ogs_pfcp_message_t *msg;
+    ogs_pfcp_far_t *far;
+    ogs_pfcp_mbsn4mbreq_flags_t flags;
+    ogs_pfcp_node_t failed, other;
+    smf_mbs_dl_tunnel_t *tunnel;
+    ogs_ip_t addr;
+    bool changed;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+
+    /* a session with an ingress tunnel of the failed MB-UPF, an LL SSM and a DL tunnel */
+    mbs_sess->ingress_tun_addr_req = true;
+    ogs_addaddrinfo(&mbs_sess->ingress_tun_addr, AF_INET, "10.9.9.9", 4000, 0);
+    mbs_sess->ll_ssm.dest_ip_addr.ipv4 = 1;
+    mbs_sess->ll_ssm.dest_ip_addr.addr = htonl(0xe8010203);
+    mbs_sess->c_teid = 0x01020304;
+    memset(&addr, 0, sizeof(addr));
+    addr.ipv4 = 1;
+    addr.len = OGS_IPV4_LEN;
+    addr.addr = htonl(0x0a141e28);
+    tunnel = smf_mbs_sess_dl_tunnel_set(mbs_sess, "ran-a", &addr, 0xabcd0001, &changed);
+    if (tunnel) tunnel->unicast_params_id = 5;
+    ogs_list_for_each(&mbs_sess->pfcp.far_list, far)
+        far->apply_action |= OGS_PFCP_APPLY_ACTION_MBSU;
+
+    mbs_sess->relocating = true;
+    msg = build_and_parse_establishment(mbs_sess);
+    CHECK(msg != NULL);
+    if (msg) {
+        ogs_tlv_octet_t *lit = &msg->pfcp_session_establishment_request.create_traffic_endpoint.local_ingress_tunnel;
+
+        flags.value = ((uint8_t *)msg->pfcp_session_establishment_request.mbs_session_n4mb_control_information
+                .mbsn4mbreq_flags.data)[0];
+        CHECK(flags.provide_lower_layer_ssm && !flags.restoration_indication);
+        CHECK(!msg->pfcp_session_establishment_request.mbs_session_n4mb_control_information
+                .multicast_transport_information_for_n3mb_and_or_n19mb.presence);
+        /* CHOOSE (bit 3 of octet 5 of the Local Ingress Tunnel IE): no address is asked for */
+        CHECK(lit->presence && lit->len >= 1 && (((uint8_t *)lit->data)[0] & 0x04));
+        CHECK(msg->pfcp_session_establishment_request.create_far[0].add_mbs_unicast_parameters[0].presence);
+    }
+
+    /* the failed MB-UPF has no alternative: the session stays */
+    memset(&failed, 0, sizeof(failed));
+    memset(&other, 0, sizeof(other));
+    mbs_sess->relocating = false;
+    mbs_sess->pfcp_node = &failed;
+    CHECK(smf_mbs_alternative_upf(&failed) == NULL);
+    CHECK(smf_mbs_node_failed(&failed) == 0 && mbs_sess->pfcp_node == &failed && !mbs_sess->relocating);
+
+    /* changes that come while the session is on its way to the alternative wait */
+    mbs_sess->relocating = true;
+    {
+        smf_mbs_tunnel_changes_t changes;
+
+        memset(&changes, 0, sizeof(changes));
+        changes.count = 1;
+        changes.change[0].has_add = true;
+        CHECK(smf_mbs_sess_send_tunnel_changes(mbs_sess, &changes) == 0 &&
+                mbs_sess->deferred_tunnel_changes.count == 1);
+    }
+    mbs_sess->relocating = false;
+    mbs_sess->pfcp_node = NULL;
+    smf_mbs_sess_release(mbs_sess);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -3244,6 +3315,7 @@ int main(void)
     test_node_report();
     test_restoration_request();
     test_changes_during_restoration();
+    test_relocation();
 
     printf("smf-mbs: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;

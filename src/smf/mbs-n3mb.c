@@ -483,7 +483,7 @@ int smf_mbs_sess_send_tunnel_changes(smf_mbs_sess_t *mbs_sess, const smf_mbs_tun
     /* The PFCP session of an MBS session whose restoration after an MB-UPF restart is pending is not at the MB-UPF
      * yet (TS 23.527 V18.6.0 clause 8.2.2: the MB-SMF "may start restoring the PFCP sessions ... by following PFCP
      * requirements for establishing a PFCP session"), so the changes wait for it. */
-    if (mbs_sess->restoring) {
+    if (mbs_sess->restoring || mbs_sess->relocating) {
         smf_mbs_tunnel_changes_t *deferred = &mbs_sess->deferred_tunnel_changes;
 
         for (i = 0; i < changes->count; i++) {

@@ -123,7 +123,7 @@ ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
         /* TS 29.244 V18.10.0 cl. 5.34.2.2: the Create FAR has the Apply Action "MBSU" "together with one or more
          * Add MBS Unicast Parameters ... if unicast transport is used over N3mb or N19mb and N3mb/N19mb DL F-TEIDs
          * are already known, e.g. during an MBS restoration for MB-UPF failure with or without restart procedure" */
-        if (mbs_sess->restoring && (far->apply_action & OGS_PFCP_APPLY_ACTION_MBSU)) {
+        if ((mbs_sess->restoring || mbs_sess->relocating) && (far->apply_action & OGS_PFCP_APPLY_ACTION_MBSU)) {
             smf_mbs_dl_tunnel_t *tunnel = NULL;
             int n = 0;
 
@@ -193,8 +193,11 @@ ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
     // NOTE (borieher): (C), create_traffic_endpoint if UP has PDI optimization or tunnelling requested
     /* Create "Create Traffic Endpoint" */
     /* An MBS restoration after an MB-UPF restart gives the ingress tunnel address used before, and "shall not set the
-     * CHOOSE bit to "1"" (TS 23.527 V18.6.0 clause 8.2.2). */
-    if (mbs_sess->ingress_tun_addr_req && !(mbs_sess->restoring && mbs_sess->ingress_tun_addr)) {
+     * CHOOSE bit to "1"" (TS 23.527 V18.6.0 clause 8.2.2); at an alternative MB-UPF (clause 8.2.3) "the MB-SMF shall
+     * request the alternative MB-UPF to allocate a new N6mb and/or Nmb9 ingress tunnel address, if unicast transport
+     * is used over N6mb and/or Nmb9". */
+    if ((mbs_sess->ingress_tun_addr_req || (mbs_sess->relocating && mbs_sess->ingress_tun_addr)) &&
+            !(mbs_sess->restoring && mbs_sess->ingress_tun_addr)) {
         /* TODO: (davidjw) allow choice of IPv4 and/or IPv6 */
 	if (ogs_pfcp_proto_choice_to_local_ingress_tunnel(true, false, &local_ingress_tunnel, &len) == OGS_OK) {
             req->create_traffic_endpoint.presence = 1;

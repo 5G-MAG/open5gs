@@ -577,6 +577,8 @@ uint8_t smf_n4mb_handle_session_restoration_response(
 {
     uint8_t cause_value = OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
     uint16_t offending_ie_value = 0;
+    bool relocating = mbs_sess->relocating;
+    bool ingress_changed = false;
     int i;
 
     ogs_assert(mbs_sess);
@@ -608,13 +610,47 @@ uint8_t smf_n4mb_handle_session_restoration_response(
         /* the ingress tunnel is the address the request gave (the MB-UPF "shall allocate the same ... ingress tunnel
          * address if possible"); what it returns is taken in as at the establishment */
         if (rsp->created_traffic_endpoint.presence && rsp->created_traffic_endpoint.local_ingress_tunnel.presence) {
-            _set_ingress_tunnel(mbs_sess, rsp->created_traffic_endpoint.local_ingress_tunnel.data);
+            ingress_changed = _set_ingress_tunnel(mbs_sess, rsp->created_traffic_endpoint.local_ingress_tunnel.data);
         } else {
             for (i = 0; i < OGS_MAX_NUM_OF_PDR && rsp->created_pdr[i].presence; i++) {
                 if (rsp->created_pdr[i].local_ingress_tunnel.presence) {
-                    _set_ingress_tunnel(mbs_sess, rsp->created_pdr[i].local_ingress_tunnel.data);
+                    ingress_changed = _set_ingress_tunnel(mbs_sess, rsp->created_pdr[i].local_ingress_tunnel.data);
                     break;
                 }
+            }
+        }
+
+        /* At an alternative MB-UPF "the alternative MB-UPF will assign: a new N3mb and/or N19mb LL SSM address and
+         * C-TEID, if multicast transport is used on N3mb and/or N19mb; and/or a new N6mb and/or Nmb9 ingress tunnel
+         * address, if unicast transport is used on N6mb and/or Nmb9." (TS 23.527 V18.6.0 clause 8.2.3) */
+        if (relocating) {
+            ogs_pfcp_multicast_transport_information_t mti;
+
+            if (rsp->mbs_session_n4mb_information.presence &&
+                    rsp->mbs_session_n4mb_information.multicast_transport_information.presence) {
+                ogs_pfcp_parse_multicast_transport_information(&mti,
+                        &rsp->mbs_session_n4mb_information.multicast_transport_information);
+                if (mti.ip_multicast_distribution_address.address_type == 0) {
+                    mbs_sess->ll_ssm.dest_ip_addr.ipv4 = 1;
+                    mbs_sess->ll_ssm.dest_ip_addr.len = OGS_IPV4_LEN;
+                    mbs_sess->ll_ssm.dest_ip_addr.addr = mti.ip_multicast_distribution_address.ipv4_addr;
+                } else if (mti.ip_multicast_distribution_address.address_type == 1) {
+                    mbs_sess->ll_ssm.dest_ip_addr.ipv6 = 1;
+                    mbs_sess->ll_ssm.dest_ip_addr.len = OGS_IPV6_LEN;
+                    memcpy(mbs_sess->ll_ssm.dest_ip_addr.addr6, mti.ip_multicast_distribution_address.ipv6_addr,
+                            OGS_IPV6_LEN);
+                }
+                if (mti.ip_source_address.address_type == 0) {
+                    mbs_sess->ll_ssm.src_ip_addr.ipv4 = 1;
+                    mbs_sess->ll_ssm.src_ip_addr.len = OGS_IPV4_LEN;
+                    mbs_sess->ll_ssm.src_ip_addr.addr = mti.ip_source_address.ipv4_addr;
+                } else if (mti.ip_source_address.address_type == 1) {
+                    mbs_sess->ll_ssm.src_ip_addr.ipv6 = 1;
+                    mbs_sess->ll_ssm.src_ip_addr.len = OGS_IPV6_LEN;
+                    memcpy(mbs_sess->ll_ssm.src_ip_addr.addr6, mti.ip_source_address.ipv6_addr, OGS_IPV6_LEN);
+                }
+                if (mti.c_teid)
+                    mbs_sess->c_teid = be32toh(mti.c_teid);
             }
         }
     }
@@ -651,6 +687,19 @@ uint8_t smf_n4mb_handle_session_restoration_response(
         }
         if (changes.count > 0)
             smf_mbs_sess_send_tunnel_changes(mbs_sess, &changes);
+
+        if (relocating) {
+            /* Clause 8.2.3: "the MB-SMF shall update the AMFs handling the ... broadcast MBS session ... about the
+             * new N3mb LL SSM address and C-TEID by sending ... an Namf_MBSBroadcast ContextUpdate Request
+             * (Broadcast Session Modification Request including the new MB-UPF LL SSM address and C-TEID) for a
+             * broadcast MBS session", and "if unicast transport is used on N6mb and/or Nmb9: the MB-SMF shall update
+             * the AF/NEF/MBSF about the new N6mb/Nmb9 ingress tunnel address ... by sending an Nmbsmf_MBSSession_
+             * StatusNotify request including an "Ingress Tunnel Address Change" event". */
+            if (mbs_sess->ll_ssm.dest_ip_addr.ipv4 || mbs_sess->ll_ssm.dest_ip_addr.ipv6)
+                smf_sbi_send_mbs_broadcast_context_update_all(mbs_sess, false, true);
+            if (ingress_changed)
+                smf_mbs_sess_report_ingress_tunnel_change(mbs_sess);
+        }
     }
 
     return cause_value;
