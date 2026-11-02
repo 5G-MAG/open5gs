@@ -4577,6 +4577,7 @@ ogs_tlv_desc_t ogs_pfcp_msg_desc_pfcp_session_modification_request =
         &ogs_pfcp_tlv_desc_update_traffic_endpoint,
         &ogs_pfcp_tlv_desc_pfcpsmreq_flags,
         &ogs_pfcp_tlv_desc_query_urr,
+        &ogs_tlv_desc_more16,
         &ogs_pfcp_tlv_desc_fq_csid,
         &ogs_pfcp_tlv_desc_fq_csid,
         &ogs_pfcp_tlv_desc_fq_csid,

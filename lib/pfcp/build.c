@@ -971,9 +971,10 @@ void ogs_pfcp_build_create_bar(
     message->bar_id.u8 = bar->id;
 }
 
+/* One buffer for each Usage Report of a message: the octet strings are read when the message is rendered */
 static struct {
     ogs_pfcp_volume_measurement_t vol_meas;
-} usage_report_buf;
+} usage_report_buf[OGS_MAX_NUM_OF_URR];
 
 ogs_pkbuf_t *ogs_pfcp_build_session_report_request(
         uint8_t type, ogs_pfcp_user_plane_report_t *report)
@@ -1072,8 +1073,8 @@ ogs_pkbuf_t *ogs_pfcp_build_session_report_request(
                 ogs_pfcp_build_volume_measurement(
                         &req->usage_report[i].volume_measurement,
                         &report->usage_report[i].vol_measurement,
-                        &usage_report_buf.vol_meas,
-                        sizeof(usage_report_buf.vol_meas));
+                        &usage_report_buf[i].vol_meas,
+                        sizeof(usage_report_buf[i].vol_meas));
             }
 
             if (report->usage_report[i].dur_measurement) {
@@ -1193,8 +1194,8 @@ ogs_pkbuf_t *ogs_pfcp_build_session_deletion_response( uint8_t type, uint8_t cau
                 ogs_pfcp_build_volume_measurement(
                         &rsp->usage_report[i].volume_measurement,
                         &report->usage_report[i].vol_measurement,
-                        &usage_report_buf.vol_meas,
-                        sizeof(usage_report_buf.vol_meas));
+                        &usage_report_buf[i].vol_meas,
+                        sizeof(usage_report_buf[i].vol_meas));
             }
 
             rsp->usage_report[i].duration_measurement.presence = 1;

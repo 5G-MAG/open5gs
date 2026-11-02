@@ -2075,7 +2075,7 @@ typedef struct ogs_pfcp_session_modification_request_s {
     ogs_pfcp_tlv_update_bar_session_modification_request_t update_bar;
     ogs_pfcp_tlv_update_traffic_endpoint_t update_traffic_endpoint;
     ogs_pfcp_tlv_pfcpsmreq_flags_t pfcpsmreq_flags;
-    ogs_pfcp_tlv_query_urr_t query_urr;
+    ogs_pfcp_tlv_query_urr_t query_urr[16];
     ogs_pfcp_tlv_fq_csid_t pgw_c_smf_fq_csid;
     ogs_pfcp_tlv_fq_csid_t sgw_c_fq_csid;
     ogs_pfcp_tlv_fq_csid_t mme_fq_csid;
