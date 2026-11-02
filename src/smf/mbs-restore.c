@@ -22,6 +22,8 @@
 #include "mbs-n3mb.h"
 #include "sbi-path.h"
 #include "event.h"
+#include "mbs-subsc.h"
+#include "pfcp-path.h"
 
 static ogs_list_t pending_restorations;
 
@@ -352,4 +354,65 @@ int smf_mbs_node_report_path_failure(ogs_pfcp_node_t *node, const ogs_ip_t *peer
     }
 
     return sent;
+}
+
+void smf_mbs_sess_release_lost(smf_mbs_sess_t *mbs_sess)
+{
+    ogs_assert(mbs_sess);
+
+    if (mbs_sess->release_triggered)
+        return;     /* an explicit release is already in flight */
+    mbs_sess->release_triggered = true;
+    mbs_sess->restoring = false;
+
+    ogs_error("MBS Session mbsSessionRef[%s] lost at the MB-UPF -- releasing the SMF-side state so its TMGI/SSM can "
+            "be reused", mbs_sess->mbs_session_ref);
+
+    /* TS 29.532 V18.6.0 cl. 5.3.2.8.1: "the new broadcast delivery status (e.g. the MBS session has been STARTED or
+     * TERMINATED)" */
+    if (ogs_strcasecmp(mbs_sess->service_type, "BROADCAST") == 0)
+        smf_mbs_sess_report_broadcast_delivery_status(mbs_sess, OpenAPI_broadcast_delivery_status_TERMINATED);
+
+    smf_sbi_send_mbs_broadcast_context_delete_all(mbs_sess);
+    smf_mbs_sess_release(mbs_sess);
+}
+
+int smf_mbs_sess_restore_n4mb(smf_mbs_sess_t *mbs_sess)
+{
+    ogs_assert(mbs_sess);
+    ogs_assert(mbs_sess->pfcp_node);
+
+    /* a new PFCP session at the MB-UPF: the request goes with SEID 0 (TS 29.244 V18.10.0 clause 7.2.2.4.2) */
+    mbs_sess->restoring = true;
+    mbs_sess->upf_n4mb_seid = 0;
+    ogs_info("MBS Session mbsSessionRef[%s]: restoring its PFCP session at the MB-UPF", mbs_sess->mbs_session_ref);
+
+    if (smf_5gc_pfcp_n4mb_send_session_establishment_request(mbs_sess, 0, NULL) != OGS_OK) {
+        mbs_sess->restoring = false;
+        return OGS_ERROR;
+    }
+    return OGS_OK;
+}
+
+bool smf_mbs_sess_restoration_response(smf_mbs_sess_t *mbs_sess, uint8_t cause)
+{
+    ogs_assert(mbs_sess);
+
+    mbs_sess->restoring = false;
+
+    if (cause == OGS_PFCP_CAUSE_REQUEST_ACCEPTED) {
+        ogs_info("MBS Session mbsSessionRef[%s] restored at the MB-UPF", mbs_sess->mbs_session_ref);
+        return true;
+    }
+
+    if (cause == OGS_PFCP_CAUSE_RESTORATION_FAILURE_RESOURCE_NOT_AVAILABLE)
+        ogs_error("MBS Session mbsSessionRef[%s]: the MB-UPF cannot restore it, the requested resource is not "
+                "available (the restoration for MB-UPF failure without restart is not implemented)",
+                mbs_sess->mbs_session_ref);
+    else
+        ogs_error("MBS Session mbsSessionRef[%s]: restoration at the MB-UPF refused, cause [%d]",
+                mbs_sess->mbs_session_ref, cause);
+
+    smf_mbs_sess_release_lost(mbs_sess);
+    return false;
 }

@@ -26,6 +26,7 @@
 // NOTE (borieher): Needed for the SBI request
 #include "sbi-path.h"
 #include "mbs-restore.h"
+#include "mbs-n3mb.h"
 
 static const char *_pfcp_cause_to_problem_cause(uint8_t pfcp_cause);
 
@@ -568,4 +569,77 @@ uint8_t smf_n4mb_handle_node_report_request(
 
     smf_mbs_node_report_path_failure(node, &peer);
     return OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
+}
+
+uint8_t smf_n4mb_handle_session_restoration_response(
+        smf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
+        ogs_pfcp_session_establishment_response_t *rsp)
+{
+    uint8_t cause_value = OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
+    uint16_t offending_ie_value = 0;
+    int i;
+
+    ogs_assert(mbs_sess);
+    ogs_assert(xact);
+    ogs_assert(rsp);
+
+    ogs_pfcp_xact_commit(xact);
+
+    if (!rsp->cause.presence)
+        cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+    else
+        cause_value = rsp->cause.u8;
+    if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED && !rsp->up_f_seid.presence)
+        cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+
+    if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED) {
+        ogs_pfcp_f_seid_t *up_f_seid = rsp->up_f_seid.data;
+        ogs_pfcp_pdr_t *pdr = NULL;
+
+        mbs_sess->upf_n4mb_seid = be64toh(up_f_seid->seid);
+
+        for (i = 0; i < OGS_MAX_NUM_OF_PDR; i++) {
+            pdr = ogs_pfcp_handle_created_pdr(&mbs_sess->pfcp, &rsp->created_pdr[i], &cause_value,
+                    &offending_ie_value);
+            if (!pdr)
+                break;
+        }
+
+        /* the ingress tunnel is the address the request gave (the MB-UPF "shall allocate the same ... ingress tunnel
+         * address if possible"); what it returns is taken in as at the establishment */
+        if (rsp->created_traffic_endpoint.presence && rsp->created_traffic_endpoint.local_ingress_tunnel.presence) {
+            _set_ingress_tunnel(mbs_sess, rsp->created_traffic_endpoint.local_ingress_tunnel.data);
+        } else {
+            for (i = 0; i < OGS_MAX_NUM_OF_PDR && rsp->created_pdr[i].presence; i++) {
+                if (rsp->created_pdr[i].local_ingress_tunnel.presence) {
+                    _set_ingress_tunnel(mbs_sess, rsp->created_pdr[i].local_ingress_tunnel.data);
+                    break;
+                }
+            }
+        }
+    }
+
+    if (smf_mbs_sess_restoration_response(mbs_sess, cause_value) && cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED) {
+        /* the Create FAR holds SMF_N4MB_MAX_UNICAST_PARAMS tunnels: the others are given now */
+        smf_mbs_tunnel_changes_t changes;
+        smf_mbs_dl_tunnel_t *tunnel = NULL;
+        int n = 0;
+
+        memset(&changes, 0, sizeof(changes));
+        ogs_list_for_each(&mbs_sess->dl_tunnel_list, tunnel) {
+            if (n++ < SMF_N4MB_MAX_UNICAST_PARAMS)
+                continue;
+            if (changes.count >= SMF_MBS_MAX_TUNNEL_CHANGES)
+                break;
+            changes.change[changes.count].has_add = true;
+            changes.change[changes.count].add_addr = tunnel->addr;
+            changes.change[changes.count].add_teid = tunnel->teid;
+            changes.change[changes.count].add_id = tunnel->unicast_params_id;
+            changes.count++;
+        }
+        if (changes.count > 0)
+            smf_mbs_sess_send_tunnel_changes(mbs_sess, &changes);
+    }
+
+    return cause_value;
 }

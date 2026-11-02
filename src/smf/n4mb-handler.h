@@ -52,6 +52,13 @@ uint8_t smf_n4mb_handle_session_deletion_response(
         smf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
         ogs_pfcp_session_deletion_response_t *rsp);
 
+/* The answer of the MB-UPF to the N4mb Session Establishment Request of a restoration after an MB-UPF restart (see
+ * smf_mbs_sess_restore_n4mb()): takes in the UP F-SEID, the ingress tunnel and the PDRs, and gives the MB-UPF the N3mb
+ * DL tunnels that the Create FAR could not hold. Returns the cause of the answer. */
+uint8_t smf_n4mb_handle_session_restoration_response(
+        smf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
+        ogs_pfcp_session_establishment_response_t *rsp);
+
 /* A PFCP Node Report Request of the MB-UPF (TS 29.244 V18.10.0 clause 6.2.9.3: "process the information being
  * reported as appropriate and send a PFCP Node Report Response with the cause "success"; otherwise return an
  * appropriate error cause value."). The User Plane Path Failure Report is the N3mb path failure of TS 23.527

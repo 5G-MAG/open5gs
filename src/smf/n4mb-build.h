@@ -29,6 +29,10 @@ extern "C" {
  * digits. Returns false for anything else. */
 bool smf_n4mb_nid_to_octets(const char *nid, uint8_t octets[6]);
 
+/* Add MBS Unicast Parameters the Create FAR of a restoration holds: the size of the array in lib/pfcp; the tunnels
+ * beyond them are given by the modification that follows the restoration */
+#define SMF_N4MB_MAX_UNICAST_PARAMS 8
+
 ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
         smf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact);
 

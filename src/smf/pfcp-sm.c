@@ -123,6 +123,15 @@ void smf_pfcp_state_will_associate(ogs_fsm_t *s, smf_event_t *e)
             ogs_pfcp_cp_send_association_setup_request(node, node_timeout);
             break;
         case SMF_TIMER_PFCP_NO_ESTABLISHMENT_RESPONSE:
+            /* no answer to the restoration of an MBS session: it is lost with the MB-UPF */
+            if (e->mbs_sess_id >= OGS_MIN_POOL_ID && e->mbs_sess_id <= OGS_MAX_POOL_ID) {
+                smf_mbs_sess_t *lost = smf_mbs_sess_find_by_id(e->mbs_sess_id);
+
+                if (lost && lost->restoring) {
+                    smf_mbs_sess_restoration_response(lost, OGS_PFCP_CAUSE_REQUEST_REJECTED);
+                    break;
+                }
+            }
             sess = smf_sess_find_by_id(e->sess_id);
             if (!sess) {
                 ogs_warn("Session has already been removed");
@@ -353,8 +362,12 @@ void smf_pfcp_state_associated(ogs_fsm_t *s, smf_event_t *e)
             if (mbs_sess) {
                 // mbs_sess was already resolved from the same SEID at the top of this function, by the
                 // same two-way lookup, and nothing reassigns it in between.
-                smf_n4mb_handle_session_establishment_response(mbs_sess, xact,
-                    &message->pfcp_session_establishment_response);
+                if (mbs_sess->restoring)    /* the restoration after an MB-UPF restart has no consumer waiting */
+                    smf_n4mb_handle_session_restoration_response(mbs_sess, xact,
+                        &message->pfcp_session_establishment_response);
+                else
+                    smf_n4mb_handle_session_establishment_response(mbs_sess, xact,
+                        &message->pfcp_session_establishment_response);
                 break;
             }
 
@@ -491,6 +504,15 @@ void smf_pfcp_state_associated(ogs_fsm_t *s, smf_event_t *e)
                 ogs_pfcp_send_heartbeat_request(node, node_timeout));
             break;
         case SMF_TIMER_PFCP_NO_ESTABLISHMENT_RESPONSE:
+            /* no answer to the restoration of an MBS session: it is lost with the MB-UPF */
+            if (e->mbs_sess_id >= OGS_MIN_POOL_ID && e->mbs_sess_id <= OGS_MAX_POOL_ID) {
+                smf_mbs_sess_t *lost = smf_mbs_sess_find_by_id(e->mbs_sess_id);
+
+                if (lost && lost->restoring) {
+                    smf_mbs_sess_restoration_response(lost, OGS_PFCP_CAUSE_REQUEST_REJECTED);
+                    break;
+                }
+            }
             sess = smf_sess_find_by_id(e->sess_id);
             if (!sess) {
                 ogs_warn("Session has already been removed");
@@ -604,13 +626,10 @@ static void pfcp_restoration(ogs_pfcp_node_t *node)
  * reusing the same TMGI/SSM (e.g. after test churn or a real UPF restart) was rejected as
  * already-existing, surfacing upstream as a recurring 502.
  *
- * Unlike regular PDU sessions, MBS sessions are not re-established here: the UPF has lost all state for
- * them, and (unlike a single-UE PDU session) MBS session re-creation is driven by the MBSF/AF via
- * Nmbsmf_MBSSession, not something the SMF can safely reconstruct unilaterally. Instead, mirror the
- * "no PFCP peer" branch of the already-correct explicit release chain
- * (smf_nmbsmf_handle_mbs_session_release() in nmbsmf-handler.c): notify the AMF of the lost broadcast
- * context, if any, then release local SMF-side state directly so the TMGI/SSM become free again. There
- * is nothing left to tell the UPF (no valid N4mb session exists there for us to delete).
+ * A broadcast MBS session is restored at the MB-UPF (TS 23.527 V18.6.0 clause 8.2.2, smf_mbs_sess_restore_n4mb()).
+ * One that cannot be restored, and a multicast one, is released locally (smf_mbs_sess_release_lost()): the
+ * subscribers are told that the broadcast MBS session has ended, every AMF that holds a context of it is told, and
+ * the TMGI/SSM become free again. There is nothing left to tell the UPF (no valid N4mb session exists there).
  */
 static void pfcp_mbs_restoration(ogs_pfcp_node_t *node)
 {
@@ -626,22 +645,15 @@ static void pfcp_mbs_restoration(ogs_pfcp_node_t *node)
             /* Already being torn down via an explicit release in flight -- don't double-release. */
             continue;
         }
-        mbs_sess->release_triggered = true;
 
-        ogs_error("MBS Session mbsSessionRef[%s] lost on restarted UPF -- "
-                "releasing stale SMF-side state so its TMGI/SSM can be reused",
-                mbs_sess->mbs_session_ref);
+        /* TS 23.527 V18.6.0 clause 8.2.2: the broadcast MBS sessions are restored at the MB-UPF. The multicast ones
+         * and a restoration that cannot be started are released, as before: nothing is left to tell the UPF (no
+         * valid N4mb session exists there), and the TMGI/SSM become free again. */
+        if (ogs_strcasecmp(mbs_sess->service_type, "BROADCAST") == 0 &&
+                smf_mbs_sess_restore_n4mb(mbs_sess) == OGS_OK)
+            continue;
 
-        // The subscribers are told that the broadcast MBS session has ended (TS 29.532 V18.6.0 cl. 5.3.2.8.1:
-        // "the new broadcast delivery status (e.g. the MBS session has been STARTED or TERMINATED)").
-        if (ogs_strcasecmp(mbs_sess->service_type, "BROADCAST") == 0)
-            smf_mbs_sess_report_broadcast_delivery_status(mbs_sess, OpenAPI_broadcast_delivery_status_TERMINATED);
-
-        // Every AMF that holds a context of the session is told; the cached nf_instance is cleared for each, for
-        // the reason given at smf_sbi_send_mbs_broadcast_context_delete_all().
-        smf_sbi_send_mbs_broadcast_context_delete_all(mbs_sess);
-
-        smf_mbs_sess_release(mbs_sess);
+        smf_mbs_sess_release_lost(mbs_sess);
     }
 }
 

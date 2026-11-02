@@ -63,6 +63,10 @@ ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
     uint8_t mbs_session_identifier_buf[sizeof(ogs_pfcp_mbs_session_identifier_t)];
     ogs_pfcp_mbsn4mbreq_flags_t mbsn4mbreq_flags;
     ogs_pfcp_local_ingress_tunnel_t local_ingress_tunnel;
+    ogs_pfcp_multicast_transport_information_t multicast_transport_information;
+    uint8_t multicast_transport_information_buf[sizeof(ogs_pfcp_multicast_transport_information_t)];
+    ogs_pfcp_outer_header_creation_t unicast_ohc[SMF_N4MB_MAX_UNICAST_PARAMS];
+    uint8_t unicast_ids[SMF_N4MB_MAX_UNICAST_PARAMS][2];
     uint8_t qer_indications = 0x01;    /* IQFISN */
     uint8_t traffic_endpoint_id = 1;
 
@@ -116,6 +120,44 @@ ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
     ogs_list_for_each(&mbs_sess->pfcp.far_list, far) {
         // TODO (borieher): Avoid setting the TEID in the create_far
         ogs_pfcp_build_create_far(&req->create_far[i], i, far);
+        /* TS 29.244 V18.10.0 cl. 5.34.2.2: the Create FAR has the Apply Action "MBSU" "together with one or more
+         * Add MBS Unicast Parameters ... if unicast transport is used over N3mb or N19mb and N3mb/N19mb DL F-TEIDs
+         * are already known, e.g. during an MBS restoration for MB-UPF failure with or without restart procedure" */
+        if (mbs_sess->restoring && (far->apply_action & OGS_PFCP_APPLY_ACTION_MBSU)) {
+            smf_mbs_dl_tunnel_t *tunnel = NULL;
+            int n = 0;
+
+            ogs_list_for_each(&mbs_sess->dl_tunnel_list, tunnel) {
+                if (n >= SMF_N4MB_MAX_UNICAST_PARAMS)
+                    break;     /* the rest is given by the modification that follows the restoration */
+                memset(&unicast_ohc[n], 0, sizeof(unicast_ohc[n]));
+                unicast_ohc[n].teid = htobe32(tunnel->teid);
+                unicast_ids[n][0] = (tunnel->unicast_params_id >> 8) & 0xff;
+                unicast_ids[n][1] = tunnel->unicast_params_id & 0xff;
+                if (tunnel->addr.ipv4) {
+                    unicast_ohc[n].gtpu4 = 1;
+                    unicast_ohc[n].addr = tunnel->addr.addr;
+                    req->create_far[i].add_mbs_unicast_parameters[n].outer_header_creation.len =
+                            2 + 4 + OGS_IPV4_LEN;
+                } else {
+                    unicast_ohc[n].gtpu6 = 1;
+                    memcpy(unicast_ohc[n].addr6, tunnel->addr.addr6, OGS_IPV6_LEN);
+                    req->create_far[i].add_mbs_unicast_parameters[n].outer_header_creation.len =
+                            2 + 4 + OGS_IPV6_LEN;
+                }
+                req->create_far[i].add_mbs_unicast_parameters[n].presence = 1;
+                req->create_far[i].add_mbs_unicast_parameters[n].destination_interface.presence = 1;
+                req->create_far[i].add_mbs_unicast_parameters[n].destination_interface.u8 =
+                        OGS_PFCP_INTERFACE_ACCESS;
+                req->create_far[i].add_mbs_unicast_parameters[n].mbs_unicast_parameters_id.presence = 1;
+                req->create_far[i].add_mbs_unicast_parameters[n].mbs_unicast_parameters_id.data = unicast_ids[n];
+                req->create_far[i].add_mbs_unicast_parameters[n].mbs_unicast_parameters_id.len =
+                        sizeof(unicast_ids[n]);
+                req->create_far[i].add_mbs_unicast_parameters[n].outer_header_creation.presence = 1;
+                req->create_far[i].add_mbs_unicast_parameters[n].outer_header_creation.data = &unicast_ohc[n];
+                n++;
+            }
+        }
         i++;
     }
 
@@ -150,7 +192,9 @@ ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
 
     // NOTE (borieher): (C), create_traffic_endpoint if UP has PDI optimization or tunnelling requested
     /* Create "Create Traffic Endpoint" */
-    if (mbs_sess->ingress_tun_addr_req) {
+    /* An MBS restoration after an MB-UPF restart gives the ingress tunnel address used before, and "shall not set the
+     * CHOOSE bit to "1"" (TS 23.527 V18.6.0 clause 8.2.2). */
+    if (mbs_sess->ingress_tun_addr_req && !(mbs_sess->restoring && mbs_sess->ingress_tun_addr)) {
         /* TODO: (davidjw) allow choice of IPv4 and/or IPv6 */
 	if (ogs_pfcp_proto_choice_to_local_ingress_tunnel(true, false, &local_ingress_tunnel, &len) == OGS_OK) {
             req->create_traffic_endpoint.presence = 1;
@@ -272,6 +316,47 @@ ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
 
     // Always allocate LL-SSM for talking to the RAN (or UPF)
     mbsn4mbreq_flags.provide_lower_layer_ssm = 1;
+
+    /* TS 23.527 V18.6.0 clause 8.2.2: "the MB-SMF shall include the MBS Restoration Indication in the PFCP Session
+     * Establishment Request message to indicate to the MB-UPF that this is a request to restore the PFCP session of
+     * an existing MBS session" and "If multicast transport is used on N3mb and/or N19mb, the MB-SMF shall additionally
+     * provide, in the Multicast Transport Information for N3mb and/or N19mb IE in the PFCP Session Establishment
+     * Request, the N3mb and/or N19mb LL SSM address and GTP-U Common TEID (C-TEID) that was previously used for the
+     * MBS session ... The MB-SMF shall not set the PLLSSM flag in the MBSN4mbReq-Flags IE". */
+    if (mbs_sess->restoring) {
+        mbsn4mbreq_flags.restoration_indication = 1;
+        if (mbs_sess->ll_ssm.dest_ip_addr.ipv4 || mbs_sess->ll_ssm.dest_ip_addr.ipv6) {
+            memset(&multicast_transport_information, 0, sizeof(multicast_transport_information));
+            multicast_transport_information.c_teid = htobe32(mbs_sess->c_teid);
+            if (mbs_sess->ll_ssm.dest_ip_addr.ipv4) {
+                multicast_transport_information.ip_multicast_distribution_address.address_type = 0;
+                multicast_transport_information.ip_multicast_distribution_address.address_length = OGS_IPV4_LEN;
+                multicast_transport_information.ip_multicast_distribution_address.ipv4_addr =
+                        mbs_sess->ll_ssm.dest_ip_addr.addr;
+            } else {
+                multicast_transport_information.ip_multicast_distribution_address.address_type = 1;
+                multicast_transport_information.ip_multicast_distribution_address.address_length = OGS_IPV6_LEN;
+                memcpy(multicast_transport_information.ip_multicast_distribution_address.ipv6_addr,
+                        mbs_sess->ll_ssm.dest_ip_addr.addr6, OGS_IPV6_LEN);
+            }
+            if (mbs_sess->ll_ssm.src_ip_addr.ipv6) {
+                multicast_transport_information.ip_source_address.address_type = 1;
+                multicast_transport_information.ip_source_address.address_length = OGS_IPV6_LEN;
+                memcpy(multicast_transport_information.ip_source_address.ipv6_addr,
+                        mbs_sess->ll_ssm.src_ip_addr.addr6, OGS_IPV6_LEN);
+            } else {
+                multicast_transport_information.ip_source_address.address_type = 0;
+                multicast_transport_information.ip_source_address.address_length = OGS_IPV4_LEN;
+                multicast_transport_information.ip_source_address.ipv4_addr = mbs_sess->ll_ssm.src_ip_addr.addr;
+            }
+            req->mbs_session_n4mb_control_information.multicast_transport_information_for_n3mb_and_or_n19mb.presence = 1;
+            ogs_pfcp_build_multicast_transport_information(
+                    &req->mbs_session_n4mb_control_information.multicast_transport_information_for_n3mb_and_or_n19mb,
+                    &multicast_transport_information, multicast_transport_information_buf,
+                    sizeof(multicast_transport_information_buf));
+        }
+        mbsn4mbreq_flags.provide_lower_layer_ssm = 0;
+    }
 
     req->mbs_session_n4mb_control_information.mbsn4mbreq_flags.presence = 1;
     req->mbs_session_n4mb_control_information.mbsn4mbreq_flags.data = &mbsn4mbreq_flags.value;

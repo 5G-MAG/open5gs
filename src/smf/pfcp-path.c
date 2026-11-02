@@ -1162,7 +1162,8 @@ int smf_5gc_pfcp_n4mb_send_session_establishment_request(
 
     xact->local_seid = mbs_sess->smf_n4mb_seid;
     xact->create_flags = flags;
-    xact->assoc_stream_id = ogs_sbi_id_from_stream(stream);
+    /* the restoration of a session after an MB-UPF restart has no consumer waiting for the answer */
+    xact->assoc_stream_id = stream ? ogs_sbi_id_from_stream(stream) : OGS_INVALID_POOL_ID;
 
     memset(&h, 0, sizeof(ogs_pfcp_header_t));
     h.type = OGS_PFCP_SESSION_ESTABLISHMENT_REQUEST_TYPE;

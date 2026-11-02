@@ -99,6 +99,27 @@ smf_mbs_dl_tunnel_t *smf_mbs_sess_dl_tunnel_find_by_peer(smf_mbs_sess_t *mbs_ses
  * that gave the tunnel. Returns the number of requests sent. */
 int smf_mbs_node_report_path_failure(ogs_pfcp_node_t *node, const ogs_ip_t *peer);
 
+/* The restoration of the PFCP sessions of the broadcast MBS sessions of an MB-UPF that restarted (TS 23.527 V18.6.0
+ * clause 8.2.2): "Immediately after the re-establishment of a PFCP association between the MB-SMF and the MB-UPF,
+ * the MB-SMF may start restoring the PFCP sessions of the affected MBS sessions in the MB-UPF, by following PFCP
+ * requirements for establishing a PFCP session over N4mb as specified in clause 5.34.2 of 3GPP TS 29.244 [4], with
+ * the following modifications" (the MBS RESTI flag, the LL SSM and C-TEID, the ingress tunnel of the session, see
+ * smf_n4mb_build_session_establishment_request()). Sends the N4mb Session Establishment Request of \p mbs_sess.
+ * Returns OGS_OK when it was sent. */
+int smf_mbs_sess_restore_n4mb(smf_mbs_sess_t *mbs_sess);
+
+/* The MB-UPF answered the restoration request. Clause 8.2.2: "If multicast transport is used on N3mb ... and the
+ * MB-UPF cannot accept the requested ... LL SSM address ... the MB-UPF shall reject the PFCP Session Establishment
+ * Request with the cause "PFCP session restoration failure due to requested resource not available". The MB-SMF may
+ * then proceed as specified for the restoration procedure for MB-UPF failure without restart". That procedure
+ * (clause 8.2.3, an alternative MB-UPF) is not implemented: the session is then released, as when no restoration
+ * is attempted. Returns true when the session was restored. */
+bool smf_mbs_sess_restoration_response(smf_mbs_sess_t *mbs_sess, uint8_t cause);
+
+/* The MBS session is lost with the MB-UPF (no restoration, or it failed): the subscribers are told the broadcast has
+ * ended, every AMF is told to release its context, and the session is released. */
+void smf_mbs_sess_release_lost(smf_mbs_sess_t *mbs_sess);
+
 #ifdef __cplusplus
 }
 #endif

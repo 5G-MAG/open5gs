@@ -3054,6 +3054,106 @@ static void test_node_report(void)
     smf_mbs_sess_release(mbs_sess);
 }
 
+/* TS 23.527 V18.6.0 clause 8.2.2, restoration after an MB-UPF restart: the establishment request carries the MBS
+ * RESTI flag, not PLLSSM, the Multicast Transport Information (LL SSM and C-TEID of before), and for unicast the
+ * ingress tunnel address without CHOOSE and the MBSU FAR with the DL tunnels. */
+static void test_restoration_request(void)
+{
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    ogs_pfcp_message_t *msg;
+    ogs_pfcp_far_t *far;
+    ogs_pfcp_mbsn4mbreq_flags_t flags;
+    ogs_pfcp_multicast_transport_information_t mti;
+    smf_mbs_dl_tunnel_t *tunnel;
+    ogs_ip_t addr;
+    bool changed;
+    int i;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+
+    /* a session as the MB-UPF made it: LL SSM 232.1.2.3 from 10.0.0.1 and C-TEID 0x01020304 */
+    mbs_sess->ll_ssm.dest_ip_addr.ipv4 = 1;
+    mbs_sess->ll_ssm.dest_ip_addr.len = OGS_IPV4_LEN;
+    mbs_sess->ll_ssm.dest_ip_addr.addr = htonl(0xe8010203);
+    mbs_sess->ll_ssm.src_ip_addr.ipv4 = 1;
+    mbs_sess->ll_ssm.src_ip_addr.len = OGS_IPV4_LEN;
+    mbs_sess->ll_ssm.src_ip_addr.addr = htonl(0x0a000001);
+    mbs_sess->c_teid = 0x01020304;
+
+    /* not a restoration: PLLSSM, no RESTI, no Multicast Transport Information */
+    msg = build_and_parse_establishment(mbs_sess);
+    CHECK(msg != NULL);
+    if (msg) {
+        flags.value = ((uint8_t *)msg->pfcp_session_establishment_request.mbs_session_n4mb_control_information
+                .mbsn4mbreq_flags.data)[0];
+        CHECK(flags.provide_lower_layer_ssm && !flags.restoration_indication);
+        CHECK(!msg->pfcp_session_establishment_request.mbs_session_n4mb_control_information
+                .multicast_transport_information_for_n3mb_and_or_n19mb.presence);
+    }
+
+    mbs_sess->restoring = true;
+    msg = build_and_parse_establishment(mbs_sess);
+    CHECK(msg != NULL);
+    if (msg) {
+        ogs_tlv_octet_t *octet = &msg->pfcp_session_establishment_request.mbs_session_n4mb_control_information
+                .multicast_transport_information_for_n3mb_and_or_n19mb;
+
+        flags.value = ((uint8_t *)msg->pfcp_session_establishment_request.mbs_session_n4mb_control_information
+                .mbsn4mbreq_flags.data)[0];
+        CHECK(flags.restoration_indication && !flags.provide_lower_layer_ssm);
+        CHECK(octet->presence);
+        if (octet->presence) {
+            ogs_pfcp_parse_multicast_transport_information(&mti, octet);
+            CHECK(mti.ip_multicast_distribution_address.address_type == 0 &&
+                    mti.ip_multicast_distribution_address.ipv4_addr == htonl(0xe8010203));
+            CHECK(mti.ip_source_address.address_type == 0 && mti.ip_source_address.ipv4_addr == htonl(0x0a000001));
+            CHECK(be32toh(mti.c_teid) == 0x01020304);
+        }
+        /* no DL tunnel: no Add MBS Unicast Parameters */
+        CHECK(!msg->pfcp_session_establishment_request.create_far[0].add_mbs_unicast_parameters[0].presence);
+    }
+
+    /* unicast N3mb: the FARs have MBSU and the Create FAR gives the DL tunnels */
+    memset(&addr, 0, sizeof(addr));
+    addr.ipv4 = 1;
+    addr.len = OGS_IPV4_LEN;
+    addr.addr = htonl(0x0a141e28);
+    tunnel = smf_mbs_sess_dl_tunnel_set(mbs_sess, "ran-a", &addr, 0xabcd0001, &changed);
+    CHECK(tunnel != NULL);
+    if (tunnel) tunnel->unicast_params_id = 5;
+    ogs_list_for_each(&mbs_sess->pfcp.far_list, far)
+        far->apply_action |= OGS_PFCP_APPLY_ACTION_MBSU;
+    msg = build_and_parse_establishment(mbs_sess);
+    CHECK(msg != NULL);
+    if (msg) {
+        ogs_pfcp_tlv_add_mbs_unicast_parameters_t *add =
+                &msg->pfcp_session_establishment_request.create_far[0].add_mbs_unicast_parameters[0];
+
+        CHECK(add->presence && add->mbs_unicast_parameters_id.presence &&
+                ((uint8_t *)add->mbs_unicast_parameters_id.data)[0] == 0 &&
+                ((uint8_t *)add->mbs_unicast_parameters_id.data)[1] == 5);
+        CHECK(add->destination_interface.presence && add->outer_header_creation.presence &&
+                add->outer_header_creation.len == 2 + 4 + OGS_IPV4_LEN);
+        CHECK(!msg->pfcp_session_establishment_request.create_far[0].add_mbs_unicast_parameters[1].presence);
+    }
+
+    /* not a restoration: no Add MBS Unicast Parameters in the Create FAR */
+    mbs_sess->restoring = false;
+    msg = build_and_parse_establishment(mbs_sess);
+    CHECK(msg != NULL);
+    if (msg)
+        CHECK(!msg->pfcp_session_establishment_request.create_far[0].add_mbs_unicast_parameters[0].presence);
+
+    /* the answer: accepted keeps the session; refused (cause 86 or any other) releases it */
+    mbs_sess->restoring = true;
+    CHECK(smf_mbs_sess_restoration_response(mbs_sess, OGS_PFCP_CAUSE_REQUEST_ACCEPTED) && !mbs_sess->restoring);
+    i = ogs_list_count(&smf_self()->smf_mbs_sess_list);
+    mbs_sess->restoring = true;
+    CHECK(!smf_mbs_sess_restoration_response(mbs_sess, OGS_PFCP_CAUSE_RESTORATION_FAILURE_RESOURCE_NOT_AVAILABLE));
+    CHECK(ogs_list_count(&smf_self()->smf_mbs_sess_list) == i - 1);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -3095,6 +3195,7 @@ int main(void)
     test_ngu_failure_indication();
     test_ngran_failure_events();
     test_node_report();
+    test_restoration_request();
 
     printf("smf-mbs: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;

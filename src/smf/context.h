@@ -746,6 +746,10 @@ typedef struct smf_mbs_sess_s {
      * request is a safe no-op instead of re-entering the release logic on a session that may already be
      * mid-teardown (or already freed, by the time a duplicate call is dispatched). */
     bool release_triggered;
+
+    /* The PFCP session of the MBS session is being restored at the MB-UPF after an MB-UPF restart (TS 23.527 V18.6.0
+     * clause 8.2.2): the establishment request carries the MBS RESTI flag and what the session used before. */
+    bool restoring;
 } smf_mbs_sess_t;
 
 // NOTE (borieher): Not defined in the specs, default to 2 extra hours
