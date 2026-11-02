@@ -612,15 +612,31 @@ ogs_pkbuf_t *ngap_build_mbs_session_modification_request_transfer(smf_mbs_sess_t
 
         mBS_SessionTNLInfo5GC = &ie->value.choice.MBS_SessionTNLInfo5GC;
 
-            // The "locationindependent" CHOICE arm is the one that matches: this SMF models no per-area session
-            // concept in mbs_sess at all, carrying a single Shared NG-U Multicast TNL Information per session, and
-            // TS29571_CommonData.yaml's MbsServiceAreaInfo/areaSessionId is not represented here. The
-            // "locationdependent" arm (TS 38.413 cl.9.3.2.15) would require a real per-area MBS Area Session ID.
+            /* TS 38.413 V18.10.0 clause 9.3.2.15: "location independent: Shared NG-U Multicast TNL Information";
+             * "location dependent: MBS Session TNL Information 5GC List ... MBS Session TNL Information 5GC Item
+             * (1..<maxnoofMBSServiceAreaInformation>): MBS Area Session ID, Shared NG-U Multicast TNL Information".
+             * An MBS session of this MB-SMF is one area session of a location dependent MBS service (it has its own
+             * Area Session ID and LL SSM), so its list has the one item. */
         sharedNGU_MulticastTNLInformation = CALLOC(1, sizeof(NGAP_SharedNGU_MulticastTNLInformation_t));
         ogs_assert(sharedNGU_MulticastTNLInformation);
 
-        mBS_SessionTNLInfo5GC->present = NGAP_MBS_SessionTNLInfo5GC_PR_locationindependent;
-        mBS_SessionTNLInfo5GC->choice.locationindependent = sharedNGU_MulticastTNLInformation;
+        if (mbs_sess->location_dependent) {
+            NGAP_MBS_SessionTNLInfo5GCList_t *list = CALLOC(1, sizeof(*list));
+            NGAP_MBS_SessionTNLInfo5GCItem_t *item = CALLOC(1, sizeof(*item));
+
+            ogs_assert(list);
+            ogs_assert(item);
+            item->mBS_AreaSessionID = mbs_sess->area_session_id;
+            item->sharedNGU_MulticastTNLInformation = *sharedNGU_MulticastTNLInformation;
+            ogs_free(sharedNGU_MulticastTNLInformation);
+            ASN_SEQUENCE_ADD(&list->list, item);
+            mBS_SessionTNLInfo5GC->present = NGAP_MBS_SessionTNLInfo5GC_PR_locationdependent;
+            mBS_SessionTNLInfo5GC->choice.locationdependent = list;
+            sharedNGU_MulticastTNLInformation = &item->sharedNGU_MulticastTNLInformation;
+        } else {
+            mBS_SessionTNLInfo5GC->present = NGAP_MBS_SessionTNLInfo5GC_PR_locationindependent;
+            mBS_SessionTNLInfo5GC->choice.locationindependent = sharedNGU_MulticastTNLInformation;
+        }
 
         // Transport Layer Address - 9.3.2.4 (M)
         iP_MulticastAddress = &sharedNGU_MulticastTNLInformation->iP_MulticastAddress;

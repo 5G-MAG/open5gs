@@ -3453,6 +3453,73 @@ static void test_local_ingress_tunnel_answer(void)
     CHECK(!smf_n4mb_local_ingress_tunnel_is_valid(&ie) && !smf_n4mb_local_ingress_tunnel_is_valid(NULL));
 }
 
+/* TS 38.413 V18.10.0 clause 9.3.2.15: location independent: Shared NG-U Multicast TNL Information; location
+ * dependent: a list whose item has the MBS Area Session ID and the Shared NG-U Multicast TNL Information */
+static void test_session_tnl_info_arms(void)
+{
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    int pass;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+    mbs_sess->ll_ssm.dest_ip_addr.ipv4 = 1;
+    mbs_sess->ll_ssm.dest_ip_addr.len = OGS_IPV4_LEN;
+    mbs_sess->ll_ssm.dest_ip_addr.addr = htonl(0xe8010203);
+    mbs_sess->ll_ssm.src_ip_addr.ipv4 = 1;
+    mbs_sess->ll_ssm.src_ip_addr.len = OGS_IPV4_LEN;
+    mbs_sess->ll_ssm.src_ip_addr.addr = htonl(0x0a000001);
+    mbs_sess->c_teid = 0x01020304;
+
+    for (pass = 0; pass < 2; pass++) {
+        ogs_pkbuf_t *pkbuf;
+        NGAP_MBSSessionSetupOrModRequestTransfer_t message;
+        int i, found = 0;
+
+        if (pass == 1) {
+            mbs_sess->location_dependent = true;
+            mbs_sess->area_session_id = 9;
+        }
+        pkbuf = ngap_build_mbs_session_setup_or_modification_request_transfer(mbs_sess);
+        CHECK(pkbuf != NULL);
+        if (!pkbuf) continue;
+        memset(&message, 0, sizeof(message));
+        CHECK(ogs_asn_decode(&asn_DEF_NGAP_MBSSessionSetupOrModRequestTransfer, &message, sizeof(message), pkbuf) ==
+                OGS_OK);
+        for (i = 0; i < message.protocolIEs.list.count; i++) {
+            NGAP_MBSSessionSetupOrModRequestTransferIEs_t *ie = message.protocolIEs.list.array[i];
+            NGAP_MBS_SessionTNLInfo5GC_t *tnl;
+            NGAP_SharedNGU_MulticastTNLInformation_t *shared = NULL;
+
+            if (ie->id != NGAP_ProtocolIE_ID_id_MBS_SessionTNLInfo5GC)
+                continue;
+            found++;
+            tnl = &ie->value.choice.MBS_SessionTNLInfo5GC;
+            if (pass == 0) {
+                CHECK(tnl->present == NGAP_MBS_SessionTNLInfo5GC_PR_locationindependent);
+                shared = tnl->choice.locationindependent;
+            } else {
+                CHECK(tnl->present == NGAP_MBS_SessionTNLInfo5GC_PR_locationdependent);
+                CHECK(tnl->choice.locationdependent && tnl->choice.locationdependent->list.count == 1);
+                if (tnl->choice.locationdependent && tnl->choice.locationdependent->list.count == 1) {
+                    CHECK(tnl->choice.locationdependent->list.array[0]->mBS_AreaSessionID == 9);
+                    shared = &tnl->choice.locationdependent->list.array[0]->sharedNGU_MulticastTNLInformation;
+                }
+            }
+            CHECK(shared != NULL);
+            if (shared) {
+                CHECK(shared->gTP_TEID.size == 4 && shared->gTP_TEID.buf[3] == 0x04 && shared->gTP_TEID.buf[0] == 0x01);
+                CHECK(shared->iP_MulticastAddress.size == 4 && shared->iP_MulticastAddress.buf[0] == 0xe8);
+            }
+        }
+        CHECK(found == 1);
+        ogs_asn_free(&asn_DEF_NGAP_MBSSessionSetupOrModRequestTransfer, &message);
+        ogs_pkbuf_free(pkbuf);
+    }
+
+    mbs_sess->location_dependent = false;
+    smf_mbs_sess_release(mbs_sess);
+}
+
 int main(void)
 {
     /* ogs_app_initialize() initialises the core library itself */
@@ -3493,6 +3560,7 @@ int main(void)
     test_tmgi_octets();
     test_notification_routing();
     test_ngu_failure_indication();
+    test_session_tnl_info_arms();
     test_ngran_failure_events();
     test_node_report();
     test_restoration_request();
