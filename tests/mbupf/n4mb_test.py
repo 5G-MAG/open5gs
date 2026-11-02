@@ -73,7 +73,7 @@ class Upf:
         self.pre_net()
         self.start()
 
-    def write_config(self, port_yaml, extra_upf='', gtpu_port=None, gtpu6=None, gtpu_only6=False):
+    def write_config(self, port_yaml, extra_upf='', gtpu_port=None, gtpu6=None, gtpu_only6=False, gtpu_wild=False, tunnel_addr='127.0.0.31'):
         text = ("""logger:
   level: debug
   file:
@@ -92,16 +92,18 @@ upf:
       dev: ogstunt
   mbs:
     udptunnel:
-      address: 127.0.0.31
+      address: %s
       port: %s
-%s""" % (self.log, '        port: %d\n' % gtpu_port if gtpu_port else '', '      - address: %s\n' % gtpu6 if gtpu6 else '', port_yaml, extra_upf))
+%s""" % (self.log, '        port: %d\n' % gtpu_port if gtpu_port else '', '      - address: %s\n' % gtpu6 if gtpu6 else '', tunnel_addr, port_yaml, extra_upf))
+        if gtpu_wild:
+            text = text.replace('  gtpu:\n    server:\n      - address: 127.0.0.31\n', '  gtpu:\n    server:\n      - address: 0.0.0.0\n')
         if gtpu_only6:
             text = text.replace('  gtpu:\n    server:\n      - address: 127.0.0.31\n', '  gtpu:\n    server:\n      - address: fd00::31\n')
         open(self.cfg, 'w').write(text)
 
-    def restart(self, port_yaml='0', extra_upf='', gtpu_port=None, gtpu6=None, gtpu_only6=False):
+    def restart(self, port_yaml='0', extra_upf='', gtpu_port=None, gtpu6=None, gtpu_only6=False, gtpu_wild=False):
         self.stop()
-        self.write_config(port_yaml, extra_upf, gtpu_port, gtpu6, gtpu_only6)
+        self.write_config(port_yaml, extra_upf, gtpu_port, gtpu6, gtpu_only6, gtpu_wild)
         self.start()
 
     def start(self):
@@ -2823,7 +2825,7 @@ def t_gtpu_path_management_is_off_unless_configured_and_for_multicast_only():
         U.restart()
 
 
-def refuses_to_start(extra, why):
+def refuses_to_start(extra, why, tunnel_addr='127.0.0.31'):
     """The daemon, started on its own configuration while the one of the harness is stopped, exits and says `why`."""
     U.stop()
     try:
@@ -2831,7 +2833,7 @@ def refuses_to_start(extra, why):
         u.dir = tempfile.mkdtemp(prefix='mbupf-cfg-')
         u.cfg = os.path.join(u.dir, 'upf.yaml')
         u.log = os.path.join(u.dir, 'upf.log')
-        u.write_config('0', extra)
+        u.write_config('0', extra, tunnel_addr=tunnel_addr)
         p = subprocess.Popen([UPFD, '-c', u.cfg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             time.sleep(1.5)
@@ -3060,6 +3062,25 @@ def t_tunnel_read_that_returns_nothing_is_not_a_packet():
             assert U.alive(), 'the daemon stopped after a read that returned -1'
         finally:
             U.delete(s)
+    finally:
+        U.restart()
+
+
+@test
+def t_wildcard_addresses_are_not_announced():
+    """The Local Ingress Tunnel (cl. 8.2.209) and the source of the low layer SSM are addresses the sender and the gNB use: the
+    wildcard address of a bind is none of them."""
+    assert refuses_to_start('', 'wildcard address', tunnel_addr='0.0.0.0'), 'upf.mbs.udptunnel.address 0.0.0.0 accepted'
+    assert refuses_to_start('', 'wildcard address', tunnel_addr='"::"'), 'upf.mbs.udptunnel.address :: accepted'
+    U.restart(gtpu_wild=True)
+    try:
+        r = U.establish(good(0xfe01))
+        assert U.alive()
+        assert r is not None and cause(r) != CAUSE_ACCEPTED, 'a low layer SSM with the source 0.0.0.0 was announced'
+        assert cause(r) == CAUSE_NO_RESOURCES, 'cause %s' % cause(r)
+        # without PLLSSM nothing is announced: the session is fine
+        s = accepted(U.establish(good(0xfe02, flags=0x00)), 'session without a low layer SSM')
+        U.delete(s)
     finally:
         U.restart()
 

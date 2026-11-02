@@ -237,6 +237,16 @@ int upf_context_parse_config(void)
                                             ogs_error("ogs_getaddrinfo[%s] failed", upf_mbs_tunnel_addr);
                                             return OGS_ERROR;
                                         }
+                                        /* The address of the tunnel is what the CP function tells the sender of the MBS data (the
+                                         * Local Ingress Tunnel, TS 29.244 cl. 8.2.209): an address the sender can send to */
+                                        if ((self.mbs_udp_tun_base_addr->ogs_sa_family == AF_INET &&
+                                                    self.mbs_udp_tun_base_addr->sin.sin_addr.s_addr == 0) ||
+                                                (self.mbs_udp_tun_base_addr->ogs_sa_family == AF_INET6 &&
+                                                    IN6_IS_ADDR_UNSPECIFIED(&self.mbs_udp_tun_base_addr->sin6.sin6_addr))) {
+                                            ogs_error("upf/mbs/udptunnel/address `%s` is the wildcard address: it must be an address "
+                                                    "the sender of the MBS data can send to", upf_mbs_tunnel_addr);
+                                            return OGS_ERROR;
+                                        }
                                         if (!self.mbs_udp_tun_base_addr->hostname) {
                                             self.mbs_udp_tun_base_addr->hostname = ogs_strdup(upf_mbs_tunnel_addr);
                                         }

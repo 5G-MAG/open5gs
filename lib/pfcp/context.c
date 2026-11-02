@@ -2522,12 +2522,13 @@ ogs_ssm_t *ogs_pfcp_llssm_add(void)
     // that mismatch alone is enough to make MBS content vanish end-to-end (MCCH/E1AP/F1AP
     // all still succeed, PDCCH just never gets a G-RNTI grant because zero bytes ever
     // arrive at RLC).
-    if (ogs_gtp_self()->gtpu_addr) {
-        ll_ssm->src_ip_addr.addr = ogs_gtp_self()->gtpu_addr->sin.sin_addr.s_addr;
-    } else {
-        ogs_error("LL-SSM: no GTP-U address configured, cannot set SSM source address");
-        ll_ssm->src_ip_addr.addr = 0;
+    if (!ogs_gtp_self()->gtpu_addr || ogs_gtp_self()->gtpu_addr->sin.sin_addr.s_addr == 0) {
+        /* No address to announce: the source is the address the gNB joins, a wildcard bind address is none */
+        ogs_error("LL-SSM: no GTP-U unicast address configured (upf.gtpu), cannot set the SSM source address");
+        ogs_pool_free(&ogs_pfcp_llssm_pool, ll_ssm);
+        return NULL;
     }
+    ll_ssm->src_ip_addr.addr = ogs_gtp_self()->gtpu_addr->sin.sin_addr.s_addr;
     ll_ssm->src_ip_addr.ipv4 = 1;
     ll_ssm->src_ip_addr.len = OGS_IPV4_LEN;
 
