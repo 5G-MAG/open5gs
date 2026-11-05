@@ -3425,8 +3425,10 @@ static bool build_multipart(
 
     http->content_length = p - http->content;
 
-    content_type = ogs_msprintf("%s; boundary=\"%s\"",
-            OGS_SBI_CONTENT_MULTIPART_TYPE, boundary);
+    /* TS 29.518 V18.14.0 cl. 6.5.2.4: the multipart message includes a "type" parameter (IETF RFC 2387) with the
+     * media type of the root body part, which is the JSON part written first. */
+    content_type = ogs_msprintf("%s; type=\"%s\"; boundary=\"%s\"",
+            OGS_SBI_CONTENT_MULTIPART_TYPE, OGS_SBI_CONTENT_JSON_TYPE, boundary);
     if (!content_type) {
         ogs_error("ogs_msprintf() failed");
         return false;

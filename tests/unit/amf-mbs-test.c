@@ -277,6 +277,35 @@ static amf_mbs_context_t make_context(void)
     return ctx;
 }
 
+/* TS 29.518 V18.14.0 clause 6.5.2.4: "The multipart message shall include a "type" parameter (see IETF RFC 2387 [9])
+ * specifying the media type of the root body part, i.e. "application/json"." */
+static void test_multipart_names_the_type_of_its_root_part(void)
+{
+    amf_gnb_t *gnb = make_gnb(0x100, 22);
+    amf_mbs_context_t ctx = make_context();
+    ogs_list_t infos;
+    ogs_sbi_request_t *request;
+    const char *content_type;
+
+    ogs_list_init(&infos);
+    ogs_list_add(&infos, amf_mbs_n2_info_create(gnb, OpenAPI_ngap_ie_type_MBS_SES_RSP, (const uint8_t *)"a", 1));
+
+    request = amf_namf_build_mbs_broadcast_context_status_notify(&ctx, &infos, OpenAPI_operation_status_NULL, false, NULL);
+    CHECK(request != NULL);
+    if (request) {
+        content_type = ogs_sbi_header_get(request->http.headers, OGS_SBI_CONTENT_TYPE);
+        CHECK(content_type != NULL);
+        if (content_type) {
+            CHECK(strncmp(content_type, "multipart/related", 17) == 0);
+            CHECK(strstr(content_type, "type=\"application/json\"") != NULL);
+            CHECK(strstr(content_type, "boundary=") != NULL);
+        }
+        ogs_sbi_request_free(request);
+    }
+    amf_mbs_n2_info_remove_all(&infos);
+    ogs_free(gnb);
+}
+
 /* TS 29.518 V18.14.0 Table 6.5.6.2.4-1: areaSessionId "shall be present if this is a Location dependent broadcast
  * MBS service", operationStatus "shall be present and indicate the completion of the MBS session start or update
  * operation ... a response has been received from all NG-RANs." */
@@ -1614,6 +1643,7 @@ int main(int argc, const char *argv[])
     test_n2_mbs_sm_info_ran_id_key();
     test_n2_info_list_limit();
     test_status_notify();
+    test_multipart_names_the_type_of_its_root_part();
     test_status_notify_ngran_event();
     test_transport_messages();
     test_transport_relay();
