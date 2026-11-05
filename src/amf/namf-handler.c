@@ -3558,6 +3558,8 @@ static bool amf_mbs_context_restore_in_gnb(amf_mbs_context_t *mbs_context, amf_g
     return true;
 }
 
+static void amf_mbs_context_schedule_reestablish(amf_mbs_context_t *mbs_context, amf_mbs_gnb_t *involved);
+
 /*
  * The answer of \p gnb to the Setup Request that restores the session. TS 23.527 V18.6.0 cl. 8.3.2.2 step 5: "If an N2
  * MBS SM Container (i.e. N2 (NGAP) MBS Session Setup or Modification Response Transfer IE) was received from the NG-RAN
@@ -3575,8 +3577,15 @@ static void amf_mbs_context_restoration_response(amf_mbs_context_t *mbs_context,
         amf_mbs_gnb_t *involved = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
 
         ogs_warn("MBS Broadcast [%s]: gNB %i did not take the restored session", mbs_context->mbs_context_ref, gnb->gnb_id);
-        if (involved)
+        if (involved) {
             involved->setup_failed = true;
+            // A gNB that restarts finishes its NG Setup before its DU and its CU-UP are connected, and then answers the
+            // restoring Setup Request with a Failure. When amf.mbs.reestablish_after is set, the session is set up in it
+            // again after that time (TS 29.518 V18.14.0 cl. 5.6.2.5: "attempt to re-establish the MBS session after some
+            // operator configurable time in these NG-RANs by performing the Broadcast MBS session restoration by AMF
+            // procedure specified in clause 8.3.2.2 of TS 23.527").
+            amf_mbs_context_schedule_reestablish(mbs_context, involved);
+        }
         return;
     }
 
@@ -3675,7 +3684,8 @@ void amf_namf_handle_mbs_broadcast_reestablish_timeout(uint32_t mbs_context_inde
         involved->reestablish_at = 0;
 
         gnb = amf_gnb_find_by_id(involved->gnb_id);
-        if (!gnb || mbs_context->release_pending || !involved->release_required || !involved->released ||
+        if (!gnb || mbs_context->release_pending ||
+                !((involved->release_required && involved->released) || involved->setup_failed) ||
                 !amf_gnb_takes_mbs_session(gnb, mbs_context)) {
             ogs_debug("MBS Broadcast [%s]: the session is not set up again in gNB %u",
                     mbs_context->mbs_context_ref, (unsigned)involved->gnb_id);
