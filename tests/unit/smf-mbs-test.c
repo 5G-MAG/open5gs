@@ -5,6 +5,7 @@
  * This file is self-contained (its own main): it runs on its own with `meson test smf-mbs`.
  */
 
+#include <ctype.h>
 #include "ogs-core.h"
 #include "ogs-app.h"
 #include "ogs-pfcp.h"
@@ -2723,6 +2724,32 @@ static void test_tmgi_octets(void)
     smf_mbs_sess_release(mbs_sess);
 }
 
+/* The MBS Service ID is hexadecimal of either case (TS 29.571 Tmgi.mbsServiceId, pattern '^[A-Fa-f0-9]{6}$'): a TMGI
+ * written in lower case is found, as a TMGI, as an MBS session and as a part of a location dependent session. */
+static void test_find_by_tmgi_ignores_the_case_of_the_service_id(void)
+{
+    smf_mbs_sess_t *a;
+    ogs_tmgi_t *tmgi = smf_tmgi_allocate(smf_tmgi_gen_expiration_time(60));
+    ogs_tmgi_t lower;
+    int i;
+
+    CHECK(tmgi != NULL);
+    if (!tmgi) return;
+    a = create_session(tmgi, true, true, "1", NULL, NULL);
+    CHECK(a != NULL);
+    if (!a) return;
+
+    lower = *tmgi;
+    lower.mbs_service_id = ogs_strdup(tmgi->mbs_service_id);
+    for (i = 0; lower.mbs_service_id[i]; i++)
+        lower.mbs_service_id[i] = (char)tolower((unsigned char)lower.mbs_service_id[i]);
+
+    CHECK(smf_tmgi_find_by_tmgi(&lower) == tmgi);
+    CHECK(smf_mbs_sess_find_by_tmgi(&lower) == a);
+    CHECK(smf_mbs_sess_find_by_tmgi_and_area(&lower, true, a->area_session_id) == a);
+    ogs_free(lower.mbs_service_id);
+}
+
 /* TS 29.518 V18.14.0 table 6.5.6.2.4-1: areaSessionId names the part of a location dependent session; releasedInd
  * true: the context is released in the AMF. */
 static void test_notification_routing(void)
@@ -4517,6 +4544,7 @@ int main(void)
     test_local_ingress_tunnel_choose();
     test_ip_multicast_addressing_info_layout();
     test_tmgi_octets();
+    test_find_by_tmgi_ignores_the_case_of_the_service_id();
     test_notification_routing();
     test_ngu_failure_indication();
     test_session_tnl_info_arms();

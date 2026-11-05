@@ -3807,6 +3807,8 @@ bool smf_tmgi_is_expired(ogs_tmgi_t *tmgi)
     return expiry <= ogs_time_now();
 }
 
+/* The MBS Service ID is six hexadecimal digits of either case (TS 29.571 Tmgi.mbsServiceId pattern '^[A-Fa-f0-9]{6}$'),
+ * so every lookup by TMGI compares it without regard to case, as the allocation does (ogs_strcasecmp above). */
 ogs_tmgi_t *smf_tmgi_find_by_tmgi(ogs_tmgi_t *tmgi_to_find)
 {
     ogs_tmgi_t *tmgi = NULL;
@@ -3821,7 +3823,7 @@ ogs_tmgi_t *smf_tmgi_find_by_tmgi(ogs_tmgi_t *tmgi_to_find)
         if (ogs_plmn_id_mcc(&tmgi->plmn_id) == ogs_plmn_id_mcc(&tmgi_to_find->plmn_id) &&
             ogs_plmn_id_mnc(&tmgi->plmn_id) == ogs_plmn_id_mnc(&tmgi_to_find->plmn_id) &&
             ogs_plmn_id_mnc_len(&tmgi->plmn_id) == ogs_plmn_id_mnc_len(&tmgi_to_find->plmn_id) &&
-            strcmp(tmgi->mbs_service_id, tmgi_to_find->mbs_service_id) == 0) {
+            strcasecmp(tmgi->mbs_service_id, tmgi_to_find->mbs_service_id) == 0) {
             return tmgi;
         }
     }
@@ -3850,7 +3852,7 @@ smf_mbs_sess_t *smf_mbs_sess_find_by_tmgi(ogs_tmgi_t *tmgi_to_find)
 
         if (!mbs_sess->tmgi) continue;
 
-        if (strcmp(mbs_sess->tmgi->mbs_service_id, tmgi_to_find->mbs_service_id) == 0) {
+        if (strcasecmp(mbs_sess->tmgi->mbs_service_id, tmgi_to_find->mbs_service_id) == 0) {
             /* Compared as integers rather than through ogs_plmn_id_mcc_string()/mnc_string(): those
              * allocate, and a two-digit and a three-digit MNC are different PLMNs, which the packed
              * representation already distinguishes. */
@@ -3977,7 +3979,7 @@ smf_mbs_sess_t *smf_mbs_sess_find_by_tmgi_and_area(
     ogs_list_for_each(&self.smf_mbs_sess_list, mbs_sess) {
         if (!mbs_sess->tmgi)
             continue;
-        if (strcmp(mbs_sess->tmgi->mbs_service_id, tmgi_to_find->mbs_service_id) != 0 ||
+        if (strcasecmp(mbs_sess->tmgi->mbs_service_id, tmgi_to_find->mbs_service_id) != 0 ||
                 ogs_plmn_id_mcc(&mbs_sess->tmgi->plmn_id) != ogs_plmn_id_mcc(&tmgi_to_find->plmn_id) ||
                 ogs_plmn_id_mnc(&mbs_sess->tmgi->plmn_id) != ogs_plmn_id_mnc(&tmgi_to_find->plmn_id) ||
                 ogs_plmn_id_mnc_len(&mbs_sess->tmgi->plmn_id) != ogs_plmn_id_mnc_len(&tmgi_to_find->plmn_id))
