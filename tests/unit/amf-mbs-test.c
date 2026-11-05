@@ -95,13 +95,13 @@ static void test_n2_info_list(void)
         CHECK(e0->ran_id && e0->ran_id->g_nb_id);
         if (e0->ran_id && e0->ran_id->g_nb_id) {
             CHECK(e0->ran_id->g_nb_id->bit_length == 22);
-            CHECK_STR("000400", e0->ran_id->g_nb_id->g_nb_value);
+            CHECK_STR("000100", e0->ran_id->g_nb_id->g_nb_value);
             CHECK_STR("999", e0->ran_id->plmn_id->mcc);
             CHECK_STR("70", e0->ran_id->plmn_id->mnc);
         }
         CHECK(e1->ran_id && e1->ran_id->g_nb_id);
         if (e1->ran_id && e1->ran_id->g_nb_id)
-            CHECK_STR("000800", e1->ran_id->g_nb_id->g_nb_value);
+            CHECK_STR("000200", e1->ran_id->g_nb_id->g_nb_value);
     }
 
     amf_namf_free_n2_mbs_sm_info_list(list);
@@ -148,19 +148,19 @@ static void test_n2_mbs_sm_info_ran_id_key(void)
     /* a body with ranId gives the identity; one with the old name gives none */
     json = cJSON_Parse("{\"ngapIeType\":\"MBS_SES_RSP\",\"ngapData\":{\"contentId\":\"c\"},"
             "\"ranId\":{\"plmnId\":{\"mcc\":\"999\",\"mnc\":\"70\"},"
-            "\"gNbId\":{\"bitLength\":22,\"gNBValue\":\"000400\"}}}");
+            "\"gNbId\":{\"bitLength\":22,\"gNBValue\":\"000100\"}}}");
     parsed = OpenAPI_n2_mbs_sm_info_parseFromJSON(json);
     cJSON_Delete(json);
     CHECK(parsed && parsed->ran_id && parsed->ran_id->g_nb_id);
     if (parsed && parsed->ran_id && parsed->ran_id->g_nb_id) {
-        CHECK_STR("000400", parsed->ran_id->g_nb_id->g_nb_value);
+        CHECK_STR("000100", parsed->ran_id->g_nb_id->g_nb_value);
         CHECK(amf_namf_ran_id_is_gnb(gnb, parsed->ran_id));
     }
     if (parsed) OpenAPI_n2_mbs_sm_info_free(parsed);
 
     json = cJSON_Parse("{\"ngapIeType\":\"MBS_SES_RSP\",\"ngapData\":{\"contentId\":\"c\"},"
             "\"randId\":{\"plmnId\":{\"mcc\":\"999\",\"mnc\":\"70\"},"
-            "\"gNbId\":{\"bitLength\":22,\"gNBValue\":\"000400\"}}}");
+            "\"gNbId\":{\"bitLength\":22,\"gNBValue\":\"000100\"}}}");
     parsed = OpenAPI_n2_mbs_sm_info_parseFromJSON(json);
     cJSON_Delete(json);
     CHECK(parsed && parsed->ran_id == NULL);
@@ -169,6 +169,72 @@ static void test_n2_mbs_sm_info_ran_id_key(void)
     amf_namf_free_n2_mbs_sm_info_list(list);
     amf_mbs_n2_info_remove_all(&infos);
     ogs_free(gnb);
+}
+
+/* TS 29.571 V18.12.0 clause 5.4.4.29, GNbId.gNBValue: "A 30 bit value "382A3F47" indicates a gNB ID with value
+ * 0x382A3F47" and "A 22 bit value "2A3F47" indicates a gNB ID with value 0x2A3F47": the value is right aligned, the
+ * padding 0 in the most significant digit; its digits are hexadecimal of either case. */
+static void test_gnb_value_is_right_aligned(void)
+{
+    amf_gnb_t *gnb22 = make_gnb(0x2A3F47, 22);
+    amf_gnb_t *gnb30 = ogs_calloc(1, sizeof(*gnb30));
+    ogs_list_t infos;
+    ogs_sbi_message_t message;
+    OpenAPI_list_t *list;
+    OpenAPI_n2_mbs_sm_info_t *info;
+    OpenAPI_global_ran_node_id_t ran_id;
+    OpenAPI_gnb_id_t gnb_id;
+    OpenAPI_plmn_id_t plmn;
+    char value[] = "2a3f47";
+
+    /* the 30 bit gNB ID 0x382A3F47 as a bit string: four octets, two unused bits */
+    ogs_plmn_id_build(&gnb30->plmn_id, 999, 70, 2);
+    gnb30->gnb_id_bit_length = 30;
+    gnb30->gnb_id_buf[0] = ((0x382A3F47U << 2) >> 24) & 0xff;
+    gnb30->gnb_id_buf[1] = ((0x382A3F47U << 2) >> 16) & 0xff;
+    gnb30->gnb_id_buf[2] = ((0x382A3F47U << 2) >> 8) & 0xff;
+    gnb30->gnb_id_buf[3] = (0x382A3F47U << 2) & 0xff;
+
+    ogs_list_init(&infos);
+    ogs_list_add(&infos, amf_mbs_n2_info_create(gnb22, OpenAPI_ngap_ie_type_MBS_SES_RSP, (const uint8_t *)"a", 1));
+    ogs_list_add(&infos, amf_mbs_n2_info_create(gnb30, OpenAPI_ngap_ie_type_MBS_SES_RSP, (const uint8_t *)"b", 1));
+    memset(&message, 0, sizeof(message));
+    list = amf_namf_build_n2_mbs_sm_info_list(&message, &infos);
+    CHECK(list && list->count == 2);
+    if (list && list->count == 2) {
+        info = list->first->data;
+        CHECK(info->ran_id && info->ran_id->g_nb_id);
+        if (info->ran_id && info->ran_id->g_nb_id)
+            CHECK_STR("2A3F47", info->ran_id->g_nb_id->g_nb_value);
+        info = list->first->next->data;
+        CHECK(info->ran_id && info->ran_id->g_nb_id);
+        if (info->ran_id && info->ran_id->g_nb_id)
+            CHECK_STR("382A3F47", info->ran_id->g_nb_id->g_nb_value);
+    }
+
+    /* the ranId of a ranIdList names the gNB by that value, in either case, and by no other */
+    memset(&ran_id, 0, sizeof(ran_id));
+    memset(&gnb_id, 0, sizeof(gnb_id));
+    memset(&plmn, 0, sizeof(plmn));
+    plmn.mcc = (char *)"999";
+    plmn.mnc = (char *)"70";
+    ran_id.plmn_id = &plmn;
+    ran_id.g_nb_id = &gnb_id;
+    gnb_id.bit_length = 22;
+    gnb_id.g_nb_value = value;
+    CHECK(amf_namf_ran_id_is_gnb(gnb22, &ran_id));
+    gnb_id.g_nb_value = (char *)"2A3F47";
+    CHECK(amf_namf_ran_id_is_gnb(gnb22, &ran_id));
+    gnb_id.g_nb_value = (char *)"A8FD1C"; /* the same bits left aligned: not the gNB ID */
+    CHECK(!amf_namf_ran_id_is_gnb(gnb22, &ran_id));
+    gnb_id.g_nb_value = (char *)"2A3F47";
+    gnb_id.bit_length = 24;
+    CHECK(!amf_namf_ran_id_is_gnb(gnb22, &ran_id));
+
+    amf_namf_free_n2_mbs_sm_info_list(list);
+    amf_mbs_n2_info_remove_all(&infos);
+    ogs_free(gnb22);
+    ogs_free(gnb30);
 }
 
 /* A message has at most OGS_SBI_MAX_NUM_OF_PART binary parts: the rest of the containers are not carried. */
@@ -255,7 +321,7 @@ static void test_status_notify(void)
     if (request) {
         CHECK(strstr(body_of(request), "\"opEventType\":\"NG_RAN_EVENT\"") != NULL);
         CHECK(strstr(body_of(request), "\"ngranFailureIndication\":\"NG_RAN_REQUIRED_RELEASE\"") != NULL);
-        CHECK(strstr(body_of(request), "\"gNBValue\":\"000400\"") != NULL);
+        CHECK(strstr(body_of(request), "\"gNBValue\":\"000100\"") != NULL);
         CHECK(strstr(body_of(request), "\"bitLength\":22") != NULL);
         CHECK(strstr(body_of(request), "releasedInd") == NULL);
         ogs_sbi_request_free(request);
@@ -286,7 +352,7 @@ static void test_status_notify(void)
         CHECK(strstr(body_of(request), "\"areaSessionId\":13") != NULL);
         CHECK(strstr(body_of(request), "\"operationStatus\":\"MBS_SESSION_UPDATE_COMPLETE\"") != NULL);
         CHECK(strstr(body_of(request), "\"ngapIeType\":\"MBS_SES_FAIL\"") != NULL);
-        CHECK(strstr(body_of(request), "\"gNBValue\":\"000400\"") != NULL);
+        CHECK(strstr(body_of(request), "\"gNBValue\":\"000100\"") != NULL);
         CHECK(strstr(body_of(request), "Content-Id: ngap-sm-0") != NULL);
         ogs_sbi_request_free(request);
     }
@@ -417,7 +483,7 @@ static void test_transport_relay(void)
     CHECK(request != NULL);
     if (request) {
         CHECK(strstr(body_of(request), "\"ngapIeType\":\"BC_TRA_REQ\"") != NULL);
-        CHECK(strstr(body_of(request), "\"gNBValue\":\"000400\"") != NULL);
+        CHECK(strstr(body_of(request), "\"gNBValue\":\"000100\"") != NULL);
         ogs_sbi_request_free(request);
     }
     amf_mbs_n2_info_remove_all(&infos);
@@ -437,9 +503,9 @@ static void test_transport_relay(void)
         OpenAPI_context_status_notification_response_t *rsp = NULL;
         OpenAPI_list_t *entries = OpenAPI_list_create();
         static const struct { OpenAPI_ngap_ie_type_e type; const char *content_id; const char *gnb_value; } e[] = {
-            { OpenAPI_ngap_ie_type_BC_TRA_RSP, "rsp", "000400" },
+            { OpenAPI_ngap_ie_type_BC_TRA_RSP, "rsp", "000100" },
             { OpenAPI_ngap_ie_type_BC_TRA_FAIL, "fail", NULL },
-            { OpenAPI_ngap_ie_type_BC_TRA_RSP, "rsp", "000800" },
+            { OpenAPI_ngap_ie_type_BC_TRA_RSP, "rsp", "000200" },
             { OpenAPI_ngap_ie_type_BC_TRA_FAIL, "garbage", NULL },
             { OpenAPI_ngap_ie_type_BC_TRA_RSP, "absent", NULL },
             { OpenAPI_ngap_ie_type_MBS_SES_RSP, "rsp", NULL },
@@ -607,7 +673,7 @@ static void test_update_action_ran_id_list(void)
     CHECK(amf_namf_mbs_update_action(&ctx, gnb2, &plan) == AMF_MBS_UPDATE_SKIP);
 
     /* ranIdList [gNB 0x200]: that node gets a Setup (whatever it released before), no other node gets anything */
-    OpenAPI_list_add(list, ran_id_of("000800", 22));
+    OpenAPI_list_add(list, ran_id_of("000200", 22));
     plan.ran_id_list = list;
     CHECK(amf_namf_mbs_update_action(&ctx, gnb2, &plan) == AMF_MBS_UPDATE_SETUP);
     CHECK(amf_namf_mbs_update_action(&ctx, gnb1, &plan) == AMF_MBS_UPDATE_SKIP);
@@ -952,7 +1018,7 @@ static void test_status_notify_ngran_event(void)
         CHECK(strstr(body_of(request), "\"mbsServiceId\":\"000001\"") != NULL);
         CHECK(strstr(body_of(request), "\"opEventType\":\"NG_RAN_EVENT\"") != NULL);
         CHECK(strstr(body_of(request), "\"ngranFailureIndication\":\"NG_RAN_RESTART_OR_START\"") != NULL);
-        CHECK(strstr(body_of(request), "\"gNBValue\":\"000400\"") != NULL);
+        CHECK(strstr(body_of(request), "\"gNBValue\":\"000100\"") != NULL);
         CHECK(strstr(body_of(request), "NG_RAN_REQUIRED_RELEASE") == NULL);
         CHECK(strstr(body_of(request), "operationStatus") == NULL);
         ogs_sbi_request_free(request);
@@ -974,7 +1040,7 @@ static void test_status_notify_ngran_event(void)
     if (request) {
         CHECK(strstr(body_of(request), "\"opEventType\":\"NG_RAN_EVENT\"") != NULL);
         CHECK(strstr(body_of(request), "\"ngranFailureIndication\":\"NG_RAN_NOT_REACHABLE\"") != NULL);
-        CHECK(strstr(body_of(request), "\"gNBValue\":\"000400\"") != NULL);
+        CHECK(strstr(body_of(request), "\"gNBValue\":\"000100\"") != NULL);
         ogs_sbi_request_free(request);
     }
 
@@ -1544,6 +1610,7 @@ int main(int argc, const char *argv[])
     ogs_local_conf()->time.message.duration = ogs_time_from_sec(10);
 
     test_n2_info_list();
+    test_gnb_value_is_right_aligned();
     test_n2_mbs_sm_info_ran_id_key();
     test_n2_info_list_limit();
     test_status_notify();

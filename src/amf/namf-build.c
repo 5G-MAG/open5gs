@@ -184,22 +184,41 @@ static const char *n2_mbs_sm_info_content_id[OGS_SBI_MAX_NUM_OF_PART] = {
     OGS_SBI_CONTENT_NGAP_SM_ID "-6", OGS_SBI_CONTENT_NGAP_SM_ID "-7",
 };
 
+/*
+ * The gNB ID as TS 29.571 V18.12.0 clause 5.4.4.29 writes GNbId.gNBValue: "The padding 0 shall be added to make multiple
+ * nibbles, the most significant character representing the padding 0 if required together with the 4 most significant
+ * bits of the gNB ID shall appear first in the string, and the character representing the 4 least significant bit of the
+ * gNB ID shall appear last in the string", e.g. "A 22 bit value "2A3F47" indicates a gNB ID with value 0x2A3F47".
+ * \p gnb_id_buf holds the NGAP BIT STRING of the gNB ID, which starts at the first bit of the first byte and ends before
+ * the unused bits of the last one, so the value is shifted right by them. \p out has room for 9 characters.
+ */
+static bool gnb_id_value_string(const uint8_t *gnb_id_buf, size_t gnb_id_buf_size, uint8_t gnb_id_bit_length, char *out)
+{
+    int size = (gnb_id_bit_length + 7) / 8;
+    uint32_t value = 0;
+    int i;
+
+    if (size == 0 || size > (int)gnb_id_buf_size || size > 4)
+        return false;
+
+    for (i = 0; i < size; i++)
+        value = (value << 8) | gnb_id_buf[i];
+    value >>= (size * 8 - gnb_id_bit_length);
+    snprintf(out, 9, "%0*X", (gnb_id_bit_length + 3) / 4, (unsigned)value);
+    return true;
+}
+
 static OpenAPI_global_ran_node_id_t *build_global_ran_node_id(
         const ogs_plmn_id_t *plmn_id, const uint8_t *gnb_id_buf, size_t gnb_id_buf_size, uint8_t gnb_id_bit_length)
 {
     OpenAPI_gnb_id_t *gnb_id = NULL;
-    char *gnb_value = NULL;
-    int size = (gnb_id_bit_length + 7) / 8;
+    char value[9];
 
     /* TS 29.571 GNbId.gNBValue: the gNB ID in hexadecimal digits; bitLength: its length in bits */
-    if (size == 0 || size > (int)gnb_id_buf_size)
+    if (!gnb_id_value_string(gnb_id_buf, gnb_id_buf_size, gnb_id_bit_length, value))
         return NULL;
 
-    gnb_value = ogs_calloc(1, OGS_KEYSTRLEN(size));
-    ogs_assert(gnb_value);
-    ogs_hex_to_ascii(gnb_id_buf, size, gnb_value, OGS_KEYSTRLEN(size));
-
-    gnb_id = OpenAPI_gnb_id_create(gnb_id_bit_length, gnb_value);
+    gnb_id = OpenAPI_gnb_id_create(gnb_id_bit_length, ogs_strdup(value));
     ogs_assert(gnb_id);
 
     return OpenAPI_global_ran_node_id_create(
@@ -214,31 +233,28 @@ static OpenAPI_global_ran_node_id_t *build_ran_id(amf_mbs_n2_info_t *n2_info)
 
 bool amf_namf_ran_id_is_gnb(const amf_gnb_t *gnb, OpenAPI_global_ran_node_id_t *ran_id)
 {
-    OpenAPI_global_ran_node_id_t *mine = NULL;
-    cJSON *a = NULL, *b = NULL;
-    char *text_a = NULL, *text_b = NULL;
+    char value[9];
+    char *mcc = NULL, *mnc = NULL;
     bool same = false;
 
     ogs_assert(gnb);
 
-    if (!ran_id)
+    if (!ran_id || !ran_id->g_nb_id || !ran_id->g_nb_id->g_nb_value || !ran_id->plmn_id ||
+            !ran_id->plmn_id->mcc || !ran_id->plmn_id->mnc)
         return false;
-    mine = build_global_ran_node_id(&gnb->plmn_id, gnb->gnb_id_buf, sizeof(gnb->gnb_id_buf), gnb->gnb_id_bit_length);
-    if (!mine)
+    if (!gnb_id_value_string(gnb->gnb_id_buf, sizeof(gnb->gnb_id_buf), gnb->gnb_id_bit_length, value))
         return false;
 
-    a = OpenAPI_global_ran_node_id_convertToJSON(mine);
-    b = OpenAPI_global_ran_node_id_convertToJSON(ran_id);
-    if (a && b) {
-        text_a = cJSON_PrintUnformatted(a);
-        text_b = cJSON_PrintUnformatted(b);
-        same = text_a && text_b && strcmp(text_a, text_b) == 0;
-    }
-    if (text_a) ogs_free(text_a);
-    if (text_b) ogs_free(text_b);
-    if (a) cJSON_Delete(a);
-    if (b) cJSON_Delete(b);
-    OpenAPI_global_ran_node_id_free(mine);
+    /* The digits of the gNB ID are hexadecimal of either case (pattern '^[A-Fa-f0-9]{6,8}$'). */
+    if (ran_id->g_nb_id->bit_length != gnb->gnb_id_bit_length ||
+            strcasecmp(ran_id->g_nb_id->g_nb_value, value) != 0)
+        return false;
+
+    mcc = ogs_plmn_id_mcc_string(&gnb->plmn_id);
+    mnc = ogs_plmn_id_mnc_string(&gnb->plmn_id);
+    same = strcmp(ran_id->plmn_id->mcc, mcc) == 0 && strcmp(ran_id->plmn_id->mnc, mnc) == 0;
+    ogs_free(mcc);
+    ogs_free(mnc);
     return same;
 }
 
