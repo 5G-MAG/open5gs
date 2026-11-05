@@ -39,6 +39,14 @@ void upf_mbs_set_inactivity_timer(upf_mbs_sess_t *mbs_sess, uint32_t seconds)
     ogs_time_t now = ogs_time_now();
     ogs_time_t idle;
 
+    /* TS 29.244 cl. 8.2.83: "The timer value "0" shall be interpreted as an indication that user plane inactivity
+     * detection and reporting is stopped." */
+    if (seconds == 0) {
+        upf_mbs_inactivity_stop(mbs_sess);
+        mbs_sess->up_inactivity_timer = 0;
+        return;
+    }
+
     if (!mbs_sess->t_up_inactivity) {
         mbs_sess->t_up_inactivity = ogs_timer_add(ogs_app()->timer_mgr, upf_timer_mbs_inactivity,
                 (void *)(uintptr_t)mbs_sess->upf_n4mb_seid);
