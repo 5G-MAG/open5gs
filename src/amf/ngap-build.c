@@ -2963,15 +2963,10 @@ ogs_pkbuf_t *ngap_build_broadcast_session_setup_request(amf_mbs_context_t *mbs_c
 }
 
 /*
- * 3GPP TS 38.413 - Release 17
- * NG-RAN; NG Application Protocol (NGAP)
- * Ch. 9.2.2.x - BROADCAST SESSION RELEASE REQUEST
+ * 3GPP TS 38.413 - BROADCAST SESSION RELEASE REQUEST
  *
- * BUG FIX: this builder did not exist before -- only ngap_build_broadcast_session_setup_request() above
- * did, which is why an MBS Broadcast session was never actually torn down over NGAP. Mirrors the setup
- * request builder's MBS Session ID IE construction; the only mandatory IE for this message (Cause is
- * optional and omitted here, matching this codebase's existing practice of only building mandatory IEs
- * for other NGAP release-style messages).
+ * Carries the MBS Session ID (M) of the context and a Cause (release due to 5GC generated reason), which is sent with
+ * criticality ignore.
  */
 ogs_pkbuf_t *ngap_build_broadcast_session_release_request(amf_mbs_context_t *mbs_context)
 {
@@ -3036,17 +3031,13 @@ ogs_pkbuf_t *ngap_build_broadcast_session_release_request(amf_mbs_context_t *mbs
 }
 
 /*
- * Item B-3: Namf_MBSBroadcast_ContextUpdate (TS 29.518 cl.5.6.2.3) sends this to the gNB(s) already
- * associated with the session. TS 38.413's own Request IEs: MBS-SessionID (M), MBS-ServiceArea (O),
- * MBS Session Modification Request Transfer (O) -- unlike Setup, no S-NSSAI (fixed at Setup, not resent).
+ * Namf_MBSBroadcast_ContextUpdate (TS 29.518 cl.5.6.2.3) sends this to the gNB(s) already associated with the session.
+ * TS 38.413's own Request IEs: MBS-SessionID (M), MBS-ServiceArea (O), MBS Session Modification Request Transfer (O) --
+ * unlike Setup, no S-NSSAI (fixed at Setup, not resent).
  *
- * has_service_area mirrors ngap_build_broadcast_session_setup_request()'s own MBS_ServiceArea handling
- * exactly (same hardcoded "every connected gNB's own TAI/NR-CGI list, MBS Area Session ID = 13" content,
- * same TODOs) rather than actually reading the caller-supplied mbsServiceArea/mbsServiceAreaInfoList --
- * Setup itself does not yet thread the caller-supplied service area through either (see its own TODOs);
- * fixing that is that finding's own item, not something to fix differently here just because Modification
- * happens to need it too. pkbuf carries the (already re-packed) MBS Session Modification Request Transfer,
- * or NULL if the ContextUpdateReqData carried no n2MbsSmInfo to forward.
+ * has_service_area adds the MBS Service Area IE, built from the service area and the Area Session IDs stored in
+ * mbs_context. pkbuf carries the (already re-packed) MBS Session Modification Request Transfer, or NULL if the
+ * ContextUpdateReqData carried no n2MbsSmInfo to forward.
  */
 ogs_pkbuf_t *ngap_build_broadcast_session_modification_request(
         amf_mbs_context_t *mbs_context, bool has_service_area, ogs_pkbuf_t *pkbuf)
