@@ -3579,6 +3579,8 @@ amf_mbs_context_t *amf_mbs_context_find_by_index(uint32_t index)
 }
 
 // Finds an existing context by TMGI, so ContextCreate can deduplicate rather than always allocating.
+// The MBS Service ID is six hexadecimal digits of either case (TS 29.571 Tmgi.mbsServiceId pattern '^[A-Fa-f0-9]{6}$'),
+// so "00001a" and "00001A" are the same TMGI.
 // A retried or duplicate ContextCreate for the same broadcast session, after a lost response say, would
 // otherwise consume another slot in the fixed-size pool (OGS_MAX_NUM_OF_MBS_SESSIONS) and orphan the
 // earlier context: the SMF tracks only the last mbsContextRef it received, so it can never reach the
@@ -3592,7 +3594,7 @@ amf_mbs_context_t *amf_mbs_context_find_by_tmgi(const ogs_tmgi_t *tmgi)
 
     ogs_list_for_each(&self.amf_mbs_context_list, amf_mbs_context) {
         if (amf_mbs_context->tmgi.mbs_service_id &&
-                strcmp(amf_mbs_context->tmgi.mbs_service_id, tmgi->mbs_service_id) == 0 &&
+                strcasecmp(amf_mbs_context->tmgi.mbs_service_id, tmgi->mbs_service_id) == 0 &&
                 memcmp(&amf_mbs_context->tmgi.plmn_id, &tmgi->plmn_id, sizeof(tmgi->plmn_id)) == 0)
             return amf_mbs_context;
     }

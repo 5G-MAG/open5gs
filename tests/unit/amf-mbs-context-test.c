@@ -152,6 +152,22 @@ static void fill(amf_mbs_context_t *ctx, amf_gnb_t *gnb)
     ctx->release_pending = true;
 }
 
+/* The MBS Service ID is hexadecimal of either case (TS 29.571 Tmgi.mbsServiceId, pattern '^[A-Fa-f0-9]{6}$'): the
+ * context of "00001A" is the one of "00001a", and not the one of another TMGI. */
+static void test_find_by_tmgi_ignores_the_case_of_the_service_id(void)
+{
+    ogs_tmgi_t upper = make_tmgi("00001A"), lower = make_tmgi("00001a"), other = make_tmgi("00001B");
+    amf_mbs_context_t *ctx = amf_mbs_context_create(&upper);
+
+    CHECK(ctx != NULL);
+    if (!ctx)
+        return;
+    CHECK(amf_mbs_context_find_by_tmgi(&lower) == ctx);
+    CHECK(amf_mbs_context_find_by_tmgi(&upper) == ctx);
+    CHECK(amf_mbs_context_find_by_tmgi(&other) == NULL);
+    amf_mbs_context_remove(ctx);
+}
+
 /* A context created after another was removed is empty, whatever the earlier one held, for the same TMGI or another; and
  * the pool slot of the earlier one is reused (so a leftover would be found there). */
 static void test_removed_context_leaves_nothing(void)
@@ -225,6 +241,7 @@ int main(void)
     }
 
     test_removed_context_leaves_nothing();
+    test_find_by_tmgi_ignores_the_case_of_the_service_id();
     test_final_frees_contexts();
 
     ogs_sbi_context_final();
