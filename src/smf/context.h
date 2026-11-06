@@ -1259,6 +1259,7 @@ bool smf_tmgi_own_plmn(ogs_plmn_id_t *plmn_id);
 bool smf_nid_is_valid(const char *nid);
 bool smf_is_date_time(const char *date_time);
 OpenAPI_snssai_t *smf_mbs_sess_build_snssai(const smf_mbs_sess_t *mbs_sess);
+const ogs_s_nssai_t *smf_mbs_default_s_nssai(void);
 OpenAPI_list_t *smf_mbs_sess_build_fsa_id_list(const smf_mbs_sess_t *mbs_sess);
 smf_mbs_nr_red_cap_e smf_mbs_nr_red_cap_from_string(const char *value);
 const char *smf_own_nid(void);

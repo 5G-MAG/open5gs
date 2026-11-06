@@ -309,8 +309,7 @@ ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_create_request(
     ogs_sbi_header_t header;
 
     ogs_sbi_nf_instance_t *nf_instance = NULL;
-    ogs_sbi_nf_info_t *nf_info = NULL;
-    ogs_s_nssai_t *self_s_nssai = NULL;
+    const ogs_s_nssai_t *self_s_nssai = NULL;
     OpenAPI_snssai_t *snssai = NULL;
 
     ogs_assert(mbs_sess);
@@ -372,20 +371,11 @@ ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_create_request(
     // snssai: TS 29.518 V18.14.0 table 6.5.6.2.2-1, row snssai: "This IE shall be included to indicate the
     // S-NSSAI of the MBS session." and NOTE 2: "If an MB-SMF does not receive the S-NSSAI from the NEF/MBSF,
     // the MB-SMF shall include a pre-configured default SNSSAI." The S-NSSAI of the Create request is used;
-    // without one, the first slice of this SMF's own configuration (smf.yaml info.s_nssai, required to be
-    // non-empty at start-up) is the pre-configured default.
+    // without one, the default one of this SMF, checked to exist by the Create handler.
     if (mbs_sess->has_s_nssai) {
         snssai = smf_mbs_sess_build_snssai(mbs_sess);
     } else {
-        nf_instance = ogs_sbi_self()->nf_instance;
-        ogs_assert(nf_instance);
-        ogs_list_for_each(&nf_instance->nf_info_list, nf_info) {
-            if (nf_info->nf_type == OpenAPI_nf_type_SMF &&
-                    nf_info->smf.num_of_slice > 0) {
-                self_s_nssai = &nf_info->smf.slice[0].s_nssai;
-                break;
-            }
-        }
+        self_s_nssai = smf_mbs_default_s_nssai();
         ogs_assert(self_s_nssai);
         snssai = OpenAPI_snssai_create(self_s_nssai->sst,
                 self_s_nssai->sd.v != OGS_S_NSSAI_NO_SD_VALUE ?
