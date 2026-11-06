@@ -2471,6 +2471,29 @@ static void amf_mbs_context_gnb_not_reached(amf_mbs_context_t *mbs_context, amf_
     amf_sbi_send_mbs_broadcast_ngran_event(mbs_context, gnb, OpenAPI_ngran_failure_indication_NG_RAN_NOT_REACHABLE);
 }
 
+static void amf_namf_send_mbs_broadcast_context_create_response(amf_mbs_context_t *mbs_context,
+        ogs_list_t *n2_info_list, OpenAPI_operation_status_e operation_status);
+
+/* No NG-RAN can take the Broadcast Session Setup Request now. When the AMF is set to restore sessions, the context is
+ * kept and the ContextCreate answered with 201 Created, without containers and without the indication of completion:
+ * TS 23.527 V18.6.0 cl. 8.3.2.2 has the AMF set the session up, with the container it keeps, in an NG-RAN that restarts
+ * or "a (new) NG-RAN is deployed to serve a TAI that is part of the MBS session service area", when it "detects" it
+ * "e.g. using NG Setup Request message". Returns false, with nothing done, when the AMF is not set to restore. */
+static bool amf_mbs_context_create_kept_without_gnb(amf_mbs_context_t *mbs_context, ogs_sbi_stream_t *stream)
+{
+    ogs_list_t no_containers;
+
+    if (amf_self()->mbs_restoration == AMF_MBS_RESTORATION_NONE)
+        return false;
+
+    ogs_warn("MBS Broadcast ContextCreate: no NG-RAN can take the session now, the context [%s] is kept until one "
+            "does", mbs_context->mbs_context_ref);
+    ogs_list_init(&no_containers);
+    mbs_context->stream_id = ogs_sbi_id_from_stream(stream);
+    amf_namf_send_mbs_broadcast_context_create_response(mbs_context, &no_containers, OpenAPI_operation_status_NULL);
+    return true;
+}
+
 int amf_namf_handle_mbs_broadcast_context_create(
         ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg)
 {
@@ -2692,6 +2715,8 @@ int amf_namf_handle_mbs_broadcast_context_create(
         // clause names the status for this; UNSPECIFIED_NF_FAILURE is TS 29.500 Table 5.2.7.2-1's generic 500
         // cause.
     if (!n2msgreq) {
+        if (amf_mbs_context_create_kept_without_gnb(mbs_context, stream))
+            goto cleanup;
         ogs_error("MBS Broadcast ContextCreate: the Broadcast Session Setup Request could not be built");
         amf_mbs_context_remove(mbs_context);
         ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
@@ -2732,6 +2757,8 @@ int amf_namf_handle_mbs_broadcast_context_create(
     ogs_pkbuf_free(n2msgreq);
 
     if (mbs_context->gnb_request_count == 0) {
+        if (amf_mbs_context_create_kept_without_gnb(mbs_context, stream))
+            goto cleanup;
         ogs_error("MBS Broadcast ContextCreate: the Broadcast Session Setup Request reached no NG-RAN");
         amf_mbs_context_remove(mbs_context);
         ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
