@@ -437,6 +437,8 @@ static void test_dnn_snssai(void)
         CHECK(dnn->len == 4 && memcmp(dnn->data, "\x03mbs", 4) == 0);
         CHECK(nssai->presence);
         CHECK(nssai->len == 4 && ((uint8_t *)nssai->data)[0] == 3);
+        /* TS 29.244 V18.10.0 clause 8.2.176, TS 23.003 clause 28.4.2: the SD most significant octet first */
+        CHECK(nssai->len == 4 && memcmp(nssai->data, "\x03\x00\x00\xab", 4) == 0);
     }
     snssai = smf_mbs_sess_build_snssai(mbs_sess);
     CHECK(snssai != NULL);
@@ -463,6 +465,32 @@ static void test_dnn_snssai(void)
     }
 
     smf_mbs_sess_release(mbs_sess);
+}
+
+/* TS 29.518 V18.14.0 table 6.5.6.2.2-1, NOTE 2: the pre-configured default S-NSSAI is the first slice of smf.info,
+ * and there is none when the configuration lists no slice. */
+static void test_default_s_nssai(void)
+{
+    ogs_sbi_nf_info_t *nf_info = NULL;
+    const ogs_s_nssai_t *s_nssai = smf_mbs_default_s_nssai();
+    int saved[8], n = 0;
+
+    CHECK(s_nssai != NULL);
+    if (s_nssai) {
+        CHECK(s_nssai->sst == 1);
+        CHECK(s_nssai->sd.v == 1);
+    }
+
+    ogs_list_for_each(&ogs_sbi_self()->nf_instance->nf_info_list, nf_info) {
+        if (n < 8) saved[n++] = nf_info->smf.num_of_slice;
+        nf_info->smf.num_of_slice = 0;
+    }
+    CHECK(smf_mbs_default_s_nssai() == NULL);
+    n = 0;
+    ogs_list_for_each(&ogs_sbi_self()->nf_instance->nf_info_list, nf_info) {
+        if (n < 8) nf_info->smf.num_of_slice = saved[n++];
+    }
+    CHECK(smf_mbs_default_s_nssai() == s_nssai);
 }
 
 /* A TMGI refreshed while an MBS session uses it keeps its place in the index of sessions by TMGI: a second
@@ -6019,6 +6047,7 @@ int main(void)
     test_tmgi_plmn();
     test_nid();
     test_dnn_snssai();
+    test_default_s_nssai();
     test_tmgi_index_after_refresh();
     test_create_outcomes();
     test_reduced_area_is_used();

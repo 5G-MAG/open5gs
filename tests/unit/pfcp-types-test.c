@@ -71,6 +71,41 @@ static void multicast_transport_information_func(abts_case *tc, void *data)
     ABTS_INT_EQUAL(tc, -1, ogs_pfcp_parse_multicast_transport_information(&mti, &octet));
 }
 
+/* TS 29.244 V18.10.0 clause 7.1: a field of several octets goes most significant octet first, so the C-TEID is in
+ * octets 6 to 9 of the Multicast Transport Information as on the N3mb G-PDUs; the structure keeps it as received,
+ * like the addresses beside it. */
+static void multicast_transport_information_c_teid_func(abts_case *tc, void *data)
+{
+    ogs_pfcp_multicast_transport_information_t in, out;
+    ogs_tlv_octet_t octet;
+    uint8_t buf[64];
+    const uint8_t *wire = buf;
+    int16_t len;
+
+    memset(&in, 0, sizeof(in));
+    in.c_teid = htobe32(0x00006cfd);
+    in.ip_multicast_distribution_address.address_type = 0;
+    in.ip_multicast_distribution_address.address_length = OGS_IPV4_LEN;
+    in.ip_multicast_distribution_address.ipv4_addr = htobe32(0xef000009);
+    in.ip_source_address.address_type = 0;
+    in.ip_source_address.address_length = OGS_IPV4_LEN;
+    in.ip_source_address.ipv4_addr = htobe32(0x7f000007);
+
+    len = ogs_pfcp_build_multicast_transport_information(&octet, &in, buf, sizeof(buf));
+    ABTS_INT_EQUAL(tc, 15, len);
+    ABTS_INT_EQUAL(tc, 0x00, wire[1]);
+    ABTS_INT_EQUAL(tc, 0x00, wire[2]);
+    ABTS_INT_EQUAL(tc, 0x6c, wire[3]);
+    ABTS_INT_EQUAL(tc, 0xfd, wire[4]);
+    ABTS_INT_EQUAL(tc, 0xef, wire[6]);
+
+    octet.len = len;
+    ABTS_INT_EQUAL(tc, len, ogs_pfcp_parse_multicast_transport_information(&out, &octet));
+    ABTS_INT_EQUAL(tc, 0x00006cfd, be32toh(out.c_teid));
+    ABTS_INT_EQUAL(tc, 0xef000009, be32toh(out.ip_multicast_distribution_address.ipv4_addr));
+    ABTS_INT_EQUAL(tc, 0x7f000007, be32toh(out.ip_source_address.ipv4_addr));
+}
+
 /* A PFCP Node Report Request without SEID: the header (version 1, type 12, length, sequence number) and the IEs. */
 static ogs_pkbuf_t *node_report_request_pkbuf(const uint8_t *ies, size_t len)
 {
@@ -197,6 +232,7 @@ abts_suite *test_pfcp_types(abts_suite *suite)
     suite = ADD_SUITE(suite)
 
     abts_run_test(suite, multicast_transport_information_func, NULL);
+    abts_run_test(suite, multicast_transport_information_c_teid_func, NULL);
     abts_run_test(suite, path_failure_report_peers_func, NULL);
     abts_run_test(suite, up_function_features_func, NULL);
 
