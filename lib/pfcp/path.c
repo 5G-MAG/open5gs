@@ -596,6 +596,8 @@ void ogs_pfcp_send_error_message(
     ogs_pfcp_message_t errmsg;
     ogs_pfcp_tlv_cause_t *cause = NULL;
     ogs_pfcp_tlv_offending_ie_t *offending_ie = NULL;
+    ogs_pfcp_node_id_t node_id;
+    int node_id_len = 0;
     ogs_pkbuf_t *pkbuf = NULL;
 
     ogs_assert(xact);
@@ -629,6 +631,17 @@ void ogs_pfcp_send_error_message(
     case OGS_PFCP_SESSION_ESTABLISHMENT_RESPONSE_TYPE:
         cause = &errmsg.pfcp_session_establishment_response.cause;
         offending_ie = &errmsg.pfcp_session_establishment_response.offending_ie;
+
+        /* Node ID is mandatory in a Session Establishment Response of any Cause */
+        if (ogs_pfcp_sockaddr_to_node_id(&node_id, &node_id_len) == OGS_OK) {
+            errmsg.pfcp_session_establishment_response.node_id.presence = 1;
+            errmsg.pfcp_session_establishment_response.node_id.data =
+                &node_id;
+            errmsg.pfcp_session_establishment_response.node_id.len =
+                node_id_len;
+        } else {
+            ogs_error("ogs_pfcp_sockaddr_to_node_id() failed");
+        }
         break;
     case OGS_PFCP_SESSION_MODIFICATION_RESPONSE_TYPE:
         cause = &errmsg.pfcp_session_modification_response.cause;

@@ -351,6 +351,16 @@ def t_U01_1_missing_cp_fseid():
 
 
 @test
+def t_U09_1_rejection_carries_node_id():
+    # TS 29.244 V18.10.0 Table 7.5.3.1-1: "Node ID | M | This IE shall contain the unique identifier of the sending Node."
+    for what, ies in (('missing CP F-SEID', replace_ie(good(), T_F_SEID, None)),
+                      ('no Create PDR', replace_ie(good(), T_CREATE_PDR, None))):
+        r = U.establish(ies)
+        assert r and cause(r) != CAUSE_ACCEPTED, '%s: not rejected' % what
+        assert find(r, T_NODE_ID) is not None, '%s: the rejection carries no Node ID' % what
+
+
+@test
 def t_U01_3_missing_node_id():
     r = U.establish(replace_ie(good(), T_NODE_ID, None))
     assert r and cause(r) == CAUSE_MANDATORY_MISSING, 'cause %s' % (cause(r) if r else None)
