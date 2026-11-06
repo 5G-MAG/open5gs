@@ -59,6 +59,7 @@ ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
     ogs_pfcp_node_id_t node_id;
     ogs_pfcp_f_seid_t f_seid;
     char apn_dnn[OGS_MAX_DNN_LEN+1];
+    ogs_s_nssai_t s_nssai;
     int len;
     ogs_pfcp_mbs_session_identifier_t mbs_session_identifier;
     uint8_t mbs_session_identifier_buf[sizeof(ogs_pfcp_mbs_session_identifier_t)];
@@ -195,11 +196,13 @@ ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
         req->apn_dnn.data = apn_dnn;
     }
 
-    /* S-NSSAI */
+    /* S-NSSAI, with the SD most significant octet first (TS 29.244 clause 8.2.176, TS 23.003 clause 28.4.2) */
     if (mbs_sess->has_s_nssai) {
+        s_nssai.sst = mbs_sess->s_nssai.sst;
+        s_nssai.sd = ogs_htobe24(mbs_sess->s_nssai.sd);
         req->s_nssai.presence = 1;
         req->s_nssai.len = 4;
-        req->s_nssai.data = &mbs_sess->s_nssai;
+        req->s_nssai.data = &s_nssai;
     }
 
     // NOTE (borieher): (C), create_traffic_endpoint if UP has PDI optimization or tunnelling requested
