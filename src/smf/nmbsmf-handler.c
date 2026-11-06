@@ -872,6 +872,16 @@ bool smf_nmbsmf_handle_mbs_session_create(
         }
     }
 
+    /* No S-NSSAI to use (TS 29.518 table 6.5.6.2.2-1 NOTE 2): SYSTEM_FAILURE (TS 29.500 table 5.2.7.2-1) */
+    if (!CreateReqData->mbs_session->snssai && !smf_mbs_default_s_nssai()) {
+        ogs_error("MBS Session Create: no [snssai] in the request and no S-NSSAI in smf.info");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+            message, "System failure", "MBS Session Create failed, no S-NSSAI in the request and no default S-NSSAI",
+            NMBSMF_MBSSESSION_SYSTEM_FAILURE);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
     // Extract the SSM
     is_multicast_service = (ogs_strcasecmp(service_type, "MULTICAST") == 0);
     if (CreateReqData->mbs_session->mbs_session_id && CreateReqData->mbs_session->mbs_session_id->ssm && is_multicast_service) {

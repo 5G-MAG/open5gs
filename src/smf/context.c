@@ -3784,6 +3784,23 @@ const char *smf_own_nid(void)
     return self.nid;
 }
 
+/* Default S-NSSAI of an MBS session (TS 29.518 table 6.5.6.2.2-1 NOTE 2): first slice of smf.info, or NULL */
+const ogs_s_nssai_t *smf_mbs_default_s_nssai(void)
+{
+    ogs_sbi_nf_instance_t *nf_instance = NULL;
+    ogs_sbi_nf_info_t *nf_info = NULL;
+
+    nf_instance = ogs_sbi_self()->nf_instance;
+    ogs_assert(nf_instance);
+
+    ogs_list_for_each(&nf_instance->nf_info_list, nf_info) {
+        if (nf_info->nf_type == OpenAPI_nf_type_SMF && nf_info->smf.num_of_slice > 0)
+            return &nf_info->smf.slice[0].s_nssai;
+    }
+
+    return NULL;
+}
+
 /* TS 23.003 V18.8.0 clause 30.2, item 3: "The MNC identifies the PLMN which the MB-SMF belongs to". That
  * PLMN is the first of the serving PLMNs of the configuration and, when none is configured, the PLMN of
  * the first tracking area of the SMF information (smf.info.tai). Returns false when the configuration
