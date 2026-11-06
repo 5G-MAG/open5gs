@@ -3343,6 +3343,19 @@ def t_mbsch_is_advertised_and_the_volume_of_mbs_data_is_reported():
 
 
 @test
+def t_U14_4_deletion_usage_report_has_no_duration_measurement():
+    """TS 29.244 V18.10.0 Table 7.5.7.2-1: Duration Measurement, "This IE shall be present if a duration measurement needs to be reported", is not applicable
+    ("-") on N4mb, where "Only volume-based measurement shall be used" (cl. 5.34.2.5)."""
+    s = accepted(charged_session(0xfd31, create_urr(1)), 'session with a URR')
+    d = U.delete(s)
+    assert d and cause(d) == CAUSE_ACCEPTED
+    reports = [dict(parse_ies(v)) for t, v in d['ies'] if t == T_USAGE_REPORT['del']]
+    assert len(reports) == 1, reports
+    assert 67 not in reports[0], 'the Usage Report carries a Duration Measurement'
+    assert T_VOL_MEAS in reports[0], 'the Usage Report carries no Volume Measurement'
+
+
+@test
 def t_mbs_charging_requests_qaurr_remove_and_the_urrs_that_are_not_for_n4mb():
     r = charged_session(0xfd21, create_urr(1), create_urr(2))
     s = accepted(r, 'two URRs')
