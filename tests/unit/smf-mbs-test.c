@@ -3475,6 +3475,68 @@ static void test_node_report_several_peers(void)
     smf_mbs_sess_release(mbs_sess);
 }
 
+static int context_creates;
+
+static int count_context_create(smf_mbs_sess_t *mbs_sess)
+{
+    context_creates++;
+    return OGS_OK;
+}
+
+static int context_checks;
+
+static int count_context_check(smf_mbs_sess_t *mbs_sess, smf_namf_context_update_param_t *param)
+{
+    /* a check changes nothing: no N2 information change, no service area, no NG-RAN list */
+    if (param->no_n2_info_change_ind && !param->service_area && param->num_ran_ids == 0 && param->amf &&
+            param->amf->mbs_context_ref)
+        context_checks++;
+    return OGS_OK;
+}
+
+/* TS 23.527 V18.6.0 cl. 8.3.2.4: the AMF that holds the broadcast context failed; the context is created again in the
+ * AMF that serves the session */
+static void test_amf_context_lost(void)
+{
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    smf_mbs_amf_t *amf, *other;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+
+    smf_mbs_set_context_create_sender(count_context_create);
+    smf_mbs_set_context_update_sender(count_context_check);
+
+    /* an AMF without the context is replaced by a Create */
+    amf = smf_mbs_sess_amf_add(mbs_sess);
+    amf->mbs_context_ref = ogs_strdup("7");
+    context_creates = 0;
+    CHECK(smf_mbs_amf_context_lost(mbs_sess, amf) == OGS_OK);
+    CHECK(context_creates == 1);
+    CHECK(ogs_list_empty(&mbs_sess->amf_list));
+
+    /* with another context, or a Create still waiting for its answer, no second Create is sent */
+    amf = smf_mbs_sess_amf_add(mbs_sess);
+    amf->mbs_context_ref = ogs_strdup("8");
+    other = smf_mbs_sess_amf_add(mbs_sess);
+    context_creates = 0;
+    CHECK(smf_mbs_amf_context_lost(mbs_sess, amf) == OGS_OK);
+    CHECK(context_creates == 0);
+    CHECK(ogs_list_count(&mbs_sess->amf_list) == 1);
+
+    /* an AMF that registered: each context with a reference is checked, the entry still waiting for its answer is not */
+    other->mbs_context_ref = ogs_strdup("9");
+    amf = smf_mbs_sess_amf_add(mbs_sess);
+    context_checks = 0;
+    CHECK(smf_mbs_probe_amf_contexts() >= 1);
+    CHECK(context_checks >= 1);
+    (void)amf;
+
+    smf_mbs_set_context_create_sender(NULL);
+    smf_mbs_set_context_update_sender(NULL);
+    smf_mbs_sess_release(mbs_sess);
+}
+
 /* TS 29.571 V18.12.0 MbsFsaId, pattern '^[A-Fa-f0-9]{6}$' (Create and Update check the entries alike) */
 static void test_fsa_id_pattern(void)
 {
@@ -4562,6 +4624,7 @@ int main(void)
     test_usage_reports();
     test_query_all_urrs();
     test_local_ingress_tunnel_answer();
+    test_amf_context_lost();
     test_mb_upf_selection();
     test_mbs_policy_control_config();
     test_npcf_mbspolicycontrol_messages();

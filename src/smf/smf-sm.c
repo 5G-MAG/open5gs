@@ -524,7 +524,15 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
             CASE(OGS_SBI_RESOURCE_NAME_NF_STATUS_NOTIFY)
                 SWITCH(sbi_message.h.method)
                 CASE(OGS_SBI_HTTP_METHOD_POST)
-                    ogs_nnrf_nfm_handle_nf_status_notify(stream, &sbi_message);
+                    if (ogs_nnrf_nfm_handle_nf_status_notify(stream, &sbi_message) &&
+                            sbi_message.NotificationData &&
+                            sbi_message.NotificationData->event ==
+                                OpenAPI_notification_event_type_NF_REGISTERED &&
+                            sbi_message.NotificationData->nf_profile &&
+                            sbi_message.NotificationData->nf_profile->nf_type ==
+                                OpenAPI_nf_type_AMF)
+                        /* an AMF that registered again may have lost the broadcast contexts (TS 23.527 cl. 8.3.2.4) */
+                        smf_mbs_probe_amf_contexts();
                     break;
 
                 DEFAULT
@@ -1162,9 +1170,13 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
                 SWITCH(sbi_message.h.method)
                 CASE(OGS_SBI_HTTP_METHOD_POST)
                     if (sbi_message.h.resource.component[1]) {
-                        /* POST on the individual context: ContextUpdate. The context stays, whatever the answer. */
-                        smf_namf_handle_mbs_broadcast_context_update_response(
-                                mbs_sess, mbs_amf, &sbi_message);
+                        /* POST on the individual context: ContextUpdate. The context stays, whatever the answer,
+                         * except that the AMF does not know it: it restarted (TS 23.527 V18.6.0 cl. 8.3.2.4) */
+                        if (sbi_message.res_status == OGS_SBI_HTTP_STATUS_NOT_FOUND)
+                            smf_mbs_amf_context_lost(mbs_sess, mbs_amf);
+                        else
+                            smf_namf_handle_mbs_broadcast_context_update_response(
+                                    mbs_sess, mbs_amf, &sbi_message);
                     } else if (sbi_message.res_status == OGS_SBI_HTTP_STATUS_CREATED) {
                         if (!smf_namf_handle_mbs_broadcast_context_create_response(
                                 mbs_sess, mbs_amf, &sbi_message))

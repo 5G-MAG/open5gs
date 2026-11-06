@@ -72,6 +72,24 @@ int smf_mbs_sess_schedule_ngran_restoration(smf_mbs_sess_t *mbs_sess, smf_mbs_am
  * AMF's context are still there. Frees \p restoration. */
 void smf_mbs_ngran_restoration_expired(smf_mbs_ngran_restoration_t *restoration);
 
+/* The restoration after an AMF failure, TS 23.527 V18.6.0 cl. 8.3.2.4 ("Selecting an alternative AMF for a Broadcast MBS
+ * Session at AMF failure"): an AMF that restarted holds none of the broadcast MBS session contexts it had. The MB-SMF
+ * finds out when an AMF registers again (smf_mbs_probe_amf_contexts(): a ContextUpdate that changes nothing, to every
+ * context it holds, which an AMF without the context refuses with 404) or when any ContextUpdate is refused that way
+ * (smf_mbs_amf_context_lost()), and then creates the context again from the data of the session. */
+
+/* The AMF no longer holds the context \p amf of the session: the entry is dropped and the context is created again
+ * (a Namf_MBSBroadcast ContextCreate) unless the session has another entry. Returns OGS_OK when the Create is sent
+ * or not needed, OGS_ERROR when it could not be sent. */
+int smf_mbs_amf_context_lost(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf);
+
+/* An AMF registered at the NRF: each context the MB-SMF holds is checked with a ContextUpdate that changes nothing.
+ * Returns the number of checks sent. */
+int smf_mbs_probe_amf_contexts(void);
+
+/* The ContextCreate sender, replaceable for a test that has no SBI (NULL: the real one) */
+void smf_mbs_set_context_create_sender(int (*sender)(smf_mbs_sess_t *));
+
 /* The number of restorations waiting; and dropping all of them (shut-down) */
 int smf_mbs_ngran_restorations_pending(void);
 smf_mbs_ngran_restoration_t *smf_mbs_ngran_restoration_first(void);

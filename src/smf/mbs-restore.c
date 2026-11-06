@@ -37,6 +37,64 @@ void smf_mbs_set_context_update_sender(int (*sender)(smf_mbs_sess_t *, smf_namf_
     context_update_sender = sender ? sender : smf_sbi_send_mbs_broadcast_context_update;
 }
 
+/* the ContextCreate sender, replaceable for a test that has no SBI */
+static int (*context_create_sender)(smf_mbs_sess_t *) = smf_sbi_send_mbs_broadcast_context_create;
+
+void smf_mbs_set_context_create_sender(int (*sender)(smf_mbs_sess_t *))
+{
+    context_create_sender = sender ? sender : smf_sbi_send_mbs_broadcast_context_create;
+}
+
+int smf_mbs_amf_context_lost(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf)
+{
+    ogs_assert(mbs_sess);
+    ogs_assert(amf);
+
+    ogs_warn("MBS session mbsSessionRef[%s]: the AMF holds no context mbsContextRef[%s] of it any more",
+            mbs_sess->mbs_session_ref, amf->mbs_context_ref ? amf->mbs_context_ref : "(none)");
+    smf_mbs_sess_amf_remove(mbs_sess, amf);
+
+    /* a Create already waiting for its answer, or a context of another AMF, is the context of the session */
+    if (!ogs_list_empty(&mbs_sess->amf_list))
+        return OGS_OK;
+
+    ogs_info("MBS session mbsSessionRef[%s]: creating its broadcast context in the AMF again", mbs_sess->mbs_session_ref);
+    if (context_create_sender(mbs_sess) != OGS_OK) {
+        ogs_error("Failed to send MBS Broadcast ContextCreate again");
+        return OGS_ERROR;
+    }
+    return OGS_OK;
+}
+
+int smf_mbs_probe_amf_contexts(void)
+{
+    smf_mbs_sess_t *mbs_sess = NULL;
+    int sent = 0;
+
+    ogs_list_for_each(&smf_self()->smf_mbs_sess_list, mbs_sess) {
+        smf_mbs_amf_t *amf = NULL;
+
+        ogs_list_for_each(&mbs_sess->amf_list, amf) {
+            smf_namf_context_update_param_t param;
+
+            if (!amf->mbs_context_ref)
+                continue;
+
+            memset(&param, 0, sizeof(param));
+            param.amf = amf;
+            param.no_n2_info_change_ind = true;
+
+            /* ogs_sbi_xact_add() builds the request before it returns, and keeps no pointer to param */
+            if (context_update_sender(mbs_sess, &param) == OGS_OK)
+                sent++;
+            else
+                ogs_error("Failed to check mbsContextRef[%s] of mbsSessionRef[%s]", amf->mbs_context_ref,
+                        mbs_sess->mbs_session_ref);
+        }
+    }
+    return sent;
+}
+
 /* The DL tunnel of the NG-RAN node \p ran_id taken away, the change recorded for the MB-UPF. Returns 1 when there
  * was one. */
 static int remove_dl_tunnel_of(smf_mbs_sess_t *mbs_sess, const char *ran_id, smf_mbs_tunnel_changes_t *changes)
