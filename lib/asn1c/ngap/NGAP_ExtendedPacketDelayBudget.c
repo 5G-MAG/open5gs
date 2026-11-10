@@ -38,7 +38,9 @@ NGAP_ExtendedPacketDelayBudget_constraint(const asn_TYPE_descriptor_t *td, const
  */
 #if !defined(ASN_DISABLE_UPER_SUPPORT) || !defined(ASN_DISABLE_APER_SUPPORT)
 asn_per_constraints_t asn_PER_type_NGAP_ExtendedPacketDelayBudget_constr_1 CC_NOTUSED = {
-	{ APC_CONSTRAINED | APC_EXTENSIBLE,  17, -1,  1,  109999 }	/* (1..109999,...) */,
+	/* Root of (1..65535, ..., 65536..109999): asn1c took the extension addition into the root and encoded 17 bits, which is no
+	 * APER of TS 38.413 (X.691 clause 13: the root is encoded with the extension bit 0, values in the addition with the bit 1) */
+	{ APC_CONSTRAINED | APC_EXTENSIBLE,  16,  16,  1,  65535 }	/* (1..65535,...) */,
 	{ APC_UNCONSTRAINED,	-1, -1,  0,  0 },
 	0, 0	/* No PER value map */
 };

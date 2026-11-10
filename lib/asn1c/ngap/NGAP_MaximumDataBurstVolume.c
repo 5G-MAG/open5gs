@@ -38,7 +38,8 @@ NGAP_MaximumDataBurstVolume_constraint(const asn_TYPE_descriptor_t *td, const vo
  */
 #if !defined(ASN_DISABLE_UPER_SUPPORT) || !defined(ASN_DISABLE_APER_SUPPORT)
 asn_per_constraints_t asn_PER_type_NGAP_MaximumDataBurstVolume_constr_1 CC_NOTUSED = {
-	{ APC_CONSTRAINED | APC_EXTENSIBLE,  21, -1,  0,  2000000 }	/* (0..2000000,...) */,
+	/* Root of (0..4095, ..., 4096..2000000): asn1c took the extension addition into the root, which is no APER of TS 38.413 */
+	{ APC_CONSTRAINED | APC_EXTENSIBLE,  12,  12,  0,  4095 }	/* (0..4095,...) */,
 	{ APC_UNCONSTRAINED,	-1, -1,  0,  0 },
 	0, 0	/* No PER value map */
 };
