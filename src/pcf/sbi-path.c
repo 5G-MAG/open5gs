@@ -257,8 +257,9 @@ static int client_notify_cb(
     }
 
     if (message.res_status != OGS_SBI_HTTP_STATUS_NO_CONTENT)
-        ogs_error("SmContextStatusNotification failed [%d]",
-                message.res_status);
+        ogs_error("Notification to an NF service consumer failed [%d] %.300s",
+                message.res_status,
+                response->http.content ? response->http.content : "");
 
     ogs_sbi_message_free(&message);
     ogs_sbi_response_free(response);
@@ -733,6 +734,7 @@ bool pcf_sbi_send_smpolicycontrol_delete_notify(
         return false;
     }
 
+    app_session->delete_notify_pending = true;
     rc = ogs_sbi_send_request_to_client(
             client, client_delete_notify_cb, request, app_session);
     if (rc == false) {

@@ -121,6 +121,12 @@ static void media_read_pdu_set(ogs_pdu_set_qos_t *out, bool is_null, bool has_bu
         out->handling_info = OGS_PDU_SET_ALL_PDUS_NOT_NEEDED;
 }
 
+/* PacketErrRate of TS 29.571: one digit, "E-", one digit */
+static bool per_is_valid(const char *s)
+{
+    return strlen(s) == 4 && s[0] >= '0' && s[0] <= '9' && s[1] == 'E' && s[2] == '-' && s[3] >= '0' && s[3] <= '9';
+}
+
 /*
  * What the media component asks of the rule beyond the QoS reference: the alternative QoS parameter sets and the PDU Set QoS parameters.
  * Each is applied only when the feature of the AF and of the SMF is negotiated (TS 29.514 V19.8.0 clause 5.8, TS 29.512 V19.7.0 clause 5.8);
@@ -136,6 +142,13 @@ static bool media_apply_qos_extensions(pcf_sess_t *sess, ogs_pcc_rule_t *pcc_rul
 
     ogs_assert(err_out);
     *err_out = NULL;
+
+    /* PacketErrRate of TS 29.571 is one digit, "E-", one digit: anything else cannot be sent to the NG-RAN (TS 38.413 clause 9.3.1.80) */
+    if ((media_component->pdu_set_dl.presence && media_component->pdu_set_dl.error_rate[0] && !per_is_valid(media_component->pdu_set_dl.error_rate)) ||
+        (media_component->pdu_set_ul.presence && media_component->pdu_set_ul.error_rate[0] && !per_is_valid(media_component->pdu_set_ul.error_rate))) {
+        *err_out = "pduSetErrRate is not of the form of PacketErrRate (one digit, E-, one digit)";
+        return false;
+    }
 
     if (OGS_SBI_FEATURES_IS_SET(sess->policyauthorization_features, OGS_SBI_NPCF_POLICYAUTHORIZATION_AUTHORIZATION_WITH_REQUIRED_QOS) &&
         OGS_SBI_FEATURES_IS_SET(sess->smpolicycontrol_features, OGS_SBI_NPCF_SMPOLICYCONTROL_AUTHORIZATION_WITH_REQUIRED_QOS)) {
@@ -1664,6 +1677,7 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
     pcf_app_t *app_session = NULL;
 
     ogs_sbi_client_t *client = NULL;
+    bool new_client = false;
     OpenAPI_uri_scheme_e scheme = OpenAPI_uri_scheme_NULL;
     char *fqdn = NULL;
     uint16_t fqdn_port = 0;
@@ -1965,8 +1979,12 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
             ogs_freeaddrinfo(addr);
             goto cleanup;
         }
+        new_client = true;
     }
     OGS_SBI_SETUP_CLIENT(&app_session->naf, client);
+    /* the application session holds the client: drop the reference of its creation, or the client is never freed */
+    if (new_client)
+        ogs_sbi_client_remove(client);
 
     ogs_free(fqdn);
     ogs_freeaddrinfo(addr);

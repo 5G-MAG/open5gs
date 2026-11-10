@@ -252,6 +252,8 @@ typedef struct pcf_app_s {
     bool um_active;
     /* A deletion that waits for the accumulated usage from the SMF (clause 4.2.4.3) */
     bool delete_pending;
+    /* the SMF has not answered the decision of the deletion yet: the callback frees the application session */
+    bool delete_notify_pending;
     ogs_pool_id_t delete_stream_id;
     char *delete_content;
 

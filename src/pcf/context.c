@@ -36,6 +36,9 @@ static int context_initialized = 0;
 static void pcf_qos_profile_clear(void);
 static void clear_ipv4addr(pcf_sess_t *sess);
 static void clear_ipv6prefix(pcf_sess_t *sess);
+static void naf_client_release(ogs_sbi_client_t *client);
+static void naf_client_reap(void);
+static void naf_client_reap_all(void);
 
 /*
  * The IPv6 prefixes are kept by length and masked address: the key is the length byte and the bytes of the prefix, so that
@@ -108,6 +111,8 @@ void pcf_context_final(void)
     ogs_hash_destroy(self.ipv4addr_hash);
     ogs_assert(self.ipv6prefix_hash);
     ogs_hash_destroy(self.ipv6prefix_hash);
+
+    naf_client_reap_all();
 
     ogs_pool_final(&pcf_app_pool);
     ogs_pool_final(&pcf_sess_pool);
@@ -1102,11 +1107,66 @@ pcf_sess_t *pcf_sess_find_by_id(ogs_pool_id_t id)
     return ogs_pool_find_by_id(&pcf_sess_pool, id);
 }
 
+/*
+ * The AF client of an application session is the session's own (the notification URI carries an ephemeral port), so the last
+ * session frees it. A client with a request in flight (the termination notice that precedes the removal of the SM policy) is
+ * freed once idle: it must not be freed under its own request.
+ */
+typedef struct naf_client_s {
+    ogs_lnode_t lnode;
+    ogs_sbi_client_t *client;
+} naf_client_t;
+
+static OGS_LIST(naf_client_list);
+
+static void naf_client_reap(void)
+{
+    naf_client_t *n = NULL, *next = NULL;
+
+    ogs_list_for_each_safe(&naf_client_list, next, n) {
+        if (!ogs_list_empty(&n->client->connection_list))
+            continue;
+        ogs_list_remove(&naf_client_list, n);
+        ogs_sbi_client_remove(n->client);
+        ogs_free(n);
+    }
+}
+
+static void naf_client_reap_all(void)
+{
+    naf_client_t *n = NULL, *next = NULL;
+
+    ogs_list_for_each_safe(&naf_client_list, next, n) {
+        ogs_list_remove(&naf_client_list, n);
+        ogs_sbi_client_remove(n->client);
+        ogs_free(n);
+    }
+}
+
+static void naf_client_release(ogs_sbi_client_t *client)
+{
+    naf_client_t *n = NULL;
+
+    ogs_assert(client);
+
+    if (OGS_OBJECT_IS_REF(client) || ogs_list_empty(&client->connection_list)) {
+        ogs_sbi_client_remove(client);
+        return;
+    }
+
+    n = ogs_calloc(1, sizeof(*n));
+    ogs_assert(n);
+    n->client = client;
+    ogs_list_add(&naf_client_list, n);
+}
+
 pcf_app_t *pcf_app_add(pcf_sess_t *sess)
 {
     pcf_app_t *app = NULL;
 
     ogs_assert(sess);
+
+    naf_client_reap();
 
     ogs_pool_alloc(&pcf_app_pool, &app);
     ogs_assert(app);
@@ -1128,9 +1188,10 @@ int pcf_app_remove(pcf_app_t *app)
     int i;
 
     ogs_assert(app);
-    ogs_assert(app->sess);
 
-    ogs_list_remove(&app->sess->app_list, app);
+    /* no session: the SM policy was deleted while the notification of this application session was on its way */
+    if (app->sess)
+        ogs_list_remove(&app->sess->app_list, app);
 
     for (i = 0; i < app->num_of_pcc_rule; i++) {
         OGS_PCC_RULE_FREE(&app->pcc_rule[i]);
@@ -1153,11 +1214,13 @@ int pcf_app_remove(pcf_app_t *app)
     if (app->ev_notif_uri)
         ogs_free(app->ev_notif_uri);
     if (app->ev_client)
-        ogs_sbi_client_remove(app->ev_client);
+        naf_client_release(app->ev_client);
     if (app->notif_uri)
         ogs_free(app->notif_uri);
     if (app->naf.client)
-        ogs_sbi_client_remove(app->naf.client);
+        naf_client_release(app->naf.client);
+
+    naf_client_reap();
 
     ogs_assert(app->app_session_id);
     ogs_free(app->app_session_id);
@@ -1173,6 +1236,12 @@ void pcf_app_remove_all(pcf_sess_t *sess)
 
     ogs_assert(sess);
     ogs_list_for_each_safe(&sess->app_list, next_app, app) {
+        /* the callback of the notification to the SMF still holds the application session and frees it */
+        if (app->delete_notify_pending) {
+            ogs_list_remove(&sess->app_list, app);
+            app->sess = NULL;
+            continue;
+        }
         /* a deletion that waits for the usage of the SMF is answered when the SMF is gone: without usage */
         if (app->delete_pending)
             pcf_npcf_policyauthorization_delete_complete(app, NULL);
