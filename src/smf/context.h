@@ -746,6 +746,7 @@ typedef struct smf_sess_s {
 
     ogs_list_t      pdr_to_modify_list;
     ogs_list_t      qos_flow_to_modify_list;
+    bool            binding_install_deferred; /* a decision that removed and created flows: the creations follow the removal */
 
     ogs_gtp_node_t  *gnode;
     ogs_pfcp_node_t *pfcp_node;

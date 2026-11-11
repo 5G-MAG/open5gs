@@ -22,9 +22,9 @@
 #include "test-common.h"
 #include "af/sbi-path.h"
 
-static test_bearer_t *test_af_complete_qos_flow_modify(
+static test_bearer_t *test_af_complete_qos_flow_modify_qfi(
         abts_case *tc, test_ue_t *test_ue, test_sess_t *sess,
-        ogs_socknode_t *ngap)
+        ogs_socknode_t *ngap, uint8_t qfi)
 {
     int rv;
     ogs_pkbuf_t *gmmbuf = NULL;
@@ -40,7 +40,7 @@ static test_bearer_t *test_af_complete_qos_flow_modify(
             NGAP_ProcedureCode_id_PDUSessionResourceModify,
             test_ue->ngap_procedure_code);
 
-    qos_flow = test_qos_flow_find_by_qfi(sess, 2);
+    qos_flow = test_qos_flow_find_by_qfi(sess, qfi);
     ogs_assert(qos_flow);
 
     sendbuf = testngap_build_qos_flow_resource_modify_response(qos_flow);
@@ -69,6 +69,13 @@ static test_bearer_t *test_af_complete_qos_flow_modify(
     ogs_msleep(100);
 
     return qos_flow;
+}
+
+static test_bearer_t *test_af_complete_qos_flow_modify(
+        abts_case *tc, test_ue_t *test_ue, test_sess_t *sess,
+        ogs_socknode_t *ngap)
+{
+    return test_af_complete_qos_flow_modify_qfi(tc, test_ue, sess, ngap, 2);
 }
 
 static void test_af_qos_reference_setup(abts_case *tc, const char *msin,
@@ -299,9 +306,9 @@ static void test_af_qos_reference_setup(abts_case *tc, const char *msin,
 }
 
 /* The SMF releases the QoS flow of the PCC rule that the PCF removed */
-static void test_af_qos_flow_release(
+static void test_af_qos_flow_release_qfi(
         abts_case *tc, test_ue_t *test_ue, test_sess_t *sess,
-        ogs_socknode_t *ngap)
+        ogs_socknode_t *ngap, uint8_t qfi)
 {
     int rv;
     ogs_pkbuf_t *gmmbuf = NULL;
@@ -317,7 +324,7 @@ static void test_af_qos_flow_release(
             NGAP_ProcedureCode_id_PDUSessionResourceModify,
             test_ue->ngap_procedure_code);
 
-    qos_flow = test_qos_flow_find_by_qfi(sess, 2);
+    qos_flow = test_qos_flow_find_by_qfi(sess, qfi);
     ogs_assert(qos_flow);
 
     sendbuf = testngap_build_qos_flow_resource_release_response(qos_flow);
@@ -346,6 +353,13 @@ static void test_af_qos_flow_release(
     test_bearer_remove(qos_flow);
 
     ogs_msleep(100);
+}
+
+static void test_af_qos_flow_release(
+        abts_case *tc, test_ue_t *test_ue, test_sess_t *sess,
+        ogs_socknode_t *ngap)
+{
+    test_af_qos_flow_release_qfi(tc, test_ue, sess, ngap, 2);
 }
 
 static void test_af_qos_reference_delete(
@@ -6633,6 +6647,65 @@ static void test35_func(abts_case *tc, void *data)
     test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
 }
 
+/* One PATCH removes a media component and creates another: the SMF removes the QoS flow first, then creates the new one */
+static void test39_func(abts_case *tc, void *data)
+{
+    ogs_socknode_t *ngap = NULL;
+    ogs_socknode_t *gtpu = NULL;
+    test_ue_t *test_ue = NULL;
+    test_sess_t *sess = NULL;
+    test_bearer_t *qos_flow = NULL;
+    af_sess_t *af_sess = NULL;
+    af_npcf_policyauthorization_param_t af_param;
+    af_npcf_policyauthorization_raw_t raw;
+
+    test_af_qos_reference_setup(tc, "0000000039",
+            &test_ue, &sess, &af_sess, &ngap, &gtpu);
+
+    memset(&af_param, 0, sizeof(af_param));
+    af_param.med_type = OpenAPI_media_type_AUDIO;
+    af_param.qos_type = 1;
+    af_param.flow_type = 99;
+    af_local_send_to_pcf(af_sess, &af_param,
+            af_npcf_policyauthorization_build_create);
+    qos_flow = test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_assert(qos_flow);
+
+    /* media component 0 goes (null), media component 1 comes, in one decision of the PCF */
+    raw.method = "PATCH";
+    raw.path = "";
+    raw.body = "{\"ascReqData\":{\"medComponents\":{\"0\":null,"
+        "\"1\":{\"medCompN\":1,\"fStatus\":\"ENABLED\",\"medType\":\"AUDIO\","
+        "\"marBwDl\":\"96000 bps\",\"marBwUl\":\"96000 bps\","
+        "\"medSubComps\":{\"0\":{\"fNum\":0,\"flowUsage\":\"NO_INFO\","
+        "\"fDescs\":[\"permit out 17 from 172.20.166.84 to 10.45.0.2 20001\","
+        "\"permit in 17 from 10.45.0.2 to 172.20.166.84 20360\"]}}}}}}";
+    af_local_send_to_pcf(af_sess, &raw, af_npcf_policyauthorization_build_raw);
+    ogs_msleep(300);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_pcf_status);
+
+    /* The first PDU session modification command only releases the QoS flow */
+    test_af_qos_flow_release(tc, test_ue, sess, ngap);
+    ABTS_INT_EQUAL(tc, 1, sess->qos_flow_release);
+    ABTS_INT_EQUAL(tc, 0, sess->qos_flow_add_or_modify);
+
+    /* The second one, sent when the removal is answered, creates the new one: QFI 3, as the SMF takes QFIs in sequence */
+    qos_flow = test_af_complete_qos_flow_modify_qfi(tc, test_ue, sess, ngap, 3);
+    ogs_assert(qos_flow);
+    ABTS_INT_EQUAL(tc, 0, sess->qos_flow_release);
+    ABTS_INT_EQUAL(tc, 1, sess->qos_flow_add_or_modify);
+
+    /* The SMF is up: the application session ends and the new QoS flow goes */
+    af_local_send_to_pcf(af_sess, NULL,
+            af_npcf_policyauthorization_build_delete);
+    ogs_msleep(100);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_NO_CONTENT,
+            af_sess->last_pcf_status);
+    test_af_qos_flow_release_qfi(tc, test_ue, sess, ngap, 3);
+
+    test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
+}
+
 abts_suite *test_af(abts_suite *suite)
 {
     suite = ADD_SUITE(suite)
@@ -6682,6 +6755,7 @@ abts_suite *test_af(abts_suite *suite)
     abts_run_test(suite, test36_func, NULL);
     abts_run_test(suite, test37_func, NULL);
     abts_run_test(suite, test38_func, NULL);
+    abts_run_test(suite, test39_func, NULL);
 
     return suite;
 }

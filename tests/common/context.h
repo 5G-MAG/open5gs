@@ -465,6 +465,8 @@ typedef struct test_sess_s {
 
     ogs_list_t qos_flow_to_modify_list;
     bool qos_flow_modify_failure; /* the gNB answers a PDU session resource modify request with a failed list */
+    int qos_flow_add_or_modify; /* the QoS flows to add or modify, and */
+    int qos_flow_release;       /* the QoS flows to release in the last modify request */
     int ecn_request;    /* the ECN Marking at UPF Request of the last QoS flow of a modify request, plus 1 (0 none) */
     int ecn_status;     /* what the gNB answers a modify with: 0 no status, 1 active, 2 not active (TS 38.413 clause 9.3.1.267) */
     bool pdu_set_indicator; /* the gNB gives the PDU Set based Handling Indicator in the answer to a modify (TS 38.413 clause 9.3.1.268) */

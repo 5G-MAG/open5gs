@@ -665,8 +665,36 @@ void smf_qos_flow_binding(smf_sess_t *sess)
 
     uint64_t pfcp_flags, check;
     bool list_reset;
+    bool resume, defer_install;
 
     ogs_assert(sess);
+
+    /*
+     * One Session Modification Request cannot both create and remove QoS flows. A decision that does both removes first; the
+     * creations are taken up again when the removal is answered (binding_install_deferred).
+     */
+    resume = sess->binding_install_deferred;
+    sess->binding_install_deferred = false;
+
+    defer_install = false;
+    if (!resume) {
+        bool will_create = false, will_remove = false;
+
+        for (i = 0; i < sess->policy.num_of_pcc_rule; i++) {
+            ogs_pcc_rule_t *rule = &sess->policy.pcc_rule[i];
+
+            if (rule->id == NULL)
+                continue;
+            if (rule->type == OGS_PCC_RULE_TYPE_INSTALL &&
+                !smf_qos_flow_find_by_pcc_rule_id(sess, rule->id))
+                will_create = true;
+            else if (rule->type == OGS_PCC_RULE_TYPE_REMOVE &&
+                smf_qos_flow_find_by_pcc_rule_id(sess, rule->id))
+                will_remove = true;
+        }
+        defer_install = will_create && will_remove;
+        sess->binding_install_deferred = defer_install;
+    }
 
     pfcp_flags = OGS_PFCP_MODIFY_NETWORK_REQUESTED;
 
@@ -694,6 +722,10 @@ void smf_qos_flow_binding(smf_sess_t *sess)
             bool qos_presence = false;
 
             qos_flow = smf_qos_flow_find_by_pcc_rule_id(sess, pcc_rule->id);
+            if (qos_flow && resume)
+                continue; /* changed by the first part of this decision */
+            if (!qos_flow && defer_install)
+                continue; /* created once the removal is answered */
             if (!qos_flow) {
                 if (pcc_rule->num_of_flow == 0) {
                     /* TFT is mandatory in
@@ -1028,6 +1060,9 @@ void smf_qos_flow_binding(smf_sess_t *sess)
                     HOME_ROUTED_ROAMING_IN_HSMF(sess) ?
                         OGS_PFCP_MODIFY_HOME_ROUTED_ROAMING|pfcp_flags :
                         pfcp_flags, 0));
+    }    else {
+        /* nothing was sent: no answer will resume the decision */
+        sess->binding_install_deferred = false;
     }
     /* the QoS monitoring of the flows that changed goes to the UP function, one Session Reporting Rule at a time */
     {

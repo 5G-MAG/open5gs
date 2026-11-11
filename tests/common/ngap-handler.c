@@ -568,12 +568,14 @@ void testngap_handle_pdu_session_resource_modify_request(
                         &n2sm_message, sizeof(n2sm_message), n2smbuf);
                 ogs_assert(rv == OGS_OK);
 
+                sess->qos_flow_add_or_modify = sess->qos_flow_release = 0;
                 for (k = 0; k < OGS_ASN_LIST_COUNT(n2sm_message.protocolIEs); k++) {
                     ie2 = OGS_ASN_LIST_GET(n2sm_message.protocolIEs, k);
                     switch (ie2->id) {
                     case NGAP_ProtocolIE_ID_id_QosFlowAddOrModifyRequestList:
                         QosFlowAddOrModifyRequestList = ie2->value.choice.QosFlowAddOrModifyRequestList;
                         ogs_assert(QosFlowAddOrModifyRequestList);
+                        sess->qos_flow_add_or_modify += OGS_ASN_LIST_COUNT(QosFlowAddOrModifyRequestList);
                         for (l = 0;
                                 l < OGS_ASN_LIST_COUNT(QosFlowAddOrModifyRequestList);
                                 l++) {
@@ -610,6 +612,11 @@ void testngap_handle_pdu_session_resource_modify_request(
                                 }
                             }
                         }
+                        break;
+                    case NGAP_ProtocolIE_ID_id_QosFlowToReleaseList:
+                        if (ie2->value.choice.QosFlowListWithCause)
+                            sess->qos_flow_release += OGS_ASN_LIST_COUNT(
+                                    ie2->value.choice.QosFlowListWithCause);
                         break;
                     default:
                         break;

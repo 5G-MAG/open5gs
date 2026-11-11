@@ -4123,6 +4123,21 @@ void smf_gsm_state_exception(ogs_fsm_t *s, smf_event_t *e)
     switch (e->h.id) {
     case OGS_FSM_ENTRY_SIG:
         ogs_error("[%s:%d] State machine exception", smf_ue->supi, sess->psi);
+        /*
+         * The SM policy association ends with the PDU session: otherwise
+         * the PCF keeps it and notifies a session that no longer exists.
+         */
+        if (PCF_SM_POLICY_ASSOCIATED(sess)) {
+            int r;
+
+            memset(&sess->nsmf_param, 0, sizeof(sess->nsmf_param));
+            r = smf_sbi_discover_and_send(
+                    OpenAPI_service_name_npcf_smpolicycontrol, NULL,
+                    smf_npcf_smpolicycontrol_build_delete,
+                    sess, NULL,
+                    OGS_PFCP_DELETE_TRIGGER_AMF_UPDATE_SM_CONTEXT, NULL);
+            ogs_expect(r == OGS_OK);
+        }
         SMF_SESS_CLEAR(sess);
         break;
 

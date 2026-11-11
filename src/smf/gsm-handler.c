@@ -505,10 +505,23 @@ int gsm_handle_pdu_session_modification_request(
     }
 
     if (ogs_list_count(&sess->qos_flow_to_modify_list) != 1) {
-        ogs_error("[%s:%d] Invalid modification request [modify:%d]",
+        /*
+         * The request names a QoS flow that does
+         * not exist (any more, the PCF may have released it): reject the
+         * request, the PDU session stays.
+         */
+        ogs_warn("[%s:%d] Invalid modification request [modify:%d]",
                 smf_ue->supi, sess->psi,
                 ogs_list_count(&sess->qos_flow_to_modify_list));
-        goto cleanup;
+        n1smbuf = gsm_build_pdu_session_modification_reject(sess,
+            OGS_5GSM_CAUSE_SEMANTIC_ERROR_IN_THE_QOS_OPERATION);
+        ogs_assert(n1smbuf);
+
+        smf_sbi_send_sm_context_update_error_n1_n2_message(
+                stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                n1smbuf, OpenAPI_n2_sm_info_type_NULL, NULL);
+
+        return OGS_OK;
     }
 
     if (pfcp_flags & OGS_PFCP_MODIFY_REMOVE) {

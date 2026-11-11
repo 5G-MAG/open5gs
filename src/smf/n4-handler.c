@@ -1025,6 +1025,9 @@ void smf_5gc_n4_handle_session_modification_response(
                 smf_bearer_remove(qos_flow);
             }
 
+            if (sess->binding_install_deferred)
+                smf_qos_flow_binding(sess);
+
         } else if (flags & OGS_PFCP_MODIFY_UE_REQUESTED) {
             ogs_pkbuf_t *n1smbuf = NULL, *n2smbuf = NULL;
             smf_bearer_t *next = NULL;

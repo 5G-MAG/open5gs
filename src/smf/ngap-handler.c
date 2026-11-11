@@ -881,10 +881,14 @@ int ngap_handle_pdu_session_resource_modify_response_transfer(
     }
 
     if (ogs_list_count(&sess->qos_flow_to_modify_list) == 0) {
-        ogs_error("[%s:%d] No QoS flow", smf_ue->supi, sess->psi);
-        smf_sbi_send_sm_context_update_error_log(
-                stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
-                "No QoS flow", smf_ue->supi);
+        /*
+         * Late response: the QoS flows were released after the request
+         * was sent, nothing is left to activate. Not an error of the session.
+         */
+        ogs_warn("[%s:%d] The QoS flows of the response no longer exist",
+                smf_ue->supi, sess->psi);
+        ogs_assert(true == ogs_sbi_send_http_status_no_content(stream));
+        rv = OGS_OK;
         goto cleanup;
     }
 

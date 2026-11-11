@@ -117,11 +117,16 @@ static NGAP_PacketErrorRate_t *per_alloc(const char *string)
 {
     NGAP_PacketErrorRate_t *per = NULL;
 
-    if (!string || strlen(string) != 4)
+    if (!string || !string[0])
         return NULL;
+    /* PacketErrRate of TS 29.571: one digit, "E-", one digit; the scalar and the exponent of TS 38.413 clause 9.3.1.80 are 0 to 9 */
+    if (strlen(string) != 4 || string[0] < '0' || string[0] > '9' || string[1] != 'E' || string[2] != '-' ||
+            string[3] < '0' || string[3] > '9') {
+        ogs_error("The packet error rate [%s] is not of the form of PacketErrRate (digit, E-, digit) and is not sent", string);
+        return NULL;
+    }
     per = CALLOC(1, sizeof(*per));
     ogs_assert(per);
-    /* PacketErrRate of TS 29.571: one digit, "E-", one digit */
     per->pERScalar = string[0] - '0';
     per->pERExponent = string[3] - '0';
     return per;
