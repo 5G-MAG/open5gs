@@ -69,8 +69,15 @@ ogs_pkbuf_t *upf_n4mb_build_session_establishment_response(uint8_t type,
     ogs_pfcp_pdrbuf_init();
 
     /* Created PDR */
+    /* TS 29.244 Table 7.5.3.1-1, Created PDR: "This IE shall be present if the cause is set to "success" and the UP
+     * function was requested to allocate a local F-TEID or a UE IP address/prefix or a Mapped N6 IP address for the
+     * PDR." A PDR whose request carried an F-TEID without CH is not one. */
     for (i = 0, j = 0; i < num_of_created_pdr; i++) {
-        bool pdr_presence = ogs_pfcp_build_created_pdr(
+        bool pdr_presence;
+
+        if (!mbs_sess->pdr_f_teid_allocated[i])
+            continue;
+        pdr_presence = ogs_pfcp_build_created_pdr(
                 &rsp->created_pdr[j], i, created_pdr[i]);
         if (pdr_presence == true) j++;
     }
@@ -122,12 +129,11 @@ ogs_pkbuf_t *upf_n4mb_build_session_establishment_response(uint8_t type,
         multicast_transport_information.spare = 0;
 
         multicast_transport_information.c_teid = htobe32(mbs_sess->c_teid);
-                // Loops over the PDRs rather than indexing created_pdr[0]. One Common TEID is allocated per MBS
-                // session and used, through Apply Action FSSM, to forward that session's data for every PDR and FAR
-                // of the session (TS 29.244 cl.8.2.207 and cl.5.34.2.2), so indexing only the first leaves any
-                // further FAR with outer_header_creation.teid == 0, which ogs_pfcp_send_g_pdu() copies verbatim
-                // into outgoing GTP-U headers. Latent while the SMF creates one PDR and FAR per session, but this
-                // is the structurally correct form.
+                // Every PDR and FAR of the session gets the Common TEID, not only the first: the MB-SMF provisions
+                // one PDR, FAR and QER per MBS QoS flow, and one Common TEID is allocated per MBS session and used,
+                // through Apply Action FSSM, to forward the data of every flow (TS 29.244 cl. 8.2.207 and
+                // cl. 5.34.2.2). A FAR left with outer_header_creation.teid == 0 would have it copied verbatim into
+                // the outgoing GTP-U headers by ogs_pfcp_send_g_pdu().
         for (i = 0; i < num_of_created_pdr; i++)
             created_pdr[i]->far->outer_header_creation.teid = mbs_sess->c_teid;
 

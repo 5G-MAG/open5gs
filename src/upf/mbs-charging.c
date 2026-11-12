@@ -269,6 +269,9 @@ static void fill_report(upf_mbs_urr_acc_t *acc, ogs_pfcp_user_plane_report_t *re
     report->usage_report[idx].id = acc->id;
     report->usage_report[idx].seqn = acc->seqn++;
     report->usage_report[idx].rep_trigger = *trigger;
+    /* "Only volume-based measurement shall be used" (TS 29.244 V18.10.0 cl. 5.34.2.5) and Duration Measurement is not
+     * applicable on N4mb (Table 7.5.7.2-1) */
+    report->usage_report[idx].dur_measurement_not_applicable = true;
     report->usage_report[idx].start_time = ogs_time_to_ntp32(acc->period_start);
     report->usage_report[idx].end_time = ogs_time_to_ntp32(now);
     report->usage_report[idx].vol_measurement.tovol = 1;

@@ -102,6 +102,27 @@ static uint16_t _get_eth_type(uint8_t *data, uint len) {
     return 0;
 }
 
+/* TS 29.244 V18.10.0 Table 7.5.2.5-1, Maximum Bitrate (N4mb "X"): "This IE shall be present if an MBR enforcement action
+ * shall be applied to packets matching this PDR." A packet is let through when the packets before it have not used the
+ * rate up by more than the time this packet itself takes at that rate (a burst of one packet: no clause gives a larger
+ * burst), and it then takes its own time at the rate. */
+static bool upf_mbs_qer_mbr_admit(ogs_pfcp_qer_t *qer, uint32_t octets)
+{
+    ogs_time_t now = ogs_time_now();
+    ogs_time_t duration;
+
+    if (!qer->mbr.downlink)
+        return true;
+
+    duration = (ogs_time_t)((uint64_t)octets * 8 * 1000000 / qer->mbr.downlink);
+    if (qer->mbs_mbr_next_time > now + duration)
+        return false;
+    if (qer->mbs_mbr_next_time < now)
+        qer->mbs_mbr_next_time = now;
+    qer->mbs_mbr_next_time += duration;
+    return true;
+}
+
 static void _gtpv1_tun_recv_common_cb(
         short when, ogs_socket_t fd, bool has_eth, void *data)
 {
@@ -283,6 +304,13 @@ void upf_gtpv1_receive_buffer_for_mbs_sess(ogs_pkbuf_t *recvbuf, upf_mbs_sess_t 
         if (ogs_global_conf()->parameter.multicast) {
             upf_gtp_handle_multicast(recvbuf);
         }
+        ogs_pkbuf_free(recvbuf);
+        return;
+    }
+
+    /* The Maximum Bitrate of the QER is enforced on the MBS session's flow */
+    if (!sess && pdr->qer && !upf_mbs_qer_mbr_admit(pdr->qer, recvbuf->len)) {
+        ogs_debug("MBS data discarded: the Maximum Bitrate of the QER is used up");
         ogs_pkbuf_free(recvbuf);
         return;
     }

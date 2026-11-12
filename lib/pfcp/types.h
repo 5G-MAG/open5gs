@@ -1576,6 +1576,8 @@ typedef struct ogs_pfcp_user_plane_report_s {
         ogs_pfcp_end_time_t end_time;
         ogs_pfcp_volume_measurement_t vol_measurement;
         ogs_pfcp_duration_measurement_t dur_measurement;
+        /* the interface carries no duration measurement in this report (N4mb, TS 29.244 Table 7.5.7.2-1): the IE is left out */
+        bool dur_measurement_not_applicable;
         ogs_pfcp_time_of_first_packet_t time_of_first_packet;
         ogs_pfcp_time_of_last_packet_t time_of_last_packet;
     } usage_report [OGS_MAX_NUM_OF_URR];

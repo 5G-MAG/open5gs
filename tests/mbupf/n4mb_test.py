@@ -676,6 +676,24 @@ def pdr_request(cp_seid, *pdrs, flags=0x01):
 
 
 @test
+def t_U09_5_created_pdr_only_for_a_local_f_teid_the_upf_was_asked_to_allocate():
+    # TS 29.244 V18.10.0 Table 7.5.3.1-1, Created PDR: "This IE shall be present if the cause is set to "success" and the UP
+    # function was requested to allocate a local F-TEID or a UE IP address/prefix or a Mapped N6 IP address for the PDR."
+    given = ie(21, b'\x01' + struct.pack('>I', 0x1234) + socket.inet_aton('127.0.0.9'))
+    r = U.establish(pdr_request(0x8101, pdr(pdr_id=1, pdi_extra=(given,))))
+    s = accepted(r, 'F-TEID given by the CP, no CH')
+    assert not all_ies(r, T_CREATED_PDR), 'a Created PDR for an F-TEID the UP function did not allocate'
+    U.delete(s)
+    asked = ie(21, b'\x05')  # V4 and CH
+    r = U.establish(pdr_request(0x8102, pdr(pdr_id=1, pdi_extra=(asked,))))
+    s = accepted(r, 'CH set')
+    created = all_ies(r, T_CREATED_PDR)
+    assert len(created) == 1, '%d Created PDR for an F-TEID the UP function was asked to allocate' % len(created)
+    assert struct.unpack('>H', dict(parse_ies(created[0]))[56])[0] == 1, 'PDR ID'
+    U.delete(s)
+
+
+@test
 def t_U10_8_ingress_tunnel_in_the_pdr():
     r = U.establish(pdr_request(0x8001, pdr(pdr_id=1, pdi_extra=(lit_choose(),))))
     s = accepted(r, 'Local Ingress Tunnel in the PDI')
@@ -1097,6 +1115,36 @@ def t_U13_4_closed_downlink_gate_discards():
     finally:
         lst.close()
         U.delete(s)
+
+
+def mbr_qer(mbr_kbps):
+    kbps = struct.pack('>Q', mbr_kbps)[3:]
+    parts = [ie(T_QER_ID, struct.pack('>I', 1)), ie(T_GATE, b'\x00'), ie(T_QFI, b'\x01')]
+    if mbr_kbps:
+        parts.insert(2, ie(T_MBR, kbps + kbps))
+    return ie(T_CREATE_QER, parts)
+
+
+@test
+def t_U13_4_maximum_bitrate_is_enforced_on_the_mbs_data():
+    # TS 29.244 V18.10.0 Table 7.5.2.5-1, Maximum Bitrate: "This IE shall be present if an MBR enforcement action shall be
+    # applied to packets matching this PDR." Without it all packets of a burst pass; with 1 kbps (a packet of the test takes
+    # far longer than the burst lasts) the first and a second on credit pass and the rest are discarded.
+    seen = {}
+    for name, mbr in (('no MBR', 0), ('1 kbps', 1)):
+        r = U.establish(replace_ie(mc_request(0xd011 + mbr, b'\x02' + V4G, None), T_CREATE_QER, mbr_qer(mbr)))
+        s = accepted(r, 'QER, %s' % name)
+        lst = N3mbListener(mc_group_of(r))
+        try:
+            for _ in range(6):
+                send_multicast('10.46.0.1', '232.1.1.1')
+            time.sleep(0.5)
+            seen[name] = sum(1 for p in lst.packets() if b'mbs-data' in p)
+        finally:
+            lst.close()
+            U.delete(s)
+    assert seen['no MBR'] == 6, 'without a Maximum Bitrate %d of 6 packets passed' % seen['no MBR']
+    assert 1 <= seen['1 kbps'] <= 2, 'with 1 kbps %d of 6 packets passed' % seen['1 kbps']
 
 
 def gtpu_parse(p):
@@ -3463,6 +3511,114 @@ def t_mbs_charging_reports_volume_threshold_period_and_linked_usage():
     s = accepted(r, 'second periodic URR')
     U.delete(s)
     assert session_report(s, 2.5) is None and U.alive()
+
+
+def n3mb_sources(group, send):
+    """The source addresses of the N3mb packets the UPF sends to the group while send() runs."""
+    sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sk.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sk.bind((group, 2152))
+    sk.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, socket.inet_aton(group) + socket.inet_aton('127.0.0.1'))
+    sk.settimeout(0.7)
+    got = []
+    try:
+        send()
+        while True:
+            data, addr = sk.recvfrom(65535)
+            got.append(addr[0])
+    except socket.timeout:
+        pass
+    finally:
+        sk.close()
+    return got
+
+
+@test
+def t_U12_2_packets_carry_the_announced_source_address():
+    """TS 29.244 cl. 3.1, Low Layer Source Specific Multicast address: "The MB-UPF sets the outer header of the DL UP packets with the respective
+    source IP address and destination multicast IP address." With two GTP-U addresses the packets leave from the one the session announces: the
+    source the MB-SMF gives when it restores a session, the one the MB-UPF allocates otherwise."""
+    U.restart(gtpu6='127.0.0.32')           # a second IPv4 GTP-U address: the last IPv4 socket is 127.0.0.32
+    try:
+        send = lambda: send_multicast('10.46.0.1', '232.1.1.1')
+        # the same group twice, from each of the two addresses in turn: what the first session left behind is not used by the second
+        for n, announced in enumerate(('127.0.0.31', '127.0.0.32', '127.0.0.31')):
+            group = '239.77.0.21'
+            r = U.establish(resti_request(0xf801 + n, mti(0x00555500 + n, socket.inet_aton(group), socket.inet_aton(announced))))
+            s = accepted(r, 'restoration, source %s' % announced)
+            got = n3mb_sources(group, send)
+            assert got, 'nothing on the group %s' % group
+            assert set(got) == {announced}, 'announced source %s, packets from %s' % (announced, sorted(set(got)))
+            if n == 0:
+                # a flow added by a modification sends from the same address
+                pdi = [ie(T_SRC_IF, b'\x01'), ie(T_QFI, b'\x02'), mc_info(b'\x02' + V4G, None)]
+                m = modify(s, ie(T_CREATE_PDR, [ie(T_PDR_ID, struct.pack('>H', 2)), ie(T_PRECEDENCE, struct.pack('>I', 10)), ie(T_PDI, pdi),
+                                                ie(T_FAR_ID, struct.pack('>I', 2)), ie(T_QER_ID, struct.pack('>I', 2))]),
+                           far(far_id=2), qer(qer_id=2, qfi=2))
+                assert m and cause(m) == CAUSE_ACCEPTED, 'flow added: %s' % (cause(m) if m else None)
+                got = n3mb_sources(group, send)
+                assert got and set(got) == {announced}, 'added flow: packets from %s' % sorted(set(got))
+            U.delete(s)
+        # allocated by the MB-UPF (PLLSSM): the response's source is the one the packets carry
+        r = U.establish(mc_request(0xf810, b'\x02' + V4G, None))
+        s = accepted(r, 'allocation')
+        info = dict(parse_ies(find(r, T_N4MB_INFO)))[T_MC_TRANSPORT]
+        announced = socket.inet_ntoa(info[11:15])
+        got = n3mb_sources(mc_group_of(r), send)
+        assert got and set(got) == {announced}, 'announced source %s, packets from %s' % (announced, sorted(set(got)))
+        U.delete(s)
+        # an address that is not a GTP-U address of the MB-UPF is not available as a source
+        r = U.establish(resti_request(0xf811, mti(0x1, socket.inet_aton('239.77.0.25'), socket.inet_aton('127.0.0.33'))))
+        assert r and cause(r) == CAUSE_RESTORATION_FAILURE and offending(r) == T_MC_TRANSPORT, 'foreign source: %s' % (cause(r) if r else None)
+    finally:
+        U.restart()
+
+
+T_APPLICATION_ID, T_FAILED_RULE_ID = 24, 114
+
+
+def failed_rule(r):
+    """The Failed Rule ID of a response as (Rule ID Type, Rule ID value), or None."""
+    v = find(r, T_FAILED_RULE_ID)
+    if v is None:
+        return None
+    return v[0] & 0x1f, int.from_bytes(v[1:], 'big')
+
+
+@test
+def t_U03_9_application_id_in_the_pdi_is_a_rule_that_cannot_be_applied():
+    """TS 29.244 Table 7.5.2.2-2: the Application ID "shall identify the Application ID to match for the incoming packet"; the MB-UPF has no
+    application detection filter, so the rule cannot be applied and the request is rejected (cl. 5.2.9: "If the CP function or the UP function does
+    not support the PSUCC feature, the UP function shall reject a PFCP session establishment or modification request if at least one rule fails to be
+    applied") with the Rule ID of the first rule that failed (cl. 6.3.2.3), the Failed Rule ID (Table 7.5.3.1-1)."""
+    app = ie(T_APPLICATION_ID, b'video')
+    # establishment: the PDR that names an Application ID; nothing of the request is kept
+    r = U.establish(pdr_request(0xfa01, pdr(pdr_id=1, pdi_extra=(app,))))
+    assert r and cause(r) == CAUSE_RULE_FAILURE, 'cause %s' % (cause(r) if r else None)
+    assert failed_rule(r) == (0, 1), 'Failed Rule ID %s' % (failed_rule(r),)
+    assert upf_seid(r) is None and find(r, T_NODE_ID) is not None
+    # the first of several that failed is the one named, and the PDR with no Application ID before it is not a failure
+    r = U.establish(pdr_request(0xfa01, pdr(pdr_id=1), pdr(pdr_id=2, pdi_extra=(app,)), pdr(pdr_id=3, pdi_extra=(app,))))
+    assert r and cause(r) == CAUSE_RULE_FAILURE and failed_rule(r) == (0, 2), 'two PDRs: %s %s' % (cause(r) if r else None, failed_rule(r) if r else None)
+    # the same CP SEID is free again: no session was left behind
+    s = accepted(U.establish(pdr_request(0xfa01, pdr(pdr_id=1))), 'the request without an Application ID')
+    try:
+        # modification, Create PDR
+        m = modify(s, pdr(pdr_id=5, far_id=1, qer_id=1, pdi_extra=(app,)))
+        assert m and cause(m) == CAUSE_RULE_FAILURE and failed_rule(m) == (0, 5), 'Create PDR: %s %s' % (cause(m) if m else None, failed_rule(m) if m else None)
+        m = modify(s, pdr(pdr_id=5, far_id=1, qer_id=1))
+        assert m and cause(m) == CAUSE_ACCEPTED, 'the PDR 5 was created by the refused request: %s' % (cause(m) if m else None)
+        # modification, Update PDR with a PDI
+        m = modify(s, update_pdr(5, pdi=ie(T_SRC_IF, b'\x01') + app))
+        assert m and cause(m) == CAUSE_RULE_FAILURE and failed_rule(m) == (0, 5), 'Update PDR: %s %s' % (cause(m) if m else None, failed_rule(m) if m else None)
+        m = modify(s, update_pdr(5, precedence=7))
+        assert m and cause(m) == CAUSE_ACCEPTED, 'Update PDR without the Application ID: %s' % (cause(m) if m else None)
+        # a rule that is named by no error carries no Failed Rule ID
+        m = modify(s, pdr(pdr_id=1, far_id=1, qer_id=1))
+        assert m and cause(m) == CAUSE_RULE_FAILURE and failed_rule(m) is None, 'PDR 1 exists: %s' % (failed_rule(m) if m else None)
+    finally:
+        U.delete(s)
+    assert U.alive()
 
 
 # E-TESTS-BELOW

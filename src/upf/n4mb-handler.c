@@ -428,6 +428,31 @@ static uint8_t _decode_multicast_transport_information(const ogs_tlv_octet_t *ie
 }
 
 /*
+ * The GTP-U socket that sends from the address a low layer SSM announces as its source: TS 29.244 cl. 3.1 (Low Layer
+ * Source Specific Multicast address) says "The MB-UPF sets the outer header of the DL UP packets with the respective
+ * source IP address and destination multicast IP address", and a UDP socket sends from the address it is bound to.
+ * NULL if none of the GTP-U sockets is bound to that address.
+ */
+static ogs_sock_t *_gtpu_socket_of_source(const ogs_ip_t *src)
+{
+    ogs_socknode_t *node = NULL;
+
+    ogs_list_for_each(&ogs_gtp_self()->gtpu_list, node) {
+        const ogs_sockaddr_t *local;
+
+        if (!node->sock)
+            continue;
+        local = &node->sock->local_addr;
+        if (src->ipv4 && local->ogs_sa_family == AF_INET && local->sin.sin_addr.s_addr == src->addr)
+            return node->sock;
+        if (src->ipv6 && local->ogs_sa_family == AF_INET6 &&
+                memcmp(&local->sin6.sin6_addr, src->addr6, OGS_IPV6_LEN) == 0)
+            return node->sock;
+    }
+    return NULL;
+}
+
+/*
  * Whether the MB-UPF can use the low layer SSM that the MB-SMF asks for in an MBS restoration (TS 29.244 Table 7.5.2.1-4
  * NOTE: "If one requested address is not available at the MB-UPF, the MB-UPF shall reject the PFCP Session
  * Establishment Request with the cause "PFCP session restoration failure due to requested resource not available""):
@@ -436,24 +461,9 @@ static uint8_t _decode_multicast_transport_information(const ogs_tlv_octet_t *ie
  */
 static bool _requested_llssm_available(const ogs_ip_t *dest, const ogs_ip_t *src)
 {
-    ogs_socknode_t *node = NULL;
-    ogs_sockaddr_t *addr = NULL;
-
     if (ogs_pfcp_llssm_dest_in_use(dest))
         return false;
-    if (!src->ipv4 && !ogs_gtp_self()->gtpu_sock6)
-        return false;
-
-    ogs_list_for_each(&ogs_gtp_self()->gtpu_list, node) {
-        for (addr = node->addr; addr; addr = addr->next) {
-            if (src->ipv4 && addr->ogs_sa_family == AF_INET && addr->sin.sin_addr.s_addr == src->addr)
-                return true;
-            if (!src->ipv4 && addr->ogs_sa_family == AF_INET6 &&
-                    memcmp(&addr->sin6.sin6_addr, src->addr6, OGS_IPV6_LEN) == 0)
-                return true;
-        }
-    }
-    return false;
+    return _gtpu_socket_of_source(src) != NULL;
 }
 
 /*
@@ -485,8 +495,19 @@ static int _setup_far_node(upf_mbs_sess_t *mbs_sess, ogs_pfcp_far_t *far)
         return OGS_ERROR;
     }
 
-    if (far->gnode)
+    if (far->gnode) {
+        /* The node of the group sends from the last GTP-U socket of its family; the packets carry the source address of
+         * the low layer SSM, so they leave from the socket that has it. */
+        ogs_gtp_node_t *gnode = far->gnode;
+        ogs_sock_t *sock = _gtpu_socket_of_source(&mbs_sess->ll_ssm->src_ip_addr);
+
+        if (!sock || sock->family != gnode->sock->family) {
+            ogs_error("No GTP-U socket sends from the source address of the low layer SSM");
+            return OGS_ERROR;
+        }
+        gnode->sock = sock;
         ogs_pfcp_far_f_teid_hash_set(far);
+    }
 
     return OGS_OK;
 }
@@ -564,6 +585,21 @@ static bool _cp_f_seid_valid(const ogs_pfcp_tlv_f_seid_t *ie_, uint8_t *cause_va
 }
 
 /*
+ * The PDI of a PDR that names an Application ID. The Application ID "shall identify the Application ID to match for the
+ * incoming packet" (TS 29.244 Table 7.5.2.2-2) and "contains an Application Identifier referencing an application
+ * detection filter in the UP function" (cl. 8.2.6); the MB-UPF has none: its Application IDs would be preconfigured, or
+ * provisioned by the PFD Management procedure, which is not applicable to N4mb (Table 7.4.3.1-2, N4mb "-"), and nothing
+ * of the kind is configured. The Application ID is unknown to it, the rule cannot be applied, and a UP function that does
+ * not support partial acceptance "shall reject a PFCP session establishment or modification request if at least one
+ * rule fails to be applied" (cl. 5.2.9), returning "the Rule ID of the Rule causing the first error" (cl. 6.3.2.3).
+ * Only a PDR that has its ID can be named.
+ */
+static bool _unknown_application_id(const ogs_pfcp_tlv_pdr_id_t *pdr_id, const ogs_pfcp_tlv_pdi_t *pdi)
+{
+    return pdi->application_id.presence && pdr_id->presence;
+}
+
+/*
  * Checks that the mandatory IEs of an N4mb Session Establishment Request are present. On a failure the
  * response has been sent and false is returned, and no session has been allocated.
  */
@@ -572,6 +608,7 @@ bool upf_n4mb_check_session_establishment_request(
 {
     uint8_t cause_value = OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
     uint16_t offending_ie_value = 0;
+    int32_t failed_pdr_id = -1;
     uint64_t cp_seid = 0;
 
     ogs_assert(xact);
@@ -766,6 +803,20 @@ bool upf_n4mb_check_session_establishment_request(
         }
     }
 
+    /* An Application ID in a PDI is a rule that cannot be applied, see _unknown_application_id() */
+    if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED) {
+        int i;
+
+        for (i = 0; i < OGS_MAX_NUM_OF_PDR && req->create_pdr[i].presence; i++) {
+            if (_unknown_application_id(&req->create_pdr[i].pdr_id, &req->create_pdr[i].pdi)) {
+                ogs_error("Application ID in the PDI of PDR %u of the N4mb Session Establishment Request", req->create_pdr[i].pdr_id.u16);
+                cause_value = OGS_PFCP_CAUSE_RULE_CREATION_MODIFICATION_FAILURE;
+                failed_pdr_id = req->create_pdr[i].pdr_id.u16;
+                break;
+            }
+        }
+    }
+
     if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED)
         return true;
 
@@ -775,9 +826,13 @@ bool upf_n4mb_check_session_establishment_request(
         ogs_pfcp_f_seid_t *f_seid = req->cp_f_seid.data;
         cp_seid = be64toh(f_seid->seid);
     }
-    ogs_pfcp_send_error_message(xact, cp_seid,
-            OGS_PFCP_SESSION_ESTABLISHMENT_RESPONSE_TYPE,
-            cause_value, offending_ie_value);
+    if (failed_pdr_id >= 0)
+        ogs_pfcp_send_error_message_failed_pdr(xact, cp_seid,
+                OGS_PFCP_SESSION_ESTABLISHMENT_RESPONSE_TYPE, cause_value, failed_pdr_id);
+    else
+        ogs_pfcp_send_error_message(xact, cp_seid,
+                OGS_PFCP_SESSION_ESTABLISHMENT_RESPONSE_TYPE,
+                cause_value, offending_ie_value);
     return false;
 }
 
@@ -961,6 +1016,10 @@ void upf_n4mb_handle_session_establishment_request(
     for (i = 0; i < num_of_created_pdr; i++) {
         pdr = created_pdr[i];
         ogs_assert(pdr);
+
+        /* Remember whether the UP function was asked to choose the local F-TEID: the hash set below replaces the
+         * flags of the F-TEID, and only such a PDR is a Created PDR (TS 29.244 Table 7.5.3.1-1). */
+        mbs_sess->pdr_f_teid_allocated[i] = pdr->f_teid_len && pdr->f_teid.ch;
 
         /* Setup UPF-N3-TEID & QFI Hash */
         // NOTE (borieher): restoration_indication set to NULL
@@ -1309,7 +1368,7 @@ static int _check_flow_pdi(upf_mbs_sess_t *mbs_sess, const ogs_pfcp_tlv_pdi_t *p
  * checks are those of the establishment, and a rule is new: one that exists is not replaced.
  */
 static int _check_flow_changes(upf_mbs_sess_t *mbs_sess, const ogs_pfcp_session_modification_request_t *req,
-        uint8_t *cause_value, uint16_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value, int32_t *failed_pdr_id)
 {
     ogs_pfcp_pdr_t *pdr;
     size_t i, j;
@@ -1370,6 +1429,11 @@ static int _check_flow_changes(upf_mbs_sess_t *mbs_sess, const ogs_pfcp_session_
                 FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_MISSING, OGS_PFCP_SOURCE_INTERFACE_TYPE);
             if (_check_flow_pdi(mbs_sess, &u->pdi, cause_value, offending_ie_value) != OGS_OK)
                 return OGS_ERROR;
+            if (_unknown_application_id(&u->pdr_id, &u->pdi)) {
+                *cause_value = OGS_PFCP_CAUSE_RULE_CREATION_MODIFICATION_FAILURE;
+                *failed_pdr_id = u->pdr_id.u16;
+                return OGS_ERROR;
+            }
         }
     }
 
@@ -1429,6 +1493,11 @@ static int _check_flow_changes(upf_mbs_sess_t *mbs_sess, const ogs_pfcp_session_
             FAIL(OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT, OGS_PFCP_QER_ID_TYPE);
         if (_check_flow_pdi(mbs_sess, &c->pdi, cause_value, offending_ie_value) != OGS_OK)
             return OGS_ERROR;
+        if (_unknown_application_id(&c->pdr_id, &c->pdi)) {
+            *cause_value = OGS_PFCP_CAUSE_RULE_CREATION_MODIFICATION_FAILURE;
+            *failed_pdr_id = c->pdr_id.u16;
+            return OGS_ERROR;
+        }
     }
 
     for (i = 0; i < OGS_ARRAY_SIZE(req->create_far) && req->create_far[i].presence; i++) {
@@ -1780,6 +1849,7 @@ void upf_n4mb_handle_session_modification_request(
     int i;
     uint8_t cause_value = OGS_PFCP_CAUSE_REQUEST_ACCEPTED;
     uint16_t offending_ie_value = 0;
+    int32_t failed_pdr_id = -1;
     mbs_unicast_journal_t journal;
     ogs_pfcp_far_t *far;
     bool delete_all_f_teids = false;
@@ -1833,7 +1903,7 @@ void upf_n4mb_handle_session_modification_request(
         goto reject;
     }
 
-    if (_check_flow_changes(mbs_sess, req, &cause_value, &offending_ie_value) != OGS_OK)
+    if (_check_flow_changes(mbs_sess, req, &cause_value, &offending_ie_value, &failed_pdr_id) != OGS_OK)
         goto reject;
 
     /* URRs (Table 7.5.4.1-1, N4mb "X": Create URR, Remove URR, Query URR; Update URR is not applied, see _modification_ie_not_supported()) */
@@ -1928,8 +1998,12 @@ rollback_flows:
 rollback:
     _journal_rollback(&journal);
 reject:
-    ogs_pfcp_send_error_message(xact, mbs_sess->smf_n4mb_f_seid.seid,
-            OGS_PFCP_SESSION_MODIFICATION_RESPONSE_TYPE, cause_value, offending_ie_value);
+    if (failed_pdr_id >= 0)
+        ogs_pfcp_send_error_message_failed_pdr(xact, mbs_sess->smf_n4mb_f_seid.seid,
+                OGS_PFCP_SESSION_MODIFICATION_RESPONSE_TYPE, cause_value, failed_pdr_id);
+    else
+        ogs_pfcp_send_error_message(xact, mbs_sess->smf_n4mb_f_seid.seid,
+                OGS_PFCP_SESSION_MODIFICATION_RESPONSE_TYPE, cause_value, offending_ie_value);
 }
 
 /*

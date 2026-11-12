@@ -1198,7 +1198,7 @@ ogs_pkbuf_t *ogs_pfcp_build_session_deletion_response( uint8_t type, uint8_t cau
                         sizeof(usage_report_buf[i].vol_meas));
             }
 
-            if (report->usage_report[i].dur_measurement) {
+            if (!report->usage_report[i].dur_measurement_not_applicable) {
                 rsp->usage_report[i].duration_measurement.presence = 1;
                 rsp->usage_report[i].duration_measurement.u32 =
                     report->usage_report[i].dur_measurement;

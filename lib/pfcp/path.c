@@ -588,12 +588,15 @@ void ogs_pfcp_send_buffered_packet(ogs_pfcp_pdr_t *pdr)
     }
 }
 
-void ogs_pfcp_send_error_message(
+/* failed_pdr_id: the PDR that failed to be created or modified (a negative value if no rule is named); only the Session
+ * Establishment and Session Modification Responses carry it. */
+static void send_error_message(
     ogs_pfcp_xact_t *xact, uint64_t seid, uint8_t type,
-    uint8_t cause_value, uint16_t offending_ie_value)
+    uint8_t cause_value, uint16_t offending_ie_value, int32_t failed_pdr_id)
 {
     int rv;
     ogs_pfcp_message_t errmsg;
+    uint8_t failed_rule_id[3];
     ogs_pfcp_tlv_cause_t *cause = NULL;
     ogs_pfcp_tlv_offending_ie_t *offending_ie = NULL;
     ogs_pfcp_node_id_t node_id;
@@ -642,10 +645,27 @@ void ogs_pfcp_send_error_message(
         } else {
             ogs_error("ogs_pfcp_sockaddr_to_node_id() failed");
         }
+        if (failed_pdr_id >= 0) {
+            /* TS 29.244 Figure 8.2.80-1: Rule ID Type (PDR is 0) in octet 5, the Rule ID value after it (the PDR ID is 2 octets) */
+            failed_rule_id[0] = 0;
+            failed_rule_id[1] = (failed_pdr_id >> 8) & 0xff;
+            failed_rule_id[2] = failed_pdr_id & 0xff;
+            errmsg.pfcp_session_establishment_response.failed_rule_id.presence = 1;
+            errmsg.pfcp_session_establishment_response.failed_rule_id.data = failed_rule_id;
+            errmsg.pfcp_session_establishment_response.failed_rule_id.len = sizeof(failed_rule_id);
+        }
         break;
     case OGS_PFCP_SESSION_MODIFICATION_RESPONSE_TYPE:
         cause = &errmsg.pfcp_session_modification_response.cause;
         offending_ie = &errmsg.pfcp_session_modification_response.offending_ie;
+        if (failed_pdr_id >= 0) {
+            failed_rule_id[0] = 0;
+            failed_rule_id[1] = (failed_pdr_id >> 8) & 0xff;
+            failed_rule_id[2] = failed_pdr_id & 0xff;
+            errmsg.pfcp_session_modification_response.failed_rule_id.presence = 1;
+            errmsg.pfcp_session_modification_response.failed_rule_id.data = failed_rule_id;
+            errmsg.pfcp_session_modification_response.failed_rule_id.len = sizeof(failed_rule_id);
+        }
         break;
     case OGS_PFCP_SESSION_DELETION_RESPONSE_TYPE:
         cause = &errmsg.pfcp_session_deletion_response.cause;
@@ -684,4 +704,18 @@ void ogs_pfcp_send_error_message(
 
     rv = ogs_pfcp_xact_commit(xact);
     ogs_expect(rv == OGS_OK);
+}
+
+void ogs_pfcp_send_error_message(
+    ogs_pfcp_xact_t *xact, uint64_t seid, uint8_t type,
+    uint8_t cause_value, uint16_t offending_ie_value)
+{
+    send_error_message(xact, seid, type, cause_value, offending_ie_value, -1);
+}
+
+void ogs_pfcp_send_error_message_failed_pdr(
+    ogs_pfcp_xact_t *xact, uint64_t seid, uint8_t type,
+    uint8_t cause_value, uint16_t failed_pdr_id)
+{
+    send_error_message(xact, seid, type, cause_value, 0, failed_pdr_id);
 }

@@ -336,6 +336,10 @@ typedef struct ogs_pfcp_qer_s {
 
     uint8_t                 qfi;
 
+    /* MBR enforcement of the MBS data of the flow: the time, in microseconds, at which the packets that were let through
+     * have used the Maximum Bitrate up (a meter with a burst of one packet), see upf_mbs_qer_mbr_admit() */
+    ogs_time_t              mbs_mbr_next_time;
+
     /* IQFISN of the QER Indications: the MB-UPF inserts the DL MBS QFI Sequence Number of the flow */
     bool                    insert_mbs_qfi_sn;
     uint32_t                mbs_qfi_sn;     /* the number of the next packet of the flow */

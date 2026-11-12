@@ -95,6 +95,12 @@ void ogs_pfcp_send_error_message(
     ogs_pfcp_xact_t *xact, uint64_t seid, uint8_t type,
     uint8_t cause_value, uint16_t offending_ie_value);
 
+/* A Session Establishment or Session Modification Response that rejects the request because the PDR with this ID failed
+ * to be created or modified: the Failed Rule ID IE names the PDR (TS 29.244 Table 7.5.3.1-1) */
+void ogs_pfcp_send_error_message_failed_pdr(
+    ogs_pfcp_xact_t *xact, uint64_t seid, uint8_t type,
+    uint8_t cause_value, uint16_t failed_pdr_id);
+
 #ifdef __cplusplus
 }
 #endif
