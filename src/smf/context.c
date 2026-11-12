@@ -26,6 +26,7 @@
 #include "mbs-restore.h"
 #include "mbs-charging.h"
 #include "mbs-pcf.h"
+#include "mbs-update.h"
 
 static smf_context_t self;
 static ogs_diam_config_t g_diam_conf;
@@ -147,6 +148,7 @@ void smf_context_init(void)
     ogs_list_init(&self.tmgi_list);
     ogs_pool_init(&smf_mbs_sess_pool, ogs_global_conf()->max.mbs.mbs_sessions);
     ogs_list_init(&self.smf_mbs_sess_list);
+    ogs_list_init(&self.mbs_fsa_id_list);
 
     self.supi_hash = ogs_hash_make();
     ogs_assert(self.supi_hash);
@@ -181,6 +183,15 @@ void smf_context_final(void)
     if (self.nid) {
         ogs_free(self.nid);
         self.nid = NULL;
+    }
+
+    {
+        smf_mbs_fsa_id_t *fsa_id = NULL, *next_fsa_id = NULL;
+
+        ogs_list_for_each_safe(&self.mbs_fsa_id_list, next_fsa_id, fsa_id) {
+            ogs_list_remove(&self.mbs_fsa_id_list, fsa_id);
+            ogs_free(fsa_id);
+        }
     }
 
     ogs_assert(self.supi_hash);
@@ -1103,6 +1114,43 @@ int smf_context_parse_config(void)
                     }
                     self.has_mbs_max_response_time = true;
                     self.mbs_max_response_time = (int)seconds;
+                } else if (!strcmp(smf_key, "mbsFsaIds")) {
+                    /* TS 23.247 V18.8.0 cl. 7.1.1.2 step 11: "if no MBS FSA ID(s) have been received, the MB-SMF
+                     * selects MBS FSA ID(s) for the Broadcast MBS session based on local configuration." The
+                     * clause names no format; this list, six hexadecimal digits each (TS 29.571 MbsFsaId), is the
+                     * configuration: the MBS FSA IDs of a broadcast session whose Create request has none. */
+                    ogs_yaml_iter_t ids_iter;
+                    ogs_yaml_iter_recurse(&smf_iter, &ids_iter);
+                    if (ogs_yaml_iter_type(&ids_iter) == YAML_MAPPING_NODE) {
+                        ogs_error("`smf.mbsFsaIds` is a list of MBS FSA IDs");
+                        return OGS_ERROR;
+                    }
+
+                    do {
+                        const char *id = NULL;
+
+                        if (ogs_yaml_iter_type(&ids_iter) == YAML_SEQUENCE_NODE) {
+                            if (!ogs_yaml_iter_next(&ids_iter))
+                                break;
+                        }
+
+                        id = ogs_yaml_iter_value(&ids_iter);
+                        if (!smf_mbs_fsa_id_configure(id)) {
+                            ogs_error("`smf.mbsFsaIds` entry [%s] is not six hexadecimal digits, is repeated, or is "
+                                    "more than %d", id ? id : "", SMF_MBS_MAX_FSA_IDS);
+                            return OGS_ERROR;
+                        }
+                    } while (ogs_yaml_iter_type(&ids_iter) == YAML_SEQUENCE_NODE);
+                } else if (!strcmp(smf_key, "mbsAcceptForeignTmgi")) {
+                    /* TS 29.532 V18.6.0 cl. 5.3.2.2.1: "For a location dependent broadcast MBS session, based on
+                     * operator's policy, the MB-SMF shall accept a TMGI value allocated by another MB-SMF." The
+                     * policy is this key, `true` or `false`; with none the MB-SMF accepts only TMGIs it allocated. */
+                    const char *value = ogs_yaml_iter_value(&smf_iter);
+
+                    if (!smf_mbs_foreign_tmgi_configure(value)) {
+                        ogs_error("`smf.mbsAcceptForeignTmgi` [%s] is not true or false", value ? value : "");
+                        return OGS_ERROR;
+                    }
                 } else if (!strcmp(smf_key, "mbsPolicyControl")) {
                     /* TS 23.247 V18.8.0 cl. 7.1.1.3: "Deployment of dynamic PCC is optional." Off unless
                      * `enabled: true`; `failureAction` (reject or allow) is required with it, no clause names a
@@ -3608,6 +3656,55 @@ bool smf_mbs_policy_control_enabled(smf_mbs_pcf_failure_action_e *action)
     return self.mbs_pcf_enabled;
 }
 
+bool smf_mbs_foreign_tmgi_configure(const char *value)
+{
+    if (!value)
+        return false;
+    if (!strcmp(value, "true"))
+        self.mbs_accept_foreign_tmgi = true;
+    else if (!strcmp(value, "false"))
+        self.mbs_accept_foreign_tmgi = false;
+    else
+        return false;
+    return true;
+}
+
+bool smf_mbs_accepts_foreign_tmgi(void)
+{
+    return self.mbs_accept_foreign_tmgi;
+}
+
+ogs_tmgi_t *smf_tmgi_add_foreign(const ogs_tmgi_t *received, bool *invalid)
+{
+    ogs_tmgi_t *tmgi = NULL;
+    int i;
+
+    ogs_assert(received);
+    if (invalid)
+        *invalid = false;
+
+    /* TS 29.571 V18.12.0 Tmgi, mbsServiceId pattern '^[A-Fa-f0-9]{6}$' */
+    if (!received->mbs_service_id || strlen(received->mbs_service_id) != 6) {
+        if (invalid)
+            *invalid = true;
+        return NULL;
+    }
+    for (i = 0; i < 6; i++) {
+        if (!isxdigit((unsigned char)received->mbs_service_id[i])) {
+            if (invalid)
+                *invalid = true;
+            return NULL;
+        }
+    }
+
+    if ((tmgi = smf_tmgi_add()) == NULL)
+        return NULL;
+    tmgi->mbs_service_id = ogs_strdup(received->mbs_service_id);
+    ogs_assert(tmgi->mbs_service_id);
+    memcpy(&tmgi->plmn_id, &received->plmn_id, sizeof(tmgi->plmn_id));
+    return tmgi;
+}
+
 bool smf_mbs_policy_control_configure(const char *enabled, const char *failure_action)
 {
     bool on = false;
@@ -4099,6 +4196,9 @@ static void smf_mbs_sess_free(smf_mbs_sess_t *smf_mbs_sess)
 
     if (smf_mbs_sess->mbs_serv_info_json)
         ogs_free(smf_mbs_sess->mbs_serv_info_json);
+
+    if (smf_mbs_sess->associated_session_id)
+        OpenAPI_associated_session_id_free(smf_mbs_sess->associated_session_id);
 
     if (smf_mbs_sess->mbs_service_area_json)
         ogs_free(smf_mbs_sess->mbs_service_area_json);

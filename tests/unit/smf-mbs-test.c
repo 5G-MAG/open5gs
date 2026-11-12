@@ -153,6 +153,10 @@ static const char *test_config =
     "      gateway: 10.45.0.1\n"
     "  dns:\n"
     "    - 8.8.8.8\n"
+    "  mbsAcceptForeignTmgi: true\n"
+    "  mbsFsaIds:\n"
+    "    - 00A001\n"
+    "    - 00a002\n"
     "  info:\n"
     "    - s_nssai:\n"
     "        - sst: 1\n"
@@ -2431,12 +2435,10 @@ static void test_transport_requests(void)
     for (i = 0; i < n; i++)
         ogs_pkbuf_free(answers[i].transfer);
 
-    /* more containers than answers fit: the rest get none, nothing overruns */
+    /* more request containers than answers fit: refused, none is left without its answer, nothing is taken in */
     memset(answers, 0, sizeof(answers));
     n = smf_mbs_sess_answer_transport_requests(mbs_sess, amf_of_answer, list, &message, &changes, answers, 2);
-    CHECK(n == 2);
-    for (i = 0; i < n; i++)
-        ogs_pkbuf_free(answers[i].transfer);
+    CHECK(n == -1 && changes.count == 0 && answers[0].transfer == NULL);
 
     /* no containers at all */
     CHECK(smf_mbs_sess_answer_transport_requests(mbs_sess, amf_of_answer, NULL, &message, &changes, answers, 8) == 0);
@@ -2454,6 +2456,246 @@ static void test_transport_requests(void)
     ogs_pkbuf_free(garbage);
     smf_mbs_sess_release(mbs_sess);
 }
+
+#define NOTIFICATION_JSON \
+    "{\"mbsSessionId\":{\"tmgi\":{\"mbsServiceId\":\"%s\",\"plmnId\":{\"mcc\":\"001\",\"mnc\":\"01\"}}}}"
+
+static char *gnb_text(int n)
+{
+    char text[160];
+
+    snprintf(text, sizeof(text), "{\"plmnId\":{\"mcc\":\"001\",\"mnc\":\"01\"},\"gNbId\":{\"bitLength\":24,"
+            "\"gNBValue\":\"%06X\"}}", n);
+    return ogs_strdup(text);
+}
+
+/* The answers to \p k Broadcast Session Transport Request Transfer containers of NG-RAN nodes 1..k (the odd ones name
+ * another MBS Session ID, so are answered with a Failure Transfer), taken to the ContextStatusNotificationResponse and
+ * read back from its wire form. \p no_ran_id leaves the ranId out of the first container; \p same_content_id makes
+ * every container refer to the part of the first one. */
+static void check_transport_answers_of(int k, bool no_ran_id, bool same_content_id)
+{
+    smf_mbs_sess_t *mbs_sess = make_session(NULL, area_1_text);
+    smf_mbs_amf_t *amf_of_answer = NULL;
+    smf_mbs_transport_answer_t answers[SMF_MBS_MAX_TRANSPORT_ANSWERS];
+    smf_mbs_tunnel_changes_t changes;
+    ogs_sbi_message_t message, parsed;
+    OpenAPI_list_t *list;
+    OpenAPI_lnode_t *node;
+    OpenAPI_context_status_notification_t *notification = NULL;
+    OpenAPI_n2_mbs_sm_info_t *request[16];
+    ogs_sbi_response_t *response;
+    ogs_tmgi_t foreign;
+    char content_id[16][16];
+    ogs_pkbuf_t *transfer[16];
+    char *text;
+    cJSON *json;
+    int i, n, group = 0, good = 0;
+    long value = 0;
+
+    CHECK(k >= 1 && k <= 10);
+    CHECK(OGS_SBI_MAX_NUM_OF_PART >= 1 + 10);
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess || OGS_SBI_MAX_NUM_OF_PART < 1 + 10) return;
+    amf_of_answer = smf_mbs_sess_amf_add(mbs_sess);
+    memset(&foreign, 0, sizeof(foreign));
+    foreign.mbs_service_id = ogs_strdup("FFFFFE");
+    foreign.plmn_id = mbs_sess->tmgi->plmn_id;
+
+    memset(&message, 0, sizeof(message));
+    list = OpenAPI_list_create();
+    for (i = 0; i < k; i++) {
+        char address[32];
+        char *ran = gnb_text(same_content_id ? 1 : i + 1);
+
+        snprintf(address, sizeof(address), "10.20.30.%d", 41 + i);
+        snprintf(content_id[i], sizeof(content_id[i]), "n2-%d", same_content_id ? 0 : i);
+        transfer[i] = encode_transport_request_transfer(
+                ((same_content_id ? 0 : i) & 1) ? &foreign : mbs_sess->tmgi, address, 0xabcd0000 + i);
+        CHECK(transfer[i] != NULL);
+        if (!same_content_id || i == 0) {
+            message.part[message.num_of_part].pkbuf = transfer[i];
+            message.part[message.num_of_part].content_id = content_id[i];
+            message.num_of_part++;
+        }
+        request[i] = n2_info(OpenAPI_ngap_ie_type_BC_TRA_REQ, content_id[i], (i == 0 && no_ran_id) ? NULL : ran);
+        OpenAPI_list_add(list, request[i]);
+        ogs_free(ran);
+        if (!(i & 1) || same_content_id)
+            good++;
+    }
+
+    memset(answers, 0, sizeof(answers));
+    n = smf_mbs_sess_answer_transport_requests(mbs_sess, amf_of_answer, list, &message, &changes, answers,
+            SMF_MBS_MAX_TRANSPORT_ANSWERS);
+    /* one answer for each container, whatever their number up to the 10 of table 6.5.6.2.4-1 */
+    CHECK(n == k);
+    if (n < 0 || n > k)
+        n = 0;
+    for (i = 0; i < n; i++) {
+        bool failure = same_content_id ? false : (i & 1);
+
+        CHECK(answers[i].failure == failure);
+        CHECK(decode_transport_answer(&answers[i], mbs_sess->tmgi, &group, &value) == (failure ? 2 : 1));
+    }
+    /* a tunnel for each NG-RAN node that gave a valid one (the containers of one NG-RAN node, one tunnel) */
+    if (same_content_id) {
+        CHECK(ogs_list_count(&mbs_sess->dl_tunnel_list) == (no_ran_id ? 2 : 1));
+    } else {
+        CHECK(changes.count == good);
+        CHECK(ogs_list_count(&mbs_sess->dl_tunnel_list) == good);
+    }
+
+    /* the 200 OK, read back from its wire form: as many entries and parts, each entry naming its NG-RAN node and its
+     * part, no Content-Id twice */
+    text = ogs_malloc(sizeof(NOTIFICATION_JSON) + 16);
+    snprintf(text, sizeof(NOTIFICATION_JSON) + 16, NOTIFICATION_JSON, mbs_sess->tmgi->mbs_service_id);
+    json = cJSON_Parse(text);
+    notification = json ? OpenAPI_context_status_notification_parseFromJSON(json) : NULL;
+    CHECK(notification != NULL);
+    if (json) cJSON_Delete(json);
+    ogs_free(text);
+    response = (notification && n > 0) ? smf_namf_build_transport_answers_response(notification, answers, n) : NULL;
+    CHECK(response != NULL);
+    if (response) {
+        OpenAPI_list_t *entries;
+
+        response->h.method = ogs_strdup("POST");
+        response->h.uri = ogs_strdup("http://127.0.0.1:7777/namf-mbs-bc/v1/mbs-context-status-notify/1");
+        memset(&parsed, 0, sizeof(parsed));
+        CHECK(ogs_sbi_parse_response(&parsed, response) == OGS_OK);
+        CHECK(response->status == 200);
+        CHECK(parsed.ContextStatusNotificationResponse != NULL);
+        entries = parsed.ContextStatusNotificationResponse ?
+            parsed.ContextStatusNotificationResponse->n2_mbs_sm_info_list : NULL;
+        CHECK(entries != NULL && entries->count == k);
+        CHECK(parsed.num_of_part == k);
+        i = 0;
+        if (entries)
+            OpenAPI_list_for_each(entries, node) {
+                OpenAPI_n2_mbs_sm_info_t *info = node->data;
+                bool failure = same_content_id ? false : (i & 1);
+                smf_mbs_transport_answer_t from_wire;
+                char want[16], *got, *expected;
+                int j;
+
+                if (i >= k)
+                    break;
+                snprintf(want, sizeof(want), "ngap-sm-%d", i);
+                CHECK(info && info->ngap_data && info->ngap_data->content_id &&
+                        strcmp(info->ngap_data->content_id, want) == 0);
+                CHECK(info && info->ngap_ie_type ==
+                        (failure ? OpenAPI_ngap_ie_type_BC_TRA_FAIL : OpenAPI_ngap_ie_type_BC_TRA_RSP));
+                for (j = 0; j < i; j++)
+                    CHECK(parsed.part[j].content_id && strcmp(parsed.part[j].content_id, want) != 0);
+                if (i == 0 && no_ran_id) {
+                    CHECK(info && info->ran_id == NULL);
+                } else {
+                    got = info ? smf_mbs_ran_id_text(info->ran_id) : NULL;
+                    expected = smf_mbs_ran_id_text(request[i]->ran_id);
+                    CHECK(info && info->ran_id != NULL && got && expected && strcmp(got, expected) == 0);
+                    if (got) ogs_free(got);
+                    if (expected) ogs_free(expected);
+                }
+                memset(&from_wire, 0, sizeof(from_wire));
+                from_wire.failure = failure;
+                from_wire.transfer = (info && info->ngap_data && info->ngap_data->content_id) ?
+                    ogs_sbi_find_part_by_content_id(&parsed, info->ngap_data->content_id) : NULL;
+                CHECK(from_wire.transfer != NULL);
+                if (from_wire.transfer)
+                    CHECK(decode_transport_answer(&from_wire, mbs_sess->tmgi, &group, &value) == (failure ? 2 : 1));
+                i++;
+            }
+        ogs_sbi_message_free(&parsed);
+        ogs_sbi_response_free(response);
+    }
+
+    for (i = 0; i < n; i++)
+        ogs_pkbuf_free(answers[i].transfer);
+    if (notification) OpenAPI_context_status_notification_free(notification);
+    OpenAPI_list_for_each(list, node)
+        OpenAPI_n2_mbs_sm_info_free(node->data);
+    OpenAPI_list_free(list);
+    for (i = 0; i < k; i++)
+        ogs_pkbuf_free(transfer[i]);
+    ogs_free(foreign.mbs_service_id);
+    smf_mbs_sess_release(mbs_sess);
+}
+
+/* TS 29.518 V18.14.0 table 6.5.6.2.4-1: "n2MbsSmInfoList | array(N2MbsSmInfo) | O | 1..10", and clause 5.6.2.5 step
+ * 2a: the MB-SMF "shall return a "200 OK" with the ContextStatusNotificationResponse containing one or more N2 MBS
+ * Session Management containers encapsulating a Broadcast Session Transport Response Transfer IE or a Broadcast Session
+ * Transport Failure Transfer IE." Each container is answered, up to 10; a longer list is refused, not truncated. */
+static void test_transport_request_bound(void)
+{
+    smf_mbs_sess_t *mbs_sess = make_session(NULL, area_1_text);
+    smf_mbs_amf_t *amf_of_answer = NULL;
+    smf_mbs_transport_answer_t answers[SMF_MBS_MAX_TRANSPORT_ANSWERS];
+    smf_mbs_tunnel_changes_t changes;
+    ogs_sbi_message_t message;
+    OpenAPI_list_t *list;
+    OpenAPI_lnode_t *node;
+    ogs_pkbuf_t *good;
+    int i, n;
+
+    CHECK(SMF_MBS_MAX_TRANSPORT_ANSWERS == 10);
+
+    /* 1, 8, 9, 10 containers: one answer each (the 9th and 10th were left without one) */
+    check_transport_answers_of(1, false, false);
+    check_transport_answers_of(8, false, false);
+    check_transport_answers_of(9, false, false);
+    check_transport_answers_of(10, false, false);
+    /* a container without its ranId is answered, its entry in the response has none */
+    check_transport_answers_of(10, true, false);
+    /* containers that refer to one and the same part (Content-Id) are each answered, the answers have distinct ones */
+    check_transport_answers_of(10, false, true);
+    check_transport_answers_of(2, true, true);
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+    amf_of_answer = smf_mbs_sess_amf_add(mbs_sess);
+    good = encode_transport_request_transfer(mbs_sess->tmgi, "10.20.30.41", 0xabcd0002);
+    CHECK(good != NULL);
+    memset(&message, 0, sizeof(message));
+    message.part[0].pkbuf = good;
+    message.part[0].content_id = (char *)"n2-good";
+    message.num_of_part = 1;
+
+    /* 11 containers (and 10 requests among 11 entries): refused, nothing answered, no tunnel taken in */
+    for (n = 0; n < 2; n++) {
+        list = OpenAPI_list_create();
+        for (i = 0; i < 11; i++)
+            OpenAPI_list_add(list, n2_info((n == 1 && i == 10) ? OpenAPI_ngap_ie_type_MBS_SES_RSP :
+                        OpenAPI_ngap_ie_type_BC_TRA_REQ, "n2-good", ran_a_text));
+        memset(answers, 0, sizeof(answers));
+        CHECK(smf_mbs_sess_answer_transport_requests(mbs_sess, amf_of_answer, list, &message, &changes, answers,
+                    SMF_MBS_MAX_TRANSPORT_ANSWERS) == -1);
+        CHECK(changes.count == 0 && answers[0].transfer == NULL);
+        CHECK(ogs_list_count(&mbs_sess->dl_tunnel_list) == 0);
+        OpenAPI_list_for_each(list, node)
+            OpenAPI_n2_mbs_sm_info_free(node->data);
+        OpenAPI_list_free(list);
+    }
+
+    /* 10 entries of which 5 are requests: 5 answers */
+    list = OpenAPI_list_create();
+    for (i = 0; i < 10; i++)
+        OpenAPI_list_add(list, n2_info((i & 1) ? OpenAPI_ngap_ie_type_MBS_SES_RSP : OpenAPI_ngap_ie_type_BC_TRA_REQ,
+                    "n2-good", ran_a_text));
+    memset(answers, 0, sizeof(answers));
+    n = smf_mbs_sess_answer_transport_requests(mbs_sess, amf_of_answer, list, &message, &changes, answers,
+            SMF_MBS_MAX_TRANSPORT_ANSWERS);
+    CHECK(n == 5);
+    for (i = 0; i < n; i++)
+        ogs_pkbuf_free(answers[i].transfer);
+    OpenAPI_list_for_each(list, node)
+        OpenAPI_n2_mbs_sm_info_free(node->data);
+    OpenAPI_list_free(list);
+
+    ogs_pkbuf_free(good);
+    smf_mbs_sess_release(mbs_sess);
+}
+
 
 /* An MBS Session Release Response Transfer (TS 38.413 V18.8.0 clause 9.3.5.14: "MBS Session TNL Information NG-RAN | O")
  * naming a shared unicast tunnel, or none. */
@@ -4799,6 +5041,181 @@ static void test_mbs_pcf_create_request(void)
     smf_mbs_sess_release(mbs_sess);
 }
 
+/* TS 29.532 V18.6.0 table 6.2.6.2.4-1 (MbsSessionExtension), areaSessionPolicyId: "When present, it shall contain the
+ * Area Session Policy ID assigned by the PCF to the location-dependent MBS session." TS 23.247 V18.8.0 cl. 7.1.1.3 step
+ * 22: the MB-SMF "provides that received Area Session Policy ID" to the PCF, and without one "uses its assigned Area
+ * Session ID as Area Session Policy ID". */
+static void test_area_session_policy_id(void)
+{
+    cJSON *json = cJSON_Parse("{\"serviceType\":\"BROADCAST\",\"locationDependent\":true,\"areaSessionPolicyId\":9}");
+    OpenAPI_ext_mbs_session_t *session = OpenAPI_ext_mbs_session_parseFromJSON(json);
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    ogs_sbi_request_t *request;
+    cJSON *back = NULL, *member = NULL;
+
+    cJSON_Delete(json);
+    CHECK(session && session->is_area_session_policy_id && session->area_session_policy_id == 9);
+    back = session ? OpenAPI_ext_mbs_session_convertToJSON(session) : NULL;
+    member = back ? cJSON_GetObjectItemCaseSensitive(back, "areaSessionPolicyId") : NULL;
+    CHECK(member && cJSON_IsNumber(member) && (int)member->valuedouble == 9);
+    if (back) cJSON_Delete(back);
+    CHECK(session && smf_nmbsmf_area_session_policy_id_is_valid(session));
+
+    CHECK(mbs_sess != NULL);
+    if (mbs_sess && session) {
+        CHECK(!mbs_sess->has_area_session_policy_id);
+        smf_nmbsmf_take_area_session_policy_id(mbs_sess, session);
+        CHECK(mbs_sess->has_area_session_policy_id && mbs_sess->area_session_policy_id == 9);
+
+        /* the PCF is given the received Area Session Policy ID, not the Area Session ID */
+        mbs_sess->location_dependent = true;
+        mbs_sess->area_session_id = 5;
+        request = smf_npcf_mbspolicycontrol_build_create(mbs_sess, NULL);
+        CHECK(request != NULL);
+        if (request) {
+            json = cJSON_Parse(request->http.content);
+            member = json ? cJSON_GetObjectItemCaseSensitive(json, "areaSessPolId") : NULL;
+            CHECK(member && (int)member->valuedouble == 9);
+            if (json) cJSON_Delete(json);
+            ogs_sbi_request_free(request);
+        }
+
+        /* without one, as before: the MB-SMF's own Area Session ID */
+        mbs_sess->has_area_session_policy_id = false;
+        request = smf_npcf_mbspolicycontrol_build_create(mbs_sess, NULL);
+        CHECK(request != NULL);
+        if (request) {
+            json = cJSON_Parse(request->http.content);
+            member = json ? cJSON_GetObjectItemCaseSensitive(json, "areaSessPolId") : NULL;
+            CHECK(member && (int)member->valuedouble == 5);
+            if (json) cJSON_Delete(json);
+            ogs_sbi_request_free(request);
+        }
+    }
+    if (session) OpenAPI_ext_mbs_session_free(session);
+
+    /* a request without the attribute leaves the session as it was; one outside Uint16 is refused */
+    json = cJSON_Parse("{\"serviceType\":\"BROADCAST\"}");
+    session = OpenAPI_ext_mbs_session_parseFromJSON(json);
+    cJSON_Delete(json);
+    CHECK(session && !session->is_area_session_policy_id && smf_nmbsmf_area_session_policy_id_is_valid(session));
+    if (mbs_sess && session) {
+        smf_nmbsmf_take_area_session_policy_id(mbs_sess, session);
+        CHECK(!mbs_sess->has_area_session_policy_id);
+    }
+    if (session) OpenAPI_ext_mbs_session_free(session);
+    json = cJSON_Parse("{\"serviceType\":\"BROADCAST\",\"areaSessionPolicyId\":65536}");
+    session = OpenAPI_ext_mbs_session_parseFromJSON(json);
+    cJSON_Delete(json);
+    CHECK(session && !smf_nmbsmf_area_session_policy_id_is_valid(session));
+    if (session) OpenAPI_ext_mbs_session_free(session);
+    json = cJSON_Parse("{\"serviceType\":\"BROADCAST\",\"areaSessionPolicyId\":-1}");
+    session = OpenAPI_ext_mbs_session_parseFromJSON(json);
+    cJSON_Delete(json);
+    CHECK(session && !smf_nmbsmf_area_session_policy_id_is_valid(session));
+    if (session) OpenAPI_ext_mbs_session_free(session);
+    json = cJSON_Parse("{\"serviceType\":\"BROADCAST\",\"areaSessionPolicyId\":65535}");
+    session = OpenAPI_ext_mbs_session_parseFromJSON(json);
+    cJSON_Delete(json);
+    CHECK(session && smf_nmbsmf_area_session_policy_id_is_valid(session));
+    if (session) OpenAPI_ext_mbs_session_free(session);
+
+    if (mbs_sess) smf_mbs_sess_release(mbs_sess);
+}
+
+/* TS 29.532 V18.6.0 cl. 5.3.2.2.1, Create request of a broadcast MBS session: "Associated Session ID to enable NG-RAN
+ * to identify multiple MBS sessions delivering the same content when an AF creates multiple broadcast MBS Sessions
+ * via different Core Networks in network sharing scenarios"; TS 29.571 V18.12.0 cl. 5.9.4.21.1: AssociatedSessionId
+ * is "encoded as an SSM" or "encoded as a string"; TS 29.518 V18.14.0 table 6.5.6.2.2-1: ContextCreateReqData
+ * associatedSessionId (O, 0..1); TS 23.247 V18.8.0 cl. 7.3.1a: "The MB-SMF includes Associated Session ID in the N2 SM
+ * information in Namf_MBSBroadcast_ContextCreate." */
+static void test_associated_session_id(void)
+{
+    cJSON *json = cJSON_Parse("{\"serviceType\":\"BROADCAST\",\"associatedSessionId\":\"mocn-7\"}");
+    OpenAPI_ext_mbs_session_t *session = OpenAPI_ext_mbs_session_parseFromJSON(json);
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    ogs_sbi_request_t *request;
+    cJSON *back = NULL, *member = NULL;
+
+    cJSON_Delete(json);
+    CHECK(session && session->associated_session_id && session->associated_session_id->string &&
+            !session->associated_session_id->ssm && !strcmp(session->associated_session_id->string, "mocn-7"));
+    back = session ? OpenAPI_ext_mbs_session_convertToJSON(session) : NULL;
+    member = back ? cJSON_GetObjectItemCaseSensitive(back, "associatedSessionId") : NULL;
+    CHECK(member && cJSON_IsString(member) && !strcmp(member->valuestring, "mocn-7"));
+    if (back) cJSON_Delete(back);
+
+    CHECK(mbs_sess != NULL);
+    if (mbs_sess && session) {
+        CHECK(mbs_sess->associated_session_id == NULL);
+        request = smf_namf_build_mbs_broadcast_context_create_request(mbs_sess, NULL);
+        CHECK(request != NULL);
+        if (request) {
+            /* none given: the attribute is left out */
+            CHECK(request->http.content && strstr(request->http.content, "associatedSessionId") == NULL);
+            ogs_sbi_request_free(request);
+        }
+
+        smf_nmbsmf_take_associated_session_id(mbs_sess, session);
+        CHECK(mbs_sess->associated_session_id && mbs_sess->associated_session_id != session->associated_session_id &&
+                mbs_sess->associated_session_id->string &&
+                !strcmp(mbs_sess->associated_session_id->string, "mocn-7"));
+        /* taken again (the same request handled twice): replaced, not added */
+        smf_nmbsmf_take_associated_session_id(mbs_sess, session);
+        CHECK(mbs_sess->associated_session_id && !strcmp(mbs_sess->associated_session_id->string, "mocn-7"));
+
+        request = smf_namf_build_mbs_broadcast_context_create_request(mbs_sess, NULL);
+        CHECK(request != NULL);
+        if (request) {
+            CHECK(request->http.content && strstr(request->http.content, "\"associatedSessionId\":\"mocn-7\"") != NULL);
+            ogs_sbi_request_free(request);
+        }
+    }
+    if (session) OpenAPI_ext_mbs_session_free(session);
+
+    /* encoded as an SSM */
+    json = cJSON_Parse("{\"serviceType\":\"BROADCAST\",\"associatedSessionId\":"
+            "{\"sourceIpAddr\":{\"ipv4Addr\":\"10.1.2.3\"},\"destIpAddr\":{\"ipv4Addr\":\"232.1.1.1\"}}}");
+    session = OpenAPI_ext_mbs_session_parseFromJSON(json);
+    cJSON_Delete(json);
+    CHECK(session && session->associated_session_id && session->associated_session_id->ssm &&
+            !session->associated_session_id->string);
+    if (mbs_sess && session) {
+        smf_nmbsmf_take_associated_session_id(mbs_sess, session);
+        CHECK(mbs_sess->associated_session_id && mbs_sess->associated_session_id->ssm &&
+                !mbs_sess->associated_session_id->string);
+        request = smf_namf_build_mbs_broadcast_context_create_request(mbs_sess, NULL);
+        CHECK(request != NULL);
+        if (request) {
+            CHECK(request->http.content && strstr(request->http.content, "\"associatedSessionId\":{") != NULL &&
+                    strstr(request->http.content, "232.1.1.1") != NULL && strstr(request->http.content, "10.1.2.3") != NULL);
+            ogs_sbi_request_free(request);
+        }
+    }
+    if (session) OpenAPI_ext_mbs_session_free(session);
+
+    /* a request without one leaves the session as it was; a value that is neither a string nor an SSM is refused */
+    json = cJSON_Parse("{\"serviceType\":\"BROADCAST\"}");
+    session = OpenAPI_ext_mbs_session_parseFromJSON(json);
+    cJSON_Delete(json);
+    CHECK(session && !session->associated_session_id);
+    if (mbs_sess && session) {
+        smf_nmbsmf_take_associated_session_id(mbs_sess, session);
+        CHECK(mbs_sess->associated_session_id != NULL);
+    }
+    if (session) OpenAPI_ext_mbs_session_free(session);
+    json = cJSON_Parse("{\"serviceType\":\"BROADCAST\",\"associatedSessionId\":5}");
+    session = OpenAPI_ext_mbs_session_parseFromJSON(json);
+    cJSON_Delete(json);
+    CHECK(session == NULL);
+    json = cJSON_Parse("{\"serviceType\":\"BROADCAST\",\"associatedSessionId\":{\"sourceIpAddr\":{\"ipv4Addr\":\"10.1.2.3\"}}}");
+    session = OpenAPI_ext_mbs_session_parseFromJSON(json);
+    cJSON_Delete(json);
+    CHECK(session == NULL);
+
+    if (mbs_sess) smf_mbs_sess_release(mbs_sess);
+}
+
 /* TS 23.247 V18.8.0 clause 7.1.1.7 step 8: with an MBS Policy Association the MB-SMF sends the Update to the PCF
  * when told "that the PCF has to be contacted" or when it has new MBS service information; contactPcfInd "false"
  * means that the PCF shall not be contacted (TS 29.532 V18.6.0 table 6.2.6.2.4-1) */
@@ -5391,6 +5808,8 @@ int main(void)
     test_nr_red_cap_ue_info_n2();
     test_context_status_notification_response_model();
     test_fsa_id_list();
+    test_fsa_ids_from_configuration();
+    test_foreign_tmgi();
     test_fsa_id_pattern();
     test_context_create_optional_ids();
     test_date_time();
@@ -5404,6 +5823,7 @@ int main(void)
     test_status_subscription();
     test_amf_answer();
     test_transport_requests();
+    test_transport_request_bound();
     test_release_response_transfer();
     test_unicast_tunnel_modification();
     test_context_update_request();
@@ -5438,6 +5858,8 @@ int main(void)
     test_npcf_mbspolicycontrol_messages();
     test_mbs_pcf_classify();
     test_mbs_pcf_create_request();
+    test_area_session_policy_id();
+    test_associated_session_id();
     test_mbs_pcf_update();
     test_mbs_pcf_release_continue();
 

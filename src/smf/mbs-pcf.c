@@ -148,7 +148,8 @@ ogs_sbi_request_t *smf_npcf_mbspolicycontrol_build_create(smf_mbs_sess_t *mbs_se
     ctxt = OpenAPI_mbs_policy_ctxt_data_create(session_id,
             mbs_sess->dnn ? ogs_strdup(mbs_sess->dnn) : NULL,
             smf_mbs_sess_build_snssai(mbs_sess),
-            mbs_sess->location_dependent, mbs_sess->area_session_id,
+            mbs_sess->location_dependent,
+            mbs_sess->has_area_session_policy_id ? mbs_sess->area_session_policy_id : mbs_sess->area_session_id,
             build_mbs_service_info(mbs_sess->mbs_serv_info_json),
             mbs_sess->location_dependent ? ogs_strdup(SMF_MBS_PCF_SUPP_FEAT_AREA_SESS_POLICY) : NULL);
     message.MbsPolicyCtxtData = ctxt;

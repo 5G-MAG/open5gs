@@ -600,7 +600,14 @@ typedef struct ogs_sbi_message_s {
 
     ogs_sbi_links_t *links;
 
-#define OGS_SBI_MAX_NUM_OF_PART 8
+/*
+ * TS 29.518 V18.14.0 Table 6.5.6.2.4-1 (ContextStatusNotification): the row n2MbsSmInfoList is "array(N2MbsSmInfo)",
+ * "O", cardinality "1..10". Tables 6.5.6.2.3-1, 6.5.6.2.6-1 and 6.5.6.2.10-1 give the same, and the OpenAPI schema has
+ * "maxItems: 10" for each of the four. Each entry refers to one binary part.
+ */
+#define OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO 10
+/* The parts of a multipart message: its JSON root part and one binary part for each n2MbsSmInfoList entry */
+#define OGS_SBI_MAX_NUM_OF_PART (1 + OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO)
     int num_of_part;
     ogs_sbi_part_t part[OGS_SBI_MAX_NUM_OF_PART];
 } ogs_sbi_message_t;

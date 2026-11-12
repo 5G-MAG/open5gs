@@ -3105,6 +3105,9 @@ typedef struct multipart_parser_data_s {
         size_t content_length;
     } part[OGS_SBI_MAX_NUM_OF_PART];
 
+    /* A part came after the last one that fits in part[]: it was not stored */
+    bool overflow;
+
     char *header_field;
 } multipart_parser_data_t;
 
@@ -3213,9 +3216,10 @@ static int on_part_data_end(multipart_parser *parser)
     data = multipart_parser_get_data(parser);
     ogs_assert(data);
 
-    if (data->num_of_part < OGS_SBI_MAX_NUM_OF_PART) {
+    if (data->num_of_part < OGS_SBI_MAX_NUM_OF_PART)
         data->num_of_part++;
-    }
+    else
+        data->overflow = true;
 
     return 0;
 }
@@ -3274,6 +3278,21 @@ static int parse_multipart(
         /* Overflow Issues #1247 */
         ogs_fatal("Overflow num_of_part[%d]", data.num_of_part);
         ogs_assert_if_reached();
+    }
+    if (data.overflow) {
+        /* The parts that fit would be a message without the others, which nothing says it may be: refused. */
+        ogs_error("The multipart message has more than %d parts", OGS_SBI_MAX_NUM_OF_PART);
+        for (i = 0; i < data.num_of_part; i++) {
+            if (data.part[i].content_id)
+                ogs_free(data.part[i].content_id);
+            if (data.part[i].content_type)
+                ogs_free(data.part[i].content_type);
+            if (data.part[i].content)
+                ogs_free(data.part[i].content);
+        }
+        if (data.header_field)
+            ogs_free(data.header_field);
+        return OGS_ERROR;
     }
     for (i = 0; i < data.num_of_part; i++) {
         SWITCH(data.part[i].content_type)

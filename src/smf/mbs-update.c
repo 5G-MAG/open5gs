@@ -480,6 +480,46 @@ bool smf_mbs_fsa_id_is_valid(const char *id)
     return true;
 }
 
+bool smf_mbs_fsa_id_configure(const char *id)
+{
+    smf_mbs_fsa_id_t *fsa_id = NULL;
+    ogs_uint24_t value;
+    int count = 0;
+
+    if (!smf_mbs_fsa_id_is_valid(id))
+        return false;
+    value = ogs_uint24_from_string(id);
+    ogs_list_for_each(&smf_self()->mbs_fsa_id_list, fsa_id) {
+        if (fsa_id->id.v == value.v)
+            return false;
+        count++;
+    }
+    if (count >= SMF_MBS_MAX_FSA_IDS)
+        return false;
+    fsa_id = ogs_calloc(1, sizeof(*fsa_id));
+    ogs_assert(fsa_id);
+    fsa_id->id = value;
+    ogs_list_add(&smf_self()->mbs_fsa_id_list, fsa_id);
+    return true;
+}
+
+bool smf_mbs_sess_select_fsa_ids(smf_mbs_sess_t *mbs_sess)
+{
+    smf_mbs_fsa_id_t *configured = NULL, *fsa_id = NULL;
+
+    ogs_assert(mbs_sess);
+
+    if (!ogs_list_empty(&mbs_sess->mbs_fsa_id_list) || ogs_list_empty(&smf_self()->mbs_fsa_id_list))
+        return false;
+    ogs_list_for_each(&smf_self()->mbs_fsa_id_list, configured) {
+        fsa_id = ogs_calloc(1, sizeof(*fsa_id));
+        ogs_assert(fsa_id);
+        fsa_id->id = configured->id;
+        ogs_list_add(&mbs_sess->mbs_fsa_id_list, fsa_id);
+    }
+    return true;
+}
+
 bool smf_mbs_update_path_is_modifiable(const char *path)
 {
     static const char *const attributes[] = { "/mbsServiceArea", "/mbsServInfo", "/mbsFsaIdList", "/contactPcfInd",

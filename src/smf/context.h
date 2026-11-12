@@ -156,6 +156,14 @@ typedef struct smf_context_s {
     bool has_mbs_context_retry_delay;
     int mbs_context_retry_delay;
 
+    /* The MBS FSA IDs the MB-SMF selects for a broadcast MBS session whose Create request has none (smf.yaml
+     * `mbsFsaIds`, smf_mbs_fsa_id_t entries); empty when not configured, and then it selects none. */
+    ogs_list_t mbs_fsa_id_list;
+
+    /* Operator policy (smf.yaml `mbsAcceptForeignTmgi`): the MB-SMF accepts, for a location dependent broadcast MBS
+     * session, a TMGI that another MB-SMF allocated. Off unless configured. */
+    bool mbs_accept_foreign_tmgi;
+
     /* Whether the MB-SMF requests MBS policies of a PCF (smf.yaml `mbsPolicyControl`), and what it does with an
      * MBS session the PCF denies (`failureAction`). Off unless configured. */
     bool mbs_pcf_enabled;
@@ -792,6 +800,21 @@ typedef struct smf_mbs_sess_s {
     bool location_dependent;
     uint16_t area_session_id;
 
+    /* TS 29.532 V18.6.0 table 6.2.6.2.4-1 (MbsSessionExtension), areaSessionPolicyId: "This IE shall be present for a
+     * location-dependent MBS session if the AF/NEF/MBSF has obtained the Area Session Policy ID from the PCF"; from
+     * the Create request. TS 23.247 V18.8.0 cl. 7.1.1.3 step 22: when it is there, "the MB-SMF provides that received
+     * Area Session Policy ID" to the PCF; when it is not, "the MB-SMF uses its assigned Area Session ID as Area
+     * Session Policy ID". */
+    bool has_area_session_policy_id;
+    uint16_t area_session_policy_id;
+
+    /* TS 29.532 V18.6.0 cl. 5.3.2.2.1: "Associated Session ID to enable NG-RAN to identify multiple MBS sessions
+     * delivering the same content when an AF creates multiple broadcast MBS Sessions via different Core Networks in
+     * network sharing scenarios" (broadcast); from the Create request, NULL when there is none. TS 23.247 V18.8.0
+     * cl. 7.3.1a, step 2: "The MB-SMF includes Associated Session ID in the N2 SM information in
+     * Namf_MBSBroadcast_ContextCreate." */
+    OpenAPI_associated_session_id_t *associated_session_id;
+
     /* BUG FIX: confirmed live this session -- MBSF's own delete-cascade sends up to three duplicate
      * Nmbsmf_MBSSession Release requests for the exact same distribution session (same URL,
      * same timestamp), which made smf_nmbsmf_handle_mbs_session_release() fire the AMF/UPF release
@@ -949,6 +972,14 @@ bool smf_mbs_policy_control_enabled(smf_mbs_pcf_failure_action_e *action);
  * absent). Returns false, changing nothing, when they are not acceptable: enabled is "true" or "false"; with
  * enabled the failure action is "reject" or "allow" and has no default. */
 bool smf_mbs_policy_control_configure(const char *enabled, const char *failure_action);
+/* The configuration smf.mbsAcceptForeignTmgi: "true" or "false"; false is returned, and the setting left, for any other
+ * text. */
+bool smf_mbs_foreign_tmgi_configure(const char *value);
+bool smf_mbs_accepts_foreign_tmgi(void);
+/* Adds a TMGI that another MB-SMF allocated, as received in a Create request, to the TMGIs of this MB-SMF (it has no
+ * expiration time here). Returns NULL, with nothing added, when the MBS Service ID is not six hexadecimal digits or
+ * the pool of TMGIs is full; \p invalid says which. */
+ogs_tmgi_t *smf_tmgi_add_foreign(const ogs_tmgi_t *received, bool *invalid);
 ogs_tmgi_t *smf_tmgi_allocate(char *expiration_time);
 char *smf_tmgi_pick_mbs_service_id(
         ogs_list_t *tmgi_list, const ogs_plmn_id_t *plmn_id, uint32_t start);

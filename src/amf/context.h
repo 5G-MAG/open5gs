@@ -1026,6 +1026,17 @@ typedef struct amf_mbs_context_s {
     ogs_pkbuf_t *n2_mbs_sm_request;
 
     /*
+     * The Associated Session ID of the ContextCreate (TS 29.518 V18.14.0 cl. 5.6.2.2: "The NF Service Consumer may also
+     * include the MBS associated session ID to enable NG-RAN to identify the multiple MBS sessions delivering the same
+     * content when AF creates multiple broadcast MBS Sessions via different Core Networks to deliver the same
+     * content."), as the octets of the NGAP Associated Session ID IE of every Broadcast Session Setup Request of the
+     * session, the restoration of the session in a gNB included. NULL, with a length of 0, when the ContextCreate
+     * carried none.
+     */
+    uint8_t *associated_session_id;
+    size_t associated_session_id_len;
+
+    /*
      * The maximum response time of the ContextCreate or ContextUpdate in progress (TS 29.518 V18.14.0 cl. 5.6.2.2:
      * "since the reception of the Namf_MBSBroadcast_ContextCreate Request"): armed only when the request carried
      * maxResponseTime. response_deadline guards against an event of a timer that was stopped or of a context
@@ -1241,6 +1252,8 @@ bool amf_mbs_gnb_holds_session(const amf_mbs_gnb_t *involved);
 bool amf_mbs_gnb_has_ran_id(const amf_mbs_gnb_t *involved, const amf_gnb_t *gnb);
 amf_mbs_gnb_t *amf_mbs_context_find_stale_involved_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *gnb);
 bool amf_mbs_context_store_n2_container(amf_mbs_context_t *amf_mbs_context, const ogs_pkbuf_t *container);
+bool amf_mbs_context_set_associated_session_id(
+        amf_mbs_context_t *amf_mbs_context, OpenAPI_associated_session_id_t *associated_session_id);
 /*
  * The service area of a context as an update applies it, with what is needed to put the earlier one back: an update that
  * is refused after the area was replaced must leave the area as it was (all or none).
@@ -1269,6 +1282,8 @@ void amf_mbs_context_undo_area(amf_mbs_context_t *amf_mbs_context, amf_mbs_area_
 void amf_mbs_context_keep_area(amf_mbs_area_undo_t *undo);
 void amf_mbs_n2_info_free(amf_mbs_n2_info_t *n2_info);
 void amf_mbs_n2_info_remove_all(ogs_list_t *n2_info_list);
+/* Moves the items of \p n2_info_list after its first \p keep to \p rest, in order (\p rest is appended to) */
+void amf_mbs_n2_info_split(ogs_list_t *n2_info_list, ogs_list_t *rest, int keep);
 
 #ifdef __cplusplus
 }

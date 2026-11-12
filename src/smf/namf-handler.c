@@ -451,33 +451,24 @@ bool smf_namf_handle_mbs_broadcast_context_delete_response(
     return true;
 }
 
-/* The "200 OK" with the ContextStatusNotificationResponse for the Broadcast Session Transport Request Transfer
- * containers of \p notification (see smf_namf_handle_mbs_broadcast_context_status_notify()). Returns false, with nothing
- * sent, when the notification has no such container. */
-static bool smf_namf_send_transport_answers(ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg,
-        smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf, OpenAPI_context_status_notification_t *notification)
+/* The "200 OK" with the ContextStatusNotificationResponse that carries \p count answers (\p answers, each a
+ * Broadcast Session Transport Response or Failure Transfer) to the Broadcast Session Transport Request Transfer
+ * containers of \p notification: one n2MbsSmInfoList entry and one binary part for each, named "ngap-sm-<n>". The
+ * transfers stay owned by \p answers. */
+ogs_sbi_response_t *smf_namf_build_transport_answers_response(
+        OpenAPI_context_status_notification_t *notification, const smf_mbs_transport_answer_t *answers, int count)
 {
-    static const char *const content_id[SMF_MBS_MAX_TRANSPORT_ANSWERS] = {
-        OGS_SBI_CONTENT_NGAP_SM_ID "-0", OGS_SBI_CONTENT_NGAP_SM_ID "-1",
-        OGS_SBI_CONTENT_NGAP_SM_ID "-2", OGS_SBI_CONTENT_NGAP_SM_ID "-3",
-        OGS_SBI_CONTENT_NGAP_SM_ID "-4", OGS_SBI_CONTENT_NGAP_SM_ID "-5",
-        OGS_SBI_CONTENT_NGAP_SM_ID "-6", OGS_SBI_CONTENT_NGAP_SM_ID "-7",
-    };
-    smf_mbs_transport_answer_t answers[SMF_MBS_MAX_TRANSPORT_ANSWERS];
-    smf_mbs_tunnel_changes_t changes;
+    char content_id[SMF_MBS_MAX_TRANSPORT_ANSWERS][sizeof(OGS_SBI_CONTENT_NGAP_SM_ID "-99")];
     ogs_sbi_message_t sendmsg;
     ogs_sbi_response_t *response = NULL;
     OpenAPI_context_status_notification_response_t body;
     OpenAPI_list_t *list = NULL;
-    int count, i;
+    OpenAPI_lnode_t *node = NULL;
+    int i;
 
-    memset(answers, 0, sizeof(answers));
-    count = smf_mbs_sess_answer_transport_requests(mbs_sess, amf, notification->n2_mbs_sm_info_list, recvmsg, &changes,
-            answers, SMF_MBS_MAX_TRANSPORT_ANSWERS);
-    if (changes.count > 0)
-        smf_mbs_sess_send_tunnel_changes(mbs_sess, &changes);
-    if (count <= 0)
-        return false;
+    ogs_assert(notification);
+    ogs_assert(answers);
+    ogs_assert(count > 0 && count <= SMF_MBS_MAX_TRANSPORT_ANSWERS);
 
     memset(&sendmsg, 0, sizeof(sendmsg));
     memset(&body, 0, sizeof(body));
@@ -489,12 +480,13 @@ static bool smf_namf_send_transport_answers(ogs_sbi_stream_t *stream, ogs_sbi_me
 
     list = OpenAPI_list_create();
     for (i = 0; i < count; i++) {
+        ogs_snprintf(content_id[i], sizeof(content_id[i]), OGS_SBI_CONTENT_NGAP_SM_ID "-%d", i);
         OpenAPI_list_add(list, OpenAPI_n2_mbs_sm_info_create(
                     answers[i].failure ? OpenAPI_ngap_ie_type_BC_TRA_FAIL : OpenAPI_ngap_ie_type_BC_TRA_RSP,
                     OpenAPI_ref_to_binary_data_create(ogs_strdup(content_id[i])),
                     answers[i].ran_id ? OpenAPI_global_ran_node_id_copy(NULL, answers[i].ran_id) : NULL));
         sendmsg.part[sendmsg.num_of_part].pkbuf = answers[i].transfer;
-        sendmsg.part[sendmsg.num_of_part].content_id = (char *)content_id[i];
+        sendmsg.part[sendmsg.num_of_part].content_id = content_id[i];
         sendmsg.part[sendmsg.num_of_part].content_type = (char *)OGS_SBI_CONTENT_NGAP_TYPE;
         sendmsg.num_of_part++;
     }
@@ -502,20 +494,49 @@ static bool smf_namf_send_transport_answers(ogs_sbi_stream_t *stream, ogs_sbi_me
     sendmsg.ContextStatusNotificationResponse = &body;
 
     response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_OK);
+
+    if (body.mbs_session_id)
+        OpenAPI_mbs_session_id_free(body.mbs_session_id);
+    OpenAPI_list_for_each(list, node)
+        OpenAPI_n2_mbs_sm_info_free(node->data);
+    OpenAPI_list_free(list);
+
+    return response;
+}
+
+/* The answer to the Broadcast Session Transport Request Transfer containers of \p notification (see
+ * smf_namf_handle_mbs_broadcast_context_status_notify()). Returns false, with nothing sent, when the notification has
+ * no such container. */
+static bool smf_namf_send_transport_answers(ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg,
+        smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf, OpenAPI_context_status_notification_t *notification)
+{
+    smf_mbs_transport_answer_t answers[SMF_MBS_MAX_TRANSPORT_ANSWERS];
+    smf_mbs_tunnel_changes_t changes;
+    ogs_sbi_response_t *response = NULL;
+    int count, i;
+
+    memset(answers, 0, sizeof(answers));
+    count = smf_mbs_sess_answer_transport_requests(mbs_sess, amf, notification->n2_mbs_sm_info_list, recvmsg, &changes,
+            answers, SMF_MBS_MAX_TRANSPORT_ANSWERS);
+    if (changes.count > 0)
+        smf_mbs_sess_send_tunnel_changes(mbs_sess, &changes);
+    if (count < 0) {
+        /* more containers than the table allows: refused by the handler before this, kept so that no container is
+         * left without its answer whatever the caller did */
+        ogs_assert(true ==
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                recvmsg, "n2MbsSmInfoList has more than 10 entries", NULL, NULL));
+        return true;
+    }
+    if (count == 0)
+        return false;
+
+    response = smf_namf_build_transport_answers_response(notification, answers, count);
     ogs_assert(response);
     ogs_assert(true == ogs_sbi_server_send_response(stream, response));
 
     for (i = 0; i < count; i++)
         ogs_pkbuf_free(answers[i].transfer);
-    if (body.mbs_session_id)
-        OpenAPI_mbs_session_id_free(body.mbs_session_id);
-    {
-        OpenAPI_lnode_t *node = NULL;
-
-        OpenAPI_list_for_each(list, node)
-            OpenAPI_n2_mbs_sm_info_free(node->data);
-        OpenAPI_list_free(list);
-    }
     return true;
 }
 
@@ -584,6 +605,18 @@ bool smf_namf_handle_mbs_broadcast_context_status_notify(
         ogs_assert(true ==
             ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
                 recvmsg, "No ContextStatusNotification", NULL, NULL));
+        return false;
+    }
+
+    /* TS 29.518 V18.14.0 table 6.5.6.2.4-1: "n2MbsSmInfoList | array(N2MbsSmInfo) | O | 1..10". A longer list is
+     * refused as a whole: each of its containers would need its answer, and the response has room for 10. */
+    if (ContextStatusNotification->n2_mbs_sm_info_list &&
+            ContextStatusNotification->n2_mbs_sm_info_list->count > SMF_MBS_MAX_TRANSPORT_ANSWERS) {
+        ogs_error("MBS Broadcast ContextStatusNotify: n2MbsSmInfoList has [%d] entries, at most [%d]",
+                (int)ContextStatusNotification->n2_mbs_sm_info_list->count, SMF_MBS_MAX_TRANSPORT_ANSWERS);
+        ogs_assert(true ==
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                recvmsg, "n2MbsSmInfoList has more than 10 entries", NULL, NULL));
         return false;
     }
 

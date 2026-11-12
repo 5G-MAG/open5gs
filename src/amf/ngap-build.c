@@ -2959,6 +2959,20 @@ ogs_pkbuf_t *ngap_build_broadcast_session_setup_request(amf_mbs_context_t *mbs_c
 
     memcpy(oCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer->buf, pkbuf->data, pkbuf->len);
 
+    // Associated Session ID - 9.3.1.262 (O, ignore): only when the ContextCreate carried one
+    if (mbs_context->associated_session_id) {
+        ie = CALLOC(1, sizeof(NGAP_BroadcastSessionSetupRequestIEs_t));
+        ogs_assert(ie);
+        ASN_SEQUENCE_ADD(&BroadcastSessionSetupRequest->protocolIEs, ie);
+
+        ie->id = NGAP_ProtocolIE_ID_id_AssociatedSessionID;
+        ie->criticality = NGAP_Criticality_ignore;
+        ie->value.present = NGAP_BroadcastSessionSetupRequestIEs__value_PR_AssociatedSessionID;
+
+        ogs_asn_buffer_to_OCTET_STRING(mbs_context->associated_session_id, mbs_context->associated_session_id_len,
+                &ie->value.choice.AssociatedSessionID);
+    }
+
     return ogs_ngap_encode(&pdu);
 }
 

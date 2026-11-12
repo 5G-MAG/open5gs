@@ -1373,6 +1373,7 @@ libsbi_openapi_sources = files('''
     model/create_rsp_data.c
     model/update_rsp_data.c
     model/ext_mbs_session.c
+    model/associated_session_id.c
     model/mbs_policy_ctxt_data.c
     model/mbs_policy_ctxt_data_update.c
     model/mbs_policy_data.c

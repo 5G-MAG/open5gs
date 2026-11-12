@@ -390,7 +390,8 @@ ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_create_request(
         ContextCreateReqData = OpenAPI_context_create_req_data_create(mbs_session_id, mbs_service_area_info_list,
             mbs_service_area, n2_mbs_sm_info, notify_uri, has_max_response_time, max_response_time, snssai,
             nf_instance->id ? ogs_strdup(nf_instance->id) : NULL,
-            (mbs_session_service && mbs_session_service->id) ? ogs_strdup(mbs_session_service->id) : NULL);
+            (mbs_session_service && mbs_session_service->id) ? ogs_strdup(mbs_session_service->id) : NULL,
+            mbs_sess->associated_session_id ? OpenAPI_associated_session_id_copy(NULL, mbs_sess->associated_session_id) : NULL);
     }
 
     message.ContextCreateReqData = ContextCreateReqData;

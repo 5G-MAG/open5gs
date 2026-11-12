@@ -174,15 +174,19 @@ OpenAPI_mbs_session_id_t *amf_namf_build_mbs_session_id(const ogs_tmgi_t *tmgi)
 }
 
 /*
- * Content-IDs of the binary parts that carry the transfer IEs of a message's n2MbsSmInfoList, one per entry. The
- * Content-ID is only a reference from N2MbsSmInfo.ngapData.contentId to its part (TS 29.518 cl. 6.5.2.4).
+ * Content-IDs of the binary parts that carry the transfer IEs of a message's n2MbsSmInfoList, one per entry (at most
+ * OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO, the cardinality of the list). The Content-ID is only a reference from
+ * N2MbsSmInfo.ngapData.contentId to its part (TS 29.518 cl. 6.5.2.4).
  */
-static const char *n2_mbs_sm_info_content_id[OGS_SBI_MAX_NUM_OF_PART] = {
+static const char *n2_mbs_sm_info_content_id[] = {
     OGS_SBI_CONTENT_NGAP_SM_ID "-0", OGS_SBI_CONTENT_NGAP_SM_ID "-1",
     OGS_SBI_CONTENT_NGAP_SM_ID "-2", OGS_SBI_CONTENT_NGAP_SM_ID "-3",
     OGS_SBI_CONTENT_NGAP_SM_ID "-4", OGS_SBI_CONTENT_NGAP_SM_ID "-5",
     OGS_SBI_CONTENT_NGAP_SM_ID "-6", OGS_SBI_CONTENT_NGAP_SM_ID "-7",
+    OGS_SBI_CONTENT_NGAP_SM_ID "-8", OGS_SBI_CONTENT_NGAP_SM_ID "-9",
 };
+_Static_assert(OGS_ARRAY_SIZE(n2_mbs_sm_info_content_id) == OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO,
+        "one Content-ID for each entry of n2MbsSmInfoList");
 
 /*
  * The gNB ID as TS 29.571 V18.12.0 clause 5.4.4.29 writes GNbId.gNBValue: "The padding 0 shall be added to make multiple
@@ -275,15 +279,18 @@ bool amf_namf_ran_id_list_has_gnb(const OpenAPI_list_t *ran_id_list, const amf_g
 
 /*
  * Builds the n2MbsSmInfoList of a ContextCreate or ContextUpdate response or of a ContextStatusNotify request from
- * \p n2_info_list (amf_mbs_n2_info_t items) and adds each transfer IE to \p message as a binary part. At most
- * OGS_SBI_MAX_NUM_OF_PART entries are carried (the rest are dropped with a warning). Returns NULL when there is none.
- * The parts reference the pkbufs of the items, so \p n2_info_list must outlive the message's use. Free the result with
+ * \p n2_info_list (amf_mbs_n2_info_t items) and adds each transfer IE to \p message as a binary part. The list has
+ * at most OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO entries (TS 29.518 V18.14.0 Table 6.5.6.2.4-1, n2MbsSmInfoList,
+ * cardinality "1..10"): the caller carries no more in one message (amf_mbs_n2_info_split()); items beyond that are
+ * reported as an error and are not in the message. Returns NULL when there is none. The parts reference the pkbufs of
+ * the items, so \p n2_info_list must outlive the message's use. Free the result with
  * amf_namf_free_n2_mbs_sm_info_list().
  */
 OpenAPI_list_t *amf_namf_build_n2_mbs_sm_info_list(ogs_sbi_message_t *message, ogs_list_t *n2_info_list)
 {
     OpenAPI_list_t *list = NULL;
     amf_mbs_n2_info_t *n2_info = NULL;
+    int count = 0;
 
     ogs_assert(message);
     ogs_assert(n2_info_list);
@@ -291,8 +298,10 @@ OpenAPI_list_t *amf_namf_build_n2_mbs_sm_info_list(ogs_sbi_message_t *message, o
     ogs_list_for_each(n2_info_list, n2_info) {
         OpenAPI_ref_to_binary_data_t *ngap_data = NULL;
 
-        if (message->num_of_part >= OGS_SBI_MAX_NUM_OF_PART) {
-            ogs_warn("n2MbsSmInfoList: more than %d containers, the rest are not sent", OGS_SBI_MAX_NUM_OF_PART);
+        /* A receiver stores the JSON root part and the binary parts together in OGS_SBI_MAX_NUM_OF_PART */
+        if (count >= OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO || message->num_of_part >= OGS_SBI_MAX_NUM_OF_PART - 1) {
+            ogs_error("n2MbsSmInfoList: more than %d containers (TS 29.518 cardinality 1..10), the rest are not sent",
+                    OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO);
             break;
         }
 
@@ -300,16 +309,15 @@ OpenAPI_list_t *amf_namf_build_n2_mbs_sm_info_list(ogs_sbi_message_t *message, o
             list = OpenAPI_list_create();
         ogs_assert(list);
 
-        ngap_data = OpenAPI_ref_to_binary_data_create(
-                ogs_strdup(n2_mbs_sm_info_content_id[message->num_of_part]));
+        ngap_data = OpenAPI_ref_to_binary_data_create(ogs_strdup(n2_mbs_sm_info_content_id[count]));
         OpenAPI_list_add(list, OpenAPI_n2_mbs_sm_info_create(
                     n2_info->ngap_ie_type, ngap_data, build_ran_id(n2_info)));
 
         message->part[message->num_of_part].pkbuf = n2_info->pkbuf;
-        message->part[message->num_of_part].content_id =
-            (char *)n2_mbs_sm_info_content_id[message->num_of_part];
+        message->part[message->num_of_part].content_id = (char *)n2_mbs_sm_info_content_id[count];
         message->part[message->num_of_part].content_type = (char *)OGS_SBI_CONTENT_NGAP_TYPE;
         message->num_of_part++;
+        count++;
     }
 
     return list;

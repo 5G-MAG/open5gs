@@ -108,6 +108,19 @@ smf_nmbsmf_flow_desc_result_e smf_nmbsmf_flow_description_check(const char *flow
 smf_nmbsmf_flow_desc_result_e smf_nmbsmf_mbs_flow_descriptions_check(
     OpenAPI_mbs_service_info_t *mbs_serv_info, const char **detail);
 
+bool smf_nmbsmf_area_session_policy_id_is_valid(const OpenAPI_ext_mbs_session_t *session);
+void smf_nmbsmf_take_area_session_policy_id(smf_mbs_sess_t *mbs_sess, const OpenAPI_ext_mbs_session_t *session);
+void smf_nmbsmf_take_associated_session_id(smf_mbs_sess_t *mbs_sess, const OpenAPI_ext_mbs_session_t *session);
+typedef enum smf_nmbsmf_foreign_tmgi_e {
+    SMF_NMBSMF_FOREIGN_TMGI_NOT_ACCEPTED,
+    SMF_NMBSMF_FOREIGN_TMGI_ACCEPTED,
+    SMF_NMBSMF_FOREIGN_TMGI_INVALID,
+    SMF_NMBSMF_FOREIGN_TMGI_NO_ROOM,
+} smf_nmbsmf_foreign_tmgi_e;
+smf_nmbsmf_foreign_tmgi_e smf_nmbsmf_accept_foreign_tmgi(const OpenAPI_ext_mbs_session_t *session,
+        const ogs_tmgi_t *received, bool is_multicast, ogs_tmgi_t **tmgi);
+void smf_nmbsmf_take_fsa_ids(smf_mbs_sess_t *mbs_sess, const OpenAPI_ext_mbs_session_t *session, bool is_multicast);
+
 /* Nmbsmf_MBSSession Service - MBS Session Create service operation */
 bool smf_nmbsmf_handle_mbs_session_create(
     ogs_sbi_stream_t *stream, ogs_sbi_message_t *message);

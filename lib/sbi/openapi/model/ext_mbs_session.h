@@ -12,6 +12,7 @@
 #include "../include/list.h"
 #include "../include/keyValuePair.h"
 #include "../include/binary.h"
+#include "associated_session_id.h"
 #include "external_mbs_service_area.h"
 #include "mbs_security_context.h"
 #include "mbs_service_area.h"
@@ -71,6 +72,9 @@ typedef struct OpenAPI_ext_mbs_session_s {
     bool is_contact_pcf_ind;
     int contact_pcf_ind;
     char *nr_red_cap_ue_info;
+    bool is_area_session_policy_id;
+    int area_session_policy_id;
+    struct OpenAPI_associated_session_id_s *associated_session_id;
 } OpenAPI_ext_mbs_session_t;
 
 OpenAPI_ext_mbs_session_t *OpenAPI_ext_mbs_session_create(
@@ -105,7 +109,10 @@ OpenAPI_ext_mbs_session_t *OpenAPI_ext_mbs_session_create(
     OpenAPI_mbs_security_context_t *mbs_security_context,
     bool is_contact_pcf_ind,
     int contact_pcf_ind,
-    char *nr_red_cap_ue_info
+    char *nr_red_cap_ue_info,
+    bool is_area_session_policy_id,
+    int area_session_policy_id,
+    OpenAPI_associated_session_id_t *associated_session_id
 );
 void OpenAPI_ext_mbs_session_free(OpenAPI_ext_mbs_session_t *ext_mbs_session);
 OpenAPI_ext_mbs_session_t *OpenAPI_ext_mbs_session_parseFromJSON(cJSON *ext_mbs_sessionJSON);

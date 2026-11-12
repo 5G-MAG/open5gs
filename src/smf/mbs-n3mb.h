@@ -49,8 +49,10 @@ bool smf_mbs_n3mb_parse_failure_transfer(ogs_pkbuf_t *pkbuf, int *group, long *v
 
 /* One answer of the MB-SMF to a Broadcast Session Transport Request Transfer container of an NG-RAN node: the
  * Broadcast Session Transport Response Transfer, or the Failure Transfer (failure true); ran_id is the one of the
- * request's entry (owned by the message), transfer is owned by the answer. */
-#define SMF_MBS_MAX_TRANSPORT_ANSWERS 8
+ * request's entry (owned by the message), transfer is owned by the answer. TS 29.518 V18.14.0 table 6.5.6.2.4-1:
+ * "n2MbsSmInfoList | array(N2MbsSmInfo) | O | 1..10" (the OpenAPI maxItems of the notification and of its response is
+ * 10): one answer for each container, so at most 10. */
+#define SMF_MBS_MAX_TRANSPORT_ANSWERS OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO
 typedef struct smf_mbs_transport_answer_s {
     OpenAPI_global_ran_node_id_t *ran_id;
     ogs_pkbuf_t *transfer;
@@ -59,7 +61,10 @@ typedef struct smf_mbs_transport_answer_s {
 
 /* TS 29.518 V18.14.0 clause 5.6.2.5 step 2a: for each Broadcast Session Transport Request Transfer container of the
  * notification the answer, and the DL tunnel the request offers is taken in (recorded in tunnel_changes, for
- * smf_mbs_sess_send_tunnel_changes()). Returns the number of answers. */
+ * smf_mbs_sess_send_tunnel_changes()). Returns the number of answers. Returns -1, with nothing taken in and no
+ * answer, when the list has more entries than table 6.5.6.2.4-1 allows ("n2MbsSmInfoList | array(N2MbsSmInfo) | O |
+ * 1..10", SMF_MBS_MAX_TRANSPORT_ANSWERS) or more request containers than max_answers: no container is left without
+ * its answer. */
 int smf_mbs_sess_answer_transport_requests(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf,
         OpenAPI_list_t *n2_mbs_sm_info_list,
         ogs_sbi_message_t *recvmsg, smf_mbs_tunnel_changes_t *tunnel_changes, smf_mbs_transport_answer_t *answers,

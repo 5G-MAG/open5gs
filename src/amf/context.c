@@ -342,6 +342,44 @@ bool amf_mbs_context_store_n2_container(amf_mbs_context_t *amf_mbs_context, cons
     return true;
 }
 
+/*
+ * Keeps the Associated Session ID of a ContextCreate (\p associated_session_id, an SSM or a string, TS 29.571 V18.12.0
+ * cl. 5.9.4.21.1) as the octets of the NGAP Associated Session ID IE, replacing the value held. TS 38.413 V18.8.0 cl.
+ * 9.3.1.262: "Coded as the AssociatedSessionId IE defined in TS 29.571 [35]. The gNB does not interpret the content of the
+ * Associated Session ID IE." The only coding that TS 29.571 defines for the type is its JSON one, which is what the
+ * octets hold (the same for both alternatives, so that equal values of two core networks give equal octets). NULL
+ * \p associated_session_id clears the value. Returns false, and keeps the value held, when it cannot be coded.
+ */
+bool amf_mbs_context_set_associated_session_id(
+        amf_mbs_context_t *amf_mbs_context, OpenAPI_associated_session_id_t *associated_session_id)
+{
+    cJSON *json = NULL;
+    char *text = NULL;
+
+    ogs_assert(amf_mbs_context);
+
+    if (associated_session_id) {
+        json = OpenAPI_associated_session_id_convertToJSON(associated_session_id);
+        if (!json) {
+            ogs_error("The Associated Session ID cannot be coded");
+            return false;
+        }
+        text = cJSON_PrintUnformatted(json);
+        cJSON_Delete(json);
+        if (!text) {
+            ogs_error("cJSON_PrintUnformatted() failed");
+            return false;
+        }
+    }
+
+    if (amf_mbs_context->associated_session_id)
+        ogs_free(amf_mbs_context->associated_session_id);
+    amf_mbs_context->associated_session_id = (uint8_t *)text;
+    amf_mbs_context->associated_session_id_len = text ? strlen(text) : 0;
+
+    return true;
+}
+
 /* \p n2_info must not be on a list */
 void amf_mbs_n2_info_free(amf_mbs_n2_info_t *n2_info)
 {
@@ -361,6 +399,22 @@ void amf_mbs_n2_info_remove_all(ogs_list_t *n2_info_list)
     ogs_list_for_each_safe(n2_info_list, next, n2_info) {
         ogs_list_remove(n2_info_list, n2_info);
         amf_mbs_n2_info_free(n2_info);
+    }
+}
+
+void amf_mbs_n2_info_split(ogs_list_t *n2_info_list, ogs_list_t *rest, int keep)
+{
+    amf_mbs_n2_info_t *n2_info = NULL, *next = NULL;
+    int n = 0;
+
+    ogs_assert(n2_info_list);
+    ogs_assert(rest);
+
+    ogs_list_for_each_safe(n2_info_list, next, n2_info) {
+        if (n++ < keep)
+            continue;
+        ogs_list_remove(n2_info_list, n2_info);
+        ogs_list_add(rest, n2_info);
     }
 }
 
@@ -3475,6 +3529,8 @@ void amf_mbs_context_remove(amf_mbs_context_t *amf_mbs_context)
     amf_mbs_n2_info_remove_all(&amf_mbs_context->pending_n2_info_list);
     if (amf_mbs_context->n2_mbs_sm_request)
         ogs_pkbuf_free(amf_mbs_context->n2_mbs_sm_request);
+    if (amf_mbs_context->associated_session_id)
+        ogs_free(amf_mbs_context->associated_session_id);
     {
         amf_mbs_gnb_t *involved = NULL, *next = NULL;
 

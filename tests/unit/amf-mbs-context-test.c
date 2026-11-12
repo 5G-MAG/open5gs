@@ -117,7 +117,7 @@ static amf_gnb_t *make_gnb(uint32_t gnb_id)
     return gnb;
 }
 
-/* Gives the context everything the AMF stores in one over its life: the last container, the Area Session IDs and the
+/* Gives the context everything the AMF stores in one over its life: the last container, the Associated Session ID, the Area Session IDs and the
  * areas, a gNB record with a re-establishment time, an outstanding operation, containers waiting for a response, the
  * notification URI. */
 static void fill(amf_mbs_context_t *ctx, amf_gnb_t *gnb)
@@ -137,6 +137,15 @@ static void fill(amf_mbs_context_t *ctx, amf_gnb_t *gnb)
     ctx->area_session_id = 5;
     ctx->mbs_service_area = ogs_calloc(1, sizeof(*ctx->mbs_service_area));
     ctx->notify_uri = ogs_strdup("http://127.0.0.30:9999/notify");
+
+    {
+        OpenAPI_associated_session_id_t *id = ogs_calloc(1, sizeof(*id));
+
+        id->string = ogs_strdup("x-1");
+        CHECK(amf_mbs_context_set_associated_session_id(ctx, id));
+        OpenAPI_associated_session_id_free(id);
+        CHECK(ctx->associated_session_id != NULL && ctx->associated_session_id_len == 5);
+    }
 
     amf_mbs_context_involve_gnb(ctx, gnb);
     rec = amf_mbs_context_find_involved_gnb(ctx, gnb);
@@ -198,6 +207,7 @@ static void test_removed_context_leaves_nothing(void)
     CHECK(again != NULL);
     if (again) {
         CHECK(again->n2_mbs_sm_request == NULL);
+        CHECK(again->associated_session_id == NULL && again->associated_session_id_len == 0);
         CHECK(ogs_list_empty(&again->area_items));
         CHECK(!again->location_dependent && again->area_session_id == 0);
         CHECK(again->mbs_service_area == NULL);

@@ -379,7 +379,9 @@ uint8_t smf_n4mb_handle_session_establishment_response(
                                                      smf_mbs_sess_build_fsa_id_list(mbs_sess) /* mbs_fsa_id_list */,
                                                      NULL             /* mbs_security_context */,
                                                      false            /* is_contact_pcf_ind */, 0 /* contact_pcf_ind */,
-                                                     NULL             /* nr_red_cap_ue_info */);
+                                                     NULL             /* nr_red_cap_ue_info */,
+                                                     false            /* is_area_session_policy_id */, 0 /* area_session_policy_id */,
+                                                     NULL             /* associated_session_id */);
 
     CreateRspData = OpenAPI_create_rsp_data_create(Ext_mbs_session, NULL);
 

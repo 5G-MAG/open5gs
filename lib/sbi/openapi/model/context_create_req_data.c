@@ -14,7 +14,8 @@ OpenAPI_context_create_req_data_t *OpenAPI_context_create_req_data_create(
     int max_response_time,
     OpenAPI_snssai_t *snssai,
     char *mbsmf_id,
-    char *mbsmf_service_inst_id
+    char *mbsmf_service_inst_id,
+    OpenAPI_associated_session_id_t *associated_session_id
 )
 {
     OpenAPI_context_create_req_data_t *context_create_req_data_local_var = ogs_malloc(sizeof(OpenAPI_context_create_req_data_t));
@@ -30,6 +31,7 @@ OpenAPI_context_create_req_data_t *OpenAPI_context_create_req_data_create(
     context_create_req_data_local_var->snssai = snssai;
     context_create_req_data_local_var->mbsmf_id = mbsmf_id;
     context_create_req_data_local_var->mbsmf_service_inst_id = mbsmf_service_inst_id;
+    context_create_req_data_local_var->associated_session_id = associated_session_id;
 
     return context_create_req_data_local_var;
 }
@@ -75,6 +77,10 @@ void OpenAPI_context_create_req_data_free(OpenAPI_context_create_req_data_t *con
     if (context_create_req_data->mbsmf_service_inst_id) {
         ogs_free(context_create_req_data->mbsmf_service_inst_id);
         context_create_req_data->mbsmf_service_inst_id = NULL;
+    }
+    if (context_create_req_data->associated_session_id) {
+        OpenAPI_associated_session_id_free(context_create_req_data->associated_session_id);
+        context_create_req_data->associated_session_id = NULL;
     }
     ogs_free(context_create_req_data);
 }
@@ -194,6 +200,19 @@ cJSON *OpenAPI_context_create_req_data_convertToJSON(OpenAPI_context_create_req_
     }
     }
 
+    if (context_create_req_data->associated_session_id) {
+    cJSON *associated_session_id_local_JSON = OpenAPI_associated_session_id_convertToJSON(context_create_req_data->associated_session_id);
+    if (associated_session_id_local_JSON == NULL) {
+        ogs_error("OpenAPI_context_create_req_data_convertToJSON() failed [associated_session_id]");
+        goto end;
+    }
+    cJSON_AddItemToObject(item, "associatedSessionId", associated_session_id_local_JSON);
+    if (item->child == NULL) {
+        ogs_error("OpenAPI_context_create_req_data_convertToJSON() failed [associated_session_id]");
+        goto end;
+    }
+    }
+
 end:
     return item;
 }
@@ -216,6 +235,8 @@ OpenAPI_context_create_req_data_t *OpenAPI_context_create_req_data_parseFromJSON
     OpenAPI_snssai_t *snssai_local_nonprim = NULL;
     cJSON *mbsmf_id = NULL;
     cJSON *mbsmf_service_inst_id = NULL;
+    cJSON *associated_session_id = NULL;
+    OpenAPI_associated_session_id_t *associated_session_id_local_nonprim = NULL;
     mbs_session_id = cJSON_GetObjectItemCaseSensitive(context_create_req_dataJSON, "mbsSessionId");
     if (!mbs_session_id) {
         ogs_error("OpenAPI_context_create_req_data_parseFromJSON() failed [mbs_session_id]");
@@ -316,6 +337,15 @@ OpenAPI_context_create_req_data_t *OpenAPI_context_create_req_data_parseFromJSON
     }
     }
 
+    associated_session_id = cJSON_GetObjectItemCaseSensitive(context_create_req_dataJSON, "associatedSessionId");
+    if (associated_session_id) {
+    associated_session_id_local_nonprim = OpenAPI_associated_session_id_parseFromJSON(associated_session_id);
+    if (!associated_session_id_local_nonprim) {
+        ogs_error("OpenAPI_associated_session_id_parseFromJSON failed [associated_session_id]");
+        goto end;
+    }
+    }
+
     context_create_req_data_local_var = OpenAPI_context_create_req_data_create (
         mbs_session_id_local_nonprim,
         mbs_service_area_info_list ? mbs_service_area_info_listList : NULL,
@@ -326,7 +356,8 @@ OpenAPI_context_create_req_data_t *OpenAPI_context_create_req_data_parseFromJSON
         max_response_time ? max_response_time->valuedouble : 0,
         snssai_local_nonprim,
         mbsmf_id && !cJSON_IsNull(mbsmf_id) ? ogs_strdup(mbsmf_id->valuestring) : NULL,
-        mbsmf_service_inst_id && !cJSON_IsNull(mbsmf_service_inst_id) ? ogs_strdup(mbsmf_service_inst_id->valuestring) : NULL
+        mbsmf_service_inst_id && !cJSON_IsNull(mbsmf_service_inst_id) ? ogs_strdup(mbsmf_service_inst_id->valuestring) : NULL,
+        associated_session_id ? associated_session_id_local_nonprim : NULL
     );
 
     return context_create_req_data_local_var;
@@ -353,6 +384,10 @@ end:
     if (snssai_local_nonprim) {
         OpenAPI_snssai_free(snssai_local_nonprim);
         snssai_local_nonprim = NULL;
+    }
+    if (associated_session_id_local_nonprim) {
+        OpenAPI_associated_session_id_free(associated_session_id_local_nonprim);
+        associated_session_id_local_nonprim = NULL;
     }
     return NULL;
 }

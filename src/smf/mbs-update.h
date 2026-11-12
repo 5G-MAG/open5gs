@@ -58,6 +58,16 @@ bool smf_mbs_fsa_id_is_valid(const char *id);
  * "maxnoofMBSFSAs | Maximum no. of FSA IDs for one MBS session. Value is 64." */
 #define SMF_MBS_MAX_FSA_IDS 64
 
+/* The configuration smf.mbsFsaIds, one entry: adds the MBS FSA ID \p id to the list the MB-SMF selects from when the
+ * Create request of a broadcast MBS session has none. Returns false, with nothing added, when \p id is not an MBS FSA
+ * (smf_mbs_fsa_id_is_valid()), is already there, or would make more than SMF_MBS_MAX_FSA_IDS. */
+bool smf_mbs_fsa_id_configure(const char *id);
+
+/* The configured MBS FSA IDs (smf_mbs_fsa_id_configure()) as the MBS FSA IDs of \p mbs_sess, when it has none: the
+ * MB-SMF "selects MBS FSA ID(s) for the Broadcast MBS session based on local configuration". Returns whether it set
+ * any. */
+bool smf_mbs_sess_select_fsa_ids(smf_mbs_sess_t *mbs_sess);
+
 /* Whether the patch path names an attribute smf_mbs_sess_update() applies: the first segment is mbsServiceArea,
  * mbsServInfo, mbsFsaIdList, contactPcfInd or nrRedCapUeInfo. */
 bool smf_mbs_update_path_is_modifiable(const char *path);

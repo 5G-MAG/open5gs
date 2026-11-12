@@ -704,7 +704,7 @@ static int client_transport_cb(int status, ogs_sbi_response_t *response, void *d
     transport_request_t *request = data;
     amf_gnb_t *gnb = NULL;
     ogs_sbi_message_t message;
-    ogs_pkbuf_t *answers[OGS_SBI_MAX_NUM_OF_PART];
+    ogs_pkbuf_t *answers[OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO];
     int i, count = 0;
 
     ogs_assert(request);

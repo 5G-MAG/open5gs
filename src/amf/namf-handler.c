@@ -2694,6 +2694,19 @@ int amf_namf_handle_mbs_broadcast_context_create(
     if (!amf_mbs_context_store_n2_container(mbs_context, n2mbssmbuf))
         ogs_warn("MBS Broadcast ContextCreate: the N2 MBS SM container could not be kept for restoration");
 
+    // TS 29.518 V18.14.0 cl. 5.6.2.2: the NF Service Consumer "may also include the MBS associated session ID": it goes
+    // into the Broadcast Session Setup Request (TS 38.413 V18.8.0 cl. 9.2.16.1) of the session, and so into the ones of its
+    // restoration.
+    if (!amf_mbs_context_set_associated_session_id(mbs_context, ContextCreateReqData->associated_session_id)) {
+        ogs_error("MBS Broadcast ContextCreate: the Associated Session ID cannot be coded");
+        amf_mbs_context_remove(mbs_context);
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+            recvmsg, "Internal Server Error",
+            "Requested MBS Broadcast ContextCreate failed, the associatedSessionId cannot be coded", "UNSPECIFIED_NF_FAILURE");
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
     // NGAP BROADCAST SESSION SETUP REQUEST message with MBS Session Setup or Modification Request Transfer IE
     n2msgreq = ngap_build_broadcast_session_setup_request(mbs_context, n2mbssmbuf);
 
@@ -2775,6 +2788,49 @@ static void amf_mbs_context_restoration_response(amf_mbs_context_t *mbs_context,
         const OCTET_STRING_t *transfer);
 
 /*
+ * A ContextCreate or ContextUpdate response carries at most OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO containers (TS 29.518
+ * V18.14.0 Tables 6.5.6.2.3-1 and 6.5.6.2.6-1, n2MbsSmInfoList, cardinality "1..10"). The containers of
+ * \p n2_info_list beyond them move to \p rest, to be sent by amf_namf_notify_remaining_n2_info() after the response
+ * (cl. 5.6.2.2: "if additional information (...) needs to be transferred to the MB-SMF, the AMF shall transfer such
+ * information by sending one or more Namf_MBSBroadcast_ContextStatusNotify requests to the MB-SMF."). Returns the
+ * operation status the response reports: that of \p operation_status, unless containers follow, when the last
+ * notification reports it ("When the AMF receives the response from all NG-RANs, the AMF shall include an indication of
+ * the completion of the operation in the Namf_MBSBroadcast_ContextStatusNotify request.").
+ */
+static OpenAPI_operation_status_e amf_namf_limit_response_n2_info(
+        ogs_list_t *n2_info_list, ogs_list_t *rest, OpenAPI_operation_status_e operation_status)
+{
+    amf_mbs_n2_info_split(n2_info_list, rest, OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO);
+    return ogs_list_empty(rest) ? operation_status : OpenAPI_operation_status_NULL;
+}
+
+/*
+ * Sends the containers of \p rest (amf_namf_limit_response_n2_info()) in ContextStatusNotify requests of at most
+ * OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO each, the last one with \p operation_status, and empties \p rest.
+ */
+static void amf_namf_notify_remaining_n2_info(
+        amf_mbs_context_t *mbs_context, ogs_list_t *rest, OpenAPI_operation_status_e operation_status)
+{
+    while (!ogs_list_empty(rest)) {
+        ogs_list_t batch;
+        amf_mbs_n2_info_t *n2_info = NULL;
+        int n = 0;
+
+        ogs_list_init(&batch);
+        while (n < OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO && (n2_info = ogs_list_first(rest)) != NULL) {
+            ogs_list_remove(rest, n2_info);
+            ogs_list_add(&batch, n2_info);
+            n++;
+        }
+
+        if (!amf_sbi_send_mbs_broadcast_context_status_notify(mbs_context, &batch,
+                    ogs_list_empty(rest) ? operation_status : OpenAPI_operation_status_NULL, false, NULL))
+            ogs_error("MBS Broadcast ContextStatusNotify: %d containers could not be sent", n);
+        amf_mbs_n2_info_remove_all(&batch);
+    }
+}
+
+/*
  * Builds and sends the deferred Namf_MBSBroadcast_ContextCreate response (OGS_SBI_HTTP_STATUS_CREATED),
  * once amf_namf_handle_mbs_broadcast_ran_response() has correlated the first successful NG-RAN response to \p
  * mbs_context. Split out of amf_namf_handle_mbs_broadcast_context_create() itself since that function
@@ -2793,6 +2849,8 @@ static void amf_namf_send_mbs_broadcast_context_create_response(amf_mbs_context_
     OpenAPI_tmgi_t *tmgi_copy = NULL;
     OpenAPI_mbs_session_id_t *mbs_session_id_copy = NULL;
     OpenAPI_list_t *n2_mbs_sm_info_list = NULL;
+    OpenAPI_operation_status_e response_status;
+    ogs_list_t rest;
 
     ogs_sbi_message_t sendmsg;
     ogs_sbi_stream_t *stream = NULL;
@@ -2827,10 +2885,12 @@ static void amf_namf_send_mbs_broadcast_context_create_response(amf_mbs_context_
     mbs_session_id_copy = OpenAPI_mbs_session_id_create(tmgi_copy, NULL, NULL);
     ogs_assert(mbs_session_id_copy);
 
+    ogs_list_init(&rest);
+    response_status = amf_namf_limit_response_n2_info(n2_info_list, &rest, operation_status);
     n2_mbs_sm_info_list = amf_namf_build_n2_mbs_sm_info_list(&sendmsg, n2_info_list);
 
     ContextCreateRspData = OpenAPI_context_create_rsp_data_create(
-            mbs_session_id_copy, n2_mbs_sm_info_list, operation_status);
+            mbs_session_id_copy, n2_mbs_sm_info_list, response_status);
 
     server = ogs_sbi_server_from_stream(stream);
     ogs_assert(server);
@@ -2868,6 +2928,9 @@ static void amf_namf_send_mbs_broadcast_context_create_response(amf_mbs_context_
 
     amf_namf_free_n2_mbs_sm_info_list(n2_mbs_sm_info_list);
     amf_mbs_n2_info_remove_all(n2_info_list);
+
+    // What did not fit in the response follows in notifications, now that the consumer has the context's reference.
+    amf_namf_notify_remaining_n2_info(mbs_context, &rest, operation_status);
 }
 
 /*
@@ -3317,6 +3380,8 @@ static void amf_namf_send_mbs_broadcast_context_update_response(amf_mbs_context_
 {
     OpenAPI_context_update_rsp_data_t ContextUpdateRspData;
     OpenAPI_list_t *n2_mbs_sm_info_list = NULL;
+    OpenAPI_operation_status_e response_status;
+    ogs_list_t rest;
     ogs_sbi_message_t sendmsg;
     ogs_sbi_stream_t *stream = NULL;
     ogs_sbi_response_t *response = NULL;
@@ -3335,12 +3400,14 @@ static void amf_namf_send_mbs_broadcast_context_update_response(amf_mbs_context_
 
     memset(&sendmsg, 0, sizeof(sendmsg));
 
+    ogs_list_init(&rest);
+    response_status = amf_namf_limit_response_n2_info(n2_info_list, &rest, operation_status);
     n2_mbs_sm_info_list = amf_namf_build_n2_mbs_sm_info_list(&sendmsg, n2_info_list);
 
-    if (n2_mbs_sm_info_list || operation_status != OpenAPI_operation_status_NULL) {
+    if (n2_mbs_sm_info_list || response_status != OpenAPI_operation_status_NULL) {
         memset(&ContextUpdateRspData, 0, sizeof(ContextUpdateRspData));
         ContextUpdateRspData.n2_mbs_sm_info_list = n2_mbs_sm_info_list;
-        ContextUpdateRspData.operation_status = operation_status;
+        ContextUpdateRspData.operation_status = response_status;
         sendmsg.ContextUpdateRspData = &ContextUpdateRspData;
 
         response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_OK);
@@ -3355,6 +3422,9 @@ static void amf_namf_send_mbs_broadcast_context_update_response(amf_mbs_context_
     amf_mbs_n2_info_remove_all(n2_info_list);
 
     mbs_context->stream_id = OGS_INVALID_POOL_ID;
+
+    // What did not fit in the response follows in notifications.
+    amf_namf_notify_remaining_n2_info(mbs_context, &rest, operation_status);
 }
 
 /*
@@ -3462,14 +3532,11 @@ void amf_namf_handle_mbs_broadcast_ran_response(amf_mbs_context_t *mbs_context, 
         // No NG-RAN has succeeded yet and another may still: the ContextCreate is answered by that success (cl.
         // 5.6.2.2: "The AMF should respond success when it receives the first successful response from the
         // NG-RAN(s)."). This node's Failure Transfer goes in that response.
-        if (n2_info) {
-            if (ogs_list_count(&mbs_context->pending_n2_info_list) < OGS_SBI_MAX_NUM_OF_PART - 1)
-                ogs_list_add(&mbs_context->pending_n2_info_list, n2_info);
-            else {
-                ogs_warn("%s: too many containers waiting for the response, one is not sent", operation);
-                amf_mbs_n2_info_free(n2_info);
-            }
-        }
+        // One container for each NG-RAN node that answered, so no more than the nodes the request was sent to
+        // (gnb_request_count); the response carries up to OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO of them and the
+        // notifications that follow it the rest.
+        if (n2_info)
+            ogs_list_add(&mbs_context->pending_n2_info_list, n2_info);
         return;
     }
 
@@ -4377,11 +4444,19 @@ int amf_namf_mbs_transport_answers(const amf_gnb_t *gnb, const ogs_tmgi_t *tmgi,
     if (!response || !response->n2_mbs_sm_info_list)
         return 0;
 
+    /* TS 29.518 V18.14.0 Table 6.5.6.2.10-1: n2MbsSmInfoList, cardinality "1..10". The response of the MB-SMF is the one
+     * to refuse (it is not an answer the AMF can use), not to take the first ten of. */
+    if (response->n2_mbs_sm_info_list->count > OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO) {
+        ogs_error("Broadcast Session Transport: the MB-SMF sent %d containers, more than the %d of n2MbsSmInfoList",
+                (int)response->n2_mbs_sm_info_list->count, OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO);
+        return 0;
+    }
+
     OpenAPI_list_for_each(response->n2_mbs_sm_info_list, node) {
         OpenAPI_n2_mbs_sm_info_t *info = node->data;
         ogs_pkbuf_t *transfer = NULL, *ngap = NULL;
 
-        if (!info || count >= max)
+        if (!info)
             continue;
         if (info->ngap_ie_type != OpenAPI_ngap_ie_type_BC_TRA_RSP &&
                 info->ngap_ie_type != OpenAPI_ngap_ie_type_BC_TRA_FAIL)
@@ -4412,8 +4487,14 @@ int amf_namf_mbs_transport_answers(const amf_gnb_t *gnb, const ogs_tmgi_t *tmgi,
             }
             ngap = ngap_build_broadcast_session_transport_failure(tmgi, transfer->data, transfer->len, group, cause);
         }
-        if (ngap)
+        if (ngap) {
+            if (count >= max) {
+                ogs_error("Broadcast Session Transport: no room for more than %d answers, the rest are not sent", max);
+                ogs_pkbuf_free(ngap);
+                break;
+            }
             out[count++] = ngap;
+        }
     }
 
     return count;

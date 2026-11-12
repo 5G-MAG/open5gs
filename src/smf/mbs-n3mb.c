@@ -372,6 +372,8 @@ static bool transport_answer_add(smf_mbs_transport_answer_t *answers, int *count
         OpenAPI_global_ran_node_id_t *ran_id, ogs_pkbuf_t *transfer, bool failure)
 {
     if (!transfer || *count >= max) {
+        ogs_error("Broadcast Session Transport Request Transfer: no answer for a container (%s)",
+                transfer ? "no room" : "cannot encode");
         if (transfer)
             ogs_pkbuf_free(transfer);
         return false;
@@ -398,6 +400,30 @@ int smf_mbs_sess_answer_transport_requests(smf_mbs_sess_t *mbs_sess, smf_mbs_amf
         memset(tunnel_changes, 0, sizeof(*tunnel_changes));
     if (!n2_mbs_sm_info_list)
         return 0;
+
+    /* TS 29.518 V18.14.0 table 6.5.6.2.4-1: "n2MbsSmInfoList | array(N2MbsSmInfo) | O | 1..10". A longer list is not
+     * a notification this MB-SMF can answer container by container, and answering a part of it would leave the
+     * rest of the NG-RAN nodes without the answer to their request. */
+    if (n2_mbs_sm_info_list->count > SMF_MBS_MAX_TRANSPORT_ANSWERS) {
+        ogs_error("n2MbsSmInfoList has [%d] containers, more than the [%d] of table 6.5.6.2.4-1",
+                (int)n2_mbs_sm_info_list->count, SMF_MBS_MAX_TRANSPORT_ANSWERS);
+        return -1;
+    }
+    {
+        int requests = 0;
+
+        OpenAPI_list_for_each(n2_mbs_sm_info_list, node) {
+            OpenAPI_n2_mbs_sm_info_t *info = node->data;
+
+            if (info && info->ngap_ie_type == OpenAPI_ngap_ie_type_BC_TRA_REQ)
+                requests++;
+        }
+        if (requests > max_answers) {
+            ogs_error("[%d] Broadcast Session Transport Request Transfer containers, room for [%d] answers",
+                    requests, max_answers);
+            return -1;
+        }
+    }
 
     OpenAPI_list_for_each(n2_mbs_sm_info_list, node) {
         OpenAPI_n2_mbs_sm_info_t *info = node->data;

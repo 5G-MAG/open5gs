@@ -572,6 +572,94 @@ smf_nmbsmf_flow_desc_result_e smf_nmbsmf_mbs_flow_descriptions_check(
     return SMF_NMBSMF_FLOW_DESC_OK;
 }
 
+/* TS 29.571 V18.12.0 table 5.2.2-1, Uint16 (the type of AreaSessionPolicyId): "Integer where the allowed values
+ * correspond to the value range of an unsigned 16-bit integer, i.e. 0 to 65535." A value outside it is an erroneous
+ * input (TS 29.532 V18.6.0 table 6.2.7.3-1, ERROR_INPUT_PARAMETERS). */
+bool smf_nmbsmf_area_session_policy_id_is_valid(const OpenAPI_ext_mbs_session_t *session)
+{
+    return !session->is_area_session_policy_id ||
+        (session->area_session_policy_id >= 0 && session->area_session_policy_id <= 65535);
+}
+
+/* The Area Session Policy ID of a Create request, which smf_nmbsmf_area_session_policy_id_is_valid() accepted */
+void smf_nmbsmf_take_area_session_policy_id(smf_mbs_sess_t *mbs_sess, const OpenAPI_ext_mbs_session_t *session)
+{
+    ogs_assert(mbs_sess);
+    ogs_assert(session);
+
+    if (!session->is_area_session_policy_id)
+        return;
+    mbs_sess->has_area_session_policy_id = true;
+    mbs_sess->area_session_policy_id = (uint16_t)session->area_session_policy_id;
+}
+
+/* The Associated Session ID of a Create request (a copy; the request keeps its own), for the ContextCreate that the
+ * MB-SMF sends to the AMF (TS 29.532 V18.6.0 cl. 5.3.2.2.1 lists it for a broadcast MBS session) */
+void smf_nmbsmf_take_associated_session_id(smf_mbs_sess_t *mbs_sess, const OpenAPI_ext_mbs_session_t *session)
+{
+    ogs_assert(mbs_sess);
+    ogs_assert(session);
+
+    if (!session->associated_session_id)
+        return;
+    if (mbs_sess->associated_session_id)
+        OpenAPI_associated_session_id_free(mbs_sess->associated_session_id);
+    mbs_sess->associated_session_id = OpenAPI_associated_session_id_copy(NULL, session->associated_session_id);
+}
+
+/* Whether the Create request names a TMGI that this MB-SMF did not allocate and is to accept (adding it to its TMGIs,
+ * *tmgi): a location dependent broadcast MBS session, and the operator's policy (smf.mbsAcceptForeignTmgi) says so. */
+smf_nmbsmf_foreign_tmgi_e smf_nmbsmf_accept_foreign_tmgi(const OpenAPI_ext_mbs_session_t *session,
+        const ogs_tmgi_t *received, bool is_multicast, ogs_tmgi_t **tmgi)
+{
+    bool invalid = false;
+
+    ogs_assert(session);
+    ogs_assert(received);
+    ogs_assert(tmgi);
+
+    if (is_multicast || !(session->is_location_dependent && session->location_dependent) ||
+            !smf_mbs_accepts_foreign_tmgi())
+        return SMF_NMBSMF_FOREIGN_TMGI_NOT_ACCEPTED;
+
+    *tmgi = smf_tmgi_add_foreign(received, &invalid);
+    if (*tmgi)
+        return SMF_NMBSMF_FOREIGN_TMGI_ACCEPTED;
+    return invalid ? SMF_NMBSMF_FOREIGN_TMGI_INVALID : SMF_NMBSMF_FOREIGN_TMGI_NO_ROOM;
+}
+
+/* The MBS FSA IDs of the session: those of a Create request, or, for a broadcast session whose request has none, those
+ * of the configuration. */
+void smf_nmbsmf_take_fsa_ids(smf_mbs_sess_t *mbs_sess, const OpenAPI_ext_mbs_session_t *session, bool is_multicast)
+{
+    ogs_assert(mbs_sess);
+    ogs_assert(session);
+
+        // MBS FSA ID (MBS Frequency Selection Area Identity) is read from TS 29.532
+        // MbsSession.mbsFsaIdList, which the AF supplies and rt-mbs-function's MBSMFMBSSession::setFsaId()
+        // builds when it does. ngap_build_mbs_session_setup_or_modification_request_transfer() populates the
+        // corresponding Optional NGAP IE whenever this list is non-empty, and omits it otherwise.
+    ogs_list_init(&mbs_sess->mbs_fsa_id_list);
+    if (session->mbs_fsa_id_list) {
+        OpenAPI_lnode_t *node;
+        OpenAPI_list_for_each(session->mbs_fsa_id_list, node) {
+            const char *hex_id = (const char *)node->data;
+            if (hex_id) {
+                smf_mbs_fsa_id_t *fsa_id = (smf_mbs_fsa_id_t *)ogs_calloc(1, sizeof(*fsa_id));
+                ogs_assert(fsa_id);
+                fsa_id->id = ogs_uint24_from_string(hex_id);
+                ogs_list_add(&mbs_sess->mbs_fsa_id_list, fsa_id);
+            }
+        }
+    }
+
+    /* TS 23.247 V18.8.0 cl. 7.1.1.2 step 11: "For broadcast communication, if no MBS FSA ID(s) have been received, the
+     * MB-SMF selects MBS FSA ID(s) for the Broadcast MBS session based on local configuration." (the Create response
+     * and the N2 information carry the list of the session) */
+    if (!is_multicast)
+        smf_mbs_sess_select_fsa_ids(mbs_sess);
+}
+
 /* Nmbsmf_MBSSession Service API */
 
 /*
@@ -668,6 +756,15 @@ bool smf_nmbsmf_handle_mbs_session_create(
         ogs_error("MBS Session Create: mbsSessionId.nid is not 11 hexadecimal digits");
         ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
             message, "Error input parameters", "MBS Session Create failed, [mbsSessionId.nid] is not 11 hexadecimal digits",
+            NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    if (!smf_nmbsmf_area_session_policy_id_is_valid(CreateReqData->mbs_session)) {
+        ogs_error("MBS Session Create: areaSessionPolicyId is not a 16-bit unsigned integer");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            message, "Error input parameters", "MBS Session Create failed, [areaSessionPolicyId] is not a 16-bit unsigned integer",
             NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
         rv = OGS_ERROR;
         goto cleanup;
@@ -879,6 +976,34 @@ bool smf_nmbsmf_handle_mbs_session_create(
                 }
             }
 
+            /* TS 29.532 V18.6.0 cl. 5.3.2.2.1: "For a location dependent broadcast MBS session, based on operator's
+             * policy, the MB-SMF shall accept a TMGI value allocated by another MB-SMF." */
+            if (!tmgi && CreateReqData->mbs_session->mbs_session_id->tmgi) {
+                switch (smf_nmbsmf_accept_foreign_tmgi(CreateReqData->mbs_session, &tmgi_received,
+                            is_multicast_service, &tmgi)) {
+                case SMF_NMBSMF_FOREIGN_TMGI_ACCEPTED:
+                    tmgi_allocated = true;      /* it goes with the session, as an allocated one does */
+                    break;
+                case SMF_NMBSMF_FOREIGN_TMGI_INVALID:
+                    ogs_error("MBS Session Create: mbsSessionId.tmgi.mbsServiceId is not 6 hexadecimal digits");
+                    ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                        message, "Error input parameters",
+                        "MBS Session Create failed, [mbsSessionId.tmgi.mbsServiceId] is not 6 hexadecimal digits",
+                        NMBSMF_MBSSESSION_ERROR_INPUT_PARAMETERS);
+                    rv = OGS_ERROR;
+                    goto cleanup;
+                case SMF_NMBSMF_FOREIGN_TMGI_NO_ROOM:
+                    ogs_error("MBS Session Create: no room for the TMGI of another MB-SMF");
+                    ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+                        message, "Insufficient resources", "MBS Session Create failed, no room for another TMGI",
+                        NMBSMF_MBSSESSION_INSUFFICIENT_RESOURCES);
+                    rv = OGS_ERROR;
+                    goto cleanup;
+                default:
+                    break;
+                }
+            }
+
             // Error checking, TMGI not found
             if (!tmgi) {
                 // TMGI not found, send error (404 + UNKNOWN_TMGI)
@@ -1075,6 +1200,9 @@ bool smf_nmbsmf_handle_mbs_session_create(
         mbs_sess->has_s_nssai = true;
     }
 
+    smf_nmbsmf_take_area_session_policy_id(mbs_sess, CreateReqData->mbs_session);
+    smf_nmbsmf_take_associated_session_id(mbs_sess, CreateReqData->mbs_session);
+
     mbs_sess->ingress_tun_addr_req = (CreateReqData->mbs_session->is_ingress_tun_addr_req &&
                                       CreateReqData->mbs_session->ingress_tun_addr_req != 0);
 
@@ -1112,23 +1240,7 @@ bool smf_nmbsmf_handle_mbs_session_create(
         mbs_sess->mbs_service_area_json = smf_mbs_service_area_to_json(CreateReqData->mbs_session->mbs_service_area);
     }
 
-        // MBS FSA ID (MBS Frequency Selection Area Identity) is read from TS 29.532
-        // MbsSession.mbsFsaIdList, which the AF supplies and rt-mbs-function's MBSMFMBSSession::setFsaId()
-        // builds when it does. ngap_build_mbs_session_setup_or_modification_request_transfer() populates the
-        // corresponding Optional NGAP IE whenever this list is non-empty, and omits it otherwise.
-    ogs_list_init(&mbs_sess->mbs_fsa_id_list);
-    if (CreateReqData->mbs_session->mbs_fsa_id_list) {
-        OpenAPI_lnode_t *node;
-        OpenAPI_list_for_each(CreateReqData->mbs_session->mbs_fsa_id_list, node) {
-            const char *hex_id = (const char *)node->data;
-            if (hex_id) {
-                smf_mbs_fsa_id_t *fsa_id = (smf_mbs_fsa_id_t *)ogs_calloc(1, sizeof(*fsa_id));
-                ogs_assert(fsa_id);
-                fsa_id->id = ogs_uint24_from_string(hex_id);
-                ogs_list_add(&mbs_sess->mbs_fsa_id_list, fsa_id);
-            }
-        }
-    }
+    smf_nmbsmf_take_fsa_ids(mbs_sess, CreateReqData->mbs_session, is_multicast_service);
 
     /* TS 29.532 V18.6.0 cl. 5.3.2.2.1: the Create request of a broadcast session may carry the "NR RedCap UE
      * information"; the MB-SMF forwards it in the N2 SM information (see the builder of the transfer). */
@@ -1488,7 +1600,9 @@ bool smf_nmbsmf_mbs_session_patch_apply(smf_mbs_sess_t *mbs_sess, ogs_sbi_stream
                 smf_mbs_sess_build_fsa_id_list(mbs_sess) /* mbs_fsa_id_list */,
                 NULL            /* mbs_security_context */,
                 false, 0        /* contact_pcf_ind */,
-                NULL            /* nr_red_cap_ue_info */);
+                NULL            /* nr_red_cap_ue_info */,
+                false, 0        /* area_session_policy_id */,
+                NULL            /* associated_session_id */);
 
         UpdateRspData = OpenAPI_update_rsp_data_create(Ext_mbs_session);
         sendmsg.UpdateRspData = UpdateRspData;

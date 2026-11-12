@@ -12,6 +12,7 @@
 #include "../include/list.h"
 #include "../include/keyValuePair.h"
 #include "../include/binary.h"
+#include "associated_session_id.h"
 #include "mbs_service_area.h"
 #include "mbs_service_area_info.h"
 #include "mbs_session_id.h"
@@ -34,6 +35,7 @@ typedef struct OpenAPI_context_create_req_data_s {
     struct OpenAPI_snssai_s *snssai;
     char *mbsmf_id;
     char *mbsmf_service_inst_id;
+    struct OpenAPI_associated_session_id_s *associated_session_id;
 } OpenAPI_context_create_req_data_t;
 
 OpenAPI_context_create_req_data_t *OpenAPI_context_create_req_data_create(
@@ -46,7 +48,8 @@ OpenAPI_context_create_req_data_t *OpenAPI_context_create_req_data_create(
     int max_response_time,
     OpenAPI_snssai_t *snssai,
     char *mbsmf_id,
-    char *mbsmf_service_inst_id
+    char *mbsmf_service_inst_id,
+    OpenAPI_associated_session_id_t *associated_session_id
 );
 void OpenAPI_context_create_req_data_free(OpenAPI_context_create_req_data_t *context_create_req_data);
 OpenAPI_context_create_req_data_t *OpenAPI_context_create_req_data_parseFromJSON(cJSON *context_create_req_dataJSON);

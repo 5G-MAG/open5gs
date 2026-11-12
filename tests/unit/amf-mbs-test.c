@@ -237,32 +237,244 @@ static void test_gnb_value_is_right_aligned(void)
     ogs_free(gnb30);
 }
 
-/* A message has at most OGS_SBI_MAX_NUM_OF_PART binary parts: the rest of the containers are not carried. */
+/* TS 29.518 V18.14.0 Table 6.5.6.2.4-1: n2MbsSmInfoList is "array(N2MbsSmInfo)", cardinality "1..10" (the numbers below are
+ * the table's, not the constant's). 1, 8, 9 and 10 containers are all carried, each by a part of its own that its entry
+ * names; an 11th is not carried and is reported (the callers split their list before, amf_mbs_n2_info_split()). */
 static void test_n2_info_list_limit(void)
 {
     static const uint8_t t[] = { 1 };
+    static const int sizes[] = { 1, 8, 9, 10, 11 };
     amf_gnb_t *gnb = make_gnb(0x100, 22);
-    ogs_list_t infos;
-    ogs_sbi_message_t message;
-    OpenAPI_list_t *list;
-    int i;
+    size_t s;
 
-    ogs_list_init(&infos);
-    for (i = 0; i < OGS_SBI_MAX_NUM_OF_PART + 2; i++)
-        ogs_list_add(&infos, amf_mbs_n2_info_create(gnb, OpenAPI_ngap_ie_type_MBS_SES_RSP, t, sizeof(t)));
+    CHECK(OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO == 10);
 
-    memset(&message, 0, sizeof(message));
-    list = amf_namf_build_n2_mbs_sm_info_list(&message, &infos);
-    CHECK(list != NULL && list->count == OGS_SBI_MAX_NUM_OF_PART);
-    CHECK(message.num_of_part == OGS_SBI_MAX_NUM_OF_PART);
+    for (s = 0; s < sizeof(sizes) / sizeof(sizes[0]); s++) {
+        int want = sizes[s] > 10 ? 10 : sizes[s];
+        ogs_list_t infos;
+        ogs_sbi_message_t message;
+        OpenAPI_list_t *list;
+        OpenAPI_lnode_t *node;
+        int i, j;
 
-    amf_namf_free_n2_mbs_sm_info_list(list);
-    amf_mbs_n2_info_remove_all(&infos);
+        ogs_list_init(&infos);
+        for (i = 0; i < sizes[s]; i++)
+            ogs_list_add(&infos, amf_mbs_n2_info_create(gnb, OpenAPI_ngap_ie_type_MBS_SES_RSP, t, sizeof(t)));
+
+        memset(&message, 0, sizeof(message));
+        list = amf_namf_build_n2_mbs_sm_info_list(&message, &infos);
+        CHECK(list != NULL && list->count == want);
+        CHECK(message.num_of_part == want);
+
+        if (list && list->count == want && message.num_of_part == want) {
+            i = 0;
+            OpenAPI_list_for_each(list, node) {
+                OpenAPI_n2_mbs_sm_info_t *info = node->data;
+
+                /* the entry names its own part, and no other entry names it */
+                CHECK(info->ngap_data && info->ngap_data->content_id &&
+                        strcmp(info->ngap_data->content_id, message.part[i].content_id) == 0);
+                for (j = 0; j < i; j++)
+                    CHECK(strcmp(message.part[j].content_id, message.part[i].content_id) != 0);
+                i++;
+            }
+        }
+
+        amf_namf_free_n2_mbs_sm_info_list(list);
+        amf_mbs_n2_info_remove_all(&infos);
+    }
 
     /* nothing to carry: no list, no part */
+    {
+        ogs_list_t infos;
+        ogs_sbi_message_t message;
+
+        ogs_list_init(&infos);
+        memset(&message, 0, sizeof(message));
+        CHECK(amf_namf_build_n2_mbs_sm_info_list(&message, &infos) == NULL);
+        CHECK(message.num_of_part == 0);
+    }
+    ogs_free(gnb);
+}
+
+/* The containers of a ContextCreate or ContextUpdate response are the first ten; the others follow in notifications. */
+static void test_n2_info_split(void)
+{
+    static const uint8_t t[] = { 1 };
+    static const int sizes[] = { 1, 10, 11, 25 };
+    amf_gnb_t *gnb = make_gnb(0x100, 22);
+    size_t s;
+
+    for (s = 0; s < sizeof(sizes) / sizeof(sizes[0]); s++) {
+        ogs_list_t infos, rest;
+        amf_mbs_n2_info_t *first = NULL, *n2_info = NULL;
+        int i, want_rest = sizes[s] > 10 ? sizes[s] - 10 : 0;
+
+        ogs_list_init(&infos);
+        ogs_list_init(&rest);
+        for (i = 0; i < sizes[s]; i++) {
+            n2_info = amf_mbs_n2_info_create(gnb, OpenAPI_ngap_ie_type_MBS_SES_RSP, t, sizeof(t));
+            ogs_list_add(&infos, n2_info);
+            if (i == 10)
+                first = n2_info;
+        }
+
+        amf_mbs_n2_info_split(&infos, &rest, 10);
+        CHECK(ogs_list_count(&infos) == (sizes[s] > 10 ? 10 : sizes[s]));
+        CHECK(ogs_list_count(&rest) == want_rest);
+        /* the order is kept: the 11th container is the first of the rest */
+        CHECK(first == NULL || ogs_list_first(&rest) == first);
+
+        amf_mbs_n2_info_remove_all(&infos);
+        amf_mbs_n2_info_remove_all(&rest);
+    }
+    ogs_free(gnb);
+}
+
+/* The response of the MB-SMF to a Broadcast Session Transport Request carries up to 10 containers (TS 29.518 V18.14.0
+ * Table 6.5.6.2.10-1, cardinality "1..10"): 1, 8, 9 and 10 of them cross the SBI (one JSON part and as many binary parts)
+ * and each is answered; more than 10 is refused, not cut to ten. */
+static ogs_sbi_response_t *notify_response_with_containers(int n, ogs_pkbuf_t **transfers)
+{
+    ogs_tmgi_t tmgi;
+    ogs_sbi_message_t sendmsg;
+    OpenAPI_context_status_notification_response_t body;
+    OpenAPI_list_t *list = OpenAPI_list_create();
+    ogs_sbi_response_t *response;
+    OpenAPI_lnode_t *node;
+    static char ids[12][16];
+    int i;
+
+    memset(&tmgi, 0, sizeof(tmgi));
+    tmgi.mbs_service_id = (char *)"000001";
+    ogs_plmn_id_build(&tmgi.plmn_id, 999, 70, 2);
+
+    memset(&sendmsg, 0, sizeof(sendmsg));
+    memset(&body, 0, sizeof(body));
+    body.mbs_session_id = amf_namf_build_mbs_session_id(&tmgi);
+    for (i = 0; i < n; i++) {
+        snprintf(ids[i], sizeof(ids[i]), "ngap-%d", i);
+        transfers[i] = ogs_pkbuf_alloc(NULL, 2);
+        ogs_pkbuf_put_data(transfers[i], "\x0a\x0b", 2);
+        OpenAPI_list_add(list, OpenAPI_n2_mbs_sm_info_create(OpenAPI_ngap_ie_type_BC_TRA_RSP,
+                    OpenAPI_ref_to_binary_data_create(ogs_strdup(ids[i])), NULL));
+        /* the parts of a message are at most OGS_SBI_MAX_NUM_OF_PART, the JSON root not among them here */
+        if (sendmsg.num_of_part < OGS_SBI_MAX_NUM_OF_PART) {
+            sendmsg.part[sendmsg.num_of_part].pkbuf = transfers[i];
+            sendmsg.part[sendmsg.num_of_part].content_id = ids[i];
+            sendmsg.part[sendmsg.num_of_part].content_type = (char *)OGS_SBI_CONTENT_NGAP_TYPE;
+            sendmsg.num_of_part++;
+        }
+    }
+    body.n2_mbs_sm_info_list = list;
+    sendmsg.ContextStatusNotificationResponse = &body;
+    response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_OK);
+
+    OpenAPI_list_for_each(list, node)
+        OpenAPI_n2_mbs_sm_info_free(node->data);
+    OpenAPI_list_free(list);
+    OpenAPI_mbs_session_id_free(body.mbs_session_id);
+    return response;
+}
+
+static void test_transport_answers_up_to_ten(void)
+{
+    static const int sizes[] = { 1, 8, 9, 10 };
+    amf_gnb_t *gnb = make_gnb(0x100, 22);
+    ogs_tmgi_t tmgi;
+    size_t s;
+
+    memset(&tmgi, 0, sizeof(tmgi));
+    tmgi.mbs_service_id = (char *)"000001";
+    ogs_plmn_id_build(&tmgi.plmn_id, 999, 70, 2);
+
+    for (s = 0; s < sizeof(sizes) / sizeof(sizes[0]); s++) {
+        ogs_pkbuf_t *transfers[10], *out[OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO];
+        ogs_sbi_response_t *response = notify_response_with_containers(sizes[s], transfers);
+        ogs_sbi_message_t message;
+        int i, n;
+
+        CHECK(response != NULL);
+        if (!response)
+            continue;
+        response->h.method = ogs_strdup(OGS_SBI_HTTP_METHOD_POST);
+
+        memset(&message, 0, sizeof(message));
+        CHECK(amf_sbi_parse_context_status_notify_response(&message, response) == OGS_OK);
+        CHECK(message.ContextStatusNotificationResponse &&
+                message.ContextStatusNotificationResponse->n2_mbs_sm_info_list &&
+                message.ContextStatusNotificationResponse->n2_mbs_sm_info_list->count == sizes[s]);
+        CHECK(message.num_of_part == sizes[s]);
+
+        memset(out, 0, sizeof(out));
+        n = amf_namf_mbs_transport_answers(gnb, &tmgi, &message, out, OGS_ARRAY_SIZE(out));
+        CHECK(n == sizes[s]);
+        for (i = 0; i < n; i++)
+            ogs_pkbuf_free(out[i]);
+
+        ogs_sbi_message_free(&message);
+        ogs_sbi_response_free(response);
+        for (i = 0; i < sizes[s]; i++)
+            ogs_pkbuf_free(transfers[i]);
+    }
+    ogs_free(gnb);
+}
+
+/* A multipart message with more parts than a message holds (the JSON part and 10 containers) is refused as a whole, and
+ * a list of more than 10 containers is refused, never cut to the first ten. */
+static void test_more_than_ten_containers_refused(void)
+{
+    amf_gnb_t *gnb = make_gnb(0x100, 22);
+    ogs_tmgi_t tmgi;
+    ogs_sbi_response_t *response;
+    ogs_sbi_message_t message;
+    char *content;
+    size_t cap = 8192;
+    int len, i;
+
+    memset(&tmgi, 0, sizeof(tmgi));
+    tmgi.mbs_service_id = (char *)"000001";
+    ogs_plmn_id_build(&tmgi.plmn_id, 999, 70, 2);
+
+    /* 11 containers, as a peer that does not keep to the cardinality would send: the 12 parts do not fit */
+    content = ogs_malloc(cap);
+    len = snprintf(content, cap, "--B\r\nContent-Type: application/json\r\n\r\n"
+            "{\"mbsSessionId\":{\"tmgi\":{\"mbsServiceId\":\"000001\",\"plmnId\":{\"mcc\":\"999\",\"mnc\":\"70\"}}}}");
+    for (i = 0; i < 11; i++)
+        len += snprintf(content + len, cap - len, "\r\n--B\r\nContent-Id: ngap-%d\r\nContent-Type: %s\r\n\r\nab",
+                i, OGS_SBI_CONTENT_NGAP_TYPE);
+    len += snprintf(content + len, cap - len, "\r\n--B--\r\n");
+
+    response = ogs_sbi_response_new();
+    response->status = OGS_SBI_HTTP_STATUS_OK;
+    response->h.method = ogs_strdup(OGS_SBI_HTTP_METHOD_POST);
+    response->h.uri = ogs_strdup("http://127.0.0.9:9999/notify");
+    ogs_sbi_header_set(response->http.headers, OGS_SBI_CONTENT_TYPE,
+            "multipart/related; type=\"application/json\"; boundary=\"B\"");
+    response->http.content = content;
+    response->http.content_length = len;
+
     memset(&message, 0, sizeof(message));
-    CHECK(amf_namf_build_n2_mbs_sm_info_list(&message, &infos) == NULL);
-    CHECK(message.num_of_part == 0);
+    CHECK(amf_sbi_parse_context_status_notify_response(&message, response) == OGS_ERROR);
+    ogs_sbi_message_free(&message);
+    ogs_sbi_response_free(response);
+
+    /* a list of 11 entries that all arrived (the JSON only, no binary parts): no answer, the caller sends the failure */
+    {
+        OpenAPI_context_status_notification_response_t *rsp = NULL;
+        OpenAPI_list_t *entries = OpenAPI_list_create();
+        ogs_pkbuf_t *out[OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO + 1];
+
+        for (i = 0; i < 11; i++)
+            OpenAPI_list_add(entries, OpenAPI_n2_mbs_sm_info_create(OpenAPI_ngap_ie_type_BC_TRA_RSP,
+                        OpenAPI_ref_to_binary_data_create(ogs_strdup("absent")), NULL));
+        rsp = OpenAPI_context_status_notification_response_create(
+                amf_namf_build_mbs_session_id(&tmgi), false, 0, entries);
+        memset(&message, 0, sizeof(message));
+        message.ContextStatusNotificationResponse = rsp;
+        CHECK(amf_namf_mbs_transport_answers(gnb, &tmgi, &message, out, OGS_ARRAY_SIZE(out)) == 0);
+        OpenAPI_context_status_notification_response_free(rsp);
+    }
     ogs_free(gnb);
 }
 
@@ -1336,6 +1548,342 @@ static void test_encode_large_cell_list(void)
     ogs_pkbuf_free(container);
 }
 
+/* The Associated Session ID of a Broadcast Session Setup Request. TS 38.413 V18.8.0 cl. 9.2.16.1: the message has
+ * "Associated Session ID | O |  | 9.3.1.262 |  | YES | ignore"; cl. 9.3.1.262: "Coded as the AssociatedSessionId IE
+ * defined in TS 29.571 [35]. The gNB does not interpret the content of the Associated Session ID IE."; TS 29.518 V18.14.0
+ * cl. 5.6.2.2: "The NF Service Consumer may also include the MBS associated session ID to enable NG-RAN to identify the
+ * multiple MBS sessions delivering the same content". The IE is in the Setup Request only: the tables of the Modification
+ * Request (cl. 9.2.16.4) and of the Release Request have none. */
+
+/* The Setup Request of build_setup() below for a context with no Associated Session ID, as the AMF built it before the IE
+ * existed (the demo sends none) */
+static const char *setup_without_associated_session_id_hex = "00440040000004012b00070000000199f907009400054000000000012a001c1000020099f907000100000099f907000100001099f9070001000020013b00050401020304";
+
+static char *hex_of(ogs_pkbuf_t *pkbuf)
+{
+    char *hex = ogs_calloc(1, pkbuf->len * 2 + 1);
+    uint32_t i;
+
+    for (i = 0; i < pkbuf->len; i++)
+        sprintf(hex + 2 * i, "%02x", ((uint8_t *)pkbuf->data)[i]);
+    return hex;
+}
+
+/* A Setup Request of a context with three cells and the container 01020304, the Associated Session ID of which is
+ * \p id (NULL: none), kept the way the ContextCreate keeps it. Returns NULL when the message cannot be encoded. */
+static ogs_pkbuf_t *build_setup(amf_mbs_context_t *ctx, OpenAPI_associated_session_id_t *id)
+{
+    ogs_pkbuf_t *container = ogs_pkbuf_alloc(NULL, 4), *request;
+
+    ogs_pkbuf_put_data(container, "\x01\x02\x03\x04", 4);
+    if (!ctx->mbs_service_area)
+        ctx->mbs_service_area = area_with_cells(3);
+    CHECK(amf_mbs_context_set_associated_session_id(ctx, id));
+    request = ngap_build_broadcast_session_setup_request(ctx, container);
+    ogs_pkbuf_free(container);
+    return request;
+}
+
+/* What a decoded Setup Request holds of the Associated Session ID IE */
+typedef struct {
+    bool found;
+    int count;              /* the IEs of the message */
+    long criticality;
+    char *octets;           /* a copy of the value, NUL terminated */
+    size_t len;
+} asid_ie_t;
+
+static asid_ie_t asid_ie_of(ogs_pkbuf_t *request)
+{
+    asid_ie_t out;
+    ogs_ngap_message_t message;
+    NGAP_BroadcastSessionSetupRequest_t *r;
+    int i;
+
+    memset(&out, 0, sizeof(out));
+    memset(&message, 0, sizeof(message));
+    CHECK(ogs_ngap_decode(&message, request) == OGS_OK);
+    CHECK(message.present == NGAP_NGAP_PDU_PR_initiatingMessage);
+    if (message.present == NGAP_NGAP_PDU_PR_initiatingMessage) {
+        r = &message.choice.initiatingMessage->value.choice.BroadcastSessionSetupRequest;
+        out.count = r->protocolIEs.list.count;
+        for (i = 0; i < r->protocolIEs.list.count; i++) {
+            NGAP_BroadcastSessionSetupRequestIEs_t *ie = r->protocolIEs.list.array[i];
+            OCTET_STRING_t *v;
+
+            if (ie->id != NGAP_ProtocolIE_ID_id_AssociatedSessionID)
+                continue;
+            CHECK(ie->value.present == NGAP_BroadcastSessionSetupRequestIEs__value_PR_AssociatedSessionID);
+            v = &ie->value.choice.AssociatedSessionID;
+            out.found = true;
+            out.criticality = ie->criticality;
+            out.len = v->size;
+            out.octets = ogs_calloc(1, v->size + 1);
+            memcpy(out.octets, v->buf, v->size);
+        }
+    }
+    ogs_ngap_free(&message);
+    return out;
+}
+
+static OpenAPI_associated_session_id_t *associated_session_id_from_json(const char *text)
+{
+    cJSON *json = cJSON_Parse(text);
+    OpenAPI_associated_session_id_t *id = NULL;
+
+    CHECK(json != NULL);
+    if (json) {
+        id = OpenAPI_associated_session_id_parseFromJSON(json);
+        cJSON_Delete(json);
+    }
+    CHECK(id != NULL);
+    return id;
+}
+
+static void test_setup_request_associated_session_id(void)
+{
+    static const char *ssm_json =
+        "{\"sourceIpAddr\":{\"ipv4Addr\":\"10.0.0.1\"},\"destIpAddr\":{\"ipv4Addr\":\"232.1.1.1\"}}";
+    amf_mbs_context_t ctx = make_context();
+    OpenAPI_associated_session_id_t *id, *none = ogs_calloc(1, sizeof(*none));
+    ogs_pkbuf_t *request, *container = ogs_pkbuf_alloc(NULL, 4);
+    asid_ie_t ie;
+    char *hex, *first, *second, *longer;
+
+    ogs_pkbuf_put_data(container, "\x01\x02\x03\x04", 4);
+
+    /* none (the demo): no IE, and the bytes of the message are the ones it had before the IE existed */
+    request = build_setup(&ctx, NULL);
+    CHECK(request != NULL);
+    if (request) {
+        hex = hex_of(request);
+        if (getenv("AMF_MBS_TEST_PRINT_GOLDEN"))
+            fprintf(stderr, "GOLDEN %s\n", hex);
+        CHECK_STR(setup_without_associated_session_id_hex, hex);
+        ogs_free(hex);
+        ie = asid_ie_of(request);
+        CHECK(!ie.found && ie.count == 4);
+        ogs_free(ie.octets);
+        ogs_pkbuf_free(request);
+    }
+    CHECK(ctx.associated_session_id == NULL && ctx.associated_session_id_len == 0);
+
+    /* a string: a fifth IE, ignore, holding the JSON text of the value; the message is the one above with the IE after it */
+    id = associated_session_id_from_json("\"ssm-232.1.1.1\"");
+    request = build_setup(&ctx, id);
+    CHECK(request != NULL);
+    if (request) {
+        ie = asid_ie_of(request);
+        CHECK(ie.found && ie.count == 5);
+        CHECK(ie.criticality == NGAP_Criticality_ignore);
+        CHECK_STR("\"ssm-232.1.1.1\"", ie.octets);
+        CHECK(ie.len == strlen("\"ssm-232.1.1.1\""));
+        ogs_free(ie.octets);
+        ogs_pkbuf_free(request);
+    }
+    OpenAPI_associated_session_id_free(id);
+
+    /* the restoration of the session in a gNB builds the message again from the same context: the IE is repeated, the bytes
+     * are the same */
+    first = hex_of(request = ngap_build_broadcast_session_setup_request(&ctx, container));
+    ogs_pkbuf_free(request);
+    second = hex_of(request = ngap_build_broadcast_session_setup_request(&ctx, container));
+    ogs_pkbuf_free(request);
+    CHECK_STR(first, second);
+    ogs_free(first);
+    ogs_free(second);
+    request = ngap_build_broadcast_session_setup_request(&ctx, container);
+    ie = asid_ie_of(request);
+    CHECK(ie.found && ie.count == 5);
+    CHECK_STR("\"ssm-232.1.1.1\"", ie.octets);
+    ogs_free(ie.octets);
+    ogs_pkbuf_free(request);
+
+    /* an SSM (TS 29.571 Ssm): the JSON text of the object, which reads back as the value */
+    id = associated_session_id_from_json(ssm_json);
+    request = build_setup(&ctx, id);
+    CHECK(request != NULL);
+    if (request) {
+        ie = asid_ie_of(request);
+        CHECK(ie.found && ie.count == 5);
+        if (ie.octets) {
+            cJSON *json = cJSON_Parse(ie.octets);
+            OpenAPI_associated_session_id_t *back = json ? OpenAPI_associated_session_id_parseFromJSON(json) : NULL;
+
+            CHECK(back != NULL && back->ssm != NULL && back->string == NULL);
+            if (back && back->ssm && back->ssm->source_ip_addr && back->ssm->dest_ip_addr) {
+                CHECK_STR("10.0.0.1", back->ssm->source_ip_addr->ipv4_addr);
+                CHECK_STR("232.1.1.1", back->ssm->dest_ip_addr->ipv4_addr);
+            } else {
+                CHECK(false);
+            }
+            OpenAPI_associated_session_id_free(back);
+            cJSON_Delete(json);
+        }
+        ogs_free(ie.octets);
+        ogs_pkbuf_free(request);
+    }
+    OpenAPI_associated_session_id_free(id);
+
+    /* a value that cannot be coded (neither an SSM nor a string) is refused, and the value held stays whole */
+    CHECK(!amf_mbs_context_set_associated_session_id(&ctx, none));
+    CHECK(ctx.associated_session_id != NULL && ctx.associated_session_id_len > 0);
+    CHECK(strncmp((const char *)ctx.associated_session_id, "{", 1) == 0);
+    ogs_free(none);
+
+    /* the empty string is a value: the IE is there, holding its two quotation marks */
+    id = associated_session_id_from_json("\"\"");
+    request = build_setup(&ctx, id);
+    CHECK(request != NULL);
+    if (request) {
+        ie = asid_ie_of(request);
+        CHECK(ie.found && ie.len == 2);
+        CHECK_STR("\"\"", ie.octets);
+        ogs_free(ie.octets);
+        ogs_pkbuf_free(request);
+    }
+    OpenAPI_associated_session_id_free(id);
+
+    /* the ASN.1 of the IE is "AssociatedSessionID ::= OCTET STRING", with no size bound: a long value is carried whole, not
+     * cut (here 70000 characters, over the 16384 of one PER fragment) */
+    longer = ogs_malloc(70001);
+    memset(longer, 'a', 70000);
+    longer[70000] = '\0';
+    id = ogs_calloc(1, sizeof(*id));
+    id->string = longer;
+    request = build_setup(&ctx, id);
+    CHECK(request != NULL);
+    if (request) {
+        ie = asid_ie_of(request);
+        CHECK(ie.found && ie.len == 70002);
+        CHECK(ie.octets && ie.octets[0] == '"' && ie.octets[70001] == '"' && ie.octets[70000] == 'a');
+        ogs_free(ie.octets);
+        ogs_pkbuf_free(request);
+    }
+    OpenAPI_associated_session_id_free(id);
+
+    /* cleared: the message without the IE, as the first one */
+    request = build_setup(&ctx, NULL);
+    CHECK(request != NULL);
+    if (request) {
+        hex = hex_of(request);
+        CHECK_STR(setup_without_associated_session_id_hex, hex);
+        ogs_free(hex);
+        ogs_pkbuf_free(request);
+    }
+    CHECK(ctx.associated_session_id == NULL && ctx.associated_session_id_len == 0);
+
+    ogs_pkbuf_free(container);
+    ogs_mbs_service_area_free(ctx.mbs_service_area);
+}
+
+/* The attribute of the ContextCreate request (TS 29.518 V18.14.0 table 6.5.6.2.2-1, associatedSessionId) reaches the IE: the
+ * JSON body of a request, parsed as the AMF parses it, kept as the ContextCreate handler keeps it, built into the message */
+static void test_context_create_req_data_associated_session_id(void)
+{
+    static const char *body_with =
+        "{\"mbsSessionId\":{\"tmgi\":{\"mbsServiceId\":\"000001\",\"plmnId\":{\"mcc\":\"999\",\"mnc\":\"70\"}}},"
+        "\"mbsServiceArea\":{\"taiList\":[{\"plmnId\":{\"mcc\":\"999\",\"mnc\":\"70\"},\"tac\":\"000001\"}]},"
+        "\"n2MbsSmInfo\":{\"ngapIeType\":\"MBS_SES_REQ\",\"ngapData\":{\"contentId\":\"n2\"}},"
+        "\"notifyUri\":\"http://127.0.0.30:9999/notify\",\"snssai\":{\"sst\":1},"
+        "\"associatedSessionId\":\"x-1\"}";
+    static const char *body_without =
+        "{\"mbsSessionId\":{\"tmgi\":{\"mbsServiceId\":\"000001\",\"plmnId\":{\"mcc\":\"999\",\"mnc\":\"70\"}}},"
+        "\"mbsServiceArea\":{\"taiList\":[{\"plmnId\":{\"mcc\":\"999\",\"mnc\":\"70\"},\"tac\":\"000001\"}]},"
+        "\"n2MbsSmInfo\":{\"ngapIeType\":\"MBS_SES_REQ\",\"ngapData\":{\"contentId\":\"n2\"}},"
+        "\"notifyUri\":\"http://127.0.0.30:9999/notify\",\"snssai\":{\"sst\":1}}";
+    const char *bodies[2] = { body_with, body_without };
+    int i;
+
+    for (i = 0; i < 2; i++) {
+        amf_mbs_context_t ctx = make_context();
+        cJSON *json = cJSON_Parse(bodies[i]);
+        OpenAPI_context_create_req_data_t *req = json ? OpenAPI_context_create_req_data_parseFromJSON(json) : NULL;
+        ogs_pkbuf_t *request;
+        asid_ie_t ie;
+
+        CHECK(req != NULL);
+        if (req) {
+            CHECK((req->associated_session_id != NULL) == (i == 0));
+            request = build_setup(&ctx, req->associated_session_id);
+            CHECK(request != NULL);
+            if (request) {
+                ie = asid_ie_of(request);
+                CHECK(ie.found == (i == 0));
+                CHECK(ie.count == (i == 0 ? 5 : 4));
+                if (i == 0)
+                    CHECK_STR("\"x-1\"", ie.octets);
+                ogs_free(ie.octets);
+                ogs_pkbuf_free(request);
+            }
+            OpenAPI_context_create_req_data_free(req);
+        }
+        if (json)
+            cJSON_Delete(json);
+        CHECK(amf_mbs_context_set_associated_session_id(&ctx, NULL));
+        ogs_mbs_service_area_free(ctx.mbs_service_area);
+    }
+}
+
+/* Only the Setup Request has the IE: a context that holds a value sends none in a Modification Request (cl. 9.2.16.4: Message
+ * Type, MBS Session ID, MBS Service Area, MBS Session Modification Request Transfer) or a Release Request */
+static void test_other_requests_have_no_associated_session_id(void)
+{
+    amf_mbs_context_t ctx = make_context();
+    OpenAPI_associated_session_id_t *id = associated_session_id_from_json("\"x-1\"");
+    ogs_pkbuf_t *container = ogs_pkbuf_alloc(NULL, 4), *request;
+    ogs_ngap_message_t message;
+    int i;
+
+    ogs_pkbuf_put_data(container, "\x01\x02\x03\x04", 4);
+    ctx.mbs_service_area = area_with_cells(3);
+    CHECK(amf_mbs_context_set_associated_session_id(&ctx, id));
+    CHECK(ctx.associated_session_id != NULL);
+
+    request = ngap_build_broadcast_session_modification_request(&ctx, true, container);
+    CHECK(request != NULL);
+    if (request) {
+        memset(&message, 0, sizeof(message));
+        CHECK(ogs_ngap_decode(&message, request) == OGS_OK);
+        if (message.present == NGAP_NGAP_PDU_PR_initiatingMessage) {
+            NGAP_BroadcastSessionModificationRequest_t *r =
+                &message.choice.initiatingMessage->value.choice.BroadcastSessionModificationRequest;
+
+            CHECK(r->protocolIEs.list.count == 3);
+            for (i = 0; i < r->protocolIEs.list.count; i++)
+                CHECK(r->protocolIEs.list.array[i]->id != NGAP_ProtocolIE_ID_id_AssociatedSessionID);
+        } else {
+            CHECK(false);
+        }
+        ogs_ngap_free(&message);
+        ogs_pkbuf_free(request);
+    }
+
+    request = ngap_build_broadcast_session_release_request(&ctx);
+    CHECK(request != NULL);
+    if (request) {
+        memset(&message, 0, sizeof(message));
+        CHECK(ogs_ngap_decode(&message, request) == OGS_OK);
+        if (message.present == NGAP_NGAP_PDU_PR_initiatingMessage) {
+            NGAP_BroadcastSessionReleaseRequest_t *r =
+                &message.choice.initiatingMessage->value.choice.BroadcastSessionReleaseRequest;
+
+            CHECK(r->protocolIEs.list.count == 2);
+            for (i = 0; i < r->protocolIEs.list.count; i++)
+                CHECK(r->protocolIEs.list.array[i]->id != NGAP_ProtocolIE_ID_id_AssociatedSessionID);
+        } else {
+            CHECK(false);
+        }
+        ogs_ngap_free(&message);
+        ogs_pkbuf_free(request);
+    }
+
+    CHECK(amf_mbs_context_set_associated_session_id(&ctx, NULL));
+    OpenAPI_associated_session_id_free(id);
+    ogs_pkbuf_free(container);
+    ogs_mbs_service_area_free(ctx.mbs_service_area);
+}
+
 /* TS 38.413 V18.8.0 cl. 8.17.3.2: "Upon reception of the BROADCAST SESSION RELEASE RESPONSE message, the AMF shall transfer
  * transparently the Broadcast Session Release Response Transfer IE, if available, to the MB-SMF." Every answer to the
  * release of a ContextRelease is counted: the first answers the consumer, the last ends the context. */
@@ -1660,6 +2208,9 @@ int main(int argc, const char *argv[])
     test_gnb_value_is_right_aligned();
     test_n2_mbs_sm_info_ran_id_key();
     test_n2_info_list_limit();
+    test_n2_info_split();
+    test_transport_answers_up_to_ten();
+    test_more_than_ten_containers_refused();
     test_status_notify();
     test_multipart_names_the_type_of_its_root_part();
     test_status_notify_ngran_event();
@@ -1681,6 +2232,9 @@ int main(int argc, const char *argv[])
     test_ngap_arm_several_areas();
     test_release_answered();
     test_encode_large_cell_list();
+    test_setup_request_associated_session_id();
+    test_context_create_req_data_associated_session_id();
+    test_other_requests_have_no_associated_session_id();
     test_notify_response_any_uri();
     test_update_action_enters_area();
     test_update_action_leaves_area();
