@@ -86,6 +86,11 @@ int smf_mbs_sess_take_amf_answer(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf,
  * tunnel away clearing it. Returns the number of requests that could not be sent. */
 int smf_mbs_sess_send_tunnel_changes(smf_mbs_sess_t *mbs_sess, const smf_mbs_tunnel_changes_t *changes);
 
+/* TS 29.244 V18.10.0 clause 5.34.2.2: the Apply Action of the FARs is "DROP" "if only unicast transport is used over
+ * N3mb or N19mb and N3mb/N19mb DL F-TEIDs are not known yet". When the MB-UPF gave the session no low layer SSM, the
+ * FARs that asked for it (FSSM) become DROP. Returns true when a FAR changed, and the MB-UPF is then to be told. */
+bool smf_mbs_sess_drop_until_dl_tunnels(smf_mbs_sess_t *mbs_sess);
+
 #ifdef __cplusplus
 }
 #endif

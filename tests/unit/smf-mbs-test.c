@@ -210,6 +210,13 @@ static int smf_context_setup(void)
     return OGS_OK;
 }
 
+/* TS 29.532 V18.6.0 table 6.1.6.2.2-1, tmgiNumber: "Maximum: 255." With the default configuration a request for the
+ * most TMGIs the attribute carries must fit the pool. */
+static void test_tmgi_pool_default_holds_a_maximal_request(void)
+{
+    CHECK(ogs_global_conf()->max.mbs.tmgis >= 255);
+}
+
 /* TS 23.003 V18.8.0 clause 30.2, item 3: "The MNC identifies the PLMN which the MB-SMF belongs to". */
 static void test_tmgi_plmn(void)
 {
@@ -2833,6 +2840,49 @@ static void test_release_response_transfer(void)
     smf_mbs_sess_release(mbs_sess);
 }
 
+/* TS 29.244 V18.10.0 clause 5.34.2.2: the Apply Action is "DROP", "if only unicast transport is used over N3mb or N19mb
+ * and N3mb/N19mb DL F-TEIDs are not known yet". */
+static void test_drop_until_dl_tunnels(void)
+{
+    smf_mbs_sess_t *mbs_sess = make_session(serv_info_2_text, area_1_text);
+    smf_n4mb_modification_t mod;
+    ogs_pfcp_message_t *msg;
+    ogs_pfcp_far_t *far;
+    int n = 0;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+
+    /* the MB-UPF gave a low layer SSM: the FARs keep FSSM */
+    mbs_sess->ll_ssm.dest_ip_addr.ipv4 = 1;
+    CHECK(!smf_mbs_sess_drop_until_dl_tunnels(mbs_sess));
+    ogs_list_for_each(&mbs_sess->pfcp.far_list, far)
+        CHECK(far->apply_action == OGS_PFCP_APPLY_ACTION_FSSM);
+
+    /* it gave none: every FAR drops, and the Update FARs say so without a tunnel */
+    memset(&mbs_sess->ll_ssm, 0, sizeof(mbs_sess->ll_ssm));
+    CHECK(smf_mbs_sess_drop_until_dl_tunnels(mbs_sess));
+    ogs_list_for_each(&mbs_sess->pfcp.far_list, far)
+        CHECK(far->apply_action == OGS_PFCP_APPLY_ACTION_DROP);
+    CHECK(!smf_mbs_sess_drop_until_dl_tunnels(mbs_sess));
+
+    memset(&mod, 0, sizeof(mod));
+    mod.update_apply_action = true;
+    msg = build_and_parse_modification_of(mbs_sess, &mod);
+    CHECK(msg != NULL);
+    if (msg) {
+        ogs_pfcp_session_modification_request_t *req = &msg->pfcp_session_modification_request;
+
+        for (n = 0; n < 2; n++) {
+            CHECK(req->update_far[n].presence && req->update_far[n].apply_action.presence);
+            CHECK(req->update_far[n].apply_action.u16 == OGS_PFCP_APPLY_ACTION_DROP);
+            CHECK(!req->update_far[n].add_mbs_unicast_parameters[0].presence);
+            CHECK(!req->update_far[n].remove_mbs_unicast_parameters[0].presence);
+        }
+        CHECK(!req->update_far[2].presence);
+    }
+}
+
 static void test_unicast_tunnel_modification(void)
 {
     smf_mbs_sess_t *mbs_sess = make_session(serv_info_2_text, area_1_text);
@@ -4485,7 +4535,7 @@ static void test_foreign_tmgi(void)
     static const char loc_dep[] = "{\"serviceType\":\"BROADCAST\",\"locationDependent\":true}";
     static const char not_loc_dep[] = "{\"serviceType\":\"BROADCAST\"}";
     OpenAPI_ext_mbs_session_t *dep, *plain;
-    ogs_tmgi_t received, *tmgi = NULL, *found, *filler[64];
+    ogs_tmgi_t received, *tmgi = NULL, *found, *filler[256];
     ogs_plmn_id_t plmn;
     cJSON *json;
     int count = smf_tmgi_count(), nfill = 0, i;
@@ -4565,14 +4615,14 @@ static void test_foreign_tmgi(void)
 
     /* the pool of TMGIs is full */
     received.mbs_service_id = (char *)"0dEaD1";
-    while (nfill < 64) {
+    while (nfill < 256) {
         char *expiration = smf_tmgi_gen_expiration_time(60);
         filler[nfill] = smf_tmgi_allocate(expiration);
         ogs_free(expiration);
         if (!filler[nfill]) break;
         nfill++;
     }
-    CHECK(nfill > 0 && nfill < 64);
+    CHECK(nfill > 0 && nfill < 256);
     CHECK(smf_nmbsmf_accept_foreign_tmgi(dep, &received, false, &tmgi) == SMF_NMBSMF_FOREIGN_TMGI_NO_ROOM);
     CHECK(smf_tmgi_add_foreign(&received, &invalid) == NULL && !invalid);
     for (i = 0; i < nfill; i++)
@@ -5797,6 +5847,7 @@ int main(void)
     }
 
     test_pick_mbs_service_id();
+    test_tmgi_pool_default_holds_a_maximal_request();
     test_tmgi_plmn();
     test_nid();
     test_dnn_snssai();
@@ -5826,6 +5877,7 @@ int main(void)
     test_transport_request_bound();
     test_release_response_transfer();
     test_unicast_tunnel_modification();
+    test_drop_until_dl_tunnels();
     test_context_update_request();
     test_local_ingress_tunnel_choose();
     test_ip_multicast_addressing_info_layout();

@@ -474,7 +474,7 @@ ogs_pkbuf_t *smf_n4mb_build_session_modification_request(
      * 7.5.2.3-6 (Add MBS Unicast Parameters): Destination Interface "M", MBS Unicast Parameters ID "M", Outer Header
      * Creation "M ... It shall contain the F-TEID of the remote GTP-U peer when adding a GTP-U/UDP/IP header." Table
      * 7.5.4.3-4 (Remove MBS Unicast Parameters): MBS Unicast Parameters ID "M". */
-    if (mod->tunnel) {
+    if (mod->tunnel || mod->update_apply_action) {
         i = 0;
         ogs_list_for_each(&mbs_sess->pfcp.far_list, far) {
             if (i >= OGS_MAX_NUM_OF_FAR)
@@ -486,7 +486,7 @@ ogs_pkbuf_t *smf_n4mb_build_session_modification_request(
                 req->update_far[i].apply_action.presence = 1;
                 req->update_far[i].apply_action.u16 = far->apply_action;
             }
-            if (mod->tunnel->has_add) {
+            if (mod->tunnel && mod->tunnel->has_add) {
                 memset(&outer_header_creation, 0, sizeof(outer_header_creation));
                 outer_header_creation.teid = htobe32(mod->tunnel->add_teid);
                 destination_interface = OGS_PFCP_INTERFACE_ACCESS;
@@ -510,7 +510,7 @@ ogs_pkbuf_t *smf_n4mb_build_session_modification_request(
                 req->update_far[i].add_mbs_unicast_parameters[0].outer_header_creation.presence = 1;
                 req->update_far[i].add_mbs_unicast_parameters[0].outer_header_creation.data = &outer_header_creation;
             }
-            if (mod->tunnel->has_remove) {
+            if (mod->tunnel && mod->tunnel->has_remove) {
                 remove_params[0] = (mod->tunnel->remove_id >> 8) & 0xff;
                 remove_params[1] = mod->tunnel->remove_id & 0xff;
                 req->update_far[i].remove_mbs_unicast_parameters[0].presence = 1;

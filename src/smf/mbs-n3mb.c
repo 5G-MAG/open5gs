@@ -578,3 +578,22 @@ int smf_mbs_sess_send_tunnel_changes(smf_mbs_sess_t *mbs_sess, const smf_mbs_tun
 
     return failures;
 }
+
+bool smf_mbs_sess_drop_until_dl_tunnels(smf_mbs_sess_t *mbs_sess)
+{
+    ogs_pfcp_far_t *far = NULL;
+    bool changed = false;
+
+    ogs_assert(mbs_sess);
+
+    if (mbs_sess->ll_ssm.dest_ip_addr.ipv4 || mbs_sess->ll_ssm.dest_ip_addr.ipv6)
+        return false;
+
+    ogs_list_for_each(&mbs_sess->pfcp.far_list, far) {
+        if (far->apply_action & OGS_PFCP_APPLY_ACTION_FSSM) {
+            far->apply_action = OGS_PFCP_APPLY_ACTION_DROP;
+            changed = true;
+        }
+    }
+    return changed;
+}

@@ -282,6 +282,18 @@ uint8_t smf_n4mb_handle_session_establishment_response(
         }
     }
 
+    /* TS 29.244 V18.10.0 clause 5.34.2.2: the MB-UPF gave no low layer SSM, so only unicast transport can be used and
+     * its DL F-TEIDs are not known yet: the FARs drop until a tunnel is given. */
+    if (smf_mbs_sess_drop_until_dl_tunnels(mbs_sess)) {
+        smf_n4mb_modification_t drop_mod;
+
+        memset(&drop_mod, 0, sizeof(drop_mod));
+        drop_mod.update_apply_action = true;
+        if (smf_5gc_pfcp_n4mb_send_session_modification_request(mbs_sess, &drop_mod) != OGS_OK)
+            ogs_error("The MB-UPF could not be told that the FARs of mbsSessionRef[%s] drop until a tunnel is given",
+                    mbs_sess->mbs_session_ref);
+    }
+
     // Send response to SBI session
     memset(&sendmsg, 0, sizeof(sendmsg));
     memset(&header, 0, sizeof(header));

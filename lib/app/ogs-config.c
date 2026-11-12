@@ -19,7 +19,7 @@
 
 #include "ogs-app.h"
 
-#define DEFAULT_MAX_NUM_OF_TMGIS 20
+#define DEFAULT_MAX_NUM_OF_TMGIS 255
 #define DEFAULT_MAX_NUM_OF_MBS_SESSIONS 20
 
 static ogs_app_global_conf_t global_conf;
