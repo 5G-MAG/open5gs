@@ -150,6 +150,11 @@ typedef struct smf_context_s {
      * release (smf.yaml `ngranRestoreDelay`); unset when not configured, and then the MB-SMF does not. */
     bool has_mbs_ngran_restore_delay;
     int mbs_ngran_restore_delay;
+    /* The time the MB-SMF waits before it asks an AMF again for the broadcast context of a session whose Create failed
+     * (smf.yaml `mbsContextRetryDelay`); unset when not configured, and then the MB-SMF asks again only when an AMF
+     * registers or the previous Create timed out. */
+    bool has_mbs_context_retry_delay;
+    int mbs_context_retry_delay;
 
     /* Whether the MB-SMF requests MBS policies of a PCF (smf.yaml `mbsPolicyControl`), and what it does with an
      * MBS session the PCF denies (`failureAction`). Off unless configured. */
@@ -591,6 +596,15 @@ typedef struct smf_mbs_fsa_id_s {
 } smf_mbs_fsa_id_t;
 
 /* An AMF of the broadcast MBS session context of an MBS session */
+/* The AMF set of an AMF instance, from the amfInfo of its NF profile */
+typedef struct smf_mbs_amf_set_s {
+    bool known;
+    uint8_t set_id;
+    uint16_t region_id;
+    bool has_plmn;              /* the PLMN of the first GUAMI of the profile */
+    ogs_plmn_id_t plmn_id;
+} smf_mbs_amf_set_t;
+
 typedef struct smf_mbs_amf_s {
     ogs_lnode_t lnode;
 
@@ -603,9 +617,24 @@ typedef struct smf_mbs_amf_s {
      * .../{ref}/update). NULL until the AMF answered. */
     char *mbs_context_ref;
 
+    /* The NRF instance of the AMF that holds the context, found from the address in the Location header of the 201
+     * Created response; every later request about the context is addressed to that instance (the discovery option
+     * 3gpp-Sbi-Discovery-target-nf-instance-id, TS 29.500 V18.10.0 cl. 6.10.3.2). NULL when the AMF could not be told
+     * from the address. */
+    char *nf_instance_id;
+
     /* The AMF reported that the start of the broadcast MBS session is complete (TS 29.518 V18.14.0 table 6.5.6.2.3-1
      * operationStatus: MBS_SESSION_START_COMPLETE) */
     bool start_complete;
+
+    /* The AMF set of the instance the context is bound to (amfSetId and amfRegionId of its NF profile, read when the
+     * context was bound: the profile is gone from the NF instances when the instance leaves the NRF), so that an
+     * alternative AMF of the same set can be selected when it fails (TS 23.527 V18.6.0 cl. 8.3.2.4 step 7). */
+    smf_mbs_amf_set_t amf_set;
+
+    /* A ContextUpdate that hands the context to an alternative AMF (noNgapSignallingInd true) has been sent and is not
+     * answered yet. */
+    bool takeover;
 } smf_mbs_amf_t;
 
 /* An N3mb DL tunnel of an NG-RAN node that wants the session by unicast transport (TS 23.247 V18.8.0 cl. 7.3.1 step
@@ -674,6 +703,10 @@ typedef struct smf_mbs_sess_s {
      * has an mbs_context_ref once its AMF answered the Namf_MBSBroadcast ContextCreate with "201 Created". */
     ogs_list_t amf_list;
     uint32_t next_amf_id;
+
+    /* The broadcast context of the session is to be created again: the AMF that held it is gone. Cleared when an AMF
+     * answers the ContextCreate with 201 Created. */
+    bool broadcast_context_pending;
 
     /* every AMF that holds a context has reported the start complete: the session has started */
     bool started;
@@ -909,6 +942,7 @@ smf_mbs_nr_red_cap_e smf_mbs_nr_red_cap_from_string(const char *value);
 const char *smf_own_nid(void);
 bool smf_mbs_max_response_time(int *seconds);
 bool smf_mbs_ngran_restore_delay(int *seconds);
+bool smf_mbs_context_retry_delay(int *seconds);
 /* Whether the MB-SMF requests MBS policies of a PCF; *action is then the configured failure action. */
 bool smf_mbs_policy_control_enabled(smf_mbs_pcf_failure_action_e *action);
 /* The configuration smf.mbsPolicyControl: \p enabled and \p failure_action are the texts of its two keys (NULL when

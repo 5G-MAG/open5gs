@@ -45,54 +45,309 @@ void smf_mbs_set_context_create_sender(int (*sender)(smf_mbs_sess_t *))
     context_create_sender = sender ? sender : smf_sbi_send_mbs_broadcast_context_create;
 }
 
-int smf_mbs_amf_context_lost(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf)
+/* Whether an AMF is registered at the NRF (the NF instances this MB-SMF knows), replaceable for a test */
+static bool real_amf_available(void)
 {
-    ogs_assert(mbs_sess);
+    ogs_sbi_nf_instance_t *nf_instance = NULL;
+
+    ogs_list_for_each(&ogs_sbi_self()->nf_instance_list, nf_instance)
+        if (nf_instance->nf_type == OpenAPI_nf_type_AMF && nf_instance->id)
+            return true;
+    return false;
+}
+
+static bool (*amf_available_check)(void) = real_amf_available;
+
+void smf_mbs_set_amf_available_check(bool (*check)(void))
+{
+    amf_available_check = check ? check : real_amf_available;
+}
+
+/* The AMF set of an NF instance, and an alternative AMF of the same set, replaceable for a test that has no NRF */
+static bool real_amf_set_of(const char *nf_instance_id, smf_mbs_amf_set_t *set)
+{
+    ogs_sbi_nf_instance_t *nf_instance = ogs_sbi_nf_instance_find((char *)nf_instance_id);
+    ogs_sbi_nf_info_t *nf_info = NULL;
+
+    memset(set, 0, sizeof(*set));
+    if (!nf_instance || nf_instance->nf_type != OpenAPI_nf_type_AMF)
+        return false;
+    nf_info = ogs_sbi_nf_info_find(&nf_instance->nf_info_list, OpenAPI_nf_type_AMF);
+    if (!nf_info)
+        return false;
+    set->known = true;
+    set->set_id = nf_info->amf.amf_set_id;
+    set->region_id = nf_info->amf.amf_region_id;
+    if (nf_info->amf.num_of_guami > 0) {
+        set->has_plmn = true;
+        set->plmn_id = nf_info->amf.guami[0].plmn_id;
+    }
+    return true;
+}
+
+bool smf_mbs_amf_set_equal(const smf_mbs_amf_set_t *a, const smf_mbs_amf_set_t *b)
+{
+    return a->known && b->known && a->set_id == b->set_id && a->region_id == b->region_id &&
+        (!a->has_plmn || !b->has_plmn || memcmp(&a->plmn_id, &b->plmn_id, sizeof(a->plmn_id)) == 0);
+}
+
+static const char *real_alternative_amf(const smf_mbs_amf_set_t *set, const char *not_instance_id)
+{
+    ogs_sbi_nf_instance_t *nf_instance = NULL;
+
+    ogs_list_for_each(&ogs_sbi_self()->nf_instance_list, nf_instance) {
+        smf_mbs_amf_set_t other;
+
+        if (nf_instance->nf_type != OpenAPI_nf_type_AMF || !nf_instance->id ||
+                nf_instance->nf_status != OpenAPI_nf_status_REGISTERED ||
+                strcmp(nf_instance->id, not_instance_id) == 0)
+            continue;
+        if (real_amf_set_of(nf_instance->id, &other) && smf_mbs_amf_set_equal(set, &other))
+            return nf_instance->id;
+    }
+    return NULL;
+}
+
+static bool (*amf_set_of)(const char *, smf_mbs_amf_set_t *) = real_amf_set_of;
+static const char *(*alternative_amf)(const smf_mbs_amf_set_t *, const char *) = real_alternative_amf;
+
+void smf_mbs_set_amf_set_lookup(bool (*set_of)(const char *, smf_mbs_amf_set_t *),
+        const char *(*alternative)(const smf_mbs_amf_set_t *, const char *))
+{
+    amf_set_of = set_of ? set_of : real_amf_set_of;
+    alternative_amf = alternative ? alternative : real_alternative_amf;
+}
+
+void smf_mbs_amf_note_set(smf_mbs_amf_t *amf)
+{
     ogs_assert(amf);
 
-    ogs_warn("MBS session mbsSessionRef[%s]: the AMF holds no context mbsContextRef[%s] of it any more",
-            mbs_sess->mbs_session_ref, amf->mbs_context_ref ? amf->mbs_context_ref : "(none)");
-    smf_mbs_sess_amf_remove(mbs_sess, amf);
+    memset(&amf->amf_set, 0, sizeof(amf->amf_set));
+    if (amf->nf_instance_id)
+        amf_set_of(amf->nf_instance_id, &amf->amf_set);
+}
 
-    /* a Create already waiting for its answer, or a context of another AMF, is the context of the session */
+/* The wait before a pending session asks for its context again (smf.mbsContextRetryDelay) */
+static ogs_timer_t *context_retry_timer;
+
+static void context_retry_timeout(void *data)
+{
+    smf_event_t *e = smf_event_new(SMF_EVT_MBS_CONTEXT_RETRY);
+
+    ogs_assert(e);
+    if (ogs_queue_push(ogs_app()->queue, e) != OGS_OK) {
+        ogs_error("ogs_queue_push() failed in the retry of a broadcast context");
+        ogs_event_free(e);
+    }
+}
+
+bool smf_mbs_context_retry_scheduled(void)
+{
+    return context_retry_timer && context_retry_timer->running;
+}
+
+bool smf_mbs_schedule_context_retry(void)
+{
+    int seconds = 0;
+
+    if (!smf_mbs_context_retry_delay(&seconds))
+        return false;
+    if (!context_retry_timer) {
+        context_retry_timer = ogs_timer_add(ogs_app()->timer_mgr, context_retry_timeout, NULL);
+        ogs_assert(context_retry_timer);
+    }
+    if (!context_retry_timer->running) {
+        ogs_timer_start(context_retry_timer, ogs_time_from_sec(seconds));
+        ogs_info("MBS broadcast contexts: asking for the contexts that are still missing again in %d s", seconds);
+    }
+    return true;
+}
+
+void smf_mbs_context_retry_expired(void)
+{
+    smf_mbs_create_pending_contexts();
+}
+
+/* Creates the broadcast context of \p mbs_sess again unless it has an entry (a Create waiting for its answer, or a context
+ * of another AMF). The session stays pending until an AMF answers 201 Created. */
+static int create_context_again(smf_mbs_sess_t *mbs_sess)
+{
     if (!ogs_list_empty(&mbs_sess->amf_list))
         return OGS_OK;
 
-    ogs_info("MBS session mbsSessionRef[%s]: creating its broadcast context in the AMF again", mbs_sess->mbs_session_ref);
+    ogs_info("MBS session mbsSessionRef[%s]: creating its broadcast context in an AMF again", mbs_sess->mbs_session_ref);
     if (context_create_sender(mbs_sess) != OGS_OK) {
         ogs_error("Failed to send MBS Broadcast ContextCreate again");
+        smf_mbs_schedule_context_retry();
         return OGS_ERROR;
     }
     return OGS_OK;
 }
 
-int smf_mbs_probe_amf_contexts(void)
+int smf_mbs_amf_context_lost(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf)
+{
+    ogs_assert(mbs_sess);
+    ogs_assert(amf);
+
+    if (!amf->nf_instance_id) {
+        /* A 404 from an AMF that is not known to be the one holding the context says nothing about the context. */
+        ogs_warn("MBS session mbsSessionRef[%s]: an AMF has no context mbsContextRef[%s], but the context is not bound "
+                "to an AMF instance: kept", mbs_sess->mbs_session_ref, amf->mbs_context_ref ? amf->mbs_context_ref : "(none)");
+        return OGS_OK;
+    }
+
+    ogs_warn("MBS session mbsSessionRef[%s]: the AMF instance [%s] holds no context mbsContextRef[%s] of it any more",
+            mbs_sess->mbs_session_ref, amf->nf_instance_id, amf->mbs_context_ref ? amf->mbs_context_ref : "(none)");
+    smf_mbs_sess_amf_remove(mbs_sess, amf);
+    mbs_sess->broadcast_context_pending = true;
+    return create_context_again(mbs_sess);
+}
+
+/* TS 23.527 V18.6.0 cl. 8.3.2.4, alternative B, steps 7 and 8: "The MB-SMF selects an alternative AMF pertaining to the
+ * same AMF set using the Binding Indication provided by the old AMF or using the NF profile of the old AMF." and "The
+ * MB-SMF sends a Namf_MBSBroadcast_ContextUpdate Request including a MBS Session ID, the corresponding MBS Service
+ * Area, a MBS Session Setup or Modification Request Transfer, and sets the "noNgapSignallingInd" to "true" to request
+ * the AMF2 to be the AMF for the Broadcast MBS Session". The entry is bound to the alternative AMF, which keeps the
+ * mbsContextRef (the context of the set). No clause gives a time to wait for a Namf_MBSBroadcast_ContextStatusNotify of
+ * alternative A: none is waited for, and one that arrives later binds the entry to the AMF that sent it. Returns
+ * OGS_OK when the request was handed to the SBI. */
+static int hand_context_to_alternative(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf, const char *alternative_id)
+{
+    smf_namf_context_update_param_t param;
+    char *instance_id = ogs_strdup(alternative_id);
+
+    ogs_assert(instance_id);
+    if (amf->nf_instance_id)
+        ogs_free(amf->nf_instance_id);
+    amf->nf_instance_id = instance_id;
+    amf->takeover = true;
+
+    memset(&param, 0, sizeof(param));
+    param.amf = amf;
+    param.service_area = true;
+    param.no_n2_info_change_ind = true;
+    param.no_ngap_signalling = true;
+
+    ogs_info("MBS session mbsSessionRef[%s]: the context mbsContextRef[%s] goes to the alternative AMF instance [%s]",
+            mbs_sess->mbs_session_ref, amf->mbs_context_ref, alternative_id);
+    if (context_update_sender(mbs_sess, &param) != OGS_OK) {
+        ogs_error("Failed to send MBS Broadcast ContextUpdate to the alternative AMF");
+        amf->takeover = false;
+        return OGS_ERROR;
+    }
+    return OGS_OK;
+}
+
+int smf_mbs_amf_instance_lost(const char *nf_instance_id)
 {
     smf_mbs_sess_t *mbs_sess = NULL;
-    int sent = 0;
+    int lost = 0;
 
+    ogs_assert(nf_instance_id);
+
+    /* TS 23.527 V18.6.0 cl. 8.3.2.4: "the MB-SMF detects that the AMF1 has failed ... via notifications from the NRF for
+     * the NF Status Change" */
     ogs_list_for_each(&smf_self()->smf_mbs_sess_list, mbs_sess) {
-        smf_mbs_amf_t *amf = NULL;
+        smf_mbs_amf_t *amf = NULL, *next = NULL;
+        bool held = false, dropped = false;
 
-        ogs_list_for_each(&mbs_sess->amf_list, amf) {
-            smf_namf_context_update_param_t param;
+        ogs_list_for_each_safe(&mbs_sess->amf_list, next, amf) {
+            const char *alternative_id = NULL;
 
-            if (!amf->mbs_context_ref)
+            if (!amf->nf_instance_id || strcmp(amf->nf_instance_id, nf_instance_id) != 0)
                 continue;
-
-            memset(&param, 0, sizeof(param));
-            param.amf = amf;
-            param.no_n2_info_change_ind = true;
-
-            /* ogs_sbi_xact_add() builds the request before it returns, and keeps no pointer to param */
-            if (context_update_sender(mbs_sess, &param) == OGS_OK)
-                sent++;
-            else
-                ogs_error("Failed to check mbsContextRef[%s] of mbsSessionRef[%s]", amf->mbs_context_ref,
-                        mbs_sess->mbs_session_ref);
+            held = true;
+            /* a context of an AMF of an AMF set goes to another AMF of the set when one is registered */
+            if (amf->mbs_context_ref && amf->amf_set.known)
+                alternative_id = alternative_amf(&amf->amf_set, nf_instance_id);
+            if (alternative_id && hand_context_to_alternative(mbs_sess, amf, alternative_id) == OGS_OK)
+                continue;
+            smf_mbs_sess_amf_remove(mbs_sess, amf);
+            dropped = true;
+        }
+        if (held) {
+            ogs_warn("MBS session mbsSessionRef[%s]: the AMF instance [%s] is gone, with its broadcast context",
+                    mbs_sess->mbs_session_ref, nf_instance_id);
+            if (dropped)
+                mbs_sess->broadcast_context_pending = true;
+            lost++;
         }
     }
-    return sent;
+    /* An alternative AMF is registered: the contexts are created in it now (TS 23.527 cl. 8.3.2.4 "selects an alternative
+     * AMF"). Otherwise they wait for an AMF to register: a Create sent now would only fail. */
+    if (lost && amf_available_check())
+        smf_mbs_create_pending_contexts();
+    return lost;
+}
+
+void smf_mbs_amf_takeover_answered(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf, bool accepted)
+{
+    ogs_assert(mbs_sess);
+    ogs_assert(amf);
+
+    if (!amf->takeover)
+        return;
+    if (accepted) {
+        amf->takeover = false;
+        return;
+    }
+    /* the alternative AMF does not hold the context, or did not take it: the entry is dropped and the context created
+     * again in an AMF */
+    ogs_warn("MBS session mbsSessionRef[%s]: the alternative AMF instance [%s] did not take the context mbsContextRef[%s]",
+            mbs_sess->mbs_session_ref, amf->nf_instance_id ? amf->nf_instance_id : "(none)",
+            amf->mbs_context_ref ? amf->mbs_context_ref : "(none)");
+    smf_mbs_amf_context_lost(mbs_sess, amf);
+}
+
+void smf_mbs_namf_request_timed_out(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf)
+{
+    ogs_assert(mbs_sess);
+
+    /* A hand over to an alternative AMF that nothing answered: that AMF holds no context of the session as far as is
+     * known, so the context is created again in an AMF. */
+    if (amf && amf->takeover) {
+        smf_mbs_amf_takeover_answered(mbs_sess, amf, false);
+        return;
+    }
+
+    /* A Create that nothing answered leaves no context: the entry waiting for it is dropped, as for any other failed
+     * Create, and a session that waits for its context asks again; the time between the attempts is the SBI client
+     * wait time of the operator. A request about an existing context keeps its entry. */
+    if (amf && !amf->mbs_context_ref)
+        smf_mbs_sess_amf_remove(mbs_sess, amf);
+
+    if (!mbs_sess->broadcast_context_pending)
+        return;
+    if (!smf_mbs_schedule_context_retry() && amf_available_check())
+        smf_mbs_create_pending_contexts();
+}
+
+void smf_mbs_context_create_failed(smf_mbs_sess_t *mbs_sess)
+{
+    ogs_assert(mbs_sess);
+
+    /* An AMF refused the Create (the mandatory 500: no NG-RAN could carry it yet, TS 29.518 has no code of its own for
+     * it): the session keeps waiting for its context and asks again after the operator's time. */
+    if (mbs_sess->broadcast_context_pending)
+        smf_mbs_schedule_context_retry();
+}
+
+int smf_mbs_create_pending_contexts(void)
+{
+    smf_mbs_sess_t *mbs_sess = NULL;
+
+    /* One Create at a time: after an AMF restarted, requests sent together to it can all meet the connection that died
+     * with the old process and fail, while the first one opens a connection the next can use. The next Create goes out
+     * when the previous one is answered (smf_namf_handle_mbs_broadcast_context_create_response()) or timed out. */
+    ogs_list_for_each(&smf_self()->smf_mbs_sess_list, mbs_sess)
+        if (mbs_sess->broadcast_context_pending && !ogs_list_empty(&mbs_sess->amf_list))
+            return 0;
+
+    ogs_list_for_each(&smf_self()->smf_mbs_sess_list, mbs_sess) {
+        if (mbs_sess->broadcast_context_pending && ogs_list_empty(&mbs_sess->amf_list))
+            return create_context_again(mbs_sess) == OGS_OK ? 1 : 0;
+    }
+    return 0;
 }
 
 /* The DL tunnel of the NG-RAN node \p ran_id taken away, the change recorded for the MB-UPF. Returns 1 when there
@@ -113,6 +368,29 @@ static int remove_dl_tunnel_of(smf_mbs_sess_t *mbs_sess, const char *ran_id, smf
     }
     smf_mbs_sess_dl_tunnel_remove(mbs_sess, tunnel);
     return 1;
+}
+
+/* TS 29.518 V18.14.0 table 6.5.6.2.8-1, amfId: "This IE shall be present to contain the NF Instance ID of the AMF sending
+ * the Context Status Notify Request message if the operation event type indicates an AMF change event."; TS 23.527
+ * V18.6.0 cl. 8.3.2.4 step 5: "The MB-SMF acknowledges the notification and will send subsequent signalling message
+ * for this Broadcast MBS Session via the AMF2." */
+bool smf_mbs_sess_take_amf_change_event(smf_mbs_amf_t *amf, const OpenAPI_operation_event_t *event)
+{
+    char *instance_id = NULL;
+
+    ogs_assert(event);
+
+    if (!amf || !event->amf_id || !*event->amf_id)
+        return false;
+    instance_id = ogs_strdup(event->amf_id);
+    ogs_assert(instance_id);
+    if (amf->nf_instance_id)
+        ogs_free(amf->nf_instance_id);
+    amf->nf_instance_id = instance_id;
+    /* the AMF set is that of the AMF that took over; an entry that has one keeps it (the AMF is "in the same AMF set") */
+    if (!amf->amf_set.known)
+        smf_mbs_amf_note_set(amf);
+    return true;
 }
 
 int smf_mbs_sess_take_ngran_failure_event(smf_mbs_sess_t *mbs_sess, const OpenAPI_ngran_failure_event_t *event,

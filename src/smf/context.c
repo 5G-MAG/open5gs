@@ -1174,6 +1174,22 @@ int smf_context_parse_config(void)
                     }
                     self.has_mbs_ngran_restore_delay = true;
                     self.mbs_ngran_restore_delay = (int)seconds;
+                } else if (!strcmp(smf_key, "mbsContextRetryDelay")) {
+                    /* TS 29.518 V18.14.0 cl. 5.6.2.2 defines no failure code for a ContextCreate that finds no NG-RAN
+                     * to carry it, so the AMF answers with the mandatory 500 (TS 29.500 table 5.2.7.1-1). When the MB-SMF
+                     * creates a context again after the AMF of the session was lost, it asks again after this time. No
+                     * clause or documented default names it (rule 12): it is the operator's, in seconds. */
+                    const char *value = ogs_yaml_iter_value(&smf_iter);
+                    char *end = NULL;
+                    long seconds = value ? strtol(value, &end, 10) : 0;
+
+                    if (!value || !*value || *end || seconds <= 0 || seconds > INT_MAX) {
+                        ogs_error("`smf.mbsContextRetryDelay` [%s] is not a positive number of seconds",
+                                value ? value : "");
+                        return OGS_ERROR;
+                    }
+                    self.has_mbs_context_retry_delay = true;
+                    self.mbs_context_retry_delay = (int)seconds;
                 } else if (!strcmp(smf_key, "mbsServiceArea")) {
                     /* TS 29.532 V18.6.0 cl.5.3.2.2.1/5.3.2.3.1 step 2b: this MB-SMF instance's own
                      * configured coverage, used by smf_mbs_service_area_reduce(). No clause,
@@ -3631,6 +3647,16 @@ bool smf_mbs_ngran_restore_delay(int *seconds)
     return true;
 }
 
+bool smf_mbs_context_retry_delay(int *seconds)
+{
+    ogs_assert(seconds);
+
+    if (!self.has_mbs_context_retry_delay)
+        return false;
+    *seconds = self.mbs_context_retry_delay;
+    return true;
+}
+
 /* TS 29.571 V18.12.0 DateTime: an RFC 3339 date-time. */
 bool smf_is_date_time(const char *date_time)
 {
@@ -3901,6 +3927,8 @@ void smf_mbs_sess_amf_remove(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf)
     ogs_list_remove(&mbs_sess->amf_list, amf);
     if (amf->mbs_context_ref)
         ogs_free(amf->mbs_context_ref);
+    if (amf->nf_instance_id)
+        ogs_free(amf->nf_instance_id);
     ogs_free(amf);
 }
 

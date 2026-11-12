@@ -66,6 +66,22 @@ int amf_namf_handle_mbs_broadcast_context_update(
 /* Whether \p notify_uri has a scheme and an address, so that notifications can be sent to it */
 bool amf_namf_notify_uri_is_valid(const char *notify_uri);
 
+/*
+ * Replaces the notification URI and client of \p mbs_context (the target of its ContextStatusNotify requests) by
+ * \p notify_uri. False, with the earlier URI and client kept, when \p notify_uri cannot be set up.
+ */
+bool amf_namf_set_mbs_context_notify_client(
+        amf_mbs_context_t *mbs_context, const char *notify_uri, const char *op_name);
+
+/* What a ContextUpdate request asks for (amf_namf_mbs_update_req_kind()) */
+typedef enum {
+    AMF_MBS_UPDATE_REQ_EMPTY,           /* nothing: no notifyUri, no service area, no N2 MBS SM information */
+    AMF_MBS_UPDATE_REQ_NOTIFY_URI_ONLY, /* the notifyUri alone: nothing for an NG-RAN node */
+    AMF_MBS_UPDATE_REQ_NG_RAN,          /* a service area or N2 MBS SM information, with or without the notifyUri */
+} amf_mbs_update_req_kind_e;
+
+amf_mbs_update_req_kind_e amf_namf_mbs_update_req_kind(bool has_service_area, bool has_n2_info, bool has_notify_uri);
+
 /* Whether \p area (NULL: yes) has at most 1024 TAIs and 8192 cells, the bounds of the NGAP MBS Service Area */
 bool amf_namf_service_area_is_valid(const OpenAPI_mbs_service_area_t *area);
 

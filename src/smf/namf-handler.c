@@ -265,6 +265,51 @@ static void take_amf_answer(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf,
         smf_mbs_sess_send_tunnel_changes(mbs_sess, &changes);
 }
 
+/* The NRF instance of the AMF whose address is the host of \p location, the Location header of a "201 Created"
+ * (TS 29.518 V18.14.0 cl. 5.6.2.2: the URI of the created context); NULL when no known AMF has that address. */
+static const char *amf_instance_id_of_location(const char *location)
+{
+    char host[128];
+    const char *p = strstr(location, "://");
+    size_t n = 0;
+    unsigned port = 0;
+    ogs_sbi_nf_instance_t *nf_instance = NULL;
+
+    if (!p)
+        return NULL;
+    p += 3;
+    while (p[n] && p[n] != ':' && p[n] != '/' && n < sizeof(host) - 1)
+        n++;
+    memcpy(host, p, n);
+    host[n] = 0;
+    if (p[n] == ':')
+        port = (unsigned)atoi(p + n + 1);
+
+    ogs_list_for_each(&ogs_sbi_self()->nf_instance_list, nf_instance) {
+        ogs_sbi_nf_service_t *nf_service = NULL;
+        int i;
+
+        if (nf_instance->nf_type != OpenAPI_nf_type_AMF || !nf_instance->id)
+            continue;
+        ogs_list_for_each(&nf_instance->nf_service_list, nf_service) {
+            if (nf_service->fqdn && strcmp(nf_service->fqdn, host) == 0)
+                return nf_instance->id;
+            for (i = 0; i < nf_service->num_of_addr; i++) {
+                ogs_sockaddr_t *addr = nf_service->addr[i].ipv4;
+                char buf[OGS_ADDRSTRLEN];
+
+                if (!addr)
+                    continue;
+                OGS_ADDR(addr, buf);
+                if (strcmp(buf, host) == 0 &&
+                        (!port || (nf_service->addr[i].is_port ? (unsigned)nf_service->addr[i].port : OGS_PORT(addr)) == port))
+                    return nf_instance->id;
+            }
+        }
+    }
+    return NULL;
+}
+
 bool smf_namf_handle_mbs_broadcast_context_create_response(
         smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf, ogs_sbi_message_t *recvmsg)
 {
@@ -307,6 +352,23 @@ bool smf_namf_handle_mbs_broadcast_context_create_response(
         ogs_free(amf->mbs_context_ref);
     amf->mbs_context_ref = ogs_strdup(location_message.h.resource.component[1]);
     ogs_assert(amf->mbs_context_ref);
+
+    /* the context belongs to this AMF instance: later requests about it go to it and to no other AMF */
+    if (amf->nf_instance_id)
+        ogs_free(amf->nf_instance_id);
+    {
+        const char *instance_id = amf_instance_id_of_location(recvmsg->http.location);
+
+        amf->nf_instance_id = instance_id ? ogs_strdup(instance_id) : NULL;
+        if (!instance_id)
+            ogs_warn("MBS Broadcast ContextCreate: no known AMF has the address of [%s]; its context is not bound to an AMF",
+                    recvmsg->http.location);
+    }
+    /* the AMF set of the instance, while its profile is known: when the instance fails, an AMF of the set takes over */
+    smf_mbs_amf_note_set(amf);
+    mbs_sess->broadcast_context_pending = false;
+    /* the next session that waits for its context asks now (one Create at a time) */
+    smf_mbs_create_pending_contexts();
 
     ogs_sbi_header_free(&header);
 
@@ -594,6 +656,11 @@ bool smf_namf_handle_mbs_broadcast_context_status_notify(
 
             if (!event)
                 continue;
+            if (event->op_event_type == OpenAPI_op_event_type_AMF_CHANGE) {
+                if (!smf_mbs_sess_take_amf_change_event(amf, event))
+                    ogs_error("MBS Broadcast ContextStatusNotify: an AMF_CHANGE without the amfId, or from no known AMF");
+                continue;
+            }
             if (event->op_event_type != OpenAPI_op_event_type_NG_RAN_EVENT) {
                 ogs_warn("MBS Broadcast ContextStatusNotify: operation event [%s]",
                         OpenAPI_op_event_type_ToString(event->op_event_type));

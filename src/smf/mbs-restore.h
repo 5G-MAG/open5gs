@@ -51,6 +51,13 @@ typedef struct smf_mbs_ngran_restore_s {
 int smf_mbs_sess_take_ngran_failure_event(smf_mbs_sess_t *mbs_sess, const OpenAPI_ngran_failure_event_t *event,
         smf_mbs_tunnel_changes_t *changes, smf_mbs_ngran_restore_t *restore);
 
+/* Takes in an operation event of the type AMF_CHANGE reported by the AMF of the entry \p amf: another AMF of the AMF set
+ * has taken over the broadcast MBS session context, and every later request about the context goes to it (the entry is
+ * bound to the instance named in amfId; the mbsContextRef is kept, no attribute of the notification carries another).
+ * Returns true when the entry now names that instance; false, with the entry as it was, when there is no entry or the
+ * event has no amfId. */
+bool smf_mbs_sess_take_amf_change_event(smf_mbs_amf_t *amf, const OpenAPI_operation_event_t *event);
+
 /* The restoration of a broadcast MBS session in an NG-RAN that required its release, waiting for the operator's time
  * (smf.ngranRestoreDelay). TS 29.518 V18.14.0 clause 5.6.2.5: the AMF may report the release in an "NG_RAN_EVENT" with
  * the ngranFailureEvent of each NG-RAN that requested it, and "Upon receiving such a notification, per local policies,
@@ -73,19 +80,68 @@ int smf_mbs_sess_schedule_ngran_restoration(smf_mbs_sess_t *mbs_sess, smf_mbs_am
 void smf_mbs_ngran_restoration_expired(smf_mbs_ngran_restoration_t *restoration);
 
 /* The restoration after an AMF failure, TS 23.527 V18.6.0 cl. 8.3.2.4 ("Selecting an alternative AMF for a Broadcast MBS
- * Session at AMF failure"): an AMF that restarted holds none of the broadcast MBS session contexts it had. The MB-SMF
- * finds out when an AMF registers again (smf_mbs_probe_amf_contexts(): a ContextUpdate that changes nothing, to every
- * context it holds, which an AMF without the context refuses with 404) or when any ContextUpdate is refused that way
- * (smf_mbs_amf_context_lost()), and then creates the context again from the data of the session. */
+ * Session at AMF failure"): "the MB-SMF detects that the AMF1 has failed ... via notifications from the NRF for the NF
+ * Status Change". The context of a session is bound to the AMF instance that created it. When that instance leaves the
+ * NRF, the MB-SMF drops its entry and creates the context again (a Namf_MBSBroadcast ContextCreate, which an AMF of the
+ * set answers); a session whose Create found no AMF stays pending until an AMF registers. */
 
-/* The AMF no longer holds the context \p amf of the session: the entry is dropped and the context is created again
- * (a Namf_MBSBroadcast ContextCreate) unless the session has another entry. Returns OGS_OK when the Create is sent
- * or not needed, OGS_ERROR when it could not be sent. */
+/* The AMF instance \p nf_instance_id left the NRF: every context bound to it is dropped and created again, at once when
+ * another AMF is registered and otherwise when one registers. Returns the number of sessions that lost a context. */
+int smf_mbs_amf_instance_lost(const char *nf_instance_id);
+
+/* The restoration after an AMF failure when the AMF is in an AMF set (TS 29.518 V18.14.0 cl. 5.6.2.3: "During a
+ * restoration procedure upon an AMF failure without restart, for an AMF deployed in an AMF set, the MB-SMF may set the
+ * noNgapSignallingInd IE to "true" when the MB-SMF detects the original AMF has failed and then selects an alternative
+ * AMF to take over the MBS session but without a need to trigger any NGAP signalling towards NG-RANs"): when the failed
+ * instance had a context, its AMF set is known and another registered AMF of the set exists, the context is not created
+ * again: a ContextUpdate with noNgapSignallingInd true (and the service area and the N2 container) goes to that AMF, with
+ * the mbsContextRef of the context. Otherwise, and when that Update cannot be sent, the Create above is used. */
+
+/* The AMF set of an instance (known false when the instance is not an AMF known to this MB-SMF) and an alternative
+ * registered AMF instance of the set other than \p not_instance_id (NULL: none), replaceable for a test that has no NRF
+ * (NULL: the real ones). */
+void smf_mbs_set_amf_set_lookup(bool (*set_of)(const char *, smf_mbs_amf_set_t *),
+        const char *(*alternative)(const smf_mbs_amf_set_t *, const char *not_instance_id));
+
+/* Whether two AMF instances are in the same AMF set: both known, the same amfSetId and amfRegionId, and the same PLMN
+ * when both profiles give one. */
+bool smf_mbs_amf_set_equal(const smf_mbs_amf_set_t *a, const smf_mbs_amf_set_t *b);
+
+/* Reads the AMF set of the instance the entry \p amf is bound to (while the NF profile is still known). */
+void smf_mbs_amf_note_set(smf_mbs_amf_t *amf);
+
+/* The AMF of the entry \p amf answered the ContextUpdate that handed the context to it: \p accepted (200 or 204) ends
+ * the hand over; otherwise the entry is dropped and the context created again, as for a 404. No effect when no hand over
+ * of the entry is waiting for its answer. */
+void smf_mbs_amf_takeover_answered(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf, bool accepted);
+
+/* An AMF registered, or the previous Create was answered: the first session that waits for a context sends its
+ * ContextCreate, unless one is already waiting for its answer. Returns the number sent (0 or 1). */
+int smf_mbs_create_pending_contexts(void);
+
+/* The wait before a session that waits for its context asks again (smf.mbsContextRetryDelay). Returns false, with
+ * nothing scheduled, when no delay is configured. */
+bool smf_mbs_schedule_context_retry(void);
+bool smf_mbs_context_retry_scheduled(void);
+
+/* The wait is over (the event SMF_EVT_MBS_CONTEXT_RETRY). */
+void smf_mbs_context_retry_expired(void);
+
+/* An AMF refused the ContextCreate of a session that waits for its context. */
+void smf_mbs_context_create_failed(smf_mbs_sess_t *mbs_sess);
+
+/* A request to an AMF about the context of \p mbs_sess got no answer within the SBI client wait time. \p amf is the
+ * entry of the request, or NULL. A Create that nothing answered drops its entry; a session that waits for its context
+ * sends its ContextCreate again. */
+void smf_mbs_namf_request_timed_out(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf);
+
+/* The AMF of \p amf answered a request about its context with 404: when the entry is bound to an AMF instance the
+ * context is gone from it, the entry is dropped and the context is created again; an entry not bound to an instance is
+ * kept, as a 404 from an unknown AMF says nothing. Returns OGS_OK, or OGS_ERROR when the Create could not be sent. */
 int smf_mbs_amf_context_lost(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf);
 
-/* An AMF registered at the NRF: each context the MB-SMF holds is checked with a ContextUpdate that changes nothing.
- * Returns the number of checks sent. */
-int smf_mbs_probe_amf_contexts(void);
+/* Whether an AMF is registered, replaceable for a test that has no NRF (NULL: the real one) */
+void smf_mbs_set_amf_available_check(bool (*check)(void));
 
 /* The ContextCreate sender, replaceable for a test that has no SBI (NULL: the real one) */
 void smf_mbs_set_context_create_sender(int (*sender)(smf_mbs_sess_t *));

@@ -651,12 +651,18 @@ int smf_sbi_old_discover_and_send(
     return OGS_OK;
 }
 
+static void mbs_bc_reset_cached_instance(smf_mbs_sess_t *mbs_sess);
+
 int smf_sbi_send_mbs_broadcast_context_create(smf_mbs_sess_t *mbs_sess)
 {
     smf_mbs_amf_t *amf = NULL;
     int r;
 
     ogs_assert(mbs_sess);
+
+    /* A Create after the first one is for a session whose AMF is gone: the instance cached for the service is that
+     * AMF, so the AMF of the new context is discovered again. The slot is empty for the first Create. */
+    mbs_bc_reset_cached_instance(mbs_sess);
 
     amf = smf_mbs_sess_amf_add(mbs_sess);
     r = smf_sbi_old_discover_and_send(
@@ -678,6 +684,21 @@ int smf_sbi_send_mbs_broadcast_context_create(smf_mbs_sess_t *mbs_sess)
  * the request goes out with a portless 3gpp-Sbi-Target-apiRoot, the SCP fails the downstream HTTP/2 connection and
  * answers 500, and the AMF never sees the request. ContextCreate starts from an empty slot and goes through the
  * SCP's own fresh discovery, which resolves the complete profile; clearing the slot puts the call on that path. */
+/* The discovery option that addresses the AMF instance that holds the context of \p amf (the header
+ * 3gpp-Sbi-Discovery-target-nf-instance-id, TS 29.500 V18.10.0 cl. 6.10.3.2), or NULL when the entry is not bound to an
+ * instance. The transaction owns the option. */
+static ogs_sbi_discovery_option_t *amf_discovery_option(const smf_mbs_amf_t *amf)
+{
+    ogs_sbi_discovery_option_t *discovery_option = NULL;
+
+    if (!amf->nf_instance_id)
+        return NULL;
+    discovery_option = ogs_sbi_discovery_option_new();
+    ogs_assert(discovery_option);
+    ogs_sbi_discovery_option_set_target_nf_instance_id(discovery_option, amf->nf_instance_id);
+    return discovery_option;
+}
+
 static void mbs_bc_reset_cached_instance(smf_mbs_sess_t *mbs_sess)
 {
     mbs_sess->sbi.service_type_array[OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC].nf_instance = NULL;
@@ -698,7 +719,7 @@ int smf_sbi_send_mbs_broadcast_context_delete_all(smf_mbs_sess_t *mbs_sess)
         mbs_bc_reset_cached_instance(mbs_sess);
 
         if (smf_sbi_old_discover_and_send(
-                OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC, NULL,
+                OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC, amf_discovery_option(amf),
                 smf_namf_build_mbs_broadcast_context_delete_request,
                 mbs_sess, NULL, amf->id, amf) != OGS_OK) {
             ogs_error("Failed to send MBS Broadcast ContextDelete for mbsContextRef[%s]", amf->mbs_context_ref);
@@ -721,7 +742,7 @@ int smf_sbi_send_mbs_broadcast_context_update(smf_mbs_sess_t *mbs_sess, smf_namf
     mbs_bc_reset_cached_instance(mbs_sess);
 
     return smf_sbi_old_discover_and_send(
-            OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC, NULL,
+            OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC, amf_discovery_option(param->amf),
             smf_namf_build_mbs_broadcast_context_update_request,
             mbs_sess, NULL, param->amf->id, param);
 }
@@ -748,7 +769,7 @@ int smf_sbi_send_mbs_broadcast_context_update_all(
         mbs_bc_reset_cached_instance(mbs_sess);
 
         if (smf_sbi_old_discover_and_send(
-                OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC, NULL,
+                OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC, amf_discovery_option(amf),
                 smf_namf_build_mbs_broadcast_context_update_request,
                 mbs_sess, NULL, amf->id, &param) != OGS_OK) {
             ogs_error("Failed to send MBS Broadcast ContextUpdate for mbsContextRef[%s]", amf->mbs_context_ref);

@@ -528,8 +528,12 @@ ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_update_request(
 
     has_max_response_time = smf_mbs_max_response_time(&max_response_time);
 
+    /* noNgapSignallingInd (table 6.5.6.2.5-1): "This IE may be present during the restoration procedure to select an
+     * alternative AMF for a Broadcast MBS Session at AMF failure as specified in clause 8.3.2.4 of TS 23.527" */
     ContextUpdateReqData = OpenAPI_context_update_req_data_create(mbs_service_area, mbs_service_area_info_list,
-            n2_mbs_sm_info, ran_id_list, OpenAPI_context_update_req_data_NONGAPSIGNALLINGIND_NULL, NULL,
+            n2_mbs_sm_info, ran_id_list,
+            param->no_ngap_signalling ? OpenAPI_context_update_req_data_NONGAPSIGNALLINGIND__true :
+                OpenAPI_context_update_req_data_NONGAPSIGNALLINGIND_NULL, NULL,
             has_max_response_time, max_response_time, !param->no_n2_info_change_ind, param->n2_info_changed);
     message.ContextUpdateReqData = ContextUpdateReqData;
 

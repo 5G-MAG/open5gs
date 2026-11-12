@@ -69,6 +69,9 @@ typedef struct smf_namf_context_update_param_s {
     int num_ran_ids;
     /* the container carries the MBS NG-U Failure Indication of an N3mb path failure (TS 23.527 V18.6.0 cl. 8.5) */
     bool n3mb_path_failure;
+    /* noNgapSignallingInd true: the AMF is to take the session over and keep the container without sending it to an
+     * NG-RAN (TS 29.518 V18.14.0 cl. 5.6.2.3; TS 23.527 V18.6.0 cl. 8.3.2.4 step 8). Left out when false. */
+    bool no_ngap_signalling;
 } smf_namf_context_update_param_t;
 
 /* POST /namf-mbs-bc/v1/mbs-contexts/{mbsContextRef}/update, TS 29.518 V18.14.0 cl. 5.6.2.3 */

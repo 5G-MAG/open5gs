@@ -1566,6 +1566,24 @@ static void test_notify_uri_is_valid(void)
     CHECK(!amf_namf_notify_uri_is_valid("ftp://127.0.0.1/x"));
 }
 
+/* TS 29.518 V18.14.0 Table 6.5.6.2.5-1 gives every attribute of ContextUpdateReqData the P value "O", and cl. 5.6.2.3 step 1
+ * lists "Notification URI, if the NF Service Consumer wishes to modify the notification URI where to be notified about the
+ * status change of the broadcast MBS session context" among what the request may contain: a request with the notifyUri
+ * alone is one for the AMF to change it, and has nothing for an NG-RAN node. */
+static void test_context_update_req_kind(void)
+{
+    /* service area, N2 MBS SM information, notifyUri */
+    CHECK(amf_namf_mbs_update_req_kind(false, false, true) == AMF_MBS_UPDATE_REQ_NOTIFY_URI_ONLY);
+    CHECK(amf_namf_mbs_update_req_kind(false, false, false) == AMF_MBS_UPDATE_REQ_EMPTY);
+    CHECK(amf_namf_mbs_update_req_kind(true, false, false) == AMF_MBS_UPDATE_REQ_NG_RAN);
+    CHECK(amf_namf_mbs_update_req_kind(false, true, false) == AMF_MBS_UPDATE_REQ_NG_RAN);
+    CHECK(amf_namf_mbs_update_req_kind(true, true, false) == AMF_MBS_UPDATE_REQ_NG_RAN);
+    /* the notifyUri with the others is still an update for NG-RAN nodes */
+    CHECK(amf_namf_mbs_update_req_kind(true, false, true) == AMF_MBS_UPDATE_REQ_NG_RAN);
+    CHECK(amf_namf_mbs_update_req_kind(false, true, true) == AMF_MBS_UPDATE_REQ_NG_RAN);
+    CHECK(amf_namf_mbs_update_req_kind(true, true, true) == AMF_MBS_UPDATE_REQ_NG_RAN);
+}
+
 /* TS 38.413 V18.11.0 cl. 9.3.1.208: "maxnoofCellsforMBS ... Value is 8192." and "maxnoofTAIforMBS ... Value is 1024." */
 static void test_service_area_bounds(void)
 {
@@ -1655,6 +1673,7 @@ int main(int argc, const char *argv[])
     test_area_apply_undo();
     test_service_area_bounds();
     test_notify_uri_is_valid();
+    test_context_update_req_kind();
     test_area_apply_replaces_state();
     test_gnb_owes();
     test_tmgi_is_valid();

@@ -3014,6 +3014,58 @@ static void test_ngran_failure_events(void)
     smf_mbs_sess_release(mbs_sess);
 }
 
+/* TS 29.518 V18.14.0 table 6.5.6.2.8-1, amfId: "This IE shall be present to contain the NF Instance ID of the AMF sending
+ * the Context Status Notify Request message if the operation event type indicates an AMF change event."; TS 23.527
+ * V18.6.0 cl. 8.3.2.4 step 5: "The MB-SMF acknowledges the notification and will send subsequent signalling message
+ * for this Broadcast MBS Session via the AMF2." */
+static void test_amf_change_event(void)
+{
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    smf_mbs_amf_t *amf;
+    OpenAPI_operation_event_t *event;
+    cJSON *json;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+    amf = smf_mbs_sess_amf_add(mbs_sess);
+    CHECK(amf != NULL);
+    if (!amf) { smf_mbs_sess_release(mbs_sess); return; }
+    amf->mbs_context_ref = ogs_strdup("ctx-1");
+    amf->nf_instance_id = ogs_strdup("11111111-1111-1111-1111-111111111111");
+
+    json = cJSON_Parse("{\"opEventType\":\"AMF_CHANGE\",\"amfId\":\"22222222-2222-2222-2222-222222222222\"}");
+    event = OpenAPI_operation_event_parseFromJSON(json);
+    cJSON_Delete(json);
+    CHECK(event && event->op_event_type == OpenAPI_op_event_type_AMF_CHANGE);
+    if (event) {
+        /* the entry is bound to the AMF that took over; the context reference stays */
+        CHECK(smf_mbs_sess_take_amf_change_event(amf, event));
+        CHECK_STR("22222222-2222-2222-2222-222222222222", amf->nf_instance_id);
+        CHECK_STR("ctx-1", amf->mbs_context_ref);
+
+        /* an entry that was not bound to an instance is bound */
+        ogs_free(amf->nf_instance_id);
+        amf->nf_instance_id = NULL;
+        CHECK(smf_mbs_sess_take_amf_change_event(amf, event));
+        CHECK_STR("22222222-2222-2222-2222-222222222222", amf->nf_instance_id);
+
+        /* from an AMF that no entry is known for */
+        CHECK(!smf_mbs_sess_take_amf_change_event(NULL, event));
+
+        /* without the amfId, or with an empty one, the entry is left as it is */
+        ogs_free(event->amf_id);
+        event->amf_id = NULL;
+        CHECK(!smf_mbs_sess_take_amf_change_event(amf, event));
+        CHECK_STR("22222222-2222-2222-2222-222222222222", amf->nf_instance_id);
+        event->amf_id = ogs_strdup("");
+        CHECK(!smf_mbs_sess_take_amf_change_event(amf, event));
+        CHECK_STR("22222222-2222-2222-2222-222222222222", amf->nf_instance_id);
+        OpenAPI_operation_event_free(event);
+    }
+
+    smf_mbs_sess_release(mbs_sess);
+}
+
 /* TS 23.527 V18.6.0 clause 8.5, N3mb path failure: the PFCP Node Report Request of the MB-UPF with a User Plane
  * Path Failure Report (TS 29.244 V18.10.0 clauses 7.4.5.1.2 and 8.2.70) and the PFCP Node Report Response. */
 static void test_node_report(void)
@@ -3476,6 +3528,12 @@ static void test_node_report_several_peers(void)
 }
 
 static int context_creates;
+static bool amf_registered;
+
+static bool fake_amf_available(void)
+{
+    return amf_registered;
+}
 
 static int count_context_create(smf_mbs_sess_t *mbs_sess)
 {
@@ -3483,19 +3541,8 @@ static int count_context_create(smf_mbs_sess_t *mbs_sess)
     return OGS_OK;
 }
 
-static int context_checks;
-
-static int count_context_check(smf_mbs_sess_t *mbs_sess, smf_namf_context_update_param_t *param)
-{
-    /* a check changes nothing: no N2 information change, no service area, no NG-RAN list */
-    if (param->no_n2_info_change_ind && !param->service_area && param->num_ran_ids == 0 && param->amf &&
-            param->amf->mbs_context_ref)
-        context_checks++;
-    return OGS_OK;
-}
-
-/* TS 23.527 V18.6.0 cl. 8.3.2.4: the AMF that holds the broadcast context failed; the context is created again in the
- * AMF that serves the session */
+/* TS 23.527 V18.6.0 cl. 8.3.2.4: the AMF that holds the broadcast context failed; the MB-SMF "detects that the AMF1 has
+ * failed ... via notifications from the NRF for the NF Status Change", and the context is created again in an AMF */
 static void test_amf_context_lost(void)
 {
     smf_mbs_sess_t *mbs_sess = new_broadcast_session();
@@ -3505,36 +3552,793 @@ static void test_amf_context_lost(void)
     if (!mbs_sess) return;
 
     smf_mbs_set_context_create_sender(count_context_create);
-    smf_mbs_set_context_update_sender(count_context_check);
+    smf_mbs_set_amf_available_check(fake_amf_available);
+    amf_registered = true;
 
-    /* an AMF without the context is replaced by a Create */
+    /* a 404 from an AMF that is not known to be the one holding the context says nothing: the entry is kept */
     amf = smf_mbs_sess_amf_add(mbs_sess);
     amf->mbs_context_ref = ogs_strdup("7");
     context_creates = 0;
     CHECK(smf_mbs_amf_context_lost(mbs_sess, amf) == OGS_OK);
-    CHECK(context_creates == 1);
-    CHECK(ogs_list_empty(&mbs_sess->amf_list));
-
-    /* with another context, or a Create still waiting for its answer, no second Create is sent */
-    amf = smf_mbs_sess_amf_add(mbs_sess);
-    amf->mbs_context_ref = ogs_strdup("8");
-    other = smf_mbs_sess_amf_add(mbs_sess);
-    context_creates = 0;
-    CHECK(smf_mbs_amf_context_lost(mbs_sess, amf) == OGS_OK);
     CHECK(context_creates == 0);
     CHECK(ogs_list_count(&mbs_sess->amf_list) == 1);
+    CHECK(!mbs_sess->broadcast_context_pending);
 
-    /* an AMF that registered: each context with a reference is checked, the entry still waiting for its answer is not */
-    other->mbs_context_ref = ogs_strdup("9");
+    /* a 404 from the AMF instance the context is bound to: the entry is dropped and the context created again */
+    amf->nf_instance_id = ogs_strdup("instance-a");
+    CHECK(smf_mbs_amf_context_lost(mbs_sess, amf) == OGS_OK);
+    CHECK(context_creates == 1);
+    CHECK(ogs_list_empty(&mbs_sess->amf_list));
+    CHECK(mbs_sess->broadcast_context_pending);
+
+    /* the instance leaves the NRF: only the contexts bound to it are dropped; a session that still has an entry waits
+     * for no Create */
+    mbs_sess->broadcast_context_pending = false;
     amf = smf_mbs_sess_amf_add(mbs_sess);
-    context_checks = 0;
-    CHECK(smf_mbs_probe_amf_contexts() >= 1);
-    CHECK(context_checks >= 1);
-    (void)amf;
+    amf->mbs_context_ref = ogs_strdup("8");
+    amf->nf_instance_id = ogs_strdup("instance-a");
+    other = smf_mbs_sess_amf_add(mbs_sess);
+    other->mbs_context_ref = ogs_strdup("9");
+    other->nf_instance_id = ogs_strdup("instance-b");
+    context_creates = 0;
+    CHECK(smf_mbs_amf_instance_lost("instance-a") == 1);
+    CHECK(ogs_list_count(&mbs_sess->amf_list) == 1);
+    CHECK(context_creates == 0);
+    CHECK(smf_mbs_amf_instance_lost("instance-unknown") == 0);
 
+    /* the last instance leaves and no other AMF is registered: nothing is sent, as a Create would only fail; the session
+     * waits, and its Create is sent when an AMF registers */
+    amf_registered = false;
+    context_creates = 0;
+    CHECK(smf_mbs_amf_instance_lost("instance-b") == 1);
+    CHECK(context_creates == 0);
+    CHECK(ogs_list_empty(&mbs_sess->amf_list) && mbs_sess->broadcast_context_pending);
+    CHECK(smf_mbs_create_pending_contexts() >= 1);
+    CHECK(context_creates == 1);
+
+    /* a Create waiting for its answer is not repeated */
+    amf = smf_mbs_sess_amf_add(mbs_sess);
+    CHECK(smf_mbs_create_pending_contexts() == 0);
+    CHECK(context_creates == 1);
+
+    /* a Create that nothing answered: its entry is dropped, and a session that waits for its context asks again */
+    smf_mbs_sess_amf_remove(mbs_sess, amf);     /* the entry of the Create above that waits for its answer */
+    amf = smf_mbs_sess_amf_add(mbs_sess);
+    mbs_sess->broadcast_context_pending = true;
+    amf_registered = true;
+    context_creates = 0;
+    smf_mbs_namf_request_timed_out(mbs_sess, amf);
+    CHECK(context_creates == 1);
+    CHECK(ogs_list_count(&mbs_sess->amf_list) == 0);
+    /* a timed out request about an existing context keeps its entry */
+    amf = smf_mbs_sess_amf_add(mbs_sess);
+    amf->mbs_context_ref = ogs_strdup("11");
+    mbs_sess->broadcast_context_pending = false;
+    context_creates = 0;
+    smf_mbs_namf_request_timed_out(mbs_sess, amf);
+    CHECK(context_creates == 0 && ogs_list_count(&mbs_sess->amf_list) == 1);
+    smf_mbs_sess_amf_remove(mbs_sess, amf);
+
+    /* another AMF is registered when the instance leaves: the Create goes to it at once */
+    amf = smf_mbs_sess_amf_add(mbs_sess);
+    amf->mbs_context_ref = ogs_strdup("10");
+    amf->nf_instance_id = ogs_strdup("instance-c");
+    mbs_sess->broadcast_context_pending = false;
+    amf_registered = true;
+    context_creates = 0;
+    CHECK(smf_mbs_amf_instance_lost("instance-c") == 1);
+    CHECK(context_creates == 1);
+
+    /* with smf.mbsContextRetryDelay configured, a failed or timed out Create makes the session ask again after that time
+     * and not at once */
+    smf_self()->has_mbs_context_retry_delay = true;
+    smf_self()->mbs_context_retry_delay = 1;
+    mbs_sess->broadcast_context_pending = true;
+    amf = smf_mbs_sess_amf_add(mbs_sess);       /* the entry of the Create that nothing answered */
+    context_creates = 0;
+    smf_mbs_namf_request_timed_out(mbs_sess, amf);
+    CHECK(context_creates == 0);
+    CHECK(smf_mbs_context_retry_scheduled());
+    smf_mbs_context_retry_expired();            /* the time is over */
+    CHECK(context_creates == 1);
+    amf = ogs_list_first(&mbs_sess->amf_list);
+    if (amf) {
+        smf_mbs_sess_amf_remove(mbs_sess, amf); /* the Create of the retry is refused (500) */
+        smf_mbs_context_create_failed(mbs_sess);
+        CHECK(smf_mbs_context_retry_scheduled());
+    }
+    /* a session that does not wait for its context does not ask again */
+    mbs_sess->broadcast_context_pending = false;
+    smf_self()->has_mbs_context_retry_delay = false;
+
+    smf_mbs_set_amf_available_check(NULL);
     smf_mbs_set_context_create_sender(NULL);
-    smf_mbs_set_context_update_sender(NULL);
     smf_mbs_sess_release(mbs_sess);
+}
+
+/* The JSON part of a request built by the builder: the content up to the part that follows it (the caller frees it) */
+static cJSON *request_json(const ogs_sbi_request_t *request)
+{
+    const char *brace = request->http.content ? strchr(request->http.content, '{') : NULL;
+    const char *end = brace ? strstr(brace, "\r\n--") : NULL;
+    char *text = (brace && end) ? ogs_strndup(brace, end - brace) : NULL;
+    cJSON *json = text ? cJSON_Parse(text) : NULL;
+
+    if (text) ogs_free(text);
+    return json;
+}
+
+/* TS 29.518 V18.14.0 table 6.5.6.2.5-1, noNgapSignallingInd: "This IE may be present during the restoration procedure to
+ * select an alternative AMF for a Broadcast MBS Session at AMF failure as specified in clause 8.3.2.4 of TS 23.527 [33]).
+ * When present, this IE shall be set as following: true: the AMF may consider to not trigger a NGAP signaling message to
+ * any NG-RAN." The request that hands the context to an alternative AMF carries it; no other ContextUpdate does. */
+static void test_no_ngap_signalling_ind_in_request(void)
+{
+    smf_mbs_sess_t *mbs_sess = make_session(serv_info_2_text, area_1_text);
+    smf_mbs_amf_t *amf;
+    smf_namf_context_update_param_t param;
+    ogs_sbi_request_t *request;
+    cJSON *json, *item;
+    const char *ran_ids[1] = { ran_a_text };
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+    amf = smf_mbs_sess_amf_add(mbs_sess);
+    amf->mbs_context_ref = ogs_strdup("5");
+
+    /* the hand over: the indication is true, with the service area and the container of the session */
+    memset(&param, 0, sizeof(param));
+    param.amf = amf;
+    param.service_area = true;
+    param.no_n2_info_change_ind = true;
+    param.no_ngap_signalling = true;
+    request = smf_namf_build_mbs_broadcast_context_update_request(mbs_sess, &param);
+    CHECK(request != NULL);
+    json = request ? request_json(request) : NULL;
+    CHECK(json != NULL);
+    if (json) {
+        item = cJSON_GetObjectItemCaseSensitive(json, "noNgapSignallingInd");
+        CHECK(cJSON_IsTrue(item));
+        CHECK(cJSON_GetObjectItemCaseSensitive(json, "mbsServiceArea") != NULL);
+        CHECK(cJSON_GetObjectItemCaseSensitive(json, "n2MbsSmInfo") != NULL);
+        CHECK(cJSON_GetObjectItemCaseSensitive(json, "ranIdList") == NULL);
+        CHECK(cJSON_GetObjectItemCaseSensitive(json, "n2MbsInfoChangeInd") == NULL);
+        cJSON_Delete(json);
+    }
+    if (request) ogs_sbi_request_free(request);
+
+    /* every other kind of update leaves the attribute out: the service area, the container that changed, the container
+     * that did not, the NG-RAN list of a restoration, the N3mb path failure */
+    memset(&param, 0, sizeof(param));
+    param.amf = amf;
+    {
+        int kind;
+
+        for (kind = 0; kind < 5; kind++) {
+            memset(&param, 0, sizeof(param));
+            param.amf = amf;
+            switch (kind) {
+            case 0: param.service_area = true; break;
+            case 1: param.n2_info_changed = true; break;
+            case 2: break;
+            case 3: param.no_n2_info_change_ind = true; param.ran_ids = ran_ids; param.num_ran_ids = 1; break;
+            case 4: param.no_n2_info_change_ind = true; param.n3mb_path_failure = true; break;
+            }
+            request = smf_namf_build_mbs_broadcast_context_update_request(mbs_sess, &param);
+            CHECK(request != NULL);
+            json = request ? request_json(request) : NULL;
+            CHECK(json != NULL);
+            if (json) {
+                CHECK(cJSON_GetObjectItemCaseSensitive(json, "noNgapSignallingInd") == NULL);
+                cJSON_Delete(json);
+            }
+            if (request) ogs_sbi_request_free(request);
+        }
+    }
+
+    /* a location dependent session carries it with its list of Area Session ID and area */
+    mbs_sess->location_dependent = true;
+    mbs_sess->area_session_id = 3;
+    memset(&param, 0, sizeof(param));
+    param.amf = amf;
+    param.service_area = true;
+    param.no_ngap_signalling = true;
+    request = smf_namf_build_mbs_broadcast_context_update_request(mbs_sess, &param);
+    CHECK(request != NULL);
+    json = request ? request_json(request) : NULL;
+    CHECK(json != NULL);
+    if (json) {
+        CHECK(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(json, "noNgapSignallingInd")));
+        CHECK(cJSON_GetObjectItemCaseSensitive(json, "mbsServiceAreaInfoList") != NULL);
+        cJSON_Delete(json);
+    }
+    if (request) ogs_sbi_request_free(request);
+
+    smf_mbs_sess_release(mbs_sess);
+}
+
+/* The AMF sets and the alternative AMFs of the test: each instance has a set, and is registered or not */
+static struct {
+    const char *id;
+    uint8_t set_id;
+    uint16_t region_id;
+    bool registered;
+} fake_amfs[] = {
+    { "amf-1", 1, 2, true }, { "amf-2", 1, 2, true }, { "amf-3", 1, 2, true },
+    { "amf-x", 9, 2, true }, { "amf-y", 1, 7, true },
+};
+#define NUM_FAKE_AMFS ((int)(sizeof(fake_amfs) / sizeof(fake_amfs[0])))
+
+static bool fake_amf_set_of(const char *id, smf_mbs_amf_set_t *set)
+{
+    int i;
+
+    memset(set, 0, sizeof(*set));
+    for (i = 0; i < NUM_FAKE_AMFS; i++) {
+        if (strcmp(fake_amfs[i].id, id) == 0) {
+            set->known = true;
+            set->set_id = fake_amfs[i].set_id;
+            set->region_id = fake_amfs[i].region_id;
+            return true;
+        }
+    }
+    return false;
+}
+
+static const char *fake_alternative_amf(const smf_mbs_amf_set_t *set, const char *not_id)
+{
+    int i;
+
+    for (i = 0; i < NUM_FAKE_AMFS; i++) {
+        smf_mbs_amf_set_t other;
+
+        if (!fake_amfs[i].registered || strcmp(fake_amfs[i].id, not_id) == 0)
+            continue;
+        if (fake_amf_set_of(fake_amfs[i].id, &other) && smf_mbs_amf_set_equal(set, &other))
+            return fake_amfs[i].id;
+    }
+    return NULL;
+}
+
+static void fake_amf_registered(const char *id, bool registered)
+{
+    int i;
+
+    for (i = 0; i < NUM_FAKE_AMFS; i++)
+        if (strcmp(fake_amfs[i].id, id) == 0)
+            fake_amfs[i].registered = registered;
+}
+
+/* what the ContextUpdate sender of the test saw */
+static int takeover_updates;
+static int takeover_updates_failing;        /* the sender refuses */
+static smf_namf_context_update_param_t takeover_last;
+static char takeover_last_instance[32];
+static char takeover_last_ref[32];
+
+static int record_takeover_update(smf_mbs_sess_t *mbs_sess, smf_namf_context_update_param_t *param)
+{
+    takeover_updates++;
+    takeover_last = *param;
+    takeover_last.ran_ids = NULL;       /* the caller's array does not outlive the call */
+    snprintf(takeover_last_instance, sizeof(takeover_last_instance), "%s",
+            param->amf->nf_instance_id ? param->amf->nf_instance_id : "");
+    snprintf(takeover_last_ref, sizeof(takeover_last_ref), "%s",
+            param->amf->mbs_context_ref ? param->amf->mbs_context_ref : "");
+    return takeover_updates_failing ? OGS_ERROR : OGS_OK;
+}
+
+static smf_mbs_amf_t *bound_entry(smf_mbs_sess_t *mbs_sess, const char *ref, const char *instance)
+{
+    smf_mbs_amf_t *amf = smf_mbs_sess_amf_add(mbs_sess);
+
+    amf->mbs_context_ref = ogs_strdup(ref);
+    amf->nf_instance_id = ogs_strdup(instance);
+    smf_mbs_amf_note_set(amf);
+    return amf;
+}
+
+/* TS 29.518 V18.14.0 cl. 5.6.2.3: "During a restoration procedure upon an AMF failure without restart, for an AMF
+ * deployed in an AMF set, the MB-SMF may set the noNgapSignallingInd IE to "true" when the MB-SMF detects the original
+ * AMF has failed and then selects an alternative AMF to take over the MBS session but without a need to trigger any NGAP
+ * signalling towards NG-RANs, as specified in clause 8.3.2.4 of TS 23.527 [33]." TS 23.527 V18.6.0 cl. 8.3.2.4 step 7:
+ * "The MB-SMF selects an alternative AMF pertaining to the same AMF set using the Binding Indication provided by the
+ * old AMF or using the NF profile of the old AMF." Step 8: "The MB-SMF sends a Namf_MBSBroadcast_ContextUpdate Request
+ * including a MBS Session ID, the corresponding MBS Service Area, a MBS Session Setup or Modification Request Transfer,
+ * and sets the "noNgapSignallingInd" to "true"". */
+static void test_amf_takeover(void)
+{
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session(), *other_sess = new_broadcast_session();
+    smf_mbs_amf_t *amf, *amf2;
+    ogs_sbi_request_t *request;
+    cJSON *json;
+    ogs_sbi_message_t answer;
+
+    CHECK(mbs_sess != NULL && other_sess != NULL);
+    if (!mbs_sess || !other_sess) return;
+
+    smf_mbs_set_context_create_sender(count_context_create);
+    smf_mbs_set_amf_available_check(fake_amf_available);
+    smf_mbs_set_context_update_sender(record_takeover_update);
+    smf_mbs_set_amf_set_lookup(fake_amf_set_of, fake_alternative_amf);
+    amf_registered = true;
+    memset(&answer, 0, sizeof(answer));
+
+    /* the AMF set is read when the entry is bound; an entry that is not bound, or bound to an instance nothing is
+     * known of, has none */
+    amf = smf_mbs_sess_amf_add(mbs_sess);
+    smf_mbs_amf_note_set(amf);
+    CHECK(!amf->amf_set.known);
+    amf->nf_instance_id = ogs_strdup("amf-unknown");
+    smf_mbs_amf_note_set(amf);
+    CHECK(!amf->amf_set.known);
+    ogs_free(amf->nf_instance_id);
+    amf->nf_instance_id = ogs_strdup("amf-1");
+    smf_mbs_amf_note_set(amf);
+    CHECK(amf->amf_set.known && amf->amf_set.set_id == 1 && amf->amf_set.region_id == 2);
+    smf_mbs_sess_amf_remove(mbs_sess, amf);
+
+    /* the AMF fails, an alternative AMF of its set is registered: the context goes to it with a ContextUpdate that has
+     * noNgapSignallingInd true, the service area and no ranIdList; no Create is sent */
+    amf = bound_entry(mbs_sess, "7", "amf-1");
+    takeover_updates = 0;
+    context_creates = 0;
+    CHECK(smf_mbs_amf_instance_lost("amf-1") == 1);
+    CHECK(takeover_updates == 1);
+    CHECK(context_creates == 0);
+    CHECK(takeover_last.no_ngap_signalling);
+    CHECK(takeover_last.service_area);
+    CHECK(takeover_last.num_ran_ids == 0);
+    CHECK(takeover_last.amf == amf);
+    CHECK_STR("amf-2", takeover_last_instance);
+    CHECK_STR("7", takeover_last_ref);
+    CHECK(ogs_list_count(&mbs_sess->amf_list) == 1 && ogs_list_first(&mbs_sess->amf_list) == amf);
+    CHECK_STR("amf-2", amf->nf_instance_id);
+    CHECK(amf->takeover);
+    CHECK(!mbs_sess->broadcast_context_pending);
+    /* the request built from what was handed to the sender carries the indication */
+    request = smf_namf_build_mbs_broadcast_context_update_request(mbs_sess, &takeover_last);
+    CHECK(request != NULL);
+    json = request ? request_json(request) : NULL;
+    CHECK(json && cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(json, "noNgapSignallingInd")));
+    if (json) cJSON_Delete(json);
+    if (request) {
+        CHECK(request->h.resource.component[1] && strcmp(request->h.resource.component[1], "7") == 0);
+        ogs_sbi_request_free(request);
+    }
+
+    /* the AMF answers 204: the hand over is over, the entry stays */
+    smf_mbs_amf_takeover_answered(mbs_sess, amf, true);
+    CHECK(!amf->takeover);
+    CHECK(ogs_list_count(&mbs_sess->amf_list) == 1 && context_creates == 0);
+    /* an answer of another request of the entry does not touch it */
+    smf_mbs_amf_takeover_answered(mbs_sess, amf, false);
+    CHECK(ogs_list_count(&mbs_sess->amf_list) == 1 && context_creates == 0);
+
+    /* that AMF fails too: the set is the same, a third AMF of it takes the context */
+    fake_amf_registered("amf-1", false);
+    takeover_updates = 0;
+    CHECK(smf_mbs_amf_instance_lost("amf-2") == 1);
+    CHECK(takeover_updates == 1 && takeover_last.no_ngap_signalling);
+    CHECK_STR("amf-3", amf->nf_instance_id);
+    CHECK(amf->takeover && context_creates == 0);
+
+    /* the alternative AMF refuses (or the answer is not 200 or 204): the entry is dropped and the context created
+     * again in an AMF */
+    smf_mbs_amf_takeover_answered(mbs_sess, amf, false);
+    CHECK(ogs_list_empty(&mbs_sess->amf_list));
+    CHECK(mbs_sess->broadcast_context_pending);
+    CHECK(context_creates == 1);
+    mbs_sess->broadcast_context_pending = false;
+
+    /* the alternative AMF does not know the context (404): the same */
+    amf = bound_entry(mbs_sess, "8", "amf-2");
+    takeover_updates = 0;
+    context_creates = 0;
+    fake_amf_registered("amf-1", true);
+    CHECK(smf_mbs_amf_instance_lost("amf-2") == 1);
+    CHECK(takeover_updates == 1 && amf->takeover);
+    CHECK(smf_mbs_amf_context_lost(mbs_sess, amf) == OGS_OK);
+    CHECK(ogs_list_empty(&mbs_sess->amf_list) && context_creates == 1);
+    mbs_sess->broadcast_context_pending = false;
+
+    /* nothing answers the hand over: the same */
+    amf = bound_entry(mbs_sess, "9", "amf-1");
+    takeover_updates = 0;
+    context_creates = 0;
+    CHECK(smf_mbs_amf_instance_lost("amf-1") == 1);
+    CHECK(takeover_updates == 1 && amf->takeover);
+    smf_mbs_namf_request_timed_out(mbs_sess, amf);
+    CHECK(ogs_list_empty(&mbs_sess->amf_list) && context_creates == 1);
+    mbs_sess->broadcast_context_pending = false;
+
+    /* the request cannot be sent: the entry is dropped, the context created again, no hand over waits */
+    amf = bound_entry(mbs_sess, "10", "amf-1");
+    takeover_updates = 0;
+    takeover_updates_failing = 1;
+    context_creates = 0;
+    CHECK(smf_mbs_amf_instance_lost("amf-1") == 1);
+    CHECK(takeover_updates == 1);
+    CHECK(ogs_list_empty(&mbs_sess->amf_list));
+    CHECK(mbs_sess->broadcast_context_pending && context_creates == 1);
+    takeover_updates_failing = 0;
+    mbs_sess->broadcast_context_pending = false;
+
+    /* no other AMF of the set is registered: no Update, the Create of before */
+    fake_amf_registered("amf-2", false);
+    fake_amf_registered("amf-3", false);
+    amf = bound_entry(mbs_sess, "11", "amf-1");
+    takeover_updates = 0;
+    context_creates = 0;
+    CHECK(smf_mbs_amf_instance_lost("amf-1") == 1);
+    CHECK(takeover_updates == 0);
+    CHECK(ogs_list_empty(&mbs_sess->amf_list) && mbs_sess->broadcast_context_pending && context_creates == 1);
+    mbs_sess->broadcast_context_pending = false;
+
+    /* an AMF of another set or of another region is registered, none of the same set: the same */
+    fake_amf_registered("amf-2", false);
+    amf = bound_entry(mbs_sess, "12", "amf-1");
+    takeover_updates = 0;
+    context_creates = 0;
+    CHECK(smf_mbs_amf_instance_lost("amf-1") == 1);
+    CHECK(takeover_updates == 0 && context_creates == 1);
+    mbs_sess->broadcast_context_pending = false;
+    fake_amf_registered("amf-2", true);
+    fake_amf_registered("amf-3", true);
+
+    /* an entry whose AMF set is not known is created again, as before */
+    amf = smf_mbs_sess_amf_add(mbs_sess);
+    amf->mbs_context_ref = ogs_strdup("13");
+    amf->nf_instance_id = ogs_strdup("amf-1");
+    takeover_updates = 0;
+    context_creates = 0;
+    CHECK(!amf->amf_set.known);
+    CHECK(smf_mbs_amf_instance_lost("amf-1") == 1);
+    CHECK(takeover_updates == 0 && context_creates == 1);
+    CHECK(ogs_list_empty(&mbs_sess->amf_list));
+    mbs_sess->broadcast_context_pending = false;
+
+    /* an entry without a context (its Create is not answered) has nothing to hand over */
+    amf = smf_mbs_sess_amf_add(mbs_sess);
+    amf->nf_instance_id = ogs_strdup("amf-1");
+    smf_mbs_amf_note_set(amf);
+    takeover_updates = 0;
+    context_creates = 0;
+    CHECK(smf_mbs_amf_instance_lost("amf-1") == 1);
+    CHECK(takeover_updates == 0 && ogs_list_empty(&mbs_sess->amf_list));
+    mbs_sess->broadcast_context_pending = false;
+    context_creates = 0;
+
+    /* only the entries bound to the failed instance are handed over, in every session; an entry of another AMF stays as
+     * it is */
+    amf = bound_entry(mbs_sess, "14", "amf-1");
+    amf2 = bound_entry(mbs_sess, "15", "amf-x");
+    bound_entry(other_sess, "16", "amf-1");
+    bound_entry(other_sess, "17", "amf-3");
+    takeover_updates = 0;
+    CHECK(smf_mbs_amf_instance_lost("amf-1") == 2);
+    CHECK(takeover_updates == 2 && context_creates == 0);
+    CHECK(amf->takeover && !amf2->takeover);
+    CHECK_STR("amf-x", amf2->nf_instance_id);
+    CHECK(ogs_list_count(&mbs_sess->amf_list) == 2 && ogs_list_count(&other_sess->amf_list) == 2);
+    CHECK(smf_mbs_amf_instance_lost("amf-unknown") == 0);
+
+    /* alternative A binds the entry to the AMF that reports having taken the context: the set is kept */
+    {
+        OpenAPI_operation_event_t *event;
+        cJSON *ev = cJSON_Parse("{\"opEventType\":\"AMF_CHANGE\",\"amfId\":\"amf-3\"}");
+
+        event = OpenAPI_operation_event_parseFromJSON(ev);
+        cJSON_Delete(ev);
+        CHECK(event != NULL);
+        if (event) {
+            CHECK(smf_mbs_sess_take_amf_change_event(amf2, event));
+            CHECK_STR("amf-3", amf2->nf_instance_id);
+            CHECK(amf2->amf_set.known && amf2->amf_set.set_id == 9);
+            /* an entry that had no set takes the one of the AMF that took over */
+            memset(&amf2->amf_set, 0, sizeof(amf2->amf_set));
+            CHECK(smf_mbs_sess_take_amf_change_event(amf2, event));
+            CHECK(amf2->amf_set.known && amf2->amf_set.set_id == 1 && amf2->amf_set.region_id == 2);
+            OpenAPI_operation_event_free(event);
+        }
+    }
+
+    smf_mbs_set_amf_set_lookup(NULL, NULL);
+    smf_mbs_set_context_update_sender(NULL);
+    smf_mbs_set_amf_available_check(NULL);
+    smf_mbs_set_context_create_sender(NULL);
+    smf_mbs_sess_release(mbs_sess);
+    smf_mbs_sess_release(other_sess);
+}
+
+/* The AMF set and the alternative AMF from the NF instances of the NRF (the lookups of the real MB-SMF): the amfSetId and
+ * amfRegionId of the amfInfo of the NF profile; "another AMF of the same AMF set" is a registered AMF instance with the
+ * same two values (and the same PLMN when the profiles give one). */
+static ogs_sbi_nf_instance_t *add_amf_instance(const char *id, uint8_t set_id, uint16_t region_id, const char *mnc,
+        OpenAPI_nf_status_e status)
+{
+    ogs_sbi_nf_instance_t *nf_instance = ogs_sbi_nf_instance_add();
+    ogs_sbi_nf_info_t *nf_info;
+
+    ogs_sbi_nf_instance_set_id(nf_instance, (char *)id);
+    ogs_sbi_nf_instance_set_type(nf_instance, OpenAPI_nf_type_AMF);
+    nf_instance->nf_status = status;
+    nf_info = ogs_sbi_nf_info_add(&nf_instance->nf_info_list, OpenAPI_nf_type_AMF);
+    nf_info->amf.amf_set_id = set_id;
+    nf_info->amf.amf_region_id = region_id;
+    if (mnc) {
+        nf_info->amf.num_of_guami = 1;
+        ogs_plmn_id_build(&nf_info->amf.guami[0].plmn_id, 1, (uint16_t)atoi(mnc), 2);
+    }
+    return nf_instance;
+}
+
+static void test_amf_alternative_from_nrf(void)
+{
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    smf_mbs_amf_t *amf;
+    ogs_sbi_nf_instance_t *a, *b, *c, *d, *e, *f;
+    int before;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+
+    smf_mbs_set_context_create_sender(count_context_create);
+    smf_mbs_set_amf_available_check(fake_amf_available);
+    smf_mbs_set_context_update_sender(record_takeover_update);
+    amf_registered = true;
+
+    a = add_amf_instance("nrf-amf-a", 4, 3, "01", OpenAPI_nf_status_REGISTERED);
+    b = add_amf_instance("nrf-amf-b", 4, 3, "01", OpenAPI_nf_status_SUSPENDED);        /* not registered */
+    c = add_amf_instance("nrf-amf-c", 5, 3, "01", OpenAPI_nf_status_REGISTERED);        /* another set */
+    d = add_amf_instance("nrf-amf-d", 4, 8, "01", OpenAPI_nf_status_REGISTERED);        /* another region */
+    e = add_amf_instance("nrf-amf-e", 4, 3, "02", OpenAPI_nf_status_REGISTERED);        /* another PLMN */
+
+    /* the set is read from the profile when the entry is bound */
+    amf = bound_entry(mbs_sess, "21", "nrf-amf-a");
+    CHECK(amf->amf_set.known && amf->amf_set.set_id == 4 && amf->amf_set.region_id == 3 && amf->amf_set.has_plmn);
+    /* the failure removes the profile, as the NRF notification does; the set is already read */
+    ogs_sbi_nf_instance_remove(a);
+    takeover_updates = 0;
+    context_creates = 0;
+    /* no registered AMF of the same set, region and PLMN: the Create */
+    CHECK(smf_mbs_amf_instance_lost("nrf-amf-a") == 1);
+    CHECK(takeover_updates == 0 && context_creates == 1 && ogs_list_empty(&mbs_sess->amf_list));
+    mbs_sess->broadcast_context_pending = false;
+
+    /* one is registered: the hand over goes to it */
+    f = add_amf_instance("nrf-amf-f", 4, 3, "01", OpenAPI_nf_status_REGISTERED);
+    a = add_amf_instance("nrf-amf-a", 4, 3, "01", OpenAPI_nf_status_REGISTERED);
+    amf = bound_entry(mbs_sess, "22", "nrf-amf-a");
+    before = takeover_updates;
+    context_creates = 0;
+    CHECK(smf_mbs_amf_instance_lost("nrf-amf-a") == 1);
+    CHECK(takeover_updates == before + 1 && takeover_last.no_ngap_signalling && context_creates == 0);
+    CHECK_STR("nrf-amf-f", amf->nf_instance_id);
+
+    smf_mbs_set_context_update_sender(NULL);
+    smf_mbs_set_amf_available_check(NULL);
+    smf_mbs_set_context_create_sender(NULL);
+    smf_mbs_sess_release(mbs_sess);
+    ogs_sbi_nf_instance_remove(a);
+    ogs_sbi_nf_instance_remove(b);
+    ogs_sbi_nf_instance_remove(c);
+    ogs_sbi_nf_instance_remove(d);
+    ogs_sbi_nf_instance_remove(e);
+    ogs_sbi_nf_instance_remove(f);
+}
+
+/* TS 23.247 V18.8.0 cl. 7.1.1.2 step 11: "For broadcast communication, if no MBS FSA ID(s) have been received, the MB-SMF
+ * selects MBS FSA ID(s) for the Broadcast MBS session based on local configuration." The configuration is smf.mbsFsaIds
+ * (read from the test configuration: 00A001 and 00a002); TS 38.413 V18.8.0 cl. 9.3.5.3: at most 64 per MBS session. */
+static void test_fsa_ids_from_configuration(void)
+{
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    smf_mbs_fsa_id_t *fsa_id, *own;
+    ogs_list_t saved = smf_self()->mbs_fsa_id_list;
+    char id[8];
+    int i, count;
+
+    /* what smf.mbsFsaIds of the configuration gave, in order */
+    count = 0;
+    ogs_list_for_each(&smf_self()->mbs_fsa_id_list, fsa_id) {
+        if (count == 0) CHECK(fsa_id->id.v == 0x00A001);
+        if (count == 1) CHECK(fsa_id->id.v == 0x00A002);
+        count++;
+    }
+    CHECK(count == 2);
+
+    CHECK(mbs_sess != NULL);
+    if (mbs_sess) {
+        CHECK(ogs_list_empty(&mbs_sess->mbs_fsa_id_list));
+        CHECK(smf_mbs_sess_select_fsa_ids(mbs_sess));
+        count = 0;
+        ogs_list_for_each(&mbs_sess->mbs_fsa_id_list, fsa_id) {
+            if (count == 0) CHECK(fsa_id->id.v == 0x00A001);
+            if (count == 1) CHECK(fsa_id->id.v == 0x00A002);
+            count++;
+        }
+        CHECK(count == 2);
+        /* the session's entries are its own: not the configuration's */
+        fsa_id = ogs_list_first(&mbs_sess->mbs_fsa_id_list);
+        CHECK(fsa_id && fsa_id != ogs_list_first(&smf_self()->mbs_fsa_id_list));
+
+        /* a session that has some (those of the request) keeps them */
+        CHECK(!smf_mbs_sess_select_fsa_ids(mbs_sess));
+        CHECK(ogs_list_count(&mbs_sess->mbs_fsa_id_list) == 2);
+        smf_mbs_sess_release(mbs_sess);
+        mbs_sess = new_broadcast_session();
+        own = ogs_calloc(1, sizeof(*own));
+        own->id = ogs_uint24_from_string("00ffff");
+        ogs_list_add(&mbs_sess->mbs_fsa_id_list, own);
+        CHECK(!smf_mbs_sess_select_fsa_ids(mbs_sess));
+        CHECK(ogs_list_count(&mbs_sess->mbs_fsa_id_list) == 1 &&
+                ((smf_mbs_fsa_id_t *)ogs_list_first(&mbs_sess->mbs_fsa_id_list))->id.v == 0x00ffff);
+        smf_mbs_sess_release(mbs_sess);
+
+        /* nothing configured: nothing selected */
+        ogs_list_init(&smf_self()->mbs_fsa_id_list);
+        mbs_sess = new_broadcast_session();
+        CHECK(!smf_mbs_sess_select_fsa_ids(mbs_sess));
+        CHECK(ogs_list_empty(&mbs_sess->mbs_fsa_id_list));
+        smf_mbs_sess_release(mbs_sess);
+        smf_self()->mbs_fsa_id_list = saved;
+    }
+
+    /* the Create handler's storing: the request's own, else the configured ones for a broadcast session only */
+    {
+        cJSON *json = cJSON_Parse("{\"serviceType\":\"BROADCAST\",\"mbsFsaIdList\":[\"00ffff\"]}");
+        OpenAPI_ext_mbs_session_t *with_ids = OpenAPI_ext_mbs_session_parseFromJSON(json);
+
+        cJSON_Delete(json);
+        json = cJSON_Parse("{\"serviceType\":\"BROADCAST\"}");
+        OpenAPI_ext_mbs_session_t *without = OpenAPI_ext_mbs_session_parseFromJSON(json);
+        cJSON_Delete(json);
+        CHECK(with_ids && without);
+        mbs_sess = new_broadcast_session();
+        if (mbs_sess && with_ids && without) {
+            smf_nmbsmf_take_fsa_ids(mbs_sess, with_ids, false);
+            CHECK(ogs_list_count(&mbs_sess->mbs_fsa_id_list) == 1 &&
+                    ((smf_mbs_fsa_id_t *)ogs_list_first(&mbs_sess->mbs_fsa_id_list))->id.v == 0x00ffff);
+            smf_nmbsmf_take_fsa_ids(mbs_sess, without, false);
+            CHECK(ogs_list_count(&mbs_sess->mbs_fsa_id_list) == 2 &&
+                    ((smf_mbs_fsa_id_t *)ogs_list_first(&mbs_sess->mbs_fsa_id_list))->id.v == 0x00A001);
+            smf_nmbsmf_take_fsa_ids(mbs_sess, without, true);
+            CHECK(ogs_list_empty(&mbs_sess->mbs_fsa_id_list));
+        }
+        if (mbs_sess) smf_mbs_sess_release(mbs_sess);
+        if (with_ids) OpenAPI_ext_mbs_session_free(with_ids);
+        if (without) OpenAPI_ext_mbs_session_free(without);
+    }
+
+    /* an entry of the configuration is six hexadecimal digits, once, and at most 64 of them */
+    CHECK(!smf_mbs_fsa_id_configure(NULL));
+    CHECK(!smf_mbs_fsa_id_configure("12345"));
+    CHECK(!smf_mbs_fsa_id_configure("1234567"));
+    CHECK(!smf_mbs_fsa_id_configure("12345g"));
+    CHECK(!smf_mbs_fsa_id_configure("00A001"));
+    CHECK(!smf_mbs_fsa_id_configure("00a001"));
+    CHECK(ogs_list_count(&smf_self()->mbs_fsa_id_list) == 2);
+    for (i = 3; i <= SMF_MBS_MAX_FSA_IDS; i++) {
+        snprintf(id, sizeof(id), "00B%03X", i);
+        CHECK(smf_mbs_fsa_id_configure(id));
+    }
+    CHECK(ogs_list_count(&smf_self()->mbs_fsa_id_list) == SMF_MBS_MAX_FSA_IDS);
+    CHECK(!smf_mbs_fsa_id_configure("00C000"));
+    CHECK(ogs_list_count(&smf_self()->mbs_fsa_id_list) == SMF_MBS_MAX_FSA_IDS);
+    /* back to the two of the configuration */
+    for (i = SMF_MBS_MAX_FSA_IDS; i > 2; i--) {
+        fsa_id = ogs_list_last(&smf_self()->mbs_fsa_id_list);
+        ogs_list_remove(&smf_self()->mbs_fsa_id_list, fsa_id);
+        ogs_free(fsa_id);
+    }
+    CHECK(ogs_list_count(&smf_self()->mbs_fsa_id_list) == 2);
+}
+
+/* TS 29.532 V18.6.0 cl. 5.3.2.2.1: "For a location dependent broadcast MBS session, based on operator's policy, the
+ * MB-SMF shall accept a TMGI value allocated by another MB-SMF." The policy is smf.mbsAcceptForeignTmgi (true in the test
+ * configuration). */
+static void test_foreign_tmgi(void)
+{
+    static const char loc_dep[] = "{\"serviceType\":\"BROADCAST\",\"locationDependent\":true}";
+    static const char not_loc_dep[] = "{\"serviceType\":\"BROADCAST\"}";
+    OpenAPI_ext_mbs_session_t *dep, *plain;
+    ogs_tmgi_t received, *tmgi = NULL, *found, *filler[64];
+    ogs_plmn_id_t plmn;
+    cJSON *json;
+    int count = smf_tmgi_count(), nfill = 0, i;
+    bool invalid = false;
+
+    json = cJSON_Parse(loc_dep);
+    dep = OpenAPI_ext_mbs_session_parseFromJSON(json);
+    cJSON_Delete(json);
+    json = cJSON_Parse(not_loc_dep);
+    plain = OpenAPI_ext_mbs_session_parseFromJSON(json);
+    cJSON_Delete(json);
+    CHECK(dep && plain);
+    if (!dep || !plain) return;
+
+    ogs_plmn_id_build(&plmn, 1, 1, 2);
+    memset(&received, 0, sizeof(received));
+    received.mbs_service_id = (char *)"0dEaD1";
+    memcpy(&received.plmn_id, &plmn, sizeof(plmn));
+
+    /* the configuration of the test says true; the setting is read from it */
+    CHECK(smf_mbs_accepts_foreign_tmgi());
+    CHECK(smf_tmgi_find_by_tmgi(&received) == NULL);
+
+    /* not for a session that is not location dependent, nor a multicast one, nor with the policy off */
+    CHECK(smf_nmbsmf_accept_foreign_tmgi(plain, &received, false, &tmgi) == SMF_NMBSMF_FOREIGN_TMGI_NOT_ACCEPTED);
+    CHECK(smf_nmbsmf_accept_foreign_tmgi(dep, &received, true, &tmgi) == SMF_NMBSMF_FOREIGN_TMGI_NOT_ACCEPTED);
+    CHECK(smf_mbs_foreign_tmgi_configure("false") && !smf_mbs_accepts_foreign_tmgi());
+    CHECK(smf_nmbsmf_accept_foreign_tmgi(dep, &received, false, &tmgi) == SMF_NMBSMF_FOREIGN_TMGI_NOT_ACCEPTED);
+    CHECK(tmgi == NULL && smf_tmgi_count() == count && smf_tmgi_find_by_tmgi(&received) == NULL);
+    CHECK(!smf_mbs_foreign_tmgi_configure("yes") && !smf_mbs_foreign_tmgi_configure(NULL) &&
+            !smf_mbs_accepts_foreign_tmgi());
+    CHECK(smf_mbs_foreign_tmgi_configure("true") && smf_mbs_accepts_foreign_tmgi());
+
+    /* accepted: the TMGI is one of this MB-SMF's, with the service ID and PLMN received and no expiration time */
+    CHECK(smf_nmbsmf_accept_foreign_tmgi(dep, &received, false, &tmgi) == SMF_NMBSMF_FOREIGN_TMGI_ACCEPTED);
+    CHECK(tmgi && smf_tmgi_count() == count + 1);
+    found = smf_tmgi_find_by_tmgi(&received);
+    CHECK(found == tmgi);
+    if (tmgi) {
+        CHECK_STR("0dEaD1", tmgi->mbs_service_id);
+        CHECK(tmgi->mbs_service_id != received.mbs_service_id);
+        CHECK(ogs_plmn_id_mcc(&tmgi->plmn_id) == 1 && ogs_plmn_id_mnc(&tmgi->plmn_id) == 1 &&
+                ogs_plmn_id_mnc_len(&tmgi->plmn_id) == 2);
+        CHECK(tmgi->expiration_time == NULL && !smf_tmgi_is_expired(tmgi));
+        /* a TMGI of this MB-SMF is not picked again for another allocation */
+        {
+            char *id = smf_tmgi_pick_mbs_service_id(&smf_self()->tmgi_list, &plmn, 0x0DEAD1);
+            CHECK_STR("0DEAD2", id);
+            if (id) ogs_free(id);
+        }
+        smf_tmgi_deallocate(tmgi);
+    }
+    CHECK(smf_tmgi_count() == count && smf_tmgi_find_by_tmgi(&received) == NULL);
+
+    /* it goes with the session made with it (the Create takes it as allocated for the session) */
+    CHECK(smf_nmbsmf_accept_foreign_tmgi(dep, &received, false, &tmgi) == SMF_NMBSMF_FOREIGN_TMGI_ACCEPTED);
+    if (tmgi) {
+        smf_mbs_sess_create_result_e result;
+        smf_mbs_sess_t *sess = smf_mbs_sess_create(tmgi, true, NULL, "BROADCAST", NULL, NULL, true, &result);
+
+        CHECK(sess != NULL);
+        CHECK(smf_tmgi_count() == count + 1 && smf_tmgi_find_by_tmgi(&received) == tmgi);
+        if (sess) smf_mbs_sess_release(sess);
+        else smf_tmgi_deallocate(tmgi);
+    }
+    CHECK(smf_tmgi_count() == count && smf_tmgi_find_by_tmgi(&received) == NULL);
+
+    /* a service ID that is not six hexadecimal digits */
+    received.mbs_service_id = (char *)"0dEaD";
+    CHECK(smf_nmbsmf_accept_foreign_tmgi(dep, &received, false, &tmgi) == SMF_NMBSMF_FOREIGN_TMGI_INVALID);
+    received.mbs_service_id = (char *)"0dEaD1F";
+    CHECK(smf_nmbsmf_accept_foreign_tmgi(dep, &received, false, &tmgi) == SMF_NMBSMF_FOREIGN_TMGI_INVALID);
+    received.mbs_service_id = (char *)"0dEaDg";
+    CHECK(smf_nmbsmf_accept_foreign_tmgi(dep, &received, false, &tmgi) == SMF_NMBSMF_FOREIGN_TMGI_INVALID);
+    CHECK(smf_tmgi_add_foreign(&received, &invalid) == NULL && invalid);
+    CHECK(smf_tmgi_count() == count);
+
+    /* the pool of TMGIs is full */
+    received.mbs_service_id = (char *)"0dEaD1";
+    while (nfill < 64) {
+        char *expiration = smf_tmgi_gen_expiration_time(60);
+        filler[nfill] = smf_tmgi_allocate(expiration);
+        ogs_free(expiration);
+        if (!filler[nfill]) break;
+        nfill++;
+    }
+    CHECK(nfill > 0 && nfill < 64);
+    CHECK(smf_nmbsmf_accept_foreign_tmgi(dep, &received, false, &tmgi) == SMF_NMBSMF_FOREIGN_TMGI_NO_ROOM);
+    CHECK(smf_tmgi_add_foreign(&received, &invalid) == NULL && !invalid);
+    for (i = 0; i < nfill; i++)
+        smf_tmgi_deallocate(filler[i]);
+    CHECK(smf_tmgi_count() == count);
+
+    OpenAPI_ext_mbs_session_free(dep);
+    OpenAPI_ext_mbs_session_free(plain);
 }
 
 /* TS 29.571 V18.12.0 MbsFsaId, pattern '^[A-Fa-f0-9]{6}$' (Create and Update check the entries alike) */
@@ -4611,6 +5415,7 @@ int main(void)
     test_ngu_failure_indication();
     test_session_tnl_info_arms();
     test_ngran_failure_events();
+    test_amf_change_event();
     test_node_report();
     test_restoration_request();
     test_area_session_id_in_establishment();
@@ -4625,6 +5430,9 @@ int main(void)
     test_query_all_urrs();
     test_local_ingress_tunnel_answer();
     test_amf_context_lost();
+    test_no_ngap_signalling_ind_in_request();
+    test_amf_takeover();
+    test_amf_alternative_from_nrf();
     test_mb_upf_selection();
     test_mbs_policy_control_config();
     test_npcf_mbspolicycontrol_messages();

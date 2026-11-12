@@ -458,6 +458,10 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
         smf_mbs_ngran_restoration_expired(e->mbs_ngran_restoration);
         break;
 
+    case SMF_EVT_MBS_CONTEXT_RETRY:
+        smf_mbs_context_retry_expired();
+        break;
+
     case SMF_EVT_MBS_PCF_TIMEOUT:
         smf_mbs_pcf_timeout(e->mbs_sess_id, e->h.sbi.state);
         break;
@@ -525,14 +529,23 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
                 SWITCH(sbi_message.h.method)
                 CASE(OGS_SBI_HTTP_METHOD_POST)
                     if (ogs_nnrf_nfm_handle_nf_status_notify(stream, &sbi_message) &&
-                            sbi_message.NotificationData &&
-                            sbi_message.NotificationData->event ==
-                                OpenAPI_notification_event_type_NF_REGISTERED &&
-                            sbi_message.NotificationData->nf_profile &&
-                            sbi_message.NotificationData->nf_profile->nf_type ==
-                                OpenAPI_nf_type_AMF)
-                        /* an AMF that registered again may have lost the broadcast contexts (TS 23.527 cl. 8.3.2.4) */
-                        smf_mbs_probe_amf_contexts();
+                            sbi_message.NotificationData) {
+                        OpenAPI_notification_data_t *notification = sbi_message.NotificationData;
+
+                        if (notification->event == OpenAPI_notification_event_type_NF_REGISTERED &&
+                                notification->nf_profile &&
+                                notification->nf_profile->nf_type == OpenAPI_nf_type_AMF) {
+                            /* an AMF is there: the sessions that wait for a broadcast context ask for it */
+                            smf_mbs_create_pending_contexts();
+                        } else if (notification->event == OpenAPI_notification_event_type_NF_DEREGISTERED &&
+                                notification->nf_instance_uri) {
+                            /* the AMF instance named by the last segment of the URI is gone (TS 23.527 cl. 8.3.2.4) */
+                            const char *last = strrchr(notification->nf_instance_uri, '/');
+
+                            if (last && last[1])
+                                smf_mbs_amf_instance_lost(last + 1);
+                        }
+                    }
                     break;
 
                 DEFAULT
@@ -1175,8 +1188,9 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
                         if (sbi_message.res_status == OGS_SBI_HTTP_STATUS_NOT_FOUND)
                             smf_mbs_amf_context_lost(mbs_sess, mbs_amf);
                         else
-                            smf_namf_handle_mbs_broadcast_context_update_response(
-                                    mbs_sess, mbs_amf, &sbi_message);
+                            smf_mbs_amf_takeover_answered(mbs_sess, mbs_amf,
+                                    smf_namf_handle_mbs_broadcast_context_update_response(
+                                        mbs_sess, mbs_amf, &sbi_message));
                     } else if (sbi_message.res_status == OGS_SBI_HTTP_STATUS_CREATED) {
                         if (!smf_namf_handle_mbs_broadcast_context_create_response(
                                 mbs_sess, mbs_amf, &sbi_message))
@@ -1186,6 +1200,7 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
                         ogs_error("HTTP response error : %d",
                                 sbi_message.res_status);
                         smf_mbs_sess_amf_remove(mbs_sess, mbs_amf);
+                        smf_mbs_context_create_failed(mbs_sess);
                     }
                     break;
 
@@ -1338,9 +1353,23 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
             /* Here, we should not use ogs_assert(stream)
              * since 'namf-comm' service has no an associated stream. */
 
-            ogs_sbi_xact_remove(sbi_xact);
+            {
+                /* a request about a broadcast MBS session context that nothing answered */
+                smf_mbs_sess_t *timed_out_sess = NULL;
+                smf_mbs_amf_t *timed_out_amf = NULL;
 
-            ogs_error("Cannot receive SBI message");
+                if (sbi_xact->service_type == OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC) {
+                    timed_out_sess = smf_mbs_sess_find_by_id(sbi_xact->sbi_object_id);
+                    if (timed_out_sess)
+                        timed_out_amf = smf_mbs_sess_amf_find(timed_out_sess, (uint32_t)sbi_xact->state);
+                }
+
+                ogs_sbi_xact_remove(sbi_xact);
+
+                ogs_error("Cannot receive SBI message");
+                if (timed_out_sess)
+                    smf_mbs_namf_request_timed_out(timed_out_sess, timed_out_amf);
+            }
             if (stream) {
                 ogs_assert(true ==
                     ogs_sbi_server_send_error(stream,

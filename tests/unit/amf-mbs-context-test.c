@@ -11,6 +11,7 @@
 #include "ogs-app.h"
 #include "ogs-sbi.h"
 #include "context.h"
+#include "namf-handler.h"
 #include "ngap-build.h"
 
 static int checks, failures;
@@ -214,6 +215,43 @@ static void test_removed_context_leaves_nothing(void)
     ogs_free(gnb);
 }
 
+/* TS 29.518 V18.14.0 cl. 5.6.2.3 step 1: "Notification URI, if the NF Service Consumer wishes to modify the notification URI
+ * where to be notified about the status change of the broadcast MBS session context". The URI of a ContextUpdate replaces
+ * the one of the context, with the client that sends to it; one that cannot be used changes neither. */
+static void test_notify_uri_is_replaced(void)
+{
+    ogs_tmgi_t tmgi = make_tmgi("000001");
+    amf_mbs_context_t *ctx = amf_mbs_context_create(&tmgi);
+    ogs_sbi_client_t *first, *second;
+
+    CHECK(ctx != NULL);
+    if (!ctx)
+        return;
+
+    CHECK(amf_namf_set_mbs_context_notify_client(ctx, "http://127.0.0.30:9999/notify", "ContextCreate"));
+    first = ctx->notify_client;
+    CHECK(first != NULL);
+    CHECK(ctx->notify_uri && !strcmp(ctx->notify_uri, "http://127.0.0.30:9999/notify"));
+
+    /* another address and path: the client and the URI both become the new ones */
+    CHECK(amf_namf_set_mbs_context_notify_client(ctx, "http://127.0.0.31:8888/other/notify", "ContextUpdate"));
+    second = ctx->notify_client;
+    CHECK(second != NULL && second != first);
+    CHECK(ctx->notify_uri && !strcmp(ctx->notify_uri, "http://127.0.0.31:8888/other/notify"));
+
+    /* the same address, another path: the client stays, the target is the new URI */
+    CHECK(amf_namf_set_mbs_context_notify_client(ctx, "http://127.0.0.31:8888/third", "ContextUpdate"));
+    CHECK(ctx->notify_client == second);
+    CHECK(ctx->notify_uri && !strcmp(ctx->notify_uri, "http://127.0.0.31:8888/third"));
+
+    /* a URI that cannot be used leaves the earlier one in place, whole */
+    CHECK(!amf_namf_set_mbs_context_notify_client(ctx, "notauri", "ContextUpdate"));
+    CHECK(ctx->notify_client == second);
+    CHECK(ctx->notify_uri && !strcmp(ctx->notify_uri, "http://127.0.0.31:8888/third"));
+
+    amf_mbs_context_remove(ctx);
+}
+
 /* The shutdown of the AMF removes every context, with what each holds. */
 static void test_final_frees_contexts(void)
 {
@@ -242,6 +280,7 @@ int main(void)
 
     test_removed_context_leaves_nothing();
     test_find_by_tmgi_ignores_the_case_of_the_service_id();
+    test_notify_uri_is_replaced();
     test_final_frees_contexts();
 
     ogs_sbi_context_final();

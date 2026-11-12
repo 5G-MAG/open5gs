@@ -1998,35 +1998,47 @@ bool amf_namf_notify_uri_is_valid(const char *notify_uri)
     return rc;
 }
 
-static void amf_namf_set_mbs_context_notify_client(
-        amf_mbs_context_t *mbs_context, char *notify_uri, const char *op_name)
+bool amf_namf_set_mbs_context_notify_client(
+        amf_mbs_context_t *mbs_context, const char *notify_uri, const char *op_name)
 {
-    bool                 uri_rc;
+    bool                 uri_rc, rc = false;
     OpenAPI_uri_scheme_e scheme = OpenAPI_uri_scheme_NULL;
     char                *fqdn = NULL;
     uint16_t             fqdn_port = 0;
     ogs_sockaddr_t      *addr = NULL, *addr6 = NULL;
+    ogs_sbi_client_t    *client = NULL;
 
-    uri_rc = ogs_sbi_getaddr_from_uri(&scheme, &fqdn, &fqdn_port, &addr, &addr6, notify_uri);
+    uri_rc = ogs_sbi_getaddr_from_uri(&scheme, &fqdn, &fqdn_port, &addr, &addr6, (char *)notify_uri);
     if (uri_rc == false || scheme == OpenAPI_uri_scheme_NULL) {
         ogs_error("MBS Broadcast %s: invalid notifyUri [%s]", op_name, notify_uri);
     } else {
-        mbs_context->notify_client = ogs_sbi_client_find(scheme, fqdn, fqdn_port, addr, addr6);
-        if (!mbs_context->notify_client)
-            mbs_context->notify_client =
-                ogs_sbi_client_add(scheme, fqdn, fqdn_port, addr, addr6);
-        if (!mbs_context->notify_client)
+        client = ogs_sbi_client_find(scheme, fqdn, fqdn_port, addr, addr6);
+        if (!client)
+            client = ogs_sbi_client_add(scheme, fqdn, fqdn_port, addr, addr6);
+        if (!client)
             ogs_error("MBS Broadcast %s: ogs_sbi_client_add() failed for notifyUri", op_name);
         else {
-            // The client holds the address only; the request's target is the whole URI.
-            if (mbs_context->notify_uri)
-                ogs_free(mbs_context->notify_uri);
-            mbs_context->notify_uri = ogs_strdup(notify_uri);
+            char *uri = ogs_strdup(notify_uri);
+
+            if (!uri) {
+                ogs_error("MBS Broadcast %s: ogs_strdup() failed for notifyUri", op_name);
+            } else {
+                // The client holds the address only; the request's target is the whole URI. The earlier client and
+                // URI stay until the new ones are both in hand: a failure leaves the notifications going where they
+                // went.
+                if (mbs_context->notify_uri)
+                    ogs_free(mbs_context->notify_uri);
+                mbs_context->notify_uri = uri;
+                mbs_context->notify_client = client;
+                rc = true;
+            }
         }
     }
     ogs_free(fqdn);
     ogs_freeaddrinfo(addr);
     ogs_freeaddrinfo(addr6);
+
+    return rc;
 }
 
 /* Mirrors smf_nmbsmf_parse_tai() (src/smf/nmbsmf-handler.c), the SMF-side equivalent for the same
@@ -2471,29 +2483,6 @@ static void amf_mbs_context_gnb_not_reached(amf_mbs_context_t *mbs_context, amf_
     amf_sbi_send_mbs_broadcast_ngran_event(mbs_context, gnb, OpenAPI_ngran_failure_indication_NG_RAN_NOT_REACHABLE);
 }
 
-static void amf_namf_send_mbs_broadcast_context_create_response(amf_mbs_context_t *mbs_context,
-        ogs_list_t *n2_info_list, OpenAPI_operation_status_e operation_status);
-
-/* No NG-RAN can take the Broadcast Session Setup Request now. When the AMF is set to restore sessions, the context is
- * kept and the ContextCreate answered with 201 Created, without containers and without the indication of completion:
- * TS 23.527 V18.6.0 cl. 8.3.2.2 has the AMF set the session up, with the container it keeps, in an NG-RAN that restarts
- * or "a (new) NG-RAN is deployed to serve a TAI that is part of the MBS session service area", when it "detects" it
- * "e.g. using NG Setup Request message". Returns false, with nothing done, when the AMF is not set to restore. */
-static bool amf_mbs_context_create_kept_without_gnb(amf_mbs_context_t *mbs_context, ogs_sbi_stream_t *stream)
-{
-    ogs_list_t no_containers;
-
-    if (amf_self()->mbs_restoration == AMF_MBS_RESTORATION_NONE)
-        return false;
-
-    ogs_warn("MBS Broadcast ContextCreate: no NG-RAN can take the session now, the context [%s] is kept until one "
-            "does", mbs_context->mbs_context_ref);
-    ogs_list_init(&no_containers);
-    mbs_context->stream_id = ogs_sbi_id_from_stream(stream);
-    amf_namf_send_mbs_broadcast_context_create_response(mbs_context, &no_containers, OpenAPI_operation_status_NULL);
-    return true;
-}
-
 int amf_namf_handle_mbs_broadcast_context_create(
         ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg)
 {
@@ -2715,8 +2704,6 @@ int amf_namf_handle_mbs_broadcast_context_create(
         // clause names the status for this; UNSPECIFIED_NF_FAILURE is TS 29.500 Table 5.2.7.2-1's generic 500
         // cause.
     if (!n2msgreq) {
-        if (amf_mbs_context_create_kept_without_gnb(mbs_context, stream))
-            goto cleanup;
         ogs_error("MBS Broadcast ContextCreate: the Broadcast Session Setup Request could not be built");
         amf_mbs_context_remove(mbs_context);
         ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
@@ -2757,8 +2744,6 @@ int amf_namf_handle_mbs_broadcast_context_create(
     ogs_pkbuf_free(n2msgreq);
 
     if (mbs_context->gnb_request_count == 0) {
-        if (amf_mbs_context_create_kept_without_gnb(mbs_context, stream))
-            goto cleanup;
         ogs_error("MBS Broadcast ContextCreate: the Broadcast Session Setup Request reached no NG-RAN");
         amf_mbs_context_remove(mbs_context);
         ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
@@ -2886,6 +2871,22 @@ static void amf_namf_send_mbs_broadcast_context_create_response(amf_mbs_context_
 }
 
 /*
+ * What a ContextUpdate request asks for. Every attribute of ContextUpdateReqData is optional (TS 29.518 V18.14.0
+ * Table 6.5.6.2.5-1, P column "O" for all of them), and the notification URI is one of the things the request "may
+ * contain" (cl. 5.6.2.3 step 1: "Notification URI, if the NF Service Consumer wishes to modify the notification URI
+ * where to be notified about the status change of the broadcast MBS session context"), so a request that carries that
+ * alone is a request to change the URI and nothing NG-RAN-facing.
+ */
+amf_mbs_update_req_kind_e amf_namf_mbs_update_req_kind(bool has_service_area, bool has_n2_info, bool has_notify_uri)
+{
+    if (has_service_area || has_n2_info)
+        return AMF_MBS_UPDATE_REQ_NG_RAN;
+    if (has_notify_uri)
+        return AMF_MBS_UPDATE_REQ_NOTIFY_URI_ONLY;
+    return AMF_MBS_UPDATE_REQ_EMPTY;
+}
+
+/*
  * 3GPP TS 29.518 V18.14.0 cl.5.6.2.3 - Namf_MBSBroadcast Service API - ContextUpdate service operation
  * (item B-3). "The ContextUpdate service operation shall be used by the NF Service Consumer (e.g. MB-SMF)
  * to request the AMF to update a broadcast MBS session context ... by using the HTTP POST method"
@@ -2937,6 +2938,7 @@ int amf_namf_handle_mbs_broadcast_context_update(
     ogs_list_t new_items;                       /* its Area Session IDs, when it carries the list */
     amf_mbs_area_undo_t area_undo;              /* what applying it replaced */
     bool has_service_area = false;
+    amf_mbs_update_req_kind_e req_kind;
     int unaffected = 0;
     bool send_failed = false;
 
@@ -3067,9 +3069,10 @@ int amf_namf_handle_mbs_broadcast_context_update(
         }
     }
 
-    if (!has_service_area && !n2mbssmbuf) {
-        ogs_error("MBS Broadcast ContextUpdate: nothing in this request maps to an NG-RAN-facing update "
-                "(no mbsServiceArea/mbsServiceAreaInfoList, no n2MbsSmInfo)");
+    req_kind = amf_namf_mbs_update_req_kind(has_service_area, n2mbssmbuf != NULL, ContextUpdateReqData->notify_uri != NULL);
+    if (req_kind == AMF_MBS_UPDATE_REQ_EMPTY) {
+        ogs_error("MBS Broadcast ContextUpdate: nothing in this request maps to an update "
+                "(no notifyUri, no mbsServiceArea/mbsServiceAreaInfoList, no n2MbsSmInfo)");
         ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
             recvmsg, "Bad Request", "Requested MBS Broadcast ContextUpdate failed, nothing to update", NULL);
         rv = OGS_ERROR;
@@ -3093,6 +3096,29 @@ int amf_namf_handle_mbs_broadcast_context_update(
             goto cleanup;
         }
         plan.ran_id_list = ContextUpdateReqData->ran_id_list;
+    }
+
+    // Only the notification URI changes (the checks above refuse the request that carries a ranIdList without the
+    // container to set the session up with): nothing NG-RAN-facing does, so nothing goes to an NG-RAN node, whatever
+    // noNgapSignallingInd says, and nothing waits for a response. The 204 No Content is step 2b of TS 29.518 V18.14.0
+    // cl. 5.6.2.3: "On success, "204 No Content" shall be returned if no additional information needs to be returned
+    // in the response." A URI that could not be set up leaves the earlier one, and the update is refused.
+    if (req_kind == AMF_MBS_UPDATE_REQ_NOTIFY_URI_ONLY) {
+        ogs_sbi_message_t sendmsg;
+        ogs_sbi_response_t *response = NULL;
+
+        if (!amf_namf_set_mbs_context_notify_client(mbs_context, ContextUpdateReqData->notify_uri, "ContextUpdate")) {
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+                recvmsg, "Internal Server Error",
+                "Requested MBS Broadcast ContextUpdate failed, [notifyUri] could not be set up", "UNSPECIFIED_NF_FAILURE");
+            rv = OGS_ERROR;
+            goto cleanup;
+        }
+        memset(&sendmsg, 0, sizeof(sendmsg));
+        response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
+        ogs_assert(response);
+        ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+        goto cleanup;
     }
 
     // The request is valid: its service area is applied. Until amf_mbs_update_accept() keeps it, every exit that
