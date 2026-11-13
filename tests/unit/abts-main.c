@@ -39,6 +39,7 @@ abts_suite *test_security(abts_suite *suite);
 abts_suite *test_nrf_discovery(abts_suite *suite);
 abts_suite *test_pfcp_qer(abts_suite *suite);
 abts_suite *test_crash(abts_suite *suite);
+abts_suite *test_pfcp_types(abts_suite *suite);
 
 const struct testlist {
     abts_suite *(*func)(abts_suite *suite);
@@ -53,6 +54,7 @@ const struct testlist {
     {test_nrf_discovery},
     {test_pfcp_qer},
     {test_crash},
+    {test_pfcp_types},
     {NULL},
 };
 
