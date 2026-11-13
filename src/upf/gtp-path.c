@@ -18,6 +18,9 @@
  */
 
 #include "context.h"
+#include "path-management.h"
+#include "mbs-report.h"
+#include "mbs-charging.h"
 
 #if HAVE_NETINET_IP_H
 #include <netinet/ip.h>
@@ -102,17 +105,32 @@ static uint16_t _get_eth_type(uint8_t *data, uint len) {
     return 0;
 }
 
+/* TS 29.244 V18.10.0 Table 7.5.2.5-1, Maximum Bitrate (N4mb "X"): "This IE shall be present if an MBR enforcement action
+ * shall be applied to packets matching this PDR." A packet is let through when the packets before it have not used the
+ * rate up by more than the time this packet itself takes at that rate (a burst of one packet: no clause gives a larger
+ * burst), and it then takes its own time at the rate. */
+static bool upf_mbs_qer_mbr_admit(ogs_pfcp_qer_t *qer, uint32_t octets)
+{
+    ogs_time_t now = ogs_time_now();
+    ogs_time_t duration;
+
+    if (!qer->mbr.downlink)
+        return true;
+
+    duration = (ogs_time_t)((uint64_t)octets * 8 * 1000000 / qer->mbr.downlink);
+    if (qer->mbs_mbr_next_time > now + duration)
+        return false;
+    if (qer->mbs_mbr_next_time < now)
+        qer->mbs_mbr_next_time = now;
+    qer->mbs_mbr_next_time += duration;
+    return true;
+}
+
 static void _gtpv1_tun_recv_common_cb(
         short when, ogs_socket_t fd, bool has_eth, void *data)
 {
     ogs_pkbuf_t *recvbuf = NULL;
-
-    upf_sess_t *sess = NULL;
-    ogs_pfcp_pdr_t *pdr = NULL;
-    ogs_pfcp_pdr_t *fallback_pdr = NULL;
-    ogs_pfcp_far_t *far = NULL;
-    ogs_pfcp_user_plane_report_t report;
-    int i;
+    upf_mbs_sess_t *mbs_sess = NULL;
 
     recvbuf = ogs_tun_read(fd, packet_pool);
     if (!recvbuf) {
@@ -166,11 +184,82 @@ static void _gtpv1_tun_recv_common_cb(
         ogs_pkbuf_pull(recvbuf, ETHER_HDR_LEN);
     }
 
-    sess = upf_sess_find_by_ue_ip_address(recvbuf);
-    if (!sess)
-        goto cleanup;
+    mbs_sess = upf_mbs_sess_find_by_ssm(recvbuf);
 
-    ogs_list_for_each(&sess->pfcp.pdr_list, pdr) {
+    upf_gtpv1_receive_buffer_for_mbs_sess(recvbuf, mbs_sess);
+
+    return;
+
+cleanup:
+    ogs_pkbuf_free(recvbuf);
+}
+
+/* The packets the FAR of the PDR holds, and whether it holds one that this PDR matched */
+static uint32_t far_of_pdr_buffered(const ogs_pfcp_pdr_t *pdr)
+{
+    return pdr->far ? pdr->far->num_of_buffered_gtpu : 0;
+}
+
+static bool far_buffers_pdr(const ogs_pfcp_pdr_t *pdr)
+{
+    uint32_t i;
+
+    if (!pdr->far)
+        return false;
+    for (i = 0; i < pdr->far->num_of_buffered_gtpu; i++)
+        if (pdr->far->buffered_gtpu_pdr_id[i] == pdr->id)
+            return true;
+    return false;
+}
+
+void upf_gtpv1_receive_buffer_for_mbs_sess(ogs_pkbuf_t *recvbuf, upf_mbs_sess_t *mbs_sess)
+{
+    upf_sess_t *sess = NULL;
+    ogs_pfcp_pdr_t *pdr = NULL;
+    ogs_pfcp_pdr_t *fallback_pdr = NULL;
+    ogs_pfcp_far_t *far = NULL;
+    ogs_pfcp_user_plane_report_t report;
+    int i;
+
+    /* An MBS session is what upf_mbs_sess_find_by_ssm() and the ingress tunnel give: the lookups of MBS sessions
+     * have their own hashes. A session without a low layer SSM (unicast transport only, no PLLSSM) is one too. */
+    if (mbs_sess) {
+        ogs_debug("MBS type sess");
+        upf_mbs_note_activity(mbs_sess);    /* user plane activity of the session (TS 29.244 cl. 5.11.2) */
+    } else {
+        sess = upf_sess_find_by_ue_ip_address(recvbuf);
+        if (sess == NULL) {
+            ogs_pkbuf_free(recvbuf);
+            return;
+        }
+    }
+
+    ogs_list_t *pdr_list;
+    if (sess != NULL)
+        pdr_list = &sess->pfcp.pdr_list;
+    else if (mbs_sess != NULL)
+        pdr_list = &mbs_sess->pfcp.pdr_list;
+
+    if (mbs_sess) {
+        /* TS 29.244 cl. 5.2.1: "find the first PDR matching the incoming packet, among all the PDRs provisioned for
+         * this PFCP session, starting with the PDRs with the highest precedence ... Only the highest precedence PDR
+         * matching the packet shall be selected"; "The UP function should drop packets unmatched by any PDRs." The
+         * Apply Action of the FAR of that PDR then says what is done with it (DROP drops it, FSSM and MBSU forward it). */
+        ogs_list_for_each(pdr_list, pdr) {
+            ogs_assert(pdr->far);
+            if (pdr->src_if != OGS_PFCP_INTERFACE_CORE)
+                continue;
+            if (ogs_list_first(&pdr->rule_list) && ogs_pfcp_pdr_rule_find_by_packet(pdr, recvbuf) == NULL)
+                continue;
+            break;
+        }
+        if (!pdr) {
+            ogs_debug("MBS data discarded: no PDR of the MBS session matches the packet");
+            ogs_pkbuf_free(recvbuf);
+            return;
+        }
+    } else
+    ogs_list_for_each(pdr_list, pdr) {
         far = pdr->far;
         ogs_assert(far);
 
@@ -180,6 +269,14 @@ static void _gtpv1_tun_recv_common_cb(
 
         /* Save the Fallback PDR : Lowest precedence downlink PDR */
         fallback_pdr = pdr;
+
+        /* MBSU: the destinations are the FAR's remote GTP-U peers, each with its own interface and outer header */
+        if ((far->apply_action & OGS_PFCP_APPLY_ACTION_MBSU) && !ogs_list_empty(&far->mbs_unicast_list)) {
+            if (ogs_list_first(&pdr->rule_list) &&
+                ogs_pfcp_pdr_rule_find_by_packet(pdr, recvbuf) == NULL)
+                continue;
+            break;
+        }
 
         /* Check if FAR is Downlink */
         if (far->dst_if != OGS_PFCP_INTERFACE_ACCESS)
@@ -191,7 +288,8 @@ static void _gtpv1_tun_recv_common_cb(
             far->outer_header_creation.udp4 == 0 &&
             far->outer_header_creation.udp6 == 0 &&
             far->outer_header_creation.gtpu4 == 0 &&
-            far->outer_header_creation.gtpu6 == 0)
+            far->outer_header_creation.gtpu6 == 0 &&
+            far->outer_header_creation.ssm_c_teid == 0)
             continue;
 
         /* Check if Rule List in PDR */
@@ -209,24 +307,59 @@ static void _gtpv1_tun_recv_common_cb(
         if (ogs_global_conf()->parameter.multicast) {
             upf_gtp_handle_multicast(recvbuf);
         }
-        goto cleanup;
+        ogs_pkbuf_free(recvbuf);
+        return;
+    }
+
+    /* The Maximum Bitrate of the QER is enforced on the MBS session's flow */
+    if (!sess && pdr->qer && !upf_mbs_qer_mbr_admit(pdr->qer, recvbuf->len)) {
+        ogs_debug("MBS data discarded: the Maximum Bitrate of the QER is used up");
+        ogs_pkbuf_free(recvbuf);
+        return;
     }
 
     /* TS 29.244 clause 5.4.2 and 8.2.7: a closed downlink gate of the QER drops the packet */
     if (pdr->qer && pdr->qer->gate_status.downlink == OGS_PFCP_GATE_CLOSE) {
         ogs_debug("DL packet dropped, the gate of QER[%d] is closed", pdr->qer->id);
-        goto cleanup;
+        ogs_pkbuf_free(recvbuf);
+        return;
     }
 
     /* TS 29.244 clause 7.5.2.5: the maximum bit rate of the QER is enforced, a packet above it is dropped */
-    if (pdr->qer && !ogs_pfcp_qer_rate_allow(pdr->qer, true, recvbuf->len, ogs_get_monotonic_time(), upf_self()->qer_averaging_window)) {
+    if (sess && pdr->qer && !ogs_pfcp_qer_rate_allow(pdr->qer, true, recvbuf->len, ogs_get_monotonic_time(), upf_self()->qer_averaging_window)) {
         ogs_debug("DL packet dropped, QER[%d] is above its maximum bit rate", pdr->qer->id);
-        goto cleanup;
+        ogs_pkbuf_free(recvbuf);
+        return;
     }
 
-    /* Increment total & dl octets + pkts */
-    for (i = 0; i < pdr->num_of_urr; i++)
-        upf_sess_urr_acc_add(sess, pdr->urr[i], recvbuf->len, false);
+    /* Increment total & dl octets + pkts: skipped on the MBS-session branch, where sess is NULL
+     * (upf_sess_urr_acc_add() dereferences sess->urr_acc[...]); the MBS charging is done below */
+    if (sess) {
+        for (i = 0; i < pdr->num_of_urr; i++)
+            upf_sess_urr_acc_add(sess, pdr->urr[i], recvbuf->len, false);
+    }
+
+    /* TS 29.244 cl. 5.2.3: "When instructed to buffer and notify the CP function about the arrival of a DL packet, the UP function shall
+     * notify the CP function, when it receives a first downlink packet for each QoS flow for a given FAR (in 5GC), by sending a PFCP Session
+     * Report Request including a Downlink Data Report IE identifying the PDR(s) for which downlink packets have been received": BUFF with
+     * NOCP; the PDR identifies the flow, so the first packet of each PDR in the buffer of its FAR is the one. */
+    if (mbs_sess) {
+        uint32_t held = far_of_pdr_buffered(pdr);
+        bool notify = pdr->far && (pdr->far->apply_action & OGS_PFCP_APPLY_ACTION_BUFF) &&
+            (pdr->far->apply_action & OGS_PFCP_APPLY_ACTION_NOCP) && !far_buffers_pdr(pdr);
+
+        /* MBS charging: the volume of the MBS data that is sent to at least one destination, once (TS 29.244 cl. 5.34.2.5 NOTE) */
+        bool counted = pdr->far && upf_mbs_far_has_destination(pdr->far);
+        uint32_t octets = recvbuf->len;
+
+        ogs_assert(true == ogs_pfcp_up_handle_pdr(
+                    pdr, OGS_GTPU_MSGTYPE_GPDU, 0, NULL, recvbuf, &report));
+        if (counted)
+            upf_mbs_urr_account(mbs_sess, octets);
+        if (notify && pdr->far->num_of_buffered_gtpu > held)
+            upf_mbs_report_dl_data_event(mbs_sess, pdr->id, pdr->qer ? pdr->qer->qfi : 0);
+        return;
+    }
 
     /* ECN marking for L4S of the downlink packets (TS 29.244 V19.6.0 clause 5.38.1) */
     if (pdr->qer && pdr->qer->ecn_marking_l4s)
@@ -253,26 +386,29 @@ static void _gtpv1_tun_recv_common_cb(
 #endif
 
     if (report.type.downlink_data_report) {
-        ogs_assert(pdr->sess);
-        sess = UPF_SESS(pdr->sess);
-        ogs_assert(sess);
+                // Skipped on the MBS-session branch. UPF_SESS() is ogs_container_of(pdr->sess, upf_sess_t, pfcp),
+                // valid only when the embedded ogs_pfcp_sess_t belongs to a real upf_sess_t; here pdr->sess is
+                // embedded in a differently-laid-out upf_mbs_sess_t, so it would yield a mistyped pointer and read
+                // and write SEID, PFCP node and session id at the wrong offsets, on a path shared with ordinary UE
+                // sessions. NOT IMPLEMENTED: the MBS-session Downlink Data Report.
+                // upf_pfcp_send_session_report_request() has no upf_mbs_sess_t-typed counterpart, needing a pool id
+                // to box into the PFCP transaction's timeout callback data that upf_mbs_sess_t does not have.
+        if (sess) {
+            report.downlink_data.pdr_id = pdr->id;
+            if (pdr->qer && pdr->qer->qfi)
+                report.downlink_data.qfi = pdr->qer->qfi; /* for 5GC */
 
-        report.downlink_data.pdr_id = pdr->id;
-        if (pdr->qer && pdr->qer->qfi)
-            report.downlink_data.qfi = pdr->qer->qfi; /* for 5GC */
-
-        ogs_assert(OGS_OK ==
-            upf_pfcp_send_session_report_request(sess, &report));
+            ogs_assert(OGS_OK ==
+                upf_pfcp_send_session_report_request(sess, &report));
+        } else {
+            ogs_warn("Downlink Data Report requested for an MBS session -- not yet implemented, skipping");
+        }
     }
 
     /*
      * The ogs_pfcp_up_handle_pdr() function
      * buffers or frees the Packet Buffer(pkbuf) memory.
      */
-    return;
-
-cleanup:
-    ogs_pkbuf_free(recvbuf);
 }
 
 static void _gtpv1_tun_recv_cb(short when, ogs_socket_t fd, void *data)
@@ -375,6 +511,31 @@ static void _gtpv1_u_recv_cb(short when, ogs_socket_t fd, void *data)
         }
         if (pkbuf->len <= len)
             goto cleanup;
+    }
+
+    if (header_desc.type == OGS_GTPU_MSGTYPE_ECHO_RSP) {
+        /* the answer to an Echo Request of the path management of the MBS unicast peers (TS 29.281 cl. 7.2.2): handled by the
+         * state machine; the S flag is set (cl. 5.1), the sequence number is the first two octets after the TEID */
+        if (upf_gtpu_path_enabled() && (gtp_h->flags & 0x02) && pkbuf->len >= 10) {
+            upf_event_t *e = upf_event_new(UPF_EVT_GTPU_ECHO_RESPONSE);
+            ogs_sockaddr_t *peer = &from;
+
+            e->sequence_number = (((uint8_t *)pkbuf->data)[8] << 8) | ((uint8_t *)pkbuf->data)[9];
+            if (peer->ogs_sa_family == AF_INET) {
+                e->peer_ip.ipv4 = 1;
+                e->peer_ip.addr = peer->sin.sin_addr.s_addr;
+                e->peer_ip.len = OGS_IPV4_LEN;
+            } else if (peer->ogs_sa_family == AF_INET6) {
+                e->peer_ip.ipv6 = 1;
+                memcpy(e->peer_ip.addr6, &peer->sin6.sin6_addr, OGS_IPV6_LEN);
+                e->peer_ip.len = OGS_IPV6_LEN;
+            }
+            if (ogs_queue_push(ogs_app()->queue, e) != OGS_OK) {
+                ogs_error("ogs_queue_push() failed");
+                upf_event_free(e);
+            }
+        }
+        goto cleanup;
     }
     if (header_desc.type != OGS_GTPU_MSGTYPE_END_MARKER &&
         pkbuf->len <= len) {

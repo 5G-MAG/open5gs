@@ -28,6 +28,14 @@ const char *upf_timer_get_name(upf_timer_e id)
         return "UPF_TIMER_ASSOCIATION";
     case UPF_TIMER_NO_HEARTBEAT:
         return "UPF_TIMER_NO_HEARTBEAT";
+    case UPF_TIMER_GTPU_ECHO:
+        return "UPF_TIMER_GTPU_ECHO";
+    case UPF_TIMER_GTPU_T3_RESPONSE:
+        return "UPF_TIMER_GTPU_T3_RESPONSE";
+    case UPF_TIMER_MBS_INACTIVITY:
+        return "UPF_TIMER_MBS_INACTIVITY";
+    case UPF_TIMER_MBS_PERIOD:
+        return "UPF_TIMER_MBS_PERIOD";
     default: 
        break;
     }
@@ -60,4 +68,62 @@ void upf_timer_association(void *data)
 void upf_timer_no_heartbeat(void *data)
 {
     timer_send_event(UPF_TIMER_NO_HEARTBEAT, data);
+}
+
+static void path_timer_send_event(int timer_id, void *data)
+{
+    int rv;
+    upf_event_t *e = NULL;
+
+    e = upf_event_new(UPF_EVT_GTPU_PATH_TIMER);
+    e->timer_id = timer_id;
+    e->path_id = OGS_POINTER_TO_UINT(data);
+
+    rv = ogs_queue_push(ogs_app()->queue, e);
+    if (rv != OGS_OK) {
+        ogs_error("ogs_queue_push() failed:%d", (int)rv);
+        upf_event_free(e);
+    }
+}
+
+void upf_timer_gtpu_echo(void *data)
+{
+    path_timer_send_event(UPF_TIMER_GTPU_ECHO, data);
+}
+
+void upf_timer_gtpu_t3_response(void *data)
+{
+    path_timer_send_event(UPF_TIMER_GTPU_T3_RESPONSE, data);
+}
+
+void upf_timer_mbs_inactivity(void *data)
+{
+    int rv;
+    upf_event_t *e = upf_event_new(UPF_EVT_MBS_TIMER);
+
+    e->timer_id = UPF_TIMER_MBS_INACTIVITY;
+    e->seid = (uint64_t)(uintptr_t)data;
+
+    rv = ogs_queue_push(ogs_app()->queue, e);
+    if (rv != OGS_OK) {
+        ogs_error("ogs_queue_push() failed:%d", (int)rv);
+        upf_event_free(e);
+    }
+}
+
+void upf_timer_mbs_period(void *data)
+{
+    int rv;
+    const upf_mbs_urr_acc_t *acc = data;
+    upf_event_t *e = upf_event_new(UPF_EVT_MBS_TIMER);
+
+    e->timer_id = UPF_TIMER_MBS_PERIOD;
+    e->seid = acc->seid;
+    e->urr_id = acc->id;
+
+    rv = ogs_queue_push(ogs_app()->queue, e);
+    if (rv != OGS_OK) {
+        ogs_error("ogs_queue_push() failed:%d", (int)rv);
+        upf_event_free(e);
+    }
 }

@@ -24,6 +24,7 @@
 
 #include "pfcp-path.h"
 #include "n4-handler.h"
+#include "n4mb-handler.h"
 
 static void pfcp_restoration(ogs_pfcp_node_t *node);
 static void node_timeout(ogs_pfcp_xact_t *xact, void *data);
@@ -154,6 +155,7 @@ void upf_pfcp_state_associated(ogs_fsm_t *s, upf_event_t *e)
     ogs_pfcp_message_t *message = NULL;
 
     upf_sess_t *sess = NULL;
+    upf_mbs_sess_t *mbs_sess = NULL;
 
     ogs_assert(s);
     ogs_assert(e);
@@ -193,8 +195,18 @@ void upf_pfcp_state_associated(ogs_fsm_t *s, upf_event_t *e)
         xact = ogs_pfcp_xact_find_by_id(e->pfcp_xact_id);
         ogs_assert(xact);
 
-        if (message->h.seid_presence && message->h.seid != 0)
-            sess = upf_sess_find_by_upf_n4_seid(message->h.seid);
+        if (message->h.seid_presence && message->h.seid != 0) {
+                        // The MBS pool is searched first. upf_sess_find_by_upf_n4_seid() does a blind ogs_hash_get() on
+                        // a hash table shared between upf_sess_t and upf_mbs_sess_t, both drawing their SEIDs from
+                        // upf_n4_seid_pool (see upf_mbs_sess_add() in context.c), so a SEID belonging to an MBS session
+                        // would yield an upf_mbs_sess_t* mistyped as upf_sess_t*. That matters most for
+                        // OGS_PFCP_SESSION_DELETION_REQUEST_TYPE below, the one case that dereferences `sess` directly
+                        // rather than routing around it on a message-body presence check as the establishment case does.
+                        // See upf_mbs_sess_find_by_seid().
+            mbs_sess = upf_mbs_sess_find_by_seid(message->h.seid);
+            if (!mbs_sess)
+                sess = upf_sess_find_by_upf_n4_seid(message->h.seid);
+        }
 
         switch (message->h.type) {
         case OGS_PFCP_HEARTBEAT_REQUEST_TYPE:
@@ -265,6 +277,19 @@ void upf_pfcp_state_associated(ogs_fsm_t *s, upf_event_t *e)
                     &message->pfcp_association_setup_response);
             break;
         case OGS_PFCP_SESSION_ESTABLISHMENT_REQUEST_TYPE:
+            // TODO (borieher): Find a better way to differentiate the messages
+            if (message->pfcp_session_establishment_request.mbs_session_n4mb_control_information.presence) {
+                if (!upf_n4mb_check_session_establishment_request(
+                            xact, &message->pfcp_session_establishment_request))
+                    break;
+                mbs_sess = upf_mbs_sess_add_by_message(message);
+                if (mbs_sess)
+                    OGS_SETUP_PFCP_NODE(mbs_sess, node);
+                upf_n4mb_handle_session_establishment_request(
+                    mbs_sess, xact, &message->pfcp_session_establishment_request);
+                break;
+            }
+
             sess = upf_sess_add_by_message(message);
             if (sess)
                 OGS_SETUP_PFCP_NODE(sess, node);
@@ -272,16 +297,52 @@ void upf_pfcp_state_associated(ogs_fsm_t *s, upf_event_t *e)
                 sess, xact, &message->pfcp_session_establishment_request);
             break;
         case OGS_PFCP_SESSION_MODIFICATION_REQUEST_TYPE:
+            /* A SEID of an MBS session is an N4mb Session Modification (TS 29.244 Table 7.5.4.1-1, N4mb column) */
+            if (mbs_sess) {
+                upf_n4mb_handle_session_modification_request(
+                    mbs_sess, xact, &message->pfcp_session_modification_request);
+                break;
+            }
             upf_n4_handle_session_modification_request(
                 sess, xact, &message->pfcp_session_modification_request);
             break;
         case OGS_PFCP_SESSION_DELETION_REQUEST_TYPE:
-            upf_n4_handle_session_deletion_request(
-                sess, xact, &message->pfcp_session_deletion_request);
+                        // Routes a deletion whose SEID belongs to an MBS session to the MBS-aware handler, so the UPF's
+                        // MBS session pool entry is actually freed; the lookup fix above only prevents the type
+                        // confusion. Without this the pool reaches "Maximum number of MBS Sessions[20] reached".
+            if (mbs_sess) {
+                upf_n4mb_handle_session_deletion_request(
+                    mbs_sess, xact, &message->pfcp_session_deletion_request);
+            } else {
+                upf_n4_handle_session_deletion_request(
+                    sess, xact, &message->pfcp_session_deletion_request);
+            }
             break;
         case OGS_PFCP_SESSION_REPORT_RESPONSE_TYPE:
+            if (mbs_sess) {
+                /* the answer to a report of an MBS session */
+                ogs_assert(xact);
+                ogs_pfcp_xact_commit(xact);
+                if (!message->pfcp_session_report_response.cause.presence ||
+                        message->pfcp_session_report_response.cause.u8 != OGS_PFCP_CAUSE_REQUEST_ACCEPTED)
+                    ogs_error("PFCP Session Report Response (MBS session): cause %d, not accepted",
+                            message->pfcp_session_report_response.cause.presence ?
+                            message->pfcp_session_report_response.cause.u8 : -1);
+                break;
+            }
             upf_n4_handle_session_report_response(
                 sess, xact, &message->pfcp_session_report_response);
+            break;
+        case OGS_PFCP_NODE_REPORT_RESPONSE_TYPE:
+            /* the answer to a Node Report Request (TS 29.244 cl. 6.2.9.2: "the UP function shall consider the information
+             * successfully delivered to the CP function" when the cause is success) */
+            ogs_assert(xact);
+            ogs_pfcp_xact_commit(xact);
+            if (!message->pfcp_node_report_response.cause.presence ||
+                    message->pfcp_node_report_response.cause.u8 != OGS_PFCP_CAUSE_REQUEST_ACCEPTED)
+                ogs_error("PFCP Node Report Response: cause %d, not accepted",
+                        message->pfcp_node_report_response.cause.presence ?
+                        message->pfcp_node_report_response.cause.u8 : -1);
             break;
         default:
             ogs_error("Not implemented PFCP message type[%d]",

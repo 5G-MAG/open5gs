@@ -28,6 +28,8 @@ extern "C" {
 
 upf_sess_t *upf_sess_find_by_ue_ip_address(ogs_pkbuf_t *pkbuf);
 
+upf_mbs_sess_t *upf_mbs_sess_find_by_ssm(ogs_pkbuf_t *pkbuf);
+
 #ifdef __cplusplus
 }
 #endif

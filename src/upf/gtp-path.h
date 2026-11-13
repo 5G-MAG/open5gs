@@ -33,6 +33,11 @@ void upf_gtp_final(void);
 int upf_gtp_open(void);
 void upf_gtp_close(void);
 
+typedef struct ogs_pkbuf_s ogs_pkbuf_t;
+typedef struct upf_mbs_sess_s upf_mbs_sess_t;
+
+void upf_gtpv1_receive_buffer_for_mbs_sess(ogs_pkbuf_t *recvbuf, upf_mbs_sess_t *mbs_sess);
+
 #ifdef __cplusplus
 }
 #endif

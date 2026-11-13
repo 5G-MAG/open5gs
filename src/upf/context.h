@@ -53,6 +53,8 @@ typedef struct upf_context_s {
     ogs_hash_t *smf_n4_f_seid_hash; /* hash table (SMF-N4-F-SEID) */
     ogs_hash_t *ipv4_hash;  /* hash table (IPv4 Address) */
     ogs_hash_t *ipv6_hash;  /* hash table (IPv6 Address) */
+    ogs_hash_t *mbs_ipv4_hash;  /* hash table (IPv4 destination of an MBS session's AF multicast), upf_mbs_sess_t */
+    ogs_hash_t *mbs_ipv6_hash;  /* hash table (IPv6 destination of an MBS session's AF multicast), upf_mbs_sess_t */
 
     /* IPv4 framed routes trie */
     struct upf_route_trie_node *ipv4_framed_routes;
@@ -67,6 +69,25 @@ typedef struct upf_context_s {
      * upf.averaging_window.
      */
     uint32_t qer_averaging_window;
+    ogs_list_t upf_mbs_sess_list;
+
+    /* MBS UDP Tunnel configuration */
+    ogs_sockaddr_t *mbs_udp_tun_base_addr;
+    bool mbs_udp_tun_ephemeral_port;
+    size_t mbs_udp_tun_num_of_ports;
+    uint16_t *mbs_udp_tun_ports;         /* Array of available port numbers when not using ephemeral ports */
+    uint16_t **mbs_udp_tun_ports_free;   /* Array of entries in mbs_udp_tun_ports that are free to use */
+    size_t mbs_udp_tun_ports_next_free;  /* Index of last free port pointer in mbs_udp_tun_ports_free */
+
+    /* MBS multicast router configuration */
+    bool mbs_multicastrouter_activate; /* Activate the multicast router */
+    char mbs_multicastrouter_input_interface[IFNAMSIZ]; /* Name of the input interface of the multicast router */
+    char mbs_multicastrouter_output_interface[IFNAMSIZ]; /* Name of the output interface of the multicast router */
+
+    /* GTP-U path management of the unicast N3mb peers (upf.mbs.gtpu_path), see path-management.c */
+    uint32_t mbs_path_echo_interval;    /* seconds between Echo Requests on a path, 0: no Echo Request */
+    uint32_t mbs_path_t3_response;      /* T3-RESPONSE in seconds */
+    uint32_t mbs_path_n3_requests;      /* N3-REQUESTS */
 } upf_context_t;
 
 /* trie mapping from IP framed routes to session. */
@@ -148,6 +169,90 @@ typedef struct upf_sess_s {
     } qosmon[UPF_MAX_NUM_OF_QOSMON];
 } upf_sess_t;
 
+// TODO (borieher): Continue implementing this
+/* A URR of an MBS session (TS 29.244 cl. 5.34.2.5: volume measurement of the MBS data of the whole session), see mbs-charging.c */
+typedef struct upf_mbs_urr_acc_s {
+    bool used;
+    uint64_t seid;                      /* UPF N4mb SEID of the session: the data of the timer */
+    ogs_pfcp_urr_id_t id;
+    uint32_t seqn;                      /* UR-SEQN of the next Usage Report */
+    ogs_pfcp_reporting_triggers_t triggers;
+    uint32_t period;                    /* Measurement Period in seconds, 0: none */
+    bool thr_total, thr_downlink;       /* Volume Threshold: the flags TOVOL and DLVOL */
+    uint64_t thr_total_volume, thr_downlink_volume;
+    bool linked;                        /* Linked URR ID, with the trigger LIUSA */
+    ogs_pfcp_urr_id_t linked_id;
+    uint64_t total_octets, dl_octets;   /* measured: added by the data path (atomic) */
+    uint64_t rep_total_octets, rep_dl_octets;   /* at the last Usage Report of the URR */
+    uint64_t thr_total_octets, thr_dl_octets;   /* at the last Usage Report caused by the threshold */
+    ogs_time_t period_start;            /* start of the measurement of the next report */
+    ogs_time_t time_of_first_packet, time_of_last_packet;
+    int check_pending;                  /* an event for the threshold is queued */
+    ogs_timer_t *t_period;
+} upf_mbs_urr_acc_t;
+
+typedef struct upf_mbs_sess_s {
+    ogs_lnode_t lnode;      /* A node of list_t */
+
+    ogs_pool_id_t *upf_n4mb_seid_node;  /* A node of UPF-N4mb-SEID */
+    uint64_t upf_n4mb_seid;   /* UPF N4mb SEID is derived from NODE */
+    struct {
+        uint64_t    seid;
+        ogs_ip_t    ip;
+    } smf_n4mb_f_seid;      /* SMF N4mb SEID is received from Peer */
+
+    ogs_mbs_session_id_t mbs_session_id;
+    bool area_session_id_presence;  /* location dependent MBS service: the session is of one service area */
+    uint16_t area_session_id;
+    char *service_type;
+
+    ogs_pfcp_sess_t pfcp;   /* PFCP session context */
+
+    char *dnn;
+
+    uint32_t c_teid; /* C-TEID */
+
+    ogs_ssm_t ssm;        /* AF SSM N6mb IPv4/IPv6; no source address set means any source */
+    bool ssm_dest_any;    /* IP Multicast Address with the A flag: any IP multicast address */
+    bool ssm_dest_range;  /* IP Multicast Address with the R flag: ssm.dest_ip_addr to ssm_dest_end */
+    ogs_ip_t ssm_dest_end;
+    bool ssm_src_has_prefix;  /* the source is a subnet: the Source IP Address carried a mask/prefix length */
+    uint8_t ssm_src_prefix_len;
+    ogs_ssm_t *ll_ssm;     /* lower layer SSM N3mb IPv4/IPv6 */
+
+    bool mc_joined;        /* the session joined the multicast channel of its AF multicast (JMBSSM) */
+    int mc_family;
+    bool mc_has_source;
+    uint8_t mc_source[16];
+    uint8_t mc_group[16];
+
+    ogs_pfcp_node_t *pfcp_node;
+
+    ogs_pfcp_mbsn4mbreq_flags_t mbs_flags;
+
+    ogs_sock_t *udp_tunnel;  /* IP encapsulating UDP listening socket (TS 23.247 Figure 8.2-1) */
+    ogs_poll_t *udp_tunnel_poll;
+    bool udp_tunnel_port_pooled;  /* the tunnel port came from the configured pool and goes back to it */
+    uint16_t udp_tunnel_pooled_port;  /* that port, host byte order, from the moment it is taken (the bind may fail) */
+    bool traffic_endpoint_id_presence;  /* the request's Create Traffic Endpoint carried an ID */
+    uint8_t traffic_endpoint_id;
+    bool ingress_in_traffic_endpoint;  /* the Create Traffic Endpoint asked for the ingress tunnel */
+    bool pdr_has_ingress_tunnel[OGS_MAX_NUM_OF_PDR];  /* by Create PDR index: the PDI asked for the ingress tunnel */
+    bool pdr_f_teid_allocated[OGS_MAX_NUM_OF_PDR];  /* by Create PDR index: the PDI asked the UP function to choose the local F-TEID (CH) */
+    unsigned int udp_tunnel_mtu;
+    ogs_pkbuf_pool_t *udp_tunnel_pkbuf_pool;
+
+    /* User plane inactivity detection and reporting (TS 29.244 cl. 5.11.2), see mbs-report.c */
+    bool up_inactivity_monitoring;
+    uint32_t up_inactivity_timer;   /* seconds */
+    ogs_time_t last_dl_packet;      /* the last MBS data packet the session got, set by the data path */
+    ogs_timer_t *t_up_inactivity;
+
+    upf_mbs_urr_acc_t urr_acc[OGS_MAX_NUM_OF_URR];     /* the URRs of the session */
+} upf_mbs_sess_t;
+
+void upf_mbs_session_id_clear(ogs_mbs_session_id_t *id);
+
 void upf_context_init(void);
 void upf_context_final(void);
 upf_context_t *upf_self(void);
@@ -178,6 +283,16 @@ void upf_sess_urr_acc_fill_usage_report(upf_sess_t *sess, const ogs_pfcp_urr_t *
                                         ogs_pfcp_user_plane_report_t *report, unsigned int idx);
 void upf_sess_urr_acc_snapshot(upf_sess_t *sess, ogs_pfcp_urr_t *urr);
 void upf_sess_urr_acc_timers_setup(upf_sess_t *sess, ogs_pfcp_urr_t *urr);
+
+upf_mbs_sess_t *upf_mbs_sess_find_by_smf_n4mb_f_seid(ogs_pfcp_f_seid_t *f_seid);
+upf_mbs_sess_t *upf_mbs_sess_find_by_seid(uint64_t seid);
+upf_mbs_sess_t *upf_mbs_sess_add_by_message(ogs_pfcp_message_t *message);
+upf_mbs_sess_t *upf_mbs_sess_find_by_ipv4(uint32_t addr);
+upf_mbs_sess_t *upf_mbs_sess_find_by_ipv6(uint32_t *addr6);
+void upf_mbs_sess_set_ssm(upf_mbs_sess_t *mbs_sess);
+bool upf_mbs_sess_same_group(const upf_mbs_sess_t *mbs_sess, int ip_version, const uint8_t *dst);
+void upf_mbs_sess_set_llssm(upf_mbs_sess_t *mbs_sess);
+void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess);
 
 #ifdef __cplusplus
 }

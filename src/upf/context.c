@@ -16,10 +16,14 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
+#include <inttypes.h>
 
 #include "context.h"
+#include "path-management.h"
+#include "mbs-charging.h"
 #include "pfcp-path.h"
 #include "qos-monitoring.h"
+#include "multicastrouter/multicastrouter.h"
 
 static upf_context_t self;
 
@@ -28,9 +32,16 @@ int __upf_log_domain;
 static OGS_POOL(upf_sess_pool, upf_sess_t);
 static OGS_POOL(upf_n4_seid_pool, ogs_pool_id_t);
 
+static OGS_POOL(upf_mbs_sess_pool, upf_mbs_sess_t);
+
 static int context_initialized = 0;
 
 static void upf_sess_urr_acc_remove_all(upf_sess_t *sess);
+
+static void upf_mbs_sess_remove_all(void);
+static unsigned long long _ull_from_string(const char *str, unsigned long long min_value, unsigned long long max_value,
+                                           char **error_string);
+static uint16_t _uint16_from_string(const char *str, uint16_t min_value, uint16_t max_value, char **error_string);
 
 void upf_context_init(void)
 {
@@ -56,12 +67,18 @@ void upf_context_init(void)
     ogs_pfcp_self()->up_function_features.pdusm = 1;
     /* TS 29.244 V19.6.0 clause 5.38.6: traffic identification and differentiated QoS for multiplexed media flows */
     ogs_pfcp_self()->up_function_features.muxmf = 1;
+    /* MBS charging (TS 29.244 cl. 5.34.2.5: "The MB-UPF shall set the MBSCH feature flag in the UP Function Features IE ... if it supports MBS charging"),
+     * octet 14 bit 1: the IE is sent up to that octet */
+    ogs_pfcp_self()->up_function_features.mbsch = 1;
     ogs_pfcp_self()->up_function_features_len = 10;
 
     ogs_list_init(&self.sess_list);
     ogs_pool_init(&upf_sess_pool, ogs_app()->pool.sess);
     ogs_pool_init(&upf_n4_seid_pool, ogs_app()->pool.sess);
     ogs_pool_random_id_generate(&upf_n4_seid_pool);
+
+    ogs_pool_init(&upf_mbs_sess_pool, ogs_global_conf()->max.mbs.mbs_sessions);
+    ogs_list_init(&self.upf_mbs_sess_list);
 
     self.upf_n4_seid_hash = ogs_hash_make();
     ogs_assert(self.upf_n4_seid_hash);
@@ -73,6 +90,14 @@ void upf_context_init(void)
     ogs_assert(self.ipv4_hash);
     self.ipv6_hash = ogs_hash_make();
     ogs_assert(self.ipv6_hash);
+    self.mbs_ipv4_hash = ogs_hash_make();
+    ogs_assert(self.mbs_ipv4_hash);
+    self.mbs_ipv6_hash = ogs_hash_make();
+    ogs_assert(self.mbs_ipv6_hash);
+
+    memset(self.mbs_multicastrouter_input_interface, 0, sizeof self.mbs_multicastrouter_input_interface);
+    memset(self.mbs_multicastrouter_output_interface, 0, sizeof self.mbs_multicastrouter_output_interface);
+    self.mbs_multicastrouter_activate = false;
 
     context_initialized = 1;
 }
@@ -90,7 +115,9 @@ void upf_context_final(void)
 {
     ogs_assert(context_initialized == 1);
 
+    upf_gtpu_path_final();
     upf_sess_remove_all();
+    upf_mbs_sess_remove_all();
 
     ogs_assert(self.upf_n4_seid_hash);
     ogs_hash_destroy(self.upf_n4_seid_hash);
@@ -102,12 +129,23 @@ void upf_context_final(void)
     ogs_hash_destroy(self.ipv4_hash);
     ogs_assert(self.ipv6_hash);
     ogs_hash_destroy(self.ipv6_hash);
+    ogs_assert(self.mbs_ipv4_hash);
+    ogs_hash_destroy(self.mbs_ipv4_hash);
+    ogs_assert(self.mbs_ipv6_hash);
+    ogs_hash_destroy(self.mbs_ipv6_hash);
 
     free_upf_route_trie_node(self.ipv4_framed_routes);
     free_upf_route_trie_node(self.ipv6_framed_routes);
 
     ogs_pool_final(&upf_sess_pool);
     ogs_pool_final(&upf_n4_seid_pool);
+
+    ogs_pool_final(&upf_mbs_sess_pool);
+
+    // MBS UDP Tunnel configuration
+    ogs_freeaddrinfo(self.mbs_udp_tun_base_addr);
+    if (self.mbs_udp_tun_ports_free) ogs_free(self.mbs_udp_tun_ports_free);
+    if (self.mbs_udp_tun_ports) ogs_free(self.mbs_udp_tun_ports);
 
     context_initialized = 0;
 }
@@ -130,6 +168,24 @@ static int upf_context_validation(void)
     }
     if (ogs_list_first(&ogs_pfcp_self()->subnet_list) == NULL) {
         ogs_error("No upf.session.subnet: in '%s'", ogs_app()->file);
+        return OGS_ERROR;
+    }
+    /* TS 29.281 cl. 7.2.1: an Echo Request is not sent "more often than every 60 s on each path"; cl. 12.2: T3-RESPONSE has
+     * no value in the specification, and cl. 12.3 gives 5 as the recommended N3-REQUESTS */
+    if (self.mbs_path_echo_interval) {
+        if (self.mbs_path_echo_interval < 60) {
+            ogs_error("upf.mbs.gtpu_path.echo_interval is %u: not less than 60 s (TS 29.281 7.2.1) in '%s'",
+                    self.mbs_path_echo_interval, ogs_app()->file);
+            return OGS_ERROR;
+        }
+        if (self.mbs_path_t3_response == 0) {
+            ogs_error("No upf.mbs.gtpu_path.t3_response in '%s' (TS 29.281 gives no value)", ogs_app()->file);
+            return OGS_ERROR;
+        }
+        if (self.mbs_path_n3_requests == 0)
+            self.mbs_path_n3_requests = 5;
+    } else if (self.mbs_path_t3_response || self.mbs_path_n3_requests) {
+        ogs_error("upf.mbs.gtpu_path.t3_response and n3_requests without echo_interval in '%s'", ogs_app()->file);
         return OGS_ERROR;
     }
     return OGS_OK;
@@ -175,8 +231,270 @@ int upf_context_parse_config(void)
                         self.qer_averaging_window = atoi(v);
                     else
                         ogs_warn("upf.averaging_window must be a number of milliseconds greater than 0");
-                } else
-                    ogs_warn("unknown key `%s`", upf_key);
+                } else if (!strcmp(upf_key, "mbs")) {
+                    ogs_yaml_iter_t upf_mbs_iter;
+                    ogs_yaml_iter_recurse(&upf_iter, &upf_mbs_iter);
+                    while (ogs_yaml_iter_next(&upf_mbs_iter)) {
+                        const char *upf_mbs_key = ogs_yaml_iter_key(&upf_mbs_iter);
+                        ogs_assert(upf_mbs_key);
+                        if (!strcmp(upf_mbs_key, "udptunnel")) {
+                            ogs_yaml_iter_t upf_mbs_tunnel_iter;
+                            ogs_yaml_iter_recurse(&upf_mbs_iter, &upf_mbs_tunnel_iter);
+                            while (ogs_yaml_iter_next(&upf_mbs_tunnel_iter)) {
+                                const char *upf_mbs_tunnel_key = ogs_yaml_iter_key(&upf_mbs_tunnel_iter);
+                                ogs_assert(upf_mbs_tunnel_key);
+                                if (!strcmp(upf_mbs_tunnel_key, "address")) {
+                                    /* expect either a single IPv4 / IPv6 address or hostname */
+                                    int port = 0;
+                                    ogs_yaml_iter_t upf_mbs_tunnel_address_iter;
+                                    ogs_yaml_iter_recurse(&upf_mbs_tunnel_iter, &upf_mbs_tunnel_address_iter);
+
+                                    if (ogs_yaml_iter_type(&upf_mbs_tunnel_address_iter) == YAML_SCALAR_NODE) {
+                                        const char *upf_mbs_tunnel_addr = ogs_yaml_iter_value(&upf_mbs_tunnel_address_iter);
+                                        ogs_freeaddrinfo(self.mbs_udp_tun_base_addr);
+                                        rv = ogs_getaddrinfo(&self.mbs_udp_tun_base_addr, AF_UNSPEC, upf_mbs_tunnel_addr, port, 0);
+                                        if (rv != OGS_OK || !self.mbs_udp_tun_base_addr) {
+                                            ogs_error("ogs_getaddrinfo[%s] failed", upf_mbs_tunnel_addr);
+                                            return OGS_ERROR;
+                                        }
+                                        /* The address of the tunnel is what the CP function tells the sender of the MBS data (the
+                                         * Local Ingress Tunnel, TS 29.244 cl. 8.2.209): an address the sender can send to */
+                                        if ((self.mbs_udp_tun_base_addr->ogs_sa_family == AF_INET &&
+                                                    self.mbs_udp_tun_base_addr->sin.sin_addr.s_addr == 0) ||
+                                                (self.mbs_udp_tun_base_addr->ogs_sa_family == AF_INET6 &&
+                                                    IN6_IS_ADDR_UNSPECIFIED(&self.mbs_udp_tun_base_addr->sin6.sin6_addr))) {
+                                            ogs_error("upf/mbs/udptunnel/address `%s` is the wildcard address: it must be an address "
+                                                    "the sender of the MBS data can send to", upf_mbs_tunnel_addr);
+                                            return OGS_ERROR;
+                                        }
+                                        if (!self.mbs_udp_tun_base_addr->hostname) {
+                                            self.mbs_udp_tun_base_addr->hostname = ogs_strdup(upf_mbs_tunnel_addr);
+                                        }
+                                    } else {
+                                        ogs_error("upf/mbs/udptunnel/address must be a single address or hostname");
+                                        return OGS_ERROR;
+                                    }
+                                } else if (!strcmp(upf_mbs_tunnel_key, "port")) {
+                                    ogs_yaml_iter_t upf_mbs_tunnel_port_iter;
+                                    ogs_yaml_iter_recurse(&upf_mbs_tunnel_iter, &upf_mbs_tunnel_port_iter);
+                                    if (ogs_yaml_iter_type(&upf_mbs_tunnel_port_iter) == YAML_SCALAR_NODE) {
+                                        /* single value = single port (0=ephemeral) */
+                                        const char *upf_mbs_tunnel_port_str = ogs_yaml_iter_value(&upf_mbs_tunnel_port_iter);
+                                        char *error = NULL;
+                                        uint16_t upf_mbs_tunnel_port = _uint16_from_string(upf_mbs_tunnel_port_str, 0, 0xfffe, &error);
+                                        if (error) {
+                                            ogs_error("UDP tunnel port error: %s", error);
+                                            ogs_free(error);
+                                            return OGS_ERROR;
+                                        }
+                                        if (upf_mbs_tunnel_port) {
+                                            self.mbs_udp_tun_ephemeral_port = false;
+                                            self.mbs_udp_tun_num_of_ports = 1;
+                                            self.mbs_udp_tun_ports = ogs_malloc(sizeof(*self.mbs_udp_tun_ports));
+                                            self.mbs_udp_tun_ports[0] = upf_mbs_tunnel_port;
+                                            self.mbs_udp_tun_ports_free = ogs_malloc(sizeof(*self.mbs_udp_tun_ports_free));
+                                            self.mbs_udp_tun_ports_free[0] = self.mbs_udp_tun_ports;
+                                            self.mbs_udp_tun_ports_next_free = 1;
+                                        } else {
+                                            self.mbs_udp_tun_ephemeral_port = true;
+                                        }
+                                    } else if (ogs_yaml_iter_type(&upf_mbs_tunnel_port_iter) == YAML_MAPPING_NODE) {
+                                        /* object value = range, expect "start" and "end" values */
+                                        uint16_t start_port = 0, end_port = 0;
+                                        while (ogs_yaml_iter_next(&upf_mbs_tunnel_port_iter)) {
+                                            const char *upf_mbs_tunnel_port_key = ogs_yaml_iter_key(&upf_mbs_tunnel_port_iter);
+                                            if (!strcmp(upf_mbs_tunnel_port_key, "start")) {
+                                                ogs_yaml_iter_t upf_mbs_tunnel_port_start_iter;
+                                                ogs_yaml_iter_recurse(&upf_mbs_tunnel_port_iter, &upf_mbs_tunnel_port_start_iter);
+                                                if (ogs_yaml_iter_type(&upf_mbs_tunnel_port_start_iter) == YAML_SCALAR_NODE) {
+                                                    const char *start_val = ogs_yaml_iter_value(&upf_mbs_tunnel_port_start_iter);
+                                                    char *error = NULL;
+                                                    start_port = _uint16_from_string(start_val, 0, 0xfffe, &error);
+                                                    if (error) {
+                                                        ogs_error("UDP tunnel start port error: %s", error);
+                                                        ogs_free(error);
+                                                        return OGS_ERROR;
+                                                    }
+                                                    if (start_port == 0) {
+                                                        ogs_warn("UDP tunnel start port is 0, ephemeral port allocation will be used");
+                                                    }
+                                                } else {
+                                                    ogs_warn("wrong type for key `%s` in upf/mbs/udptunnel/port section, ignoring", upf_mbs_tunnel_port_key);
+                                                }
+                                            } else if (!strcmp(upf_mbs_tunnel_port_key, "end")) {
+                                                ogs_yaml_iter_t upf_mbs_tunnel_port_end_iter;
+                                                ogs_yaml_iter_recurse(&upf_mbs_tunnel_port_iter, &upf_mbs_tunnel_port_end_iter);
+                                                if (ogs_yaml_iter_type(&upf_mbs_tunnel_port_end_iter) == YAML_SCALAR_NODE) {
+                                                    const char *end_val = ogs_yaml_iter_value(&upf_mbs_tunnel_port_end_iter);
+                                                    char *error = NULL;
+                                                    end_port = _uint16_from_string(end_val, 0, 0xfffe, &error);
+                                                    if (error) {
+                                                        ogs_error("UDP tunnel end port error: %s", error);
+                                                        ogs_free(error);
+                                                        return OGS_ERROR;
+                                                    }
+                                                    if (end_port == 0) {
+                                                        ogs_warn("UDP tunnel end port is 0, ephemeral port allocation will be used");
+                                                    }
+                                                } else {
+                                                    ogs_warn("wrong type for key `%s` in upf/mbs/udptunnel/port section, ignoring", upf_mbs_tunnel_port_key);
+                                                }
+                                            } else {
+                                                ogs_warn("unknown key `%s` in upf/mbs/udptunnel/port section", upf_mbs_tunnel_port_key);
+                                            }
+                                        }
+                                        if (!start_port || !end_port) {
+                                            self.mbs_udp_tun_ephemeral_port = true;
+                                        } else {
+                                            uint32_t i, port;
+                                            if (end_port < start_port) {
+                                                start_port ^= end_port;
+                                                end_port ^= start_port;
+                                                start_port ^= end_port;
+                                            }
+                                            size_t num_of_ports = end_port - start_port + 1;
+                                            self.mbs_udp_tun_ephemeral_port = false;
+                                            self.mbs_udp_tun_num_of_ports = num_of_ports;
+                                            self.mbs_udp_tun_ports = ogs_malloc(sizeof(*self.mbs_udp_tun_ports) * num_of_ports);
+                                            self.mbs_udp_tun_ports_free = ogs_malloc(sizeof(*self.mbs_udp_tun_ports_free) * num_of_ports);
+                                            self.mbs_udp_tun_ports_next_free = num_of_ports;
+                                            for (i = 0, port = start_port; port <= end_port; i++,port++) {
+                                                 self.mbs_udp_tun_ports[i] = port;
+                                                 self.mbs_udp_tun_ports_free[i] = self.mbs_udp_tun_ports + i;
+                                            }
+                                        }
+                                    } else if  (ogs_yaml_iter_type(&upf_mbs_tunnel_port_iter) == YAML_SEQUENCE_NODE) {
+                                        /*
+                                         * BUG FIX: this used to check upf_mbs_tunnel_iter's type (the
+                                         * "port" key's own iterator, before recursing into its value) --
+                                         * always a MAPPING node at this point, never SEQUENCE, since the
+                                         * YAML "port:" key itself is a mapping-node entry. That made this
+                                         * whole branch permanently unreachable, so the list-of-ports form
+                                         * (e.g. "port: [1000, 1001, 1002]") could never actually be
+                                         * parsed. Check upf_mbs_tunnel_port_iter (the already-recursed
+                                         * child, matching the SCALAR/MAPPING checks above) instead.
+                                         */
+                                        /* array value = list of port numbers */
+                                                                                // num_of_ports is assigned, not only incremented: an
+                                                                                // uninitialised value is undefined behaviour and, once this
+                                                                                // branch is reachable, a garbage allocation size.
+                                        size_t num_of_ports = 0;
+                                        bool ephemeral = false;
+                                        while (ogs_yaml_iter_next(&upf_mbs_tunnel_port_iter)) {
+                                            ogs_yaml_iter_t upf_mbs_tunnel_port_value_iter;
+                                            ogs_yaml_iter_recurse(&upf_mbs_tunnel_port_iter, &upf_mbs_tunnel_port_value_iter);
+                                            if (ogs_yaml_iter_type(&upf_mbs_tunnel_port_value_iter) == YAML_SCALAR_NODE) {
+                                                char *error = NULL;
+                                                const char *port_val = ogs_yaml_iter_value(&upf_mbs_tunnel_port_value_iter);
+                                                uint16_t port = _uint16_from_string(port_val, 0, 0xfffe, &error);
+                                                if (error) {
+                                                    ogs_error("UDP tunnel port value error: %s", error);
+                                                    ogs_free(error);
+                                                    return OGS_ERROR;
+                                                }
+                                                if (port == 0) {
+                                                    ogs_warn("UDP tunnel port is 0, ephemeral port allocation will be used");
+                                                    ephemeral = true;
+                                                    break;
+                                                }
+                                                num_of_ports++;
+                                            } else {
+                                                ogs_error("UDP tunnel port value error: Value is not a scalar type");
+                                                return OGS_ERROR;
+                                            }
+                                        }
+                                        if (ephemeral) {
+                                            self.mbs_udp_tun_ephemeral_port = true;
+                                        } else {
+                                            size_t i;
+                                            self.mbs_udp_tun_ephemeral_port = false;
+                                            self.mbs_udp_tun_ports = ogs_malloc(sizeof(*self.mbs_udp_tun_ports) * num_of_ports);
+                                            self.mbs_udp_tun_ports_free = ogs_malloc(sizeof(*self.mbs_udp_tun_ports_free) * num_of_ports);
+                                            self.mbs_udp_tun_ports_next_free = num_of_ports;
+                                            ogs_yaml_iter_recurse(&upf_mbs_tunnel_iter, &upf_mbs_tunnel_port_iter);
+                                            for (i=0; ogs_yaml_iter_next(&upf_mbs_tunnel_port_iter); i++) {
+                                                ogs_yaml_iter_t upf_mbs_tunnel_port_value_iter;
+                                                ogs_yaml_iter_recurse(&upf_mbs_tunnel_port_iter, &upf_mbs_tunnel_port_value_iter);
+                                                const char *str = ogs_yaml_iter_value(&upf_mbs_tunnel_port_value_iter);
+                                                self.mbs_udp_tun_ports[i] = _uint16_from_string(str, 0, 0xfffe, NULL);
+                                                self.mbs_udp_tun_ports_free[i] = self.mbs_udp_tun_ports + i;
+                                            }
+                                            self.mbs_udp_tun_num_of_ports = i;
+                                        }
+                                    } else {
+                                        ogs_error("Unknown YAML node type");
+                                        return OGS_ERROR;
+                                    }
+                                } else {
+                                    ogs_warn("unknown key `%s` in upf/mbs/udptunnel section", upf_mbs_tunnel_key);
+                                }
+                            }
+                        } else if (!strcmp(upf_mbs_key, "multicast_router")) {
+                            ogs_yaml_iter_t upf_mbs_multicastrouter_iter;
+                            ogs_yaml_iter_recurse(&upf_mbs_iter, &upf_mbs_multicastrouter_iter);
+                            while (ogs_yaml_iter_next(&upf_mbs_multicastrouter_iter)) {
+                                const char *upf_mbs_multicastrouter_key = ogs_yaml_iter_key(&upf_mbs_multicastrouter_iter);
+                                ogs_assert(upf_mbs_multicastrouter_key);
+                                if (!strcmp(upf_mbs_multicastrouter_key, "input_interface")) {
+                                    ogs_yaml_iter_t upf_mbs_multicastrouter_address_iter;
+                                    ogs_yaml_iter_recurse(&upf_mbs_multicastrouter_iter, &upf_mbs_multicastrouter_address_iter);
+                                    const char *input_interface = ogs_yaml_iter_value(&upf_mbs_multicastrouter_address_iter);
+                                    strcpy(self.mbs_multicastrouter_input_interface , input_interface);
+                                }else if (!strcmp(upf_mbs_multicastrouter_key, "output_interface")) {
+                                    ogs_yaml_iter_t upf_mbs_multicastrouter_address_iter;
+                                    ogs_yaml_iter_recurse(&upf_mbs_multicastrouter_iter, &upf_mbs_multicastrouter_address_iter);
+                                    const char *output_interface = ogs_yaml_iter_value(&upf_mbs_multicastrouter_address_iter);
+                                    strcpy(self.mbs_multicastrouter_output_interface , output_interface);
+                                }else if (!strcmp(upf_mbs_multicastrouter_key, "activate")) {
+                                    ogs_yaml_iter_t upf_mbs_multicastrouter_address_iter;
+                                    ogs_yaml_iter_recurse(&upf_mbs_multicastrouter_iter, &upf_mbs_multicastrouter_address_iter);
+                                    const char *value = ogs_yaml_iter_value(&upf_mbs_multicastrouter_address_iter);
+                                    if(strcmp(value, "true") == 0){
+                                        self.mbs_multicastrouter_activate = true;
+                                    }else if(strcmp(value, "false") == 0){
+                                        self.mbs_multicastrouter_activate = false;
+                                    }else{
+                                        ogs_warn("unkown value `%s` in mbs/multicast_router_activate, must be either true or false", value);
+                                        self.mbs_multicastrouter_activate = false;
+                                    }
+                                } else {
+                                    ogs_warn("unknown key `%s` in upf/mbs/multicastrouter section", upf_mbs_multicastrouter_key);
+                                }
+                            }
+
+                        } else if (!strcmp(upf_mbs_key, "gtpu_path")) {
+                            ogs_yaml_iter_t upf_mbs_path_iter;
+                            ogs_yaml_iter_recurse(&upf_mbs_iter, &upf_mbs_path_iter);
+                            while (ogs_yaml_iter_next(&upf_mbs_path_iter)) {
+                                const char *upf_mbs_path_key = ogs_yaml_iter_key(&upf_mbs_path_iter);
+                                const char *value = ogs_yaml_iter_value(&upf_mbs_path_iter);
+                                char *end = NULL;
+                                unsigned long number;
+
+                                ogs_assert(upf_mbs_path_key);
+                                number = value ? strtoul(value, &end, 10) : 0;
+                                if (!value || !*value || *end || number == 0 || number > 0xffffff) {
+                                    ogs_error("upf/mbs/gtpu_path/%s must be a positive number of seconds or times, not `%s`",
+                                            upf_mbs_path_key, value ? value : "");
+                                    return OGS_ERROR;
+                                }
+                                if (!strcmp(upf_mbs_path_key, "echo_interval")) {
+                                    self.mbs_path_echo_interval = number;
+                                } else if (!strcmp(upf_mbs_path_key, "t3_response")) {
+                                    self.mbs_path_t3_response = number;
+                                } else if (!strcmp(upf_mbs_path_key, "n3_requests")) {
+                                    self.mbs_path_n3_requests = number;
+                                } else {
+                                    ogs_warn("unknown key `%s` in upf/mbs/gtpu_path section", upf_mbs_path_key);
+                                }
+                            }
+                        } else {
+                            ogs_warn("unknown key `%s` in upf/mbs section", upf_mbs_key);
+                        }
+                    }
+                } else {
+                    ogs_warn("unknown key `%s` in upf section", upf_key);
+                }
             }
         }
     }
@@ -936,4 +1254,336 @@ static void upf_sess_urr_acc_remove_all(upf_sess_t *sess)
             sess->urr_acc[i].t_time_quota = NULL;
         }
     }
+}
+
+static upf_mbs_sess_t *upf_mbs_sess_add(ogs_pfcp_f_seid_t *cp_f_seid)
+{
+    upf_mbs_sess_t *upf_mbs_sess = NULL;
+
+    ogs_pool_alloc(&upf_mbs_sess_pool, &upf_mbs_sess);
+    if (!upf_mbs_sess) {
+        ogs_error("Maximum number of MBS Sessions[%" PRIu64 "] reached",
+                    ogs_global_conf()->max.mbs.mbs_sessions);
+        return NULL;
+    }
+    memset(upf_mbs_sess, 0, sizeof *upf_mbs_sess);
+
+    // PFCP initialization
+    ogs_pfcp_pool_init(&upf_mbs_sess->pfcp);
+
+    // Set SEID
+    ogs_pool_alloc(&upf_n4_seid_pool, &upf_mbs_sess->upf_n4mb_seid_node);
+    ogs_assert(upf_mbs_sess->upf_n4mb_seid_node);
+
+    upf_mbs_sess->upf_n4mb_seid = *(upf_mbs_sess->upf_n4mb_seid_node);
+
+    ogs_hash_set(self.upf_n4_seid_hash, &upf_mbs_sess->upf_n4mb_seid,
+        sizeof(upf_mbs_sess->upf_n4mb_seid), upf_mbs_sess);
+
+    /* Since F-SEID is composed of ogs_ip_t and uint64-seid,
+     * all these values must be put into the structure-smf_n4mb_f_seid
+     * before creating hash */
+    upf_mbs_sess->smf_n4mb_f_seid.seid = cp_f_seid->seid;
+    ogs_assert(OGS_OK ==
+            ogs_pfcp_f_seid_to_ip(cp_f_seid, &upf_mbs_sess->smf_n4mb_f_seid.ip));
+
+    ogs_hash_set(self.smf_n4_f_seid_hash, &upf_mbs_sess->smf_n4mb_f_seid,
+            sizeof(upf_mbs_sess->smf_n4mb_f_seid), upf_mbs_sess);
+    ogs_hash_set(self.smf_n4_seid_hash, &upf_mbs_sess->smf_n4mb_f_seid.seid,
+            sizeof(upf_mbs_sess->smf_n4mb_f_seid.seid), upf_mbs_sess);
+
+    ogs_list_add(&self.upf_mbs_sess_list, upf_mbs_sess);
+
+    ogs_info("[Added] Number of MBS Sessions in UPF is now %d",
+            ogs_list_count(&self.upf_mbs_sess_list));
+
+    return upf_mbs_sess;
+}
+
+/*
+ * Frees what an MBS Session Identifier holds: the TMGI with its MBS Service ID string, or the SSM, and the NID. The
+ * TMGI and the SSM share the pointer (a union), so which one it is comes from the flags.
+ */
+void upf_mbs_session_id_clear(ogs_mbs_session_id_t *id)
+{
+    ogs_assert(id);
+
+    if (id->is_tmgi && id->tmgi) {
+        if (id->tmgi->mbs_service_id)
+            ogs_free(id->tmgi->mbs_service_id);
+        if (id->tmgi->expiration_time)
+            ogs_free(id->tmgi->expiration_time);
+        ogs_free(id->tmgi);
+    } else if (id->is_ssm && id->ssm) {
+        ogs_free(id->ssm);
+    }
+    id->tmgi = NULL;
+    if (id->nid)
+        ogs_free(id->nid);
+    id->nid = NULL;
+    id->is_tmgi = 0;
+    id->is_ssm = 0;
+}
+
+// Non-static so upf_n4mb_handle_session_deletion_request() below can call it at runtime. Reachable only
+// through upf_mbs_sess_remove_all(), which runs from upf_context_final() at process shutdown, the
+// fixed-size MBS session pool (OGS_MAX_NUM_OF_MBS_SESSIONS) never drains across create and delete cycles.
+// Mirrors amf_mbs_context_remove() on the AMF side.
+void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess)
+{
+    ogs_assert(upf_mbs_sess);
+
+    ogs_list_remove(&self.upf_mbs_sess_list, upf_mbs_sess);
+
+    // The session's entry in the destination hashes, handed to another session on the same group if there is one.
+    if (upf_mbs_sess->ssm.dest_ip_addr.ipv4 && !upf_mbs_sess->ssm_dest_any && !upf_mbs_sess->ssm_dest_range &&
+            ogs_hash_get(self.mbs_ipv4_hash, &upf_mbs_sess->ssm.dest_ip_addr.addr, OGS_IPV4_LEN) == upf_mbs_sess) {
+        upf_mbs_sess_t *it;
+
+        ogs_hash_set(self.mbs_ipv4_hash, &upf_mbs_sess->ssm.dest_ip_addr.addr, OGS_IPV4_LEN, NULL);
+        ogs_list_for_each(&self.upf_mbs_sess_list, it) {
+            if (upf_mbs_sess_same_group(it, 4, (const uint8_t *)&upf_mbs_sess->ssm.dest_ip_addr.addr)) {
+                ogs_hash_set(self.mbs_ipv4_hash, &it->ssm.dest_ip_addr.addr, OGS_IPV4_LEN, it);
+                break;
+            }
+        }
+    }
+    if (upf_mbs_sess->ssm.dest_ip_addr.ipv6 && !upf_mbs_sess->ssm_dest_any && !upf_mbs_sess->ssm_dest_range &&
+            ogs_hash_get(self.mbs_ipv6_hash, upf_mbs_sess->ssm.dest_ip_addr.addr6,
+                OGS_IPV6_LEN) == upf_mbs_sess) {
+        upf_mbs_sess_t *it;
+
+        ogs_hash_set(self.mbs_ipv6_hash, upf_mbs_sess->ssm.dest_ip_addr.addr6,
+                OGS_IPV6_LEN, NULL);
+        ogs_list_for_each(&self.upf_mbs_sess_list, it) {
+            if (upf_mbs_sess_same_group(it, 6, upf_mbs_sess->ssm.dest_ip_addr.addr6)) {
+                ogs_hash_set(self.mbs_ipv6_hash, it->ssm.dest_ip_addr.addr6,
+                        OGS_IPV6_LEN, it);
+                break;
+            }
+        }
+    }
+
+    // The multicast channel joined for JMBSSM
+    if (upf_mbs_sess->mc_joined) {
+        multicastrouter_leave(upf_mbs_sess->mc_family,
+                upf_mbs_sess->mc_has_source ? upf_mbs_sess->mc_source : NULL, upf_mbs_sess->mc_group);
+        upf_mbs_sess->mc_joined = false;
+    }
+
+    // A session has a low-layer SSM only if the MB-SMF asked for one (PLLSSM).
+    if (upf_mbs_sess->ll_ssm) {
+        ogs_pfcp_llssm_remove(upf_mbs_sess->ll_ssm);
+        upf_mbs_sess->ll_ssm = NULL;
+    }
+    ogs_pfcp_sess_clear(&upf_mbs_sess->pfcp);
+
+    ogs_hash_set(self.upf_n4_seid_hash, &upf_mbs_sess->upf_n4mb_seid,
+            sizeof(upf_mbs_sess->upf_n4mb_seid), NULL);
+
+    ogs_hash_set(self.smf_n4_seid_hash, &upf_mbs_sess->smf_n4mb_f_seid.seid,
+            sizeof(upf_mbs_sess->smf_n4mb_f_seid.seid), NULL);
+    ogs_hash_set(self.smf_n4_f_seid_hash, &upf_mbs_sess->smf_n4mb_f_seid,
+            sizeof(upf_mbs_sess->smf_n4mb_f_seid), NULL);
+
+    // MBS UDP Tunnels. Released before the session goes back to its pool: the entry must not be read after that.
+    if (upf_mbs_sess->udp_tunnel_poll) {
+        ogs_pollset_remove(upf_mbs_sess->udp_tunnel_poll);
+        upf_mbs_sess->udp_tunnel_poll = NULL;
+    }
+    // The tunnel port goes back into the free pool whether or not the socket was opened: it is taken before the bind
+    if (upf_mbs_sess->udp_tunnel_port_pooled) {
+        uint16_t port = upf_mbs_sess->udp_tunnel_pooled_port;
+        size_t i;
+        for (i=0; i < self.mbs_udp_tun_num_of_ports && self.mbs_udp_tun_ports[i] != port; i++);
+        if (i < self.mbs_udp_tun_num_of_ports) {
+            self.mbs_udp_tun_ports_free[self.mbs_udp_tun_ports_next_free++] = self.mbs_udp_tun_ports + i;
+        }
+        upf_mbs_sess->udp_tunnel_port_pooled = false;
+    }
+    if (upf_mbs_sess->udp_tunnel) {
+        ogs_sock_destroy(upf_mbs_sess->udp_tunnel);
+        upf_mbs_sess->udp_tunnel = NULL;
+    }
+    if (upf_mbs_sess->udp_tunnel_pkbuf_pool) {
+        ogs_pkbuf_pool_destroy(upf_mbs_sess->udp_tunnel_pkbuf_pool);
+        upf_mbs_sess->udp_tunnel_pkbuf_pool = NULL;
+    }
+
+    upf_mbs_urr_free_all(upf_mbs_sess);
+    if (upf_mbs_sess->t_up_inactivity) {
+        ogs_timer_delete(upf_mbs_sess->t_up_inactivity);
+        upf_mbs_sess->t_up_inactivity = NULL;
+    }
+
+    upf_mbs_session_id_clear(&upf_mbs_sess->mbs_session_id);
+
+    // PFCP finalization
+    ogs_pfcp_pool_final(&upf_mbs_sess->pfcp);
+
+    ogs_pool_free(&upf_n4_seid_pool, upf_mbs_sess->upf_n4mb_seid_node);
+
+    ogs_pool_free(&upf_mbs_sess_pool, upf_mbs_sess);
+
+    ogs_info("[Removed] Number of MBS Sessions in UPF is now %d",
+            ogs_list_count(&self.upf_mbs_sess_list));
+}
+
+static void upf_mbs_sess_remove_all(void)
+{
+    upf_mbs_sess_t *upf_mbs_sess = NULL, *next = NULL;
+
+    ogs_list_for_each_safe(&self.upf_mbs_sess_list, next, upf_mbs_sess)
+        upf_mbs_sess_remove(upf_mbs_sess);
+}
+
+upf_mbs_sess_t *upf_mbs_sess_find_by_smf_n4mb_f_seid(ogs_pfcp_f_seid_t *f_seid)
+{
+    struct {
+        uint64_t seid;
+        ogs_ip_t ip;
+    } key;
+
+    ogs_assert(f_seid);
+    ogs_assert(OGS_OK == ogs_pfcp_f_seid_to_ip(f_seid, &key.ip));
+    key.seid = f_seid->seid;
+
+    return ogs_hash_get(self.smf_n4_f_seid_hash, &key, sizeof(key));
+}
+
+/*
+ * BUG FIX: no way existed to look up an upf_mbs_sess_t by its own (UPF-assigned) SEID -- only by the SMF's
+ * F-SEID (above, only present in the Establishment Request). A PFCP Session Deletion Request carries no
+ * IEs of its own (ogs_pfcp_session_deletion_request_t is empty) and is addressed purely by the SEID in
+ * the PFCP header, so this is what pfcp-sm.c's deletion dispatch needs to tell an MBS session's SEID
+ * apart from a regular session's before routing to the right handler -- both types' SEIDs are drawn from
+ * the same shared upf_n4_seid_pool/hash (see upf_mbs_sess_add() above), so blindly treating the shared
+ * hash's result as a upf_sess_t* (as the pre-existing deletion dispatch code did) is a type-confusion bug
+ * whenever the SEID actually belongs to an MBS session.
+ */
+upf_mbs_sess_t *upf_mbs_sess_find_by_seid(uint64_t seid)
+{
+    upf_mbs_sess_t *upf_mbs_sess = NULL;
+
+    ogs_list_for_each(&self.upf_mbs_sess_list, upf_mbs_sess) {
+        if (upf_mbs_sess->upf_n4mb_seid == seid)
+            return upf_mbs_sess;
+    }
+
+    return NULL;
+}
+
+upf_mbs_sess_t *upf_mbs_sess_add_by_message(ogs_pfcp_message_t *message)
+{
+    upf_mbs_sess_t *mbs_sess = NULL;
+    ogs_pfcp_f_seid_t *f_seid = NULL;
+
+    ogs_pfcp_session_establishment_request_t *req =
+        &message->pfcp_session_establishment_request;
+
+    f_seid = req->cp_f_seid.data;
+    if (req->cp_f_seid.presence == 0 || f_seid == NULL) {
+        ogs_error("No CP F-SEID");
+        return NULL;
+    }
+    f_seid->seid = be64toh(f_seid->seid);
+
+    mbs_sess = upf_mbs_sess_find_by_smf_n4mb_f_seid(f_seid);
+    if (!mbs_sess) {
+        mbs_sess = upf_mbs_sess_add(f_seid);
+        if (!mbs_sess) {
+            ogs_error("No MBS Session Context");
+            return NULL;
+        }
+    }
+    ogs_assert(mbs_sess);
+
+    return mbs_sess;
+}
+
+upf_mbs_sess_t *upf_mbs_sess_find_by_ipv4(uint32_t addr)
+{
+    ogs_assert(self.mbs_ipv4_hash);
+
+    return ogs_hash_get(self.mbs_ipv4_hash, &addr, OGS_IPV4_LEN);
+}
+
+upf_mbs_sess_t *upf_mbs_sess_find_by_ipv6(uint32_t *addr6)
+{
+    ogs_assert(self.mbs_ipv6_hash);
+    ogs_assert(addr6);
+
+    return ogs_hash_get(
+            self.mbs_ipv6_hash, addr6, OGS_IPV6_LEN);
+}
+
+/* True if the session receives exactly the group dst of the IP version (not a range, not any group). */
+bool upf_mbs_sess_same_group(const upf_mbs_sess_t *mbs_sess, int ip_version, const uint8_t *dst)
+{
+    if (mbs_sess->ssm_dest_any || mbs_sess->ssm_dest_range)
+        return false;
+    if (ip_version == 4)
+        return mbs_sess->ssm.dest_ip_addr.ipv4 && memcmp(&mbs_sess->ssm.dest_ip_addr.addr, dst, OGS_IPV4_LEN) == 0;
+    return mbs_sess->ssm.dest_ip_addr.ipv6 && memcmp(mbs_sess->ssm.dest_ip_addr.addr6, dst, OGS_IPV6_LEN) == 0;
+}
+
+void upf_mbs_sess_set_ssm(upf_mbs_sess_t *mbs_sess)
+{
+    ogs_assert(mbs_sess);
+
+    /* A session for a range of groups or for any group has no single address to key the lookup on:
+     * upf_mbs_sess_find_by_ssm() scans for it. */
+    if (mbs_sess->ssm_dest_any || mbs_sess->ssm_dest_range)
+        return;
+
+    /* The slot of a group holds one session. Another session on the same group (another source: the group is only
+     * half of an SSM channel) keeps the slot of the first; upf_mbs_sess_find_by_ssm() finds the others by scanning. */
+    if (mbs_sess->ssm.dest_ip_addr.ipv4) {
+        upf_mbs_sess_t *other = ogs_hash_get(self.mbs_ipv4_hash, &mbs_sess->ssm.dest_ip_addr.addr, OGS_IPV4_LEN);
+
+        if (!other || other == mbs_sess)
+            ogs_hash_set(self.mbs_ipv4_hash, &mbs_sess->ssm.dest_ip_addr.addr, OGS_IPV4_LEN, mbs_sess);
+    }
+
+    if (mbs_sess->ssm.dest_ip_addr.ipv6) {
+        upf_mbs_sess_t *other = ogs_hash_get(self.mbs_ipv6_hash,
+                &mbs_sess->ssm.dest_ip_addr.addr6, OGS_IPV6_LEN);
+
+        if (!other || other == mbs_sess)
+            ogs_hash_set(self.mbs_ipv6_hash,
+                &mbs_sess->ssm.dest_ip_addr.addr6, OGS_IPV6_LEN, mbs_sess);
+    }
+}
+
+void upf_mbs_sess_set_llssm(upf_mbs_sess_t *mbs_sess)
+{
+    ogs_assert(mbs_sess);
+
+    mbs_sess->ll_ssm = ogs_pfcp_llssm_add();
+}
+
+static unsigned long long _ull_from_string(const char *str, unsigned long long min_value, unsigned long long max_value,
+                                           char **error_string)
+{
+    unsigned long long val = 0;
+    if (str) {
+        char *end_ptr = NULL;
+        val = strtoull(str, &end_ptr, 0);
+        if (!end_ptr || *end_ptr != '\0') {
+            if (error_string)
+                *error_string = ogs_msprintf("The string \"%s\" could not be parsed as an unsigned integer", str);
+            return 0;
+        }
+    }
+    if (val < min_value || val > max_value) {
+        if (error_string)
+            *error_string = ogs_msprintf("Value %llu out of range: value must be between %llu and %llu inclusive", val, min_value, max_value);
+        return 0;
+    }
+    return val;
+}
+
+static uint16_t _uint16_from_string(const char *str, uint16_t min_value, uint16_t max_value, char **error_string)
+{
+    return (uint16_t)_ull_from_string(str, (unsigned long long)min_value, (unsigned long long)max_value, error_string);
 }

@@ -58,6 +58,12 @@ libupf_sources = files('''
     qos-monitoring.h
     l4s.h
     pdu-set.h
+    n4mb-handler.h
+    n4mb-build.h
+    multicastrouter-path.h
+    path-management.h
+    mbs-report.h
+    mbs-charging.h
 
     rule-match.c
     init.c
@@ -74,6 +80,12 @@ libupf_sources = files('''
     qos-monitoring.c
     l4s.c
     pdu-set.c
+    n4mb-handler.c
+    n4mb-build.c
+    multicastrouter-path.c
+    path-management.c
+    mbs-report.c
+    mbs-charging.c
 '''.split())
 
 libtins_dep = dependency('libtins',
@@ -108,6 +120,7 @@ libupf_dep = declare_dependency(
         libpfcp_dep,
         libtun_dep,
         libarp_nd_dep,
+        libmulticastrouter_dep,
     ])
 
 upf_sources = files('''

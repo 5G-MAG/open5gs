@@ -21,6 +21,7 @@
 #include "gtp-path.h"
 #include "pfcp-path.h"
 #include "metrics.h"
+#include "multicastrouter-path.h"
 
 static ogs_thread_t *thread;
 static void upf_main(void *data);
@@ -74,6 +75,11 @@ int upf_initialize(void)
     rv = upf_gtp_open();
     if (rv != OGS_OK) return rv;
 
+    if(upf_self()->mbs_multicastrouter_activate){
+        rv = upf_multicastrouter_init();
+        if (rv != OGS_OK) return rv;
+    }
+
     thread = ogs_thread_create(upf_main, NULL);
     if (!thread) return OGS_ERROR;
 
@@ -104,6 +110,10 @@ void upf_terminate(void)
 
     upf_gtp_final();
     upf_event_final();
+
+    if(upf_self()->mbs_multicastrouter_activate){
+        upf_multicastrouter_final();
+    }
 
     upf_metrics_final();
 }
