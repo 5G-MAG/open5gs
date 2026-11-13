@@ -1022,3 +1022,540 @@ int16_t ogs_pfcp_build_user_id(
 
     return octet->len;
 }
+
+int16_t ogs_pfcp_build_mbs_session_identifier(ogs_tlv_octet_t *octet,
+        ogs_pfcp_mbs_session_identifier_t *mbs_session_identifier, void *data, int data_len)
+{
+    ogs_pfcp_mbs_session_identifier_t target;
+    int16_t size = 0;
+
+    ogs_assert(mbs_session_identifier);
+    ogs_assert(octet);
+    ogs_assert(data);
+    ogs_assert(data_len);
+
+    octet->data = data;
+    memcpy(&target, mbs_session_identifier, sizeof(ogs_pfcp_mbs_session_identifier_t));
+
+    ogs_assert(size + sizeof(target.octet5) <= data_len);
+    memcpy((uint8_t *)octet->data + size,
+            &target.octet5, sizeof(target.octet5));
+    size += sizeof(target.octet5);
+
+    if (target.tmgif) {
+        ogs_assert(size + sizeof(target.tmgi.mbs_service_id) <= data_len);
+        memcpy((uint8_t *)octet->data + size, &target.tmgi.mbs_service_id,
+            sizeof(target.tmgi.mbs_service_id));
+        size += sizeof(target.tmgi.mbs_service_id);
+
+        ogs_assert(size + sizeof(target.tmgi.plmn_id) <= data_len);
+        memcpy((uint8_t *)octet->data + size, &target.tmgi.plmn_id,
+            sizeof(target.tmgi.plmn_id));
+        size += sizeof(target.tmgi.plmn_id);
+#if 0
+    } else {
+        size += 6;
+#endif
+    }
+
+    if (target.ssmif) {
+        // TODO (borieher): Add SSM
+        ((uint8_t *)octet->data)[size] = target.ssm.ip_multicast_distribution_address.flags;
+        size += 1;
+
+        memcpy((uint8_t *)octet->data + size, target.ssm.ip_multicast_distribution_address.ipv6_addr, target.ssm.ip_multicast_distribution_address.address_length);
+        size += target.ssm.ip_multicast_distribution_address.address_length;
+
+        ((uint8_t *)octet->data)[size] = target.ssm.ip_source_address.flags;
+        size += 1;
+
+        memcpy((uint8_t *)octet->data + size, target.ssm.ip_source_address.ipv6_addr, target.ssm.ip_source_address.address_length);
+        size += target.ssm.ip_source_address.address_length;
+    }
+
+    if (target.nidif) {
+        // TODO (borieher): Add NID
+        memcpy((uint8_t *)octet->data + size, target.nid, sizeof(target.nid));
+	size += sizeof(target.nid);
+    }
+
+    octet->len = size;
+
+    return octet->len;
+}
+
+/* Copies an IPv4 or IPv6 address of the given length into ip (kept in network byte order, as ogs_ip_t does). */
+static void set_ip_from_octets(ogs_ip_t *ip, bool v6, const uint8_t *data)
+{
+    if (v6) {
+        ip->ipv6 = 1;
+        ip->len = OGS_IPV6_LEN;
+        memcpy(ip->addr6, data, OGS_IPV6_LEN);
+    } else {
+        ip->ipv4 = 1;
+        ip->len = OGS_IPV4_LEN;
+        memcpy(&ip->addr, data, OGS_IPV4_LEN);
+    }
+}
+
+int16_t ogs_pfcp_build_ip_multicast_address(
+        void *buf, const ogs_pfcp_ip_multicast_address_t *address)
+{
+    uint8_t *p = buf;
+    int flags;
+
+    ogs_assert(buf);
+    ogs_assert(address);
+
+    /* "One and only one of the V6, V4 and A flags shall be set to "1". The R flag may be set if the V6 or the V4
+     * flag is set to "1"." (cl. 8.2.137) */
+    flags = (address->v6 ? 1 : 0) + (address->v4 ? 1 : 0) + (address->a ? 1 : 0);
+    if (flags != 1 || (address->r && address->a)) {
+        ogs_error("IP Multicast Address flags 0x%02x are not valid", address->octet5);
+        return -1;
+    }
+
+    /* octet 5: spare "0", A, R, V4, V6 */
+    *p++ = (address->octet5 & 0x0f);
+    if (address->a)
+        return 1;
+
+    if (address->v4) {
+        memcpy(p, &address->s_ipv4_addr, OGS_IPV4_LEN);
+        p += OGS_IPV4_LEN;
+    }
+    if (address->v6) {
+        memcpy(p, address->s_ipv6_addr, OGS_IPV6_LEN);
+        p += OGS_IPV6_LEN;
+    }
+    if (address->r) {
+        if (address->v4) {
+            memcpy(p, &address->e_ipv4_addr, OGS_IPV4_LEN);
+            p += OGS_IPV4_LEN;
+        }
+        if (address->v6) {
+            memcpy(p, address->e_ipv6_addr, OGS_IPV6_LEN);
+            p += OGS_IPV6_LEN;
+        }
+    }
+
+    return p - (uint8_t *)buf;
+}
+
+int16_t ogs_pfcp_build_source_ip_address(
+        void *buf, const ogs_pfcp_source_ip_address_t *address)
+{
+    uint8_t *p = buf;
+
+    ogs_assert(buf);
+    ogs_assert(address);
+
+    if (!address->v4 && !address->v6) {
+        ogs_error("Source IP Address flags 0x%02x carry no address", address->octet5);
+        return -1;
+    }
+
+    /* octet 5: spare "0", MPL, V4, V6; then the IPv4 address, the IPv6 address, the mask/prefix length */
+    *p++ = (address->octet5 & 0x07);
+    if (address->v4) {
+        memcpy(p, &address->ipv4_addr, OGS_IPV4_LEN);
+        p += OGS_IPV4_LEN;
+    }
+    if (address->v6) {
+        memcpy(p, address->ipv6_addr, OGS_IPV6_LEN);
+        p += OGS_IPV6_LEN;
+    }
+    if (address->mpl)
+        *p++ = address->mask_prefix_len;
+
+    return p - (uint8_t *)buf;
+}
+
+int16_t ogs_pfcp_parse_ip_multicast_address(
+        ogs_pfcp_decoded_ip_multicast_address_t *decoded, const ogs_tlv_octet_t *octet)
+{
+    const uint8_t *data;
+    uint32_t len, want, pos;
+    bool v6, v4, r, a;
+
+    ogs_assert(decoded);
+    ogs_assert(octet);
+
+    memset(decoded, 0, sizeof(*decoded));
+    data = octet->data;
+    len = octet->len;
+    if (data == NULL || len < 1) {
+        ogs_error("IP Multicast Address without its flags octet");
+        return -1;
+    }
+
+    v6 = data[0] & 0x01;    /* bit 1 */
+    v4 = data[0] & 0x02;    /* bit 2 */
+    r  = data[0] & 0x04;    /* bit 3 */
+    a  = data[0] & 0x08;    /* bit 4 */
+
+    /* TS 29.244 cl. 8.2.137: "One and only one of the V6, V4 and A flags shall be set to "1". The R flag may be
+     * set if the V6 or the V4 flag is set to "1"." */
+    if ((v6 + v4 + a) != 1 || (r && a)) {
+        ogs_error("IP Multicast Address flags 0x%02x are not valid", data[0]);
+        return -1;
+    }
+
+    want = 1;
+    if (v4) want += OGS_IPV4_LEN * (r ? 2 : 1);
+    if (v6) want += OGS_IPV6_LEN * (r ? 2 : 1);
+    if (len != want) {
+        ogs_error("IP Multicast Address length %u, flags 0x%02x need %u", len, data[0], want);
+        return -1;
+    }
+
+    decoded->any = a;
+    decoded->range = r;
+    pos = 1;
+    if (v4 || v6) {
+        set_ip_from_octets(&decoded->start, v6, data + pos);
+        pos += v6 ? OGS_IPV6_LEN : OGS_IPV4_LEN;
+        if (r)
+            set_ip_from_octets(&decoded->end, v6, data + pos);
+    }
+    return len;
+}
+
+int16_t ogs_pfcp_parse_source_ip_address(
+        ogs_pfcp_decoded_source_ip_address_t *decoded, const ogs_tlv_octet_t *octet)
+{
+    const uint8_t *data;
+    uint32_t len, want, pos;
+    bool v6, v4, mpl;
+
+    ogs_assert(decoded);
+    ogs_assert(octet);
+
+    memset(decoded, 0, sizeof(*decoded));
+    data = octet->data;
+    len = octet->len;
+    if (data == NULL || len < 1) {
+        ogs_error("Source IP Address without its flags octet");
+        return -1;
+    }
+
+    v6  = data[0] & 0x01;   /* bit 1 */
+    v4  = data[0] & 0x02;   /* bit 2 */
+    mpl = data[0] & 0x04;   /* bit 3 */
+
+    if (!v4 && !v6) {
+        ogs_error("Source IP Address flags 0x%02x carry no address", data[0]);
+        return -1;
+    }
+
+    want = 1 + (v4 ? OGS_IPV4_LEN : 0) + (v6 ? OGS_IPV6_LEN : 0) + (mpl ? 1 : 0);
+    if (len != want) {
+        ogs_error("Source IP Address length %u, flags 0x%02x need %u", len, data[0], want);
+        return -1;
+    }
+
+    /* Octets follow the flags in the order of figure 8.2.138-1: IPv4, IPv6, mask/prefix length. */
+    pos = 1;
+    if (v4) {
+        decoded->addr.ipv4 = 1;
+        memcpy(&decoded->addr.addr, data + pos, OGS_IPV4_LEN);
+        pos += OGS_IPV4_LEN;
+    }
+    if (v6) {
+        decoded->addr.ipv6 = 1;
+        memcpy(decoded->addr.addr6, data + pos, OGS_IPV6_LEN);
+        pos += OGS_IPV6_LEN;
+    }
+    decoded->addr.len = (v4 ? OGS_IPV4_LEN : 0) + (v6 ? OGS_IPV6_LEN : 0);
+    if (mpl) {
+        decoded->has_mask_prefix_len = true;
+        decoded->mask_prefix_len = data[pos];
+    }
+    return len;
+}
+
+/*
+ * Decodes one Address Type / Address Length / Address field of the Source Specific IP Multicast
+ * Address (TS 29.244 cl. 8.2.206 and 8.2.207: type 0 with length 4, or type 1 with length 16; "Other
+ * combinations of values are not valid."). Returns the octets consumed, or -1 if the field is not valid
+ * or does not fit in the IE.
+ */
+static int parse_ssm_address(uint8_t *flags, void *addr, const uint8_t *data, uint32_t data_len)
+{
+    uint8_t type, length;
+
+    if (data_len < 1)
+        return -1;
+    *flags = data[0];
+    type = data[0] >> 6;
+    length = data[0] & 0x3f;
+
+    if (!((type == 0 && length == OGS_IPV4_LEN) || (type == 1 && length == OGS_IPV6_LEN))) {
+        ogs_error("Invalid address type %u / length %u in the MBS Session Identifier", type, length);
+        return -1;
+    }
+    if (data_len < 1u + length) {
+        ogs_error("MBS Session Identifier too short for its address");
+        return -1;
+    }
+    memcpy(addr, data + 1, length);
+    return 1 + length;
+}
+
+int16_t ogs_pfcp_parse_mbs_session_identifier(
+        ogs_pfcp_mbs_session_identifier_t *mbs_session_identifier, ogs_tlv_octet_t *octet)
+{
+    uint32_t size = 0;
+    int rv;
+
+    ogs_assert(mbs_session_identifier);
+    ogs_assert(octet);
+
+    uint8_t *data = (uint8_t*)octet->data;
+    uint32_t data_len = octet->len;
+
+    memset(mbs_session_identifier, 0, sizeof(ogs_pfcp_mbs_session_identifier_t));
+
+    if (data == NULL || data_len < sizeof(mbs_session_identifier->octet5)) {
+        ogs_error("MBS Session Identifier without its flags octet");
+        return -1;
+    }
+    mbs_session_identifier->octet5 = data[size];
+    size += sizeof(mbs_session_identifier->octet5);
+
+    if (mbs_session_identifier->tmgif) {
+        if (size + sizeof(mbs_session_identifier->tmgi.mbs_service_id) +
+                sizeof(mbs_session_identifier->tmgi.plmn_id) > data_len) {
+            ogs_error("MBS Session Identifier too short for its TMGI");
+            return -1;
+        }
+        memcpy(mbs_session_identifier->tmgi.mbs_service_id, data + size,
+                sizeof(mbs_session_identifier->tmgi.mbs_service_id));
+        size += sizeof(mbs_session_identifier->tmgi.mbs_service_id);
+
+        memcpy(&mbs_session_identifier->tmgi.plmn_id, data + size,
+                sizeof(mbs_session_identifier->tmgi.plmn_id));
+        size += sizeof(mbs_session_identifier->tmgi.plmn_id);
+#if 0 /* Commented out as the intention is to omit the field if not indicated by the flag, but the spec shows otherwise */
+    } else {
+        // No TMGI so we skip to octet 12 (TS 29.244 Clause 8.2.206 shows SSM always starts at octet 12)
+        size += 6;
+#endif
+    }
+
+    if (mbs_session_identifier->ssmif) {
+        rv = parse_ssm_address(&mbs_session_identifier->ssm.ip_multicast_distribution_address.flags,
+                mbs_session_identifier->ssm.ip_multicast_distribution_address.ipv6_addr,
+                data + size, data_len - size);
+        if (rv < 0)
+            return -1;
+        size += rv;
+
+        rv = parse_ssm_address(&mbs_session_identifier->ssm.ip_source_address.flags,
+                mbs_session_identifier->ssm.ip_source_address.ipv6_addr,
+                data + size, data_len - size);
+        if (rv < 0)
+            return -1;
+        size += rv;
+    }
+
+    if (mbs_session_identifier->nidif) {
+        if (size + sizeof(mbs_session_identifier->nid) > data_len) {
+            ogs_error("MBS Session Identifier too short for its NID");
+            return -1;
+        }
+        memcpy(mbs_session_identifier->nid, data + size, sizeof(mbs_session_identifier->nid));
+        size += sizeof(mbs_session_identifier->nid);
+    }
+
+    if (size != data_len) {
+        ogs_error("MBS Session Identifier length %u, fields decoded %u", data_len, size);
+        return -1;
+    }
+
+    return size;
+}
+
+int16_t ogs_pfcp_build_multicast_transport_information(ogs_tlv_octet_t *octet,
+        ogs_pfcp_multicast_transport_information_t *multicast_transport_information, void *data, int data_len)
+{
+    ogs_pfcp_multicast_transport_information_t target;
+    int16_t size = 0;
+
+    ogs_assert(multicast_transport_information);
+    ogs_assert(octet);
+    ogs_assert(data);
+    ogs_assert(data_len);
+
+    octet->data = data;
+    memcpy(&target, multicast_transport_information, sizeof(ogs_pfcp_multicast_transport_information_t));
+
+    // spare
+    ogs_assert(size + sizeof(target.spare) <= data_len);
+    memcpy((uint8_t *)octet->data + size,
+            &target.spare, sizeof(target.spare));
+    size += sizeof(target.spare);
+
+    // c_teid
+    ogs_assert(size + sizeof(target.c_teid) <= data_len);
+    memcpy((uint8_t *)octet->data + size,
+            &target.c_teid, sizeof(target.c_teid));
+    size += sizeof(target.c_teid);
+
+    // ip_multicast_distribution_address
+    ogs_assert(size + sizeof(target.ip_multicast_distribution_address.flags) <= data_len);
+    memcpy((uint8_t *)octet->data + size,
+            &target.ip_multicast_distribution_address.flags, sizeof(target.ip_multicast_distribution_address.flags));
+    size += sizeof(target.ip_multicast_distribution_address.flags);
+
+    if (target.ip_multicast_distribution_address.address_type == 0) {
+        // IPv4
+        ogs_assert(target.ip_multicast_distribution_address.address_length == sizeof(target.ip_multicast_distribution_address.ipv4_addr));
+        ogs_assert(size + sizeof(target.ip_multicast_distribution_address.ipv4_addr) <= data_len);
+        memcpy((uint8_t *)octet->data + size,
+                &target.ip_multicast_distribution_address.ipv4_addr, sizeof(target.ip_multicast_distribution_address.ipv4_addr));
+        size += sizeof(target.ip_multicast_distribution_address.ipv4_addr);
+    } else if (target.ip_multicast_distribution_address.address_type == 1) {
+        // IPv6
+        ogs_assert(target.ip_multicast_distribution_address.address_length == OGS_IPV6_LEN);
+        ogs_assert(size + OGS_IPV6_LEN <= data_len);
+        memcpy((uint8_t *)octet->data + size,
+                &target.ip_multicast_distribution_address.ipv6_addr, OGS_IPV6_LEN);
+        size += OGS_IPV6_LEN;
+    }
+
+    // ip_source_address
+    ogs_assert(size + sizeof(target.ip_source_address.flags) <= data_len);
+    memcpy((uint8_t *)octet->data + size,
+            &target.ip_source_address.flags, sizeof(target.ip_source_address.flags));
+    size += sizeof(target.ip_source_address.flags);
+
+    if (target.ip_source_address.address_type == 0) {
+        // IPv4
+        ogs_assert(target.ip_source_address.address_length == sizeof(target.ip_source_address.ipv4_addr));
+        ogs_assert(size + sizeof(target.ip_source_address.ipv4_addr) <= data_len);
+        memcpy((uint8_t *)octet->data + size,
+                &target.ip_source_address.ipv4_addr, sizeof(target.ip_source_address.ipv4_addr));
+        size += sizeof(target.ip_source_address.ipv4_addr);
+    } else if (target.ip_source_address.address_type == 1) {
+        // IPv6
+        ogs_assert(target.ip_source_address.address_length == OGS_IPV6_LEN);
+        ogs_assert(size + OGS_IPV6_LEN <= data_len);
+        memcpy((uint8_t *)octet->data + size,
+                &target.ip_source_address.ipv6_addr, OGS_IPV6_LEN);
+        size += OGS_IPV6_LEN;
+    }
+
+    octet->len = size;
+
+    return octet->len;
+}
+
+/*
+ * Multicast Transport Information (TS 29.244 cl. 8.2.207). The octet string comes from a peer: a string that is too
+ * short, an address whose length does not match its type, an address type that is not IPv4 or IPv6, or octets left
+ * over are errors, reported by the return value (-1), not assertions.
+ */
+int16_t ogs_pfcp_parse_multicast_transport_information(
+        ogs_pfcp_multicast_transport_information_t *multicast_transport_information, ogs_tlv_octet_t *octet)
+{
+    int size = 0;
+
+    ogs_assert(multicast_transport_information);
+    ogs_assert(octet);
+
+    memset(multicast_transport_information, 0, sizeof(ogs_pfcp_multicast_transport_information_t));
+
+    if (!octet->data) {
+        ogs_error("No Multicast Transport Information");
+        return -1;
+    }
+
+    // spare, c_teid
+    if (size + sizeof(multicast_transport_information->spare) + sizeof(multicast_transport_information->c_teid) >
+            octet->len) {
+        ogs_error("Multicast Transport Information too short [%d]", octet->len);
+        return -1;
+    }
+    multicast_transport_information->spare = ((uint8_t *)octet->data)[size];
+    size += sizeof(multicast_transport_information->spare);
+    memcpy(&multicast_transport_information->c_teid, (unsigned char *)octet->data + size,
+            sizeof(multicast_transport_information->c_teid));
+    size += sizeof(multicast_transport_information->c_teid);
+
+    // ip_multicast_distribution_address
+    if (size + 1 > octet->len) {
+        ogs_error("Multicast Transport Information too short [%d]", octet->len);
+        return -1;
+    }
+    multicast_transport_information->ip_multicast_distribution_address.flags = ((uint8_t *)octet->data)[size];
+    size += sizeof(multicast_transport_information->ip_multicast_distribution_address.flags);
+    if (multicast_transport_information->ip_multicast_distribution_address.address_type == 0) {
+        // IPv4
+        if (multicast_transport_information->ip_multicast_distribution_address.address_length !=
+                sizeof(multicast_transport_information->ip_multicast_distribution_address.ipv4_addr) ||
+                size + sizeof(multicast_transport_information->ip_multicast_distribution_address.ipv4_addr) >
+                octet->len) {
+            ogs_error("Multicast Transport Information: invalid IPv4 multicast distribution address");
+            return -1;
+        }
+        memcpy(&multicast_transport_information->ip_multicast_distribution_address.ipv4_addr,
+            (unsigned char *)octet->data + size,
+            sizeof(multicast_transport_information->ip_multicast_distribution_address.ipv4_addr));
+        size += sizeof(multicast_transport_information->ip_multicast_distribution_address.ipv4_addr);
+    } else if (multicast_transport_information->ip_multicast_distribution_address.address_type == 1) {
+        // IPv6
+        if (multicast_transport_information->ip_multicast_distribution_address.address_length != OGS_IPV6_LEN ||
+                size + OGS_IPV6_LEN > octet->len) {
+            ogs_error("Multicast Transport Information: invalid IPv6 multicast distribution address");
+            return -1;
+        }
+        memcpy(&multicast_transport_information->ip_multicast_distribution_address.ipv6_addr, (unsigned char *)octet->data + size, OGS_IPV6_LEN);
+        size += OGS_IPV6_LEN;
+    } else {
+        ogs_error("Multicast Transport Information: address type %d of the multicast distribution address",
+                multicast_transport_information->ip_multicast_distribution_address.address_type);
+        return -1;
+    }
+
+    // ip_source_address
+    if (size + 1 > octet->len) {
+        ogs_error("Multicast Transport Information too short [%d]", octet->len);
+        return -1;
+    }
+    multicast_transport_information->ip_source_address.flags = ((uint8_t *)octet->data)[size];
+    size += sizeof(multicast_transport_information->ip_source_address.flags);
+    if (multicast_transport_information->ip_source_address.address_type == 0) {
+        // IPv4
+        if (multicast_transport_information->ip_source_address.address_length !=
+                sizeof(multicast_transport_information->ip_source_address.ipv4_addr) ||
+                size + sizeof(multicast_transport_information->ip_source_address.ipv4_addr) > octet->len) {
+            ogs_error("Multicast Transport Information: invalid IPv4 source address");
+            return -1;
+        }
+        memcpy(&multicast_transport_information->ip_source_address.ipv4_addr,
+            (unsigned char *)octet->data + size,
+            sizeof(multicast_transport_information->ip_source_address.ipv4_addr));
+        size += sizeof(multicast_transport_information->ip_source_address.ipv4_addr);
+    } else if (multicast_transport_information->ip_source_address.address_type == 1) {
+        // IPv6
+        if (multicast_transport_information->ip_source_address.address_length != OGS_IPV6_LEN ||
+                size + OGS_IPV6_LEN > octet->len) {
+            ogs_error("Multicast Transport Information: invalid IPv6 source address");
+            return -1;
+        }
+        memcpy(&multicast_transport_information->ip_source_address.ipv6_addr, (unsigned char *)octet->data + size, OGS_IPV6_LEN);
+        size += OGS_IPV6_LEN;
+    } else {
+        ogs_error("Multicast Transport Information: address type %d of the source address",
+                multicast_transport_information->ip_source_address.address_type);
+        return -1;
+    }
+
+    if (size != octet->len) {
+        ogs_error("Multicast Transport Information: %d octets, %d read", octet->len, size);
+        return -1;
+    }
+
+    return size;
+}

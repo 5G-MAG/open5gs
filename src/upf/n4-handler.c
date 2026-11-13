@@ -25,7 +25,7 @@
 
 /* Create SRR and Update SRR: start or change the QoS monitoring of a QoS flow (TS 29.244 V19.6.0 clause 5.39.2) */
 static void upf_n4_handle_srr(upf_sess_t *sess, bool create, ogs_tlv_octet_t *srr_id,
-        ogs_tlv_octet_t *control, uint8_t *cause_value, uint8_t *offending_ie_value)
+        ogs_tlv_octet_t *control, uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     ogs_pfcp_srr_t *srr = ogs_pfcp_handle_srr(&sess->pfcp, create, srr_id, control, cause_value, offending_ie_value);
 
@@ -34,7 +34,7 @@ static void upf_n4_handle_srr(upf_sess_t *sess, bool create, ogs_tlv_octet_t *sr
 }
 
 static void upf_n4_handle_create_urr(upf_sess_t *sess, ogs_pfcp_tlv_create_urr_t *create_urr_arr,
-                              uint8_t *cause_value, uint8_t *offending_ie_value)
+                              uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     int i;
     ogs_pfcp_urr_t *urr;
@@ -63,7 +63,7 @@ void upf_n4_handle_session_establishment_request(
     ogs_pfcp_pdr_t *created_pdr[OGS_MAX_NUM_OF_PDR];
     int num_of_created_pdr = 0;
     uint8_t cause_value = 0;
-    uint8_t offending_ie_value = 0;
+    uint16_t offending_ie_value = 0;
     int i;
 
     ogs_pfcp_sereq_flags_t sereq_flags;
@@ -267,7 +267,7 @@ void upf_n4_handle_session_modification_request(
     ogs_pfcp_pdr_t *created_pdr[OGS_MAX_NUM_OF_PDR];
     int num_of_created_pdr = 0;
     uint8_t cause_value = 0;
-    uint8_t offending_ie_value = 0;
+    uint16_t offending_ie_value = 0;
     int i;
     ogs_pfcp_user_plane_report_t usage;
     ogs_pfcp_urr_t *queried = NULL;
@@ -473,15 +473,15 @@ void upf_n4_handle_session_modification_request(
     }
 
     /* TS 29.244 clause 7.5.4.4: Query URR asks for the usage report of a URR at once, which starts a new report period */
-    if (req->query_urr.presence && req->query_urr.urr_id.presence) {
-        queried = ogs_pfcp_urr_find(&sess->pfcp, req->query_urr.urr_id.u32);
+    if (req->query_urr[0].presence && req->query_urr[0].urr_id.presence) {
+        queried = ogs_pfcp_urr_find(&sess->pfcp, req->query_urr[0].urr_id.u32);
         if (queried) {
             upf_sess_urr_acc_fill_usage_report(sess, queried, &usage, 0);
             usage.usage_report[0].rep_trigger.immediate_report = 1;
             usage.num_of_usage_report = 1;
             upf_sess_urr_acc_snapshot(sess, queried);
         } else {
-            ogs_warn("Query URR: no URR[%d]", req->query_urr.urr_id.u32);
+            ogs_warn("Query URR: no URR[%d]", req->query_urr[0].urr_id.u32);
         }
     }
 

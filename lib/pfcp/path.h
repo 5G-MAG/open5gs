@@ -79,11 +79,22 @@ int ogs_pfcp_up_send_association_setup_response(ogs_pfcp_xact_t *xact,
 void ogs_pfcp_send_gtpu(ogs_pfcp_pdr_t *pdr, ogs_pkbuf_t *sendbuf);
 void ogs_pfcp_send_buffered_gtpu(ogs_pfcp_pdr_t *pdr);
 
+/* The downlink G-PDU of an MBS session's FAR: one copy to the low layer SSM for FSSM and one to each remote GTP-U
+ * peer for MBSU. Takes the packet, which has its GTP-U header (ogs_gtp2_encapsulate_header()); the TEID of each
+ * destination is written when its copy is sent. */
+void ogs_pfcp_send_g_pdu_mbs(ogs_pfcp_pdr_t *pdr, ogs_pkbuf_t *sendbuf);
+
 int ogs_pfcp_send_end_marker(ogs_pfcp_pdr_t *pdr);
 
 void ogs_pfcp_send_error_message(
     ogs_pfcp_xact_t *xact, uint64_t seid, uint8_t type,
     uint8_t cause_value, uint16_t offending_ie_value);
+
+/* A Session Establishment or Session Modification Response that rejects the request because the PDR with this ID failed
+ * to be created or modified: the Failed Rule ID IE names the PDR (TS 29.244 Table 7.5.3.1-1) */
+void ogs_pfcp_send_error_message_failed_pdr(
+    ogs_pfcp_xact_t *xact, uint64_t seid, uint8_t type,
+    uint8_t cause_value, uint16_t failed_pdr_id);
 
 #ifdef __cplusplus
 }

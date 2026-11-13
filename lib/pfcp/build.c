@@ -274,6 +274,8 @@ static struct {
         uint8_t payload_type[OGS_PFCP_MAX_RTP_PAYLOAD_TYPE];
         uint8_t payload_format;
     } protocol_description;
+    uint8_t ip_multicast_address[OGS_PFCP_IP_MULTICAST_ADDRESS_MAX_LEN];
+    uint8_t source_ip_address[OGS_PFCP_SOURCE_IP_ADDRESS_MAX_LEN];
 } pdrbuf[OGS_MAX_NUM_OF_PDR];
 
 void ogs_pfcp_pdrbuf_init(void)
@@ -470,6 +472,40 @@ void ogs_pfcp_build_create_pdr(
         message->qer_id.presence = 1;
         message->qer_id.u32 = pdr->qer->id;
     }
+
+    // IP Multicast Addressing Info in PDI IE. The IEs are encoded as TS 29.244 V18.10.0 figures 8.2.137-1 and
+    // 8.2.138-1 draw them, not copied from the structure, which holds an IPv6 address after the IPv4 one.
+    if (pdr->ip_multicast_addressing_info_len) {
+        int16_t len;
+
+        message->pdi.ip_multicast_addressing_info.presence = 1;
+
+        if (pdr->ip_multicast_addressing_info.ip_multicast_address_len) {
+            len = ogs_pfcp_build_ip_multicast_address(
+                    pdrbuf[i].ip_multicast_address, &pdr->ip_multicast_addressing_info.ip_multicast_address);
+            if (len > 0) {
+                message->pdi.ip_multicast_addressing_info.ip_multicast_address.presence = 1;
+                message->pdi.ip_multicast_addressing_info.ip_multicast_address.data =
+                        pdrbuf[i].ip_multicast_address;
+                message->pdi.ip_multicast_addressing_info.ip_multicast_address.len = len;
+            } else {
+                ogs_error("The IP Multicast Address of PDR [%d] cannot be encoded", pdr->id);
+            }
+        }
+
+        if (pdr->ip_multicast_addressing_info.source_ip_address_len) {
+            len = ogs_pfcp_build_source_ip_address(
+                    pdrbuf[i].source_ip_address, &pdr->ip_multicast_addressing_info.source_ip_address);
+            if (len > 0) {
+                message->pdi.ip_multicast_addressing_info.source_ip_address.presence = 1;
+                message->pdi.ip_multicast_addressing_info.source_ip_address.data =
+                        pdrbuf[i].source_ip_address;
+                message->pdi.ip_multicast_addressing_info.source_ip_address.len = len;
+            } else {
+                ogs_error("The Source IP Address of PDR [%d] cannot be encoded", pdr->id);
+            }
+        }
+    }
 }
 
 bool ogs_pfcp_build_created_pdr(
@@ -654,6 +690,32 @@ void ogs_pfcp_build_create_far(
         ogs_assert(sess->bar);
         message->bar_id.presence = 1;
         message->bar_id.u8 = sess->bar->id;
+    } else if (far->apply_action & OGS_PFCP_APPLY_ACTION_FSSM) {
+        // TODO (borieher): Keep adding the optional and conditional IEs
+        message->mbs_multicast_parameters.presence = 1;
+
+        // destination_interface (M)
+        message->mbs_multicast_parameters.destination_interface.presence = 1;
+        message->mbs_multicast_parameters.destination_interface.u8 = far->dst_if;
+
+        // network_instance (O)
+
+        // outer_header_creation (M)
+        if (far->outer_header_creation_len) {
+            memcpy(&farbuf[i].outer_header_creation,
+                    &far->outer_header_creation, far->outer_header_creation_len);
+
+            message->mbs_multicast_parameters.outer_header_creation.presence = 1;
+            message->mbs_multicast_parameters.outer_header_creation.data =
+                &farbuf[i].outer_header_creation;
+            message->mbs_multicast_parameters.outer_header_creation.len =
+                far->outer_header_creation_len;
+        }
+
+        // transport_level_marking (C) if UP needs DSCP marking
+
+        // destination_interface_type (O)
+
     }
 }
 
@@ -1008,9 +1070,10 @@ void ogs_pfcp_build_create_bar(
     message->bar_id.u8 = bar->id;
 }
 
+/* One buffer for each Usage Report of a message: the octet strings are read when the message is rendered */
 static struct {
     ogs_pfcp_volume_measurement_t vol_meas;
-} usage_report_buf;
+} usage_report_buf[OGS_MAX_NUM_OF_URR];
 
 /* Create SRR and Update SRR carry the QoS monitoring control of the rule (TS 29.244 V19.6.0 tables 7.5.2.9-1 and 7.5.4.9-1); buf outlives the building of the message */
 void ogs_pfcp_build_create_srr(
@@ -1157,8 +1220,8 @@ ogs_pkbuf_t *ogs_pfcp_build_session_report_request(
                 ogs_pfcp_build_volume_measurement(
                         &req->usage_report[i].volume_measurement,
                         &report->usage_report[i].vol_measurement,
-                        &usage_report_buf.vol_meas,
-                        sizeof(usage_report_buf.vol_meas));
+                        &usage_report_buf[i].vol_meas,
+                        sizeof(usage_report_buf[i].vol_meas));
             }
 
             if (report->usage_report[i].dur_measurement) {
@@ -1288,8 +1351,8 @@ void ogs_pfcp_build_usage_report_modification_response(
             ogs_pfcp_build_volume_measurement(
                     &rsp->usage_report[i].volume_measurement,
                     &report->usage_report[i].vol_measurement,
-                    &usage_report_buf.vol_meas,
-                    sizeof(usage_report_buf.vol_meas));
+                    &usage_report_buf[i].vol_meas,
+                    sizeof(usage_report_buf[i].vol_meas));
         }
         rsp->usage_report[i].duration_measurement.presence = 1;
         rsp->usage_report[i].duration_measurement.u32 = report->usage_report[i].dur_measurement;
@@ -1354,13 +1417,15 @@ ogs_pkbuf_t *ogs_pfcp_build_session_deletion_response( uint8_t type, uint8_t cau
                 ogs_pfcp_build_volume_measurement(
                         &rsp->usage_report[i].volume_measurement,
                         &report->usage_report[i].vol_measurement,
-                        &usage_report_buf.vol_meas,
-                        sizeof(usage_report_buf.vol_meas));
+                        &usage_report_buf[i].vol_meas,
+                        sizeof(usage_report_buf[i].vol_meas));
             }
 
-            rsp->usage_report[i].duration_measurement.presence = 1;
-            rsp->usage_report[i].duration_measurement.u32 =
-                report->usage_report[i].dur_measurement;
+            if (!report->usage_report[i].dur_measurement_not_applicable) {
+                rsp->usage_report[i].duration_measurement.presence = 1;
+                rsp->usage_report[i].duration_measurement.u32 =
+                    report->usage_report[i].dur_measurement;
+            }
 
             if (report->usage_report[i].time_of_first_packet) {
                 rsp->usage_report[i].time_of_first_packet.presence = 1;

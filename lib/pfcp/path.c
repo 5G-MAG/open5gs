@@ -436,6 +436,79 @@ void ogs_pfcp_send_gtpu(ogs_pfcp_pdr_t *pdr, ogs_pkbuf_t *sendbuf)
     ogs_pkbuf_free(sendbuf);
 }
 
+void ogs_pfcp_send_g_pdu_mbs(ogs_pfcp_pdr_t *pdr, ogs_pkbuf_t *sendbuf)
+{
+    ogs_pfcp_far_t *far = NULL;
+    ogs_pfcp_mbs_unicast_t *mu = NULL;
+    int num_of_destinations = 0, sent = 0;
+    bool multicast;
+
+    ogs_assert(pdr);
+    ogs_assert(sendbuf);
+
+    far = pdr->far;
+    if (!far) {
+        ogs_error("No FAR");
+        ogs_pkbuf_free(sendbuf);
+        return;
+    }
+
+    /* FSSM: the low layer SSM; MBSU: each remote GTP-U peer (TS 29.244 cl. 5.34.2.2: "Both the "FSSM" and "MBSU"
+     * flags shall be set in the Apply Action IE if the MB-UPF is requested to forward MBS data using both
+     * multicast and unicast transport") */
+    multicast = (far->apply_action & OGS_PFCP_APPLY_ACTION_FSSM) && far->gnode &&
+        far->dst_if != OGS_PFCP_INTERFACE_UNKNOWN;
+    if (multicast)
+        num_of_destinations++;
+    if (far->apply_action & OGS_PFCP_APPLY_ACTION_MBSU) {
+        ogs_list_for_each(&far->mbs_unicast_list, mu) {
+            if (mu->gnode)
+                num_of_destinations++;
+        }
+    }
+    if (num_of_destinations == 0) {
+        ogs_error("No destination for the MBS data of FAR %u", far->id);
+        ogs_pkbuf_free(sendbuf);
+        return;
+    }
+
+    /* One header for every copy: the DL MBS QFI Sequence Number identifies the packet of the flow, not the copy */
+    if (multicast) {
+        ogs_gtp_node_t *gnode = far->gnode;
+        ogs_pkbuf_t *buf;
+
+        ogs_assert(gnode->sock);
+        sent++;
+        buf = sent == num_of_destinations ? sendbuf : ogs_pkbuf_copy(sendbuf);
+        if (buf) {
+            ogs_gtp_send_with_teid(gnode->sock, buf, far->outer_header_creation.teid, &gnode->addr);
+            ogs_pkbuf_free(buf);
+        } else
+            ogs_error("ogs_pkbuf_copy() failed");
+    }
+
+    if (far->apply_action & OGS_PFCP_APPLY_ACTION_MBSU) {
+        ogs_list_for_each(&far->mbs_unicast_list, mu) {
+            ogs_gtp_node_t *gnode = mu->gnode;
+            ogs_pkbuf_t *buf;
+
+            if (!gnode)
+                continue;
+            ogs_assert(gnode->sock);
+
+            /* The packet itself goes to the last destination, a copy to each of the others */
+            sent++;
+            buf = sent == num_of_destinations ? sendbuf : ogs_pkbuf_copy(sendbuf);
+            if (!buf) {
+                ogs_error("ogs_pkbuf_copy() failed");
+                continue;
+            }
+            ogs_gtp_send_with_teid(gnode->sock, buf, mu->outer_header_creation.teid, &gnode->addr);
+            ogs_pkbuf_free(buf);
+        }
+    }
+}
+
 void ogs_pfcp_send_buffered_gtpu(ogs_pfcp_pdr_t *pdr)
 {
     ogs_pfcp_far_t *far = NULL;
@@ -484,14 +557,19 @@ int ogs_pfcp_send_end_marker(ogs_pfcp_pdr_t *pdr)
     return OGS_OK;
 }
 
-void ogs_pfcp_send_error_message(
+/* failed_pdr_id: the PDR that failed to be created or modified (a negative value if no rule is named); only the Session
+ * Establishment and Session Modification Responses carry it. */
+static void send_error_message(
     ogs_pfcp_xact_t *xact, uint64_t seid, uint8_t type,
-    uint8_t cause_value, uint16_t offending_ie_value)
+    uint8_t cause_value, uint16_t offending_ie_value, int32_t failed_pdr_id)
 {
     int rv;
     ogs_pfcp_message_t errmsg;
+    uint8_t failed_rule_id[3];
     ogs_pfcp_tlv_cause_t *cause = NULL;
     ogs_pfcp_tlv_offending_ie_t *offending_ie = NULL;
+    ogs_pfcp_node_id_t node_id;
+    int node_id_len = 0;
     ogs_pkbuf_t *pkbuf = NULL;
 
     ogs_assert(xact);
@@ -525,10 +603,38 @@ void ogs_pfcp_send_error_message(
     case OGS_PFCP_SESSION_ESTABLISHMENT_RESPONSE_TYPE:
         cause = &errmsg.pfcp_session_establishment_response.cause;
         offending_ie = &errmsg.pfcp_session_establishment_response.offending_ie;
+
+        /* Node ID is mandatory in a Session Establishment Response of any Cause */
+        if (ogs_pfcp_sockaddr_to_node_id(&node_id, &node_id_len) == OGS_OK) {
+            errmsg.pfcp_session_establishment_response.node_id.presence = 1;
+            errmsg.pfcp_session_establishment_response.node_id.data =
+                &node_id;
+            errmsg.pfcp_session_establishment_response.node_id.len =
+                node_id_len;
+        } else {
+            ogs_error("ogs_pfcp_sockaddr_to_node_id() failed");
+        }
+        if (failed_pdr_id >= 0) {
+            /* TS 29.244 Figure 8.2.80-1: Rule ID Type (PDR is 0) in octet 5, the Rule ID value after it (the PDR ID is 2 octets) */
+            failed_rule_id[0] = 0;
+            failed_rule_id[1] = (failed_pdr_id >> 8) & 0xff;
+            failed_rule_id[2] = failed_pdr_id & 0xff;
+            errmsg.pfcp_session_establishment_response.failed_rule_id.presence = 1;
+            errmsg.pfcp_session_establishment_response.failed_rule_id.data = failed_rule_id;
+            errmsg.pfcp_session_establishment_response.failed_rule_id.len = sizeof(failed_rule_id);
+        }
         break;
     case OGS_PFCP_SESSION_MODIFICATION_RESPONSE_TYPE:
         cause = &errmsg.pfcp_session_modification_response.cause;
         offending_ie = &errmsg.pfcp_session_modification_response.offending_ie;
+        if (failed_pdr_id >= 0) {
+            failed_rule_id[0] = 0;
+            failed_rule_id[1] = (failed_pdr_id >> 8) & 0xff;
+            failed_rule_id[2] = failed_pdr_id & 0xff;
+            errmsg.pfcp_session_modification_response.failed_rule_id.presence = 1;
+            errmsg.pfcp_session_modification_response.failed_rule_id.data = failed_rule_id;
+            errmsg.pfcp_session_modification_response.failed_rule_id.len = sizeof(failed_rule_id);
+        }
         break;
     case OGS_PFCP_SESSION_DELETION_RESPONSE_TYPE:
         cause = &errmsg.pfcp_session_deletion_response.cause;
@@ -567,4 +673,18 @@ void ogs_pfcp_send_error_message(
 
     rv = ogs_pfcp_xact_commit(xact);
     ogs_expect(rv == OGS_OK);
+}
+
+void ogs_pfcp_send_error_message(
+    ogs_pfcp_xact_t *xact, uint64_t seid, uint8_t type,
+    uint8_t cause_value, uint16_t offending_ie_value)
+{
+    send_error_message(xact, seid, type, cause_value, offending_ie_value, -1);
+}
+
+void ogs_pfcp_send_error_message_failed_pdr(
+    ogs_pfcp_xact_t *xact, uint64_t seid, uint8_t type,
+    uint8_t cause_value, uint16_t failed_pdr_id)
+{
+    send_error_message(xact, seid, type, cause_value, 0, failed_pdr_id);
 }

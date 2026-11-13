@@ -69,6 +69,8 @@ typedef struct ogs_pfcp_context_s {
     ogs_list_t      dev_list;       /* Tun Device List */
     ogs_list_t      subnet_list;    /* UE Subnet List */
 
+    ogs_list_t      llssm_list;    /* Lower Layer SSM List (N3mb) */
+
     ogs_hash_t      *object_teid_hash; /* hash table for PFCP OBJ(TEID) */
     ogs_hash_t      *far_f_teid_hash;  /* hash table for FAR(TEID+ADDR) */
     ogs_hash_t      *far_teid_hash; /* hash table for FAR(TEID) */
@@ -236,6 +238,15 @@ typedef struct ogs_pfcp_pdr_s {
 
     ogs_list_t              rule_list;      /* Rule List */
 
+    /* PDI IP Multicast Addressing Info grouped IE */
+    struct {
+        ogs_pfcp_ip_multicast_address_t ip_multicast_address;
+        int                             ip_multicast_address_len;
+        ogs_pfcp_source_ip_address_t    source_ip_address;
+        int                             source_ip_address_len;
+    } ip_multicast_addressing_info;
+    int                     ip_multicast_addressing_info_len;
+
     /* Related Context */
     ogs_pfcp_sess_t         *sess;
     void                    *gnode;         /* For CP-Function */
@@ -245,6 +256,23 @@ typedef struct ogs_pfcp_far_hash_f_teid_s {
     uint32_t teid;
     uint32_t addr[4];
 } ogs_pfcp_far_hash_f_teid_t;
+
+/*
+ * One remote GTP-U peer of an MBS session's FAR for unicast transport: an Add MBS Unicast Parameters IE
+ * (TS 29.244 Table 7.5.2.3-6), identified by its MBS Unicast Parameters ID within the FAR.
+ */
+typedef struct ogs_pfcp_mbs_unicast_s {
+    ogs_lnode_t             lnode;
+    ogs_pfcp_far_t          *far;
+    uint16_t                id;
+    ogs_pfcp_interface_t    dst_if;
+    char                    *dnn;                   /* Network Instance */
+    ogs_pfcp_outer_header_creation_t outer_header_creation; /* the F-TEID of the peer */
+    bool                    transport_level_marking;
+    uint8_t                 tos;
+    uint8_t                 tos_mask;
+    void                    *gnode;
+} ogs_pfcp_mbs_unicast_t;
 
 typedef struct ogs_pfcp_far_s {
     ogs_lnode_t             lnode;
@@ -277,10 +305,22 @@ typedef struct ogs_pfcp_far_s {
     ogs_pfcp_outer_header_creation_t outer_header_creation;
     int                     outer_header_creation_len;
 
+    /* The FAR was created with MBS Multicast Parameters (TS 29.244 Table 7.5.2.3-1): the destination interface,
+     * the outer header and the marking of the multicast transport, which an Update FAR cannot carry */
+    bool                    mbs_multicast_parameters;
+
+    /* Transport Level Marking of the MBS Multicast Parameters: the DSCP octet and its mask (0xFC) */
+    bool                    transport_level_marking;
+    uint8_t                 tos;
+    uint8_t                 tos_mask;
+
     ogs_pfcp_smreq_flags_t  smreq_flags;
+
+    ogs_list_t              mbs_unicast_list;       /* ogs_pfcp_mbs_unicast_t: the remote GTP-U peers of MBSU */
 
     uint32_t                num_of_buffered_gtpu;
     ogs_pkbuf_t             *buffered_gtpu[OGS_MAX_NUM_OF_GTPU_BUFFER];
+    uint16_t                buffered_gtpu_pdr_id[OGS_MAX_NUM_OF_GTPU_BUFFER];   /* the PDR that matched it */
 
     struct {
         bool prepared;
@@ -380,6 +420,13 @@ typedef struct ogs_pfcp_qer_s {
         bool                pssize_presence;
         uint32_t            pssize;
     } pdu_set_mark;
+
+    /* MBR enforcement of the MBS data of the flow: the time, in microseconds, at which the packets that were let through
+     * have used the Maximum Bitrate up (a meter with a burst of one packet), see upf_mbs_qer_mbr_admit() */
+    ogs_time_t              mbs_mbr_next_time;
+    /* IQFISN of the QER Indications: the MB-UPF inserts the DL MBS QFI Sequence Number of the flow */
+    bool                    insert_mbs_qfi_sn;
+    uint32_t                mbs_qfi_sn;     /* the number of the next packet of the flow */
 
     ogs_pfcp_sess_t         *sess;
 } ogs_pfcp_qer_t;
@@ -557,6 +604,15 @@ ogs_pfcp_far_t *ogs_pfcp_far_find_by_teid(uint32_t teid);
 void ogs_pfcp_far_remove(ogs_pfcp_far_t *far);
 void ogs_pfcp_far_remove_all(ogs_pfcp_sess_t *sess);
 
+ogs_pfcp_mbs_unicast_t *ogs_pfcp_mbs_unicast_find(ogs_pfcp_far_t *far, uint16_t id);
+ogs_pfcp_mbs_unicast_t *ogs_pfcp_mbs_unicast_add(ogs_pfcp_far_t *far, uint16_t id);
+/* Unlinks from the FAR and frees */
+void ogs_pfcp_mbs_unicast_remove(ogs_pfcp_mbs_unicast_t *mu);
+/* Frees an entry that is not in a FAR's list */
+void ogs_pfcp_mbs_unicast_free(ogs_pfcp_mbs_unicast_t *mu);
+void ogs_pfcp_mbs_unicast_remove_all(ogs_pfcp_far_t *far);
+int ogs_pfcp_setup_mbs_unicast_gtpu_node(ogs_pfcp_mbs_unicast_t *mu);
+
 ogs_pfcp_urr_t *ogs_pfcp_urr_add(ogs_pfcp_sess_t *sess);
 ogs_pfcp_srr_t *ogs_pfcp_srr_find(ogs_pfcp_sess_t *sess, uint8_t id);
 ogs_pfcp_srr_t *ogs_pfcp_srr_find_or_add(ogs_pfcp_sess_t *sess, uint8_t id);
@@ -616,6 +672,14 @@ ogs_pfcp_subnet_t *ogs_pfcp_find_subnet_by_dnn(int family, const char *dnn);
 
 void ogs_pfcp_pool_init(ogs_pfcp_sess_t *sess);
 void ogs_pfcp_pool_final(ogs_pfcp_sess_t *sess);
+
+ogs_ssm_t *ogs_pfcp_llssm_add(void);
+/* The low layer SSM the CP function asked for (MBS restoration): NULL if the pool is exhausted or the destination is
+ * in use by another low layer SSM. */
+ogs_ssm_t *ogs_pfcp_llssm_add_requested(const ogs_ip_t *dest_ip_addr, const ogs_ip_t *src_ip_addr);
+bool ogs_pfcp_llssm_dest_in_use(const ogs_ip_t *dest_ip_addr);
+void ogs_pfcp_llssm_remove(ogs_ssm_t *ll_ssm);
+void ogs_pfcp_llssm_remove_all(void);
 
 #ifdef __cplusplus
 }

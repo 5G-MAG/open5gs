@@ -55,6 +55,11 @@ int ogs_pfcp_ip_to_outer_header_creation(ogs_ip_t *ip,
 void ogs_pfcp_outer_header_creation_to_ip(
     ogs_pfcp_outer_header_creation_t *outer_header_creation, ogs_ip_t *ip);
 
+int ogs_pfcp_sockaddr_to_local_ingress_tunnel(const ogs_sockaddr_t *addr,
+    ogs_pfcp_local_ingress_tunnel_t *local_ingress_tunnel, int *len);
+int ogs_pfcp_proto_choice_to_local_ingress_tunnel(bool ipv4, bool ipv6,
+    ogs_pfcp_local_ingress_tunnel_t *local_ingress_tunnel, int *len);
+
 #ifdef __cplusplus
 }
 #endif

@@ -40,6 +40,8 @@ static OGS_POOL(ogs_pfcp_rule_pool, ogs_pfcp_rule_t);
 static OGS_POOL(ogs_pfcp_dev_pool, ogs_pfcp_dev_t);
 static OGS_POOL(ogs_pfcp_subnet_pool, ogs_pfcp_subnet_t);
 
+static OGS_POOL(ogs_pfcp_llssm_pool, ogs_ssm_t);
+
 void ogs_pfcp_context_init(void)
 {
     int i;
@@ -81,6 +83,8 @@ void ogs_pfcp_context_init(void)
     ogs_pool_init(&ogs_pfcp_dev_pool, OGS_MAX_NUM_OF_DEV);
     ogs_pool_init(&ogs_pfcp_subnet_pool, OGS_MAX_NUM_OF_SUBNET);
 
+    ogs_pool_init(&ogs_pfcp_llssm_pool, ogs_global_conf()->max.mbs.mbs_sessions);
+
     self.object_teid_hash = ogs_hash_make();
     ogs_assert(self.object_teid_hash);
     self.far_f_teid_hash = ogs_hash_make();
@@ -102,8 +106,13 @@ void ogs_pfcp_context_final(void)
     ogs_assert(self.far_teid_hash);
     ogs_hash_destroy(self.far_teid_hash);
 
+    ogs_pfcp_llssm_remove_all();
+
     ogs_pfcp_dev_remove_all();
     ogs_pfcp_subnet_remove_all();
+
+    ogs_pool_final(&ogs_pfcp_llssm_pool);
+    ogs_list_init(&self.llssm_list);
 
     ogs_pool_final(&ogs_pfcp_dev_pool);
     ogs_pool_final(&ogs_pfcp_subnet_pool);
@@ -1225,6 +1234,39 @@ int ogs_pfcp_setup_far_gtpu_node(ogs_pfcp_far_t *far)
     return OGS_OK;
 }
 
+int ogs_pfcp_setup_mbs_unicast_gtpu_node(ogs_pfcp_mbs_unicast_t *mu)
+{
+    int rv;
+    ogs_ip_t ip;
+    ogs_gtp_node_t *gnode = NULL;
+
+    ogs_assert(mu);
+
+    ogs_pfcp_outer_header_creation_to_ip(&mu->outer_header_creation, &ip);
+    if (ip.len == 0) return OGS_DONE;
+
+    gnode = ogs_gtp_node_find_by_ip(&ogs_gtp_self()->gtpu_peer_list, &ip);
+    if (!gnode) {
+        gnode = ogs_gtp_node_add_by_ip(
+            &ogs_gtp_self()->gtpu_peer_list, &ip, ogs_gtp_self()->gtpu_port);
+        if (!gnode) {
+            ogs_error("ogs_gtp_node_add_by_ip() failed");
+            return OGS_ERROR;
+        }
+
+        rv = ogs_gtp_connect(
+                ogs_gtp_self()->gtpu_sock, ogs_gtp_self()->gtpu_sock6, gnode);
+        if (rv != OGS_OK) {
+            ogs_error("ogs_gtp_connect() failed");
+            return rv;
+        }
+    }
+
+    OGS_SETUP_GTP_NODE(mu, gnode);
+
+    return OGS_OK;
+}
+
 int ogs_pfcp_setup_pdr_gtpu_node(ogs_pfcp_pdr_t *pdr)
 {
     int rv;
@@ -1930,6 +1972,65 @@ ogs_pfcp_far_t *ogs_pfcp_far_find_by_teid(uint32_t teid)
             self.far_teid_hash, &teid, sizeof(teid));
 }
 
+ogs_pfcp_mbs_unicast_t *ogs_pfcp_mbs_unicast_find(ogs_pfcp_far_t *far, uint16_t id)
+{
+    ogs_pfcp_mbs_unicast_t *mu = NULL;
+
+    ogs_assert(far);
+
+    ogs_list_for_each(&far->mbs_unicast_list, mu)
+        if (mu->id == id) return mu;
+
+    return NULL;
+}
+
+ogs_pfcp_mbs_unicast_t *ogs_pfcp_mbs_unicast_add(ogs_pfcp_far_t *far, uint16_t id)
+{
+    ogs_pfcp_mbs_unicast_t *mu = NULL;
+
+    ogs_assert(far);
+
+    mu = ogs_calloc(1, sizeof(*mu));
+    if (!mu) {
+        ogs_error("ogs_calloc() failed");
+        return NULL;
+    }
+    mu->far = far;
+    mu->id = id;
+    mu->dst_if = OGS_PFCP_INTERFACE_UNKNOWN;
+    ogs_list_add(&far->mbs_unicast_list, mu);
+
+    return mu;
+}
+
+void ogs_pfcp_mbs_unicast_free(ogs_pfcp_mbs_unicast_t *mu)
+{
+    ogs_assert(mu);
+
+    if (mu->dnn)
+        ogs_free(mu->dnn);
+    ogs_free(mu);
+}
+
+void ogs_pfcp_mbs_unicast_remove(ogs_pfcp_mbs_unicast_t *mu)
+{
+    ogs_assert(mu);
+    ogs_assert(mu->far);
+
+    ogs_list_remove(&mu->far->mbs_unicast_list, mu);
+    ogs_pfcp_mbs_unicast_free(mu);
+}
+
+void ogs_pfcp_mbs_unicast_remove_all(ogs_pfcp_far_t *far)
+{
+    ogs_pfcp_mbs_unicast_t *mu = NULL, *next_mu = NULL;
+
+    ogs_assert(far);
+
+    ogs_list_for_each_safe(&far->mbs_unicast_list, next_mu, mu)
+        ogs_pfcp_mbs_unicast_remove(mu);
+}
+
 void ogs_pfcp_far_remove(ogs_pfcp_far_t *far)
 {
     int i;
@@ -1948,6 +2049,8 @@ void ogs_pfcp_far_remove(ogs_pfcp_far_t *far)
     if (far->hash.f_teid.len)
         ogs_hash_set(self.far_f_teid_hash,
                 &far->hash.f_teid.key, far->hash.f_teid.len, NULL);
+
+    ogs_pfcp_mbs_unicast_remove_all(far);
 
     if (far->dnn)
         ogs_free(far->dnn);
@@ -2655,4 +2758,143 @@ void ogs_pfcp_pool_final(ogs_pfcp_sess_t *sess)
     ogs_pool_destroy(&sess->urr_id_pool);
     ogs_pool_destroy(&sess->qer_id_pool);
     ogs_pool_destroy(&sess->bar_id_pool);
+}
+
+bool ogs_pfcp_llssm_dest_in_use(const ogs_ip_t *dest_ip_addr)
+{
+    ogs_ssm_t *it = NULL;
+
+    ogs_assert(dest_ip_addr);
+
+    ogs_list_for_each(&self.llssm_list, it) {
+        if (dest_ip_addr->ipv4 && it->dest_ip_addr.ipv4 && dest_ip_addr->addr == it->dest_ip_addr.addr)
+            return true;
+        if (dest_ip_addr->ipv6 && it->dest_ip_addr.ipv6 &&
+                memcmp(dest_ip_addr->addr6, it->dest_ip_addr.addr6, OGS_IPV6_LEN) == 0)
+            return true;
+    }
+    return false;
+}
+
+ogs_ssm_t *ogs_pfcp_llssm_add_requested(const ogs_ip_t *dest_ip_addr, const ogs_ip_t *src_ip_addr)
+{
+    ogs_ssm_t *ll_ssm = NULL;
+
+    ogs_assert(dest_ip_addr);
+    ogs_assert(src_ip_addr);
+
+    if (ogs_pfcp_llssm_dest_in_use(dest_ip_addr))
+        return NULL;
+
+    ogs_pool_alloc(&ogs_pfcp_llssm_pool, &ll_ssm);
+    if (!ll_ssm) {
+        ogs_error("LL-SSM: No resources available");
+        return NULL;
+    }
+    memset(ll_ssm, 0, sizeof *ll_ssm);
+    ll_ssm->dest_ip_addr = *dest_ip_addr;
+    ll_ssm->src_ip_addr = *src_ip_addr;
+    ogs_list_add(&self.llssm_list, ll_ssm);
+
+    return ll_ssm;
+}
+
+// TODO (borieher): Add support for IPv6 too
+ogs_ssm_t *ogs_pfcp_llssm_add(void)
+{
+    ogs_ssm_t *ll_ssm = NULL;
+    int offset = 0;
+
+    OGS_LIST(skipped);
+
+    /* A slot whose address a requested low layer SSM (MBS restoration) holds is skipped; the skipped slots go back to
+     * the pool once a free address is found. */
+    for (;;) {
+        ogs_pool_alloc(&ogs_pfcp_llssm_pool, &ll_ssm);
+        if (!ll_ssm) {
+            ogs_error("LL-SSM: No resources available");
+            break;
+        }
+        memset(ll_ssm, 0, sizeof *ll_ssm);
+        ll_ssm->dest_ip_addr.ipv4 = 1;
+        ll_ssm->dest_ip_addr.len = OGS_IPV4_LEN;
+        ogs_ipv4_from_string(&ll_ssm->dest_ip_addr.addr, "239.0.0.4");
+        ll_ssm->dest_ip_addr.addr += htobe32(ogs_pool_index(&ogs_pfcp_llssm_pool, ll_ssm) - 1);
+        if (!ogs_pfcp_llssm_dest_in_use(&ll_ssm->dest_ip_addr))
+            break;
+        ogs_list_add(&skipped, ll_ssm);
+        ll_ssm = NULL;
+    }
+    {
+        ogs_ssm_t *sk, *sk_next;
+
+        ogs_list_for_each_safe(&skipped, sk_next, sk) {
+            ogs_list_remove(&skipped, sk);
+            ogs_pool_free(&ogs_pfcp_llssm_pool, sk);
+        }
+    }
+    if (!ll_ssm)
+        return NULL;
+
+    /*
+     * BUG FIX: this used to derive the offset from ogs_list_count(&self.llssm_list), i.e. the
+     * *current live count*, not a stable per-entry counter. Out-of-order teardown (e.g. session B
+     * at offset 1 released while sessions A at offset 0 and C at offset 2 remain active) meant the
+     * next session created got offset = ogs_list_count(...) = 2, already in use by C -- two live
+     * sessions then shared the same N3mb multicast group address.
+     *
+     * Fix: use the LL-SSM pool's own allocation-slot index (ogs_pool_index()) as the offset instead.
+     * A plain incrementing counter wrapped modulo the pool size would only reduce the odds of
+     * collision, not eliminate them (a long-lived session's offset can still be revisited by the
+     * counter while cycling through short-lived neighbours, before that long-lived session is ever
+     * freed). The pool-slot index, by construction of ogs_pool_alloc()/ogs_pool_free(), can never be
+     * held by two simultaneously-allocated entries -- the same mechanism already relied on elsewhere
+     * in this codebase for collision-free per-entry indices (e.g. smf_mbs_sess->index).
+     */
+    offset = ogs_pool_index(&ogs_pfcp_llssm_pool, ll_ssm) - 1;
+
+    // N3mb address:
+    ogs_ipv4_from_string(&ll_ssm->dest_ip_addr.addr, "239.0.0.4");
+    ll_ssm->dest_ip_addr.addr += htobe32(offset);
+    ll_ssm->dest_ip_addr.ipv4 = 1;
+    ll_ssm->dest_ip_addr.len = OGS_IPV4_LEN;
+
+    // UPF address: use the UPF's own configured N3 GTP-U address, so the SSM source the
+    // gNB is told to join on (S,G) actually matches the address packets are transmitted
+    // from. This was previously a hardcoded placeholder (192.168.1.5) that didn't match
+    // any real deployment's N3 address -- since the (S,G) join fails silently at the
+    // multicast-routing layer with no visibility in any application log on either side,
+    // that mismatch alone is enough to make MBS content vanish end-to-end (MCCH/E1AP/F1AP
+    // all still succeed, PDCCH just never gets a G-RNTI grant because zero bytes ever
+    // arrive at RLC).
+    if (!ogs_gtp_self()->gtpu_addr || ogs_gtp_self()->gtpu_addr->sin.sin_addr.s_addr == 0) {
+        /* No address to announce: the source is the address the gNB joins, a wildcard bind address is none */
+        ogs_error("LL-SSM: no GTP-U unicast address configured (upf.gtpu), cannot set the SSM source address");
+        ogs_pool_free(&ogs_pfcp_llssm_pool, ll_ssm);
+        return NULL;
+    }
+    ll_ssm->src_ip_addr.addr = ogs_gtp_self()->gtpu_addr->sin.sin_addr.s_addr;
+    ll_ssm->src_ip_addr.ipv4 = 1;
+    ll_ssm->src_ip_addr.len = OGS_IPV4_LEN;
+
+    ogs_list_add(&self.llssm_list, ll_ssm);
+
+    return ll_ssm;
+}
+
+void ogs_pfcp_llssm_remove(ogs_ssm_t *ll_ssm)
+{
+    ogs_assert(ll_ssm);
+
+    ogs_list_remove(&self.llssm_list, ll_ssm);
+
+    ogs_pool_free(&ogs_pfcp_llssm_pool, ll_ssm);
+}
+
+void ogs_pfcp_llssm_remove_all(void)
+{
+    ogs_ssm_t *ll_ssm = NULL, *next_ll_ssm = NULL;
+
+    ogs_list_for_each_safe(&self.llssm_list, next_ll_ssm, ll_ssm)
+        ogs_pfcp_llssm_remove(ll_ssm);
 }

@@ -263,6 +263,13 @@ bool ogs_pfcp_up_handle_pdr(
             sendhdr.pdu_type =
                 OGS_GTP2_EXTENSION_HEADER_PDU_TYPE_DL_PDU_SESSION_INFORMATION;
             sendhdr.qos_flow_identifier = pdr->qer->qfi;
+            /* IQFISN: "the MB-UPF shall insert the DL MBS QFI Sequence Number in the PDU Session Container";
+             * a number per MBS QoS flow (TS 23.247 cl. 6.8: "the MB-UPF transmits the MBS data with the sequence
+             * number for each MBS QoS Flow"), counting the packets of the flow */
+            if (pdr->qer->insert_mbs_qfi_sn) {
+                sendhdr.mbs_sequence_number_presence = true;
+                sendhdr.mbs_sequence_number = pdr->qer->mbs_qfi_sn++;
+            }
             /* PDU Set marking (TS 29.244 V19.6.0 clause 5.38.3): the PDU Set information of this packet, which the UPF has left in the QER */
             if (pdr->qer->pdu_set_marking && pdr->qer->pdu_set_mark.presence) {
                 sendhdr.pdu_set.presence = true;
@@ -332,7 +339,9 @@ bool ogs_pfcp_up_handle_pdr(
         ogs_trace("ENCAP GTP-U[%d], TEID[0x%x]", sendhdr.type, sendhdr.teid);
     }
 
-    if (!far->gnode) {
+    /* MBSU: a remote GTP-U peer is a destination of the FAR as the low layer SSM node is */
+    if (!far->gnode && !((far->apply_action & OGS_PFCP_APPLY_ACTION_MBSU) &&
+                         !ogs_list_empty(&far->mbs_unicast_list))) {
 
         buffering = true;
 
@@ -345,6 +354,10 @@ bool ogs_pfcp_up_handle_pdr(
 
             buffering = true;
 
+        } else if (far->apply_action &
+                (OGS_PFCP_APPLY_ACTION_FSSM | OGS_PFCP_APPLY_ACTION_MBSU)) {
+            /* Forward packet: to the low layer SSM (FSSM) and to the remote GTP-U peers (MBSU) */
+            ogs_pfcp_send_g_pdu_mbs(pdr, sendbuf);
         } else {
             ogs_error("Not implemented = %d", far->apply_action);
             ogs_pkbuf_free(sendbuf);
@@ -360,6 +373,7 @@ bool ogs_pfcp_up_handle_pdr(
         }
 
         if (far->num_of_buffered_gtpu < OGS_MAX_NUM_OF_GTPU_BUFFER) {
+            far->buffered_gtpu_pdr_id[far->num_of_buffered_gtpu] = pdr->id;
             far->buffered_gtpu[far->num_of_buffered_gtpu++] = sendbuf;
         } else {
             ogs_pkbuf_free(sendbuf);
@@ -446,10 +460,46 @@ static void handle_protocol_description(
     }
 }
 
+/*
+ * The Flow Descriptions of the SDF Filters of a PDI can be compiled. Nothing is changed: a request that is
+ * refused for one has to leave the PFCP session as it was. Returns OGS_OK, or OGS_ERROR for the first filter
+ * whose Flow Description is not valid (TS 29.244 cl. 7.6.8: semantically incorrect).
+ */
+int ogs_pfcp_check_sdf_filters(const ogs_pfcp_tlv_pdi_t *pdi)
+{
+    int i, len;
+
+    ogs_assert(pdi);
+
+    for (i = 0; i < OGS_MAX_NUM_OF_FLOW_IN_PDR; i++) {
+        ogs_pfcp_sdf_filter_t sdf_filter;
+        ogs_ipfw_rule_t ipfw;
+        char *flow_description;
+        int rv;
+
+        if (pdi->sdf_filter[i].presence == 0)
+            break;
+
+        len = ogs_pfcp_parse_sdf_filter(&sdf_filter, (ogs_tlv_octet_t *)&pdi->sdf_filter[i]);
+        if (pdi->sdf_filter[i].len != len || !sdf_filter.fd)
+            continue;   /* the handlers skip these */
+
+        flow_description = ogs_calloc(1, sdf_filter.flow_description_len + 1);
+        ogs_assert(flow_description);
+        ogs_cpystrn(flow_description, sdf_filter.flow_description, sdf_filter.flow_description_len + 1);
+        rv = ogs_ipfw_compile_rule(&ipfw, flow_description);
+        ogs_free(flow_description);
+        if (rv != OGS_OK)
+            return OGS_ERROR;
+    }
+
+    return OGS_OK;
+}
+
 ogs_pfcp_pdr_t *ogs_pfcp_handle_create_pdr(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_create_pdr_t *message,
         ogs_pfcp_sereq_flags_t *sereq_flags,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     ogs_pfcp_pdr_t *pdr = NULL;
     ogs_pfcp_far_t *far = NULL;
@@ -630,6 +680,12 @@ ogs_pfcp_pdr_t *ogs_pfcp_handle_create_pdr(ogs_pfcp_sess_t *sess,
             }
 
             ogs_free(flow_description);
+            if (rv != OGS_OK) {
+                ogs_error("Invalid Flow Description in the SDF Filter");
+                *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+                *offending_ie_value = OGS_PFCP_SDF_FILTER_TYPE;
+                return NULL;
+            }
 /*
  *
  * TS29.244 Ch 5.2.1A.2A
@@ -838,12 +894,39 @@ ogs_pfcp_pdr_t *ogs_pfcp_handle_create_pdr(ogs_pfcp_sess_t *sess,
         ogs_pfcp_pdr_associate_qer(pdr, qer);
     }
 
+    // IP Multicast Addressing Info in PDI IE
+    if (message->pdi.ip_multicast_addressing_info.presence) {
+        if (message->pdi.ip_multicast_addressing_info.ip_multicast_address.presence) {
+            pdr->ip_multicast_addressing_info.ip_multicast_address_len =
+            ogs_min(message->pdi.ip_multicast_addressing_info.ip_multicast_address.len,
+                    sizeof(pdr->ip_multicast_addressing_info.ip_multicast_address));
+
+            memcpy(&pdr->ip_multicast_addressing_info.ip_multicast_address,
+                message->pdi.ip_multicast_addressing_info.ip_multicast_address.data,
+                pdr->ip_multicast_addressing_info.ip_multicast_address_len);
+        }
+
+        if (message->pdi.ip_multicast_addressing_info.source_ip_address.presence) {
+            pdr->ip_multicast_addressing_info.source_ip_address_len =
+            ogs_min(message->pdi.ip_multicast_addressing_info.source_ip_address.len,
+                sizeof(pdr->ip_multicast_addressing_info.source_ip_address));
+
+            memcpy(&pdr->ip_multicast_addressing_info.source_ip_address,
+                message->pdi.ip_multicast_addressing_info.source_ip_address.data,
+                pdr->ip_multicast_addressing_info.source_ip_address_len);
+        }
+
+        pdr->ip_multicast_addressing_info_len =
+            pdr->ip_multicast_addressing_info.ip_multicast_address_len +
+            pdr->ip_multicast_addressing_info.source_ip_address_len;
+    }
+
     return pdr;
 }
 
 ogs_pfcp_pdr_t *ogs_pfcp_handle_created_pdr(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_created_pdr_t *message,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     ogs_pfcp_pdr_t *pdr = NULL;
 
@@ -894,7 +977,7 @@ ogs_pfcp_pdr_t *ogs_pfcp_handle_created_pdr(ogs_pfcp_sess_t *sess,
 
 ogs_pfcp_pdr_t *ogs_pfcp_handle_update_pdr(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_update_pdr_t *message,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     ogs_pfcp_pdr_t *pdr = NULL;
     int i, len;
@@ -1028,6 +1111,12 @@ ogs_pfcp_pdr_t *ogs_pfcp_handle_update_pdr(ogs_pfcp_sess_t *sess,
                 }
 
                 ogs_free(flow_description);
+                if (rv != OGS_OK) {
+                    ogs_error("Invalid Flow Description in the SDF Filter");
+                    *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+                    *offending_ie_value = OGS_PFCP_SDF_FILTER_TYPE;
+                    return NULL;
+                }
     /*
      *
      * TS29.244 Ch 5.2.1A.2A
@@ -1140,7 +1229,7 @@ ogs_pfcp_pdr_t *ogs_pfcp_handle_update_pdr(ogs_pfcp_sess_t *sess,
 
 bool ogs_pfcp_handle_remove_pdr(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_remove_pdr_t *message,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     ogs_pfcp_pdr_t *pdr = NULL;
 
@@ -1171,9 +1260,10 @@ bool ogs_pfcp_handle_remove_pdr(ogs_pfcp_sess_t *sess,
 
 ogs_pfcp_far_t *ogs_pfcp_handle_create_far(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_create_far_t *message,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     ogs_pfcp_far_t *far = NULL;
+    int i;
 
     ogs_assert(message);
     ogs_assert(sess);
@@ -1264,12 +1354,244 @@ ogs_pfcp_far_t *ogs_pfcp_handle_create_far(ogs_pfcp_sess_t *sess,
         }
     }
 
+    far->transport_level_marking = false;
+    far->tos = far->tos_mask = 0;
+    far->mbs_multicast_parameters = message->mbs_multicast_parameters.presence;
+
+    ogs_pfcp_mbs_unicast_remove_all(far);
+    for (i = 0; i < OGS_ARRAY_SIZE(message->add_mbs_unicast_parameters) &&
+            message->add_mbs_unicast_parameters[i].presence; i++) {
+        if (ogs_pfcp_handle_add_mbs_unicast_parameters(far, &message->add_mbs_unicast_parameters[i],
+                    cause_value, offending_ie_value) == NULL)
+            return NULL;
+    }
+
+    if (message->mbs_multicast_parameters.presence) {
+        // TODO (borieher): Keep adding the optional and conditional IEs
+        if (message->mbs_multicast_parameters.destination_interface.presence) {
+            far->dst_if =
+                message->mbs_multicast_parameters.destination_interface.u8;
+        }
+
+        /* TS 29.244 cl. 8.2.12: the DSCP in the first octet, the mask (0xFC) in the second */
+        if (message->mbs_multicast_parameters.transport_level_marking.presence) {
+            const uint8_t *tlm = message->mbs_multicast_parameters.transport_level_marking.data;
+
+            if (message->mbs_multicast_parameters.transport_level_marking.len != 2) {
+                ogs_error("Transport Level Marking length %u",
+                        message->mbs_multicast_parameters.transport_level_marking.len);
+                *cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
+                *offending_ie_value = OGS_PFCP_TRANSPORT_LEVEL_MARKING_TYPE;
+                return NULL;
+            }
+            far->transport_level_marking = true;
+            far->tos = tlm[0];
+            far->tos_mask = tlm[1];
+        }
+
+        /* The Network Instance towards which to send the packets, kept as the one of the forwarding parameters */
+        if (message->mbs_multicast_parameters.network_instance.presence) {
+            char dnn[OGS_MAX_DNN_LEN+1];
+
+            if (ogs_fqdn_parse(dnn,
+                message->mbs_multicast_parameters.network_instance.data,
+                ogs_min(message->mbs_multicast_parameters.network_instance.len,
+                    OGS_MAX_DNN_LEN)) > 0) {
+                if (far->dnn)
+                    ogs_free(far->dnn);
+                far->dnn = ogs_strdup(dnn);
+                ogs_assert(far->dnn);
+            } else {
+                ogs_error("Invalid mbs_multicast_parameters.network_instance");
+            }
+        }
+
+        if (message->mbs_multicast_parameters.outer_header_creation.presence) {
+            ogs_pfcp_tlv_outer_header_creation_t *outer_header_creation =
+                &message->mbs_multicast_parameters.outer_header_creation;
+
+            ogs_assert(outer_header_creation->data);
+            ogs_assert(outer_header_creation->len);
+
+            memcpy(&far->outer_header_creation, outer_header_creation->data,
+                    ogs_min(sizeof(far->outer_header_creation),
+                            outer_header_creation->len));
+
+            if (far->outer_header_creation.teid)
+                far->outer_header_creation.teid =
+                    be32toh(far->outer_header_creation.teid);
+        }
+    }
+
     return far;
+}
+
+ogs_pfcp_mbs_unicast_t *ogs_pfcp_handle_add_mbs_unicast_parameters(ogs_pfcp_far_t *far,
+        ogs_pfcp_tlv_add_mbs_unicast_parameters_t *message,
+        uint8_t *cause_value, uint16_t *offending_ie_value)
+{
+    ogs_pfcp_mbs_unicast_t *mu = NULL;
+    const ogs_pfcp_outer_header_creation_t *ohc;
+    uint16_t id, want;
+    int rv;
+
+    ogs_assert(far);
+    ogs_assert(message);
+
+    /* TS 29.244 Table 7.5.2.3-6: Destination Interface (M), MBS Unicast Parameters ID (M), Outer Header Creation (M) */
+    if (message->destination_interface.presence == 0) {
+        ogs_error("No Destination Interface in Add MBS Unicast Parameters");
+        *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+        *offending_ie_value = OGS_PFCP_DESTINATION_INTERFACE_TYPE;
+        return NULL;
+    }
+    if (message->mbs_unicast_parameters_id.presence == 0) {
+        ogs_error("No MBS Unicast Parameters ID in Add MBS Unicast Parameters");
+        *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+        *offending_ie_value = OGS_PFCP_MBS_UNICAST_PARAMETERS_ID_TYPE;
+        return NULL;
+    }
+    /* TS 29.244 cl. 8.2.210: the value field is an Unsigned16 */
+    if (message->mbs_unicast_parameters_id.len != 2) {
+        ogs_error("MBS Unicast Parameters ID of length %u", message->mbs_unicast_parameters_id.len);
+        *cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
+        *offending_ie_value = OGS_PFCP_MBS_UNICAST_PARAMETERS_ID_TYPE;
+        return NULL;
+    }
+    id = be16toh(*(uint16_t *)message->mbs_unicast_parameters_id.data);
+
+    if (message->outer_header_creation.presence == 0) {
+        ogs_error("No Outer Header Creation in Add MBS Unicast Parameters");
+        *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+        *offending_ie_value = OGS_PFCP_OUTER_HEADER_CREATION_TYPE;
+        return NULL;
+    }
+    /* "It shall contain the F-TEID of the remote GTP-U peer when adding a GTP-U/UDP/IP header": the description
+     * (octets 5 and 6) and then the TEID and the address of each family the description names */
+    ohc = message->outer_header_creation.data;
+    if (message->outer_header_creation.len < 2) {
+        *cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
+        *offending_ie_value = OGS_PFCP_OUTER_HEADER_CREATION_TYPE;
+        return NULL;
+    }
+    if (!ohc->gtpu4 && !ohc->gtpu6) {
+        ogs_error("Add MBS Unicast Parameters: the Outer Header Creation is not GTP-U/UDP/IP");
+        *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+        *offending_ie_value = OGS_PFCP_OUTER_HEADER_CREATION_TYPE;
+        return NULL;
+    }
+    if (ohc->udp4 || ohc->udp6 || ohc->ip4 || ohc->ip6 || ohc->ctag || ohc->stag ||
+            ohc->n19 || ohc->n6 || ohc->ssm_c_teid) {
+        ogs_error("Add MBS Unicast Parameters: an Outer Header Creation besides GTP-U/UDP/IP");
+        *cause_value = OGS_PFCP_CAUSE_SERVICE_NOT_SUPPORTED;
+        *offending_ie_value = OGS_PFCP_OUTER_HEADER_CREATION_TYPE;
+        return NULL;
+    }
+    want = 2 + 4 + (ohc->gtpu4 ? OGS_IPV4_LEN : 0) + (ohc->gtpu6 ? OGS_IPV6_LEN : 0);
+    if (message->outer_header_creation.len != want) {
+        ogs_error("Outer Header Creation of length %u, expected %u", message->outer_header_creation.len, want);
+        *cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
+        *offending_ie_value = OGS_PFCP_OUTER_HEADER_CREATION_TYPE;
+        return NULL;
+    }
+    if (message->transport_level_marking.presence && message->transport_level_marking.len != 2) {
+        ogs_error("Transport Level Marking length %u", message->transport_level_marking.len);
+        *cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
+        *offending_ie_value = OGS_PFCP_TRANSPORT_LEVEL_MARKING_TYPE;
+        return NULL;
+    }
+    if (ogs_pfcp_mbs_unicast_find(far, id)) {
+        ogs_error("MBS Unicast Parameters ID %u of FAR %u is already provisioned", id, far->id);
+        *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+        *offending_ie_value = OGS_PFCP_MBS_UNICAST_PARAMETERS_ID_TYPE;
+        return NULL;
+    }
+
+    mu = ogs_pfcp_mbs_unicast_add(far, id);
+    if (!mu) {
+        *cause_value = OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+        *offending_ie_value = OGS_PFCP_ADD_MBS_UNICAST_PARAMETERS_TYPE;
+        return NULL;
+    }
+
+    mu->dst_if = message->destination_interface.u8;
+    memcpy(&mu->outer_header_creation, ohc, message->outer_header_creation.len);
+    mu->outer_header_creation.teid = be32toh(mu->outer_header_creation.teid);
+
+    if (message->network_instance.presence) {
+        char dnn[OGS_MAX_DNN_LEN+1];
+
+        if (ogs_fqdn_parse(dnn, message->network_instance.data,
+                ogs_min(message->network_instance.len, OGS_MAX_DNN_LEN)) <= 0) {
+            ogs_error("Invalid Network Instance in Add MBS Unicast Parameters");
+            *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+            *offending_ie_value = OGS_PFCP_NETWORK_INSTANCE_TYPE;
+            ogs_pfcp_mbs_unicast_remove(mu);
+            return NULL;
+        }
+        mu->dnn = ogs_strdup(dnn);
+        ogs_assert(mu->dnn);
+    }
+
+    /* TS 29.244 cl. 8.2.12: the DSCP in the first octet, the mask (0xFC) in the second */
+    if (message->transport_level_marking.presence) {
+        const uint8_t *tlm = message->transport_level_marking.data;
+
+        mu->transport_level_marking = true;
+        mu->tos = tlm[0];
+        mu->tos_mask = tlm[1];
+    }
+
+    rv = ogs_pfcp_setup_mbs_unicast_gtpu_node(mu);
+    if (rv != OGS_OK) {
+        ogs_error("ogs_pfcp_setup_mbs_unicast_gtpu_node() failed");
+        *cause_value = OGS_PFCP_CAUSE_SYSTEM_FAILURE;
+        *offending_ie_value = OGS_PFCP_OUTER_HEADER_CREATION_TYPE;
+        ogs_pfcp_mbs_unicast_remove(mu);
+        return NULL;
+    }
+
+    return mu;
+}
+
+ogs_pfcp_mbs_unicast_t *ogs_pfcp_handle_remove_mbs_unicast_parameters(ogs_pfcp_far_t *far,
+        ogs_pfcp_tlv_remove_mbs_unicast_parameters_t *message,
+        uint8_t *cause_value, uint16_t *offending_ie_value)
+{
+    ogs_pfcp_mbs_unicast_t *mu = NULL;
+    uint16_t id;
+
+    ogs_assert(far);
+    ogs_assert(message);
+
+    if (message->mbs_unicast_parameters_id.presence == 0) {
+        ogs_error("No MBS Unicast Parameters ID in Remove MBS Unicast Parameters");
+        *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
+        *offending_ie_value = OGS_PFCP_MBS_UNICAST_PARAMETERS_ID_TYPE;
+        return NULL;
+    }
+    if (message->mbs_unicast_parameters_id.len != 2) {
+        ogs_error("MBS Unicast Parameters ID of length %u", message->mbs_unicast_parameters_id.len);
+        *cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
+        *offending_ie_value = OGS_PFCP_MBS_UNICAST_PARAMETERS_ID_TYPE;
+        return NULL;
+    }
+    id = be16toh(*(uint16_t *)message->mbs_unicast_parameters_id.data);
+
+    mu = ogs_pfcp_mbs_unicast_find(far, id);
+    if (!mu) {
+        ogs_error("MBS Unicast Parameters ID %u is not provisioned in FAR %u", id, far->id);
+        *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_INCORRECT;
+        *offending_ie_value = OGS_PFCP_MBS_UNICAST_PARAMETERS_ID_TYPE;
+        return NULL;
+    }
+
+    return mu;
 }
 
 ogs_pfcp_far_t *ogs_pfcp_handle_update_far_flags(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_update_far_t *message,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     ogs_pfcp_far_t *far = NULL;
 
@@ -1307,7 +1629,7 @@ ogs_pfcp_far_t *ogs_pfcp_handle_update_far_flags(ogs_pfcp_sess_t *sess,
 
 ogs_pfcp_far_t *ogs_pfcp_handle_update_far(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_update_far_t *message,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     ogs_pfcp_far_t *far = NULL;
 
@@ -1394,7 +1716,7 @@ ogs_pfcp_far_t *ogs_pfcp_handle_update_far(ogs_pfcp_sess_t *sess,
 
 bool ogs_pfcp_handle_remove_far(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_remove_far_t *message,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     ogs_pfcp_far_t *far = NULL;
 
@@ -1425,7 +1747,7 @@ bool ogs_pfcp_handle_remove_far(ogs_pfcp_sess_t *sess,
 
 ogs_pfcp_qer_t *ogs_pfcp_handle_create_qer(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_create_qer_t *message,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     int rv;
     ogs_pfcp_qer_t *qer = NULL;
@@ -1454,7 +1776,7 @@ ogs_pfcp_qer_t *ogs_pfcp_handle_create_qer(ogs_pfcp_sess_t *sess,
     if (message->gate_status.presence == 0) {
         ogs_error("No Gate Status");
         *cause_value = OGS_PFCP_CAUSE_MANDATORY_IE_MISSING;
-        *offending_ie_value = OGS_PFCP_APPLY_ACTION_TYPE;
+        *offending_ie_value = OGS_PFCP_GATE_STATUS_TYPE;
         return NULL;
     }
 
@@ -1504,13 +1826,17 @@ ogs_pfcp_qer_t *ogs_pfcp_handle_create_qer(ogs_pfcp_sess_t *sess,
         qer->data_burst_size_marking = (((uint8_t *)message->qer_indications.data)[0] & 0x10) ? true : false;
         qer->time_to_next_burst_marking = (((uint8_t *)message->qer_indications.data)[0] & 0x20) ? true : false;
     }
+    /* QER Indications, octet 5 bit 1: IQFISN (TS 29.244 cl. 8.2.216) */
+    qer->insert_mbs_qfi_sn = false;
+    if (message->qer_indications.presence && message->qer_indications.len >= 1)
+        qer->insert_mbs_qfi_sn = *(const uint8_t *)message->qer_indications.data & 0x01;
 
     return qer;
 }
 
 ogs_pfcp_qer_t *ogs_pfcp_handle_update_qer(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_update_qer_t *message,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     int rv;
     ogs_pfcp_qer_t *qer = NULL;
@@ -1573,12 +1899,17 @@ ogs_pfcp_qer_t *ogs_pfcp_handle_update_qer(ogs_pfcp_sess_t *sess,
         qer->time_to_next_burst_marking = (((uint8_t *)message->qer_indications.data)[0] & 0x20) ? true : false;
     }
 
+    /* QER Indications, octet 5 bit 1: IQFISN (TS 29.244 cl. 8.2.216) */
+    qer->insert_mbs_qfi_sn = false;
+    if (message->qer_indications.presence && message->qer_indications.len >= 1)
+        qer->insert_mbs_qfi_sn = *(const uint8_t *)message->qer_indications.data & 0x01;
+
     return qer;
 }
 
 bool ogs_pfcp_handle_remove_qer(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_remove_qer_t *message,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     ogs_pfcp_qer_t *qer = NULL;
 
@@ -1609,7 +1940,7 @@ bool ogs_pfcp_handle_remove_qer(ogs_pfcp_sess_t *sess,
 
 ogs_pfcp_bar_t *ogs_pfcp_handle_create_bar(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_create_bar_t *message,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     ogs_assert(message);
     ogs_assert(sess);
@@ -1637,7 +1968,7 @@ ogs_pfcp_bar_t *ogs_pfcp_handle_create_bar(ogs_pfcp_sess_t *sess,
 
 bool ogs_pfcp_handle_remove_bar(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_remove_bar_t *message,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     ogs_assert(sess);
     ogs_assert(message);
@@ -1665,7 +1996,7 @@ bool ogs_pfcp_handle_remove_bar(ogs_pfcp_sess_t *sess,
 /* The SRR of a Create SRR or an Update SRR: the QoS monitoring control of one QoS flow (TS 29.244 V19.6.0 clause 5.39.2) */
 ogs_pfcp_srr_t *ogs_pfcp_handle_srr(ogs_pfcp_sess_t *sess, bool create,
         ogs_tlv_octet_t *srr_id, ogs_tlv_octet_t *control,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     ogs_pfcp_srr_t *srr = NULL;
     ogs_pfcp_qos_monitoring_control_t parsed;
@@ -1701,7 +2032,7 @@ ogs_pfcp_srr_t *ogs_pfcp_handle_srr(ogs_pfcp_sess_t *sess, bool create,
 
 ogs_pfcp_urr_t *ogs_pfcp_handle_create_urr(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_create_urr_t *message,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     int16_t decoded;
     ogs_pfcp_urr_t *urr = NULL;
@@ -1839,7 +2170,7 @@ ogs_pfcp_urr_t *ogs_pfcp_handle_create_urr(ogs_pfcp_sess_t *sess,
 
 ogs_pfcp_urr_t *ogs_pfcp_handle_update_urr(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_update_urr_t *message,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     int16_t decoded;
     ogs_pfcp_urr_t *urr = NULL;
@@ -1952,7 +2283,7 @@ ogs_pfcp_urr_t *ogs_pfcp_handle_update_urr(ogs_pfcp_sess_t *sess,
 
 bool ogs_pfcp_handle_remove_urr(ogs_pfcp_sess_t *sess,
         ogs_pfcp_tlv_remove_urr_t *message,
-        uint8_t *cause_value, uint8_t *offending_ie_value)
+        uint8_t *cause_value, uint16_t *offending_ie_value)
 {
     ogs_pfcp_urr_t *urr = NULL;
 

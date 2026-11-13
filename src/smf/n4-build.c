@@ -737,9 +737,9 @@ ogs_pkbuf_t *smf_n4_build_usage_monitoring_request(
         }
 
         if (sess->policy.um[i].query_pending && !queried && sess->policy.um[i].created) {
-            req->query_urr.presence = 1;
-            req->query_urr.urr_id.presence = 1;
-            req->query_urr.urr_id.u32 = urr->id;
+            req->query_urr[0].presence = 1;
+            req->query_urr[0].urr_id.presence = 1;
+            req->query_urr[0].urr_id.u32 = urr->id;
             sess->policy.um[i].query_pending = false;
             sess->policy.um[i].query_inflight = true;
             queried = true;
