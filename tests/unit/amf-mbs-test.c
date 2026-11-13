@@ -1548,6 +1548,117 @@ static void test_encode_large_cell_list(void)
     ogs_pkbuf_free(container);
 }
 
+/* The NR NTN Intended Service Areas (TS 38.413 V19.4.0 clauses 9.3.1.209 and 9.3.1.273; TS 29.571 V19.8.0 clause 5.9.4.4):
+ * the MBS Service Area Information of the Broadcast Session Setup Request carries them as the extension "MBS Intended
+ * Service Area List | O | ... | YES | ignore", each entry the octets that the SBI carries in base64. */
+static void area_add_intended(ogs_mbs_service_area_t *area, const char *base64)
+{
+    ogs_intended_service_area_t *isa = ogs_calloc(1, sizeof(*isa));
+
+    if (!area->intended_area_list) {
+        area->intended_area_list = ogs_calloc(1, sizeof(*area->intended_area_list));
+        ogs_list_init(area->intended_area_list);
+    }
+    isa->bytes = ogs_strdup(base64);
+    ogs_list_add(area->intended_area_list, isa);
+}
+
+static void test_intended_service_area(void)
+{
+    amf_mbs_context_t ctx = make_context();
+    ogs_pkbuf_t *container = ogs_pkbuf_alloc(NULL, 4), *request;
+    ogs_ngap_message_t pdu;
+    ogs_mbs_service_area_t *a, *b;
+
+    ogs_pkbuf_put_data(container, "\x01\x02\x03\x04", 4);
+
+    /* two areas: 01020304 and 0506 */
+    ctx.mbs_service_area = area_with_cells(2);
+    area_add_intended(ctx.mbs_service_area, "AQIDBA==");
+    area_add_intended(ctx.mbs_service_area, "BQY=");
+    request = ngap_build_broadcast_session_setup_request(&ctx, container);
+    CHECK(decode_pdu(request, &pdu));
+    if (request && pdu.present == NGAP_NGAP_PDU_PR_initiatingMessage) {
+        NGAP_BroadcastSessionSetupRequest_t *r =
+            pdu.choice.initiatingMessage->value.choice.BroadcastSessionSetupRequest;
+        int i, found = 0;
+
+        for (i = 0; i < OGS_ASN_LIST_COUNT(r->protocolIEs); i++) {
+            NGAP_BroadcastSessionSetupRequestIEs_t *ie = OGS_ASN_LIST_GET(r->protocolIEs, i);
+            NGAP_MBS_ServiceAreaInformation_t *info;
+            NGAP_ProtocolExtensionContainer_14713P201_t *ext;
+            NGAP_MBS_ServiceAreaInformation_ExtIEs_t *extIe;
+            NGAP_MBS_IntendedServiceAreaList_t *list;
+
+            if (ie->id != NGAP_ProtocolIE_ID_id_MBS_ServiceArea)
+                continue;
+            CHECK(ie->value.choice.MBS_ServiceArea->present == NGAP_MBS_ServiceArea_PR_locationindependent);
+            info = ie->value.choice.MBS_ServiceArea->choice.locationindependent;
+            ext = (NGAP_ProtocolExtensionContainer_14713P201_t *)info->iE_Extensions;
+            CHECK(ext != NULL && ext->list.count == 1);
+            if (!ext || ext->list.count != 1)
+                continue;
+            extIe = ext->list.array[0];
+            CHECK(extIe->id == NGAP_ProtocolIE_ID_id_MBS_IntendedServiceAreaList &&
+                    extIe->id == 449 && extIe->criticality == NGAP_Criticality_ignore);
+            CHECK(extIe->extensionValue.present ==
+                    NGAP_MBS_ServiceAreaInformation_ExtIEs__extensionValue_PR_MBS_IntendedServiceAreaList);
+            list = extIe->extensionValue.choice.MBS_IntendedServiceAreaList;
+            CHECK(list && list->list.count == 2);
+            if (list && list->list.count == 2) {
+                CHECK(list->list.array[0]->size == 4 && !memcmp(list->list.array[0]->buf, "\x01\x02\x03\x04", 4));
+                CHECK(list->list.array[1]->size == 2 && !memcmp(list->list.array[1]->buf, "\x05\x06", 2));
+            }
+            found = 1;
+        }
+        CHECK(found);
+    } else
+        CHECK(0);
+    if (request) {
+        ogs_ngap_free(&pdu);
+        ogs_pkbuf_free(request);
+    }
+    ogs_mbs_service_area_free(ctx.mbs_service_area);
+
+    /* an entry that is not base64 is left out; with no entry left there is no extension at all */
+    ctx.mbs_service_area = area_with_cells(2);
+    area_add_intended(ctx.mbs_service_area, "***");
+    request = ngap_build_broadcast_session_setup_request(&ctx, container);
+    CHECK(decode_pdu(request, &pdu));
+    if (request && pdu.present == NGAP_NGAP_PDU_PR_initiatingMessage) {
+        NGAP_BroadcastSessionSetupRequest_t *r =
+            pdu.choice.initiatingMessage->value.choice.BroadcastSessionSetupRequest;
+        int i;
+
+        for (i = 0; i < OGS_ASN_LIST_COUNT(r->protocolIEs); i++) {
+            NGAP_BroadcastSessionSetupRequestIEs_t *ie = OGS_ASN_LIST_GET(r->protocolIEs, i);
+
+            if (ie->id == NGAP_ProtocolIE_ID_id_MBS_ServiceArea)
+                CHECK(ie->value.choice.MBS_ServiceArea->choice.locationindependent->iE_Extensions == NULL);
+        }
+    }
+    if (request) {
+        ogs_ngap_free(&pdu);
+        ogs_pkbuf_free(request);
+    }
+    ogs_mbs_service_area_free(ctx.mbs_service_area);
+    ogs_pkbuf_free(container);
+
+    /* the comparison that decides whether a ContextUpdate changes the area for the NG-RAN */
+    a = area_with_cells(1);
+    b = area_with_cells(1);
+    CHECK(ogs_mbs_service_area_intended_equal(a, b) && ogs_mbs_service_area_intended_equal(NULL, NULL));
+    area_add_intended(a, "AQIDBA==");
+    CHECK(!ogs_mbs_service_area_intended_equal(a, b) && !ogs_mbs_service_area_intended_equal(b, a));
+    area_add_intended(b, "AQIDBA==");
+    CHECK(ogs_mbs_service_area_intended_equal(a, b));
+    area_add_intended(a, "BQY=");
+    area_add_intended(b, "BQU=");
+    CHECK(!ogs_mbs_service_area_intended_equal(a, b));
+    ogs_mbs_service_area_free(a);
+    ogs_mbs_service_area_free(b);
+}
+
 /* The Associated Session ID of a Broadcast Session Setup Request. TS 38.413 V18.8.0 cl. 9.2.16.1: the message has
  * "Associated Session ID | O |  | 9.3.1.262 |  | YES | ignore"; cl. 9.3.1.262: "Coded as the AssociatedSessionId IE
  * defined in TS 29.571 [35]. The gNB does not interpret the content of the Associated Session ID IE."; TS 29.518 V18.14.0
@@ -2237,6 +2348,7 @@ int main(int argc, const char *argv[])
     test_setup_request_associated_session_id();
     test_context_create_req_data_associated_session_id();
     test_other_requests_have_no_associated_session_id();
+    test_intended_service_area();
     test_notify_response_any_uri();
     test_update_action_enters_area();
     test_update_action_leaves_area();

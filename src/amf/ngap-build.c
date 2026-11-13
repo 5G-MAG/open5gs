@@ -3327,6 +3327,53 @@ static void mbs_service_area_information_set(
             }
         }
     }
+
+    /* The NR NTN Intended Service Areas: TS 38.413 V19.4.0 clause 9.3.1.209, "MBS Intended Service Area List | O |
+     * 0..<maxnoofIntendedAreasforMBS> | | | YES | ignore", each "Intended Service Area Coordinates | M | OCTET STRING |
+     * Includes the areaCoordinates contained in the IntendedServiceAreaInfo IE as defined in TS 38.331" (clause 9.3.1.273);
+     * the Intended Service Area of the SBI is those octets in base64 (TS 29.571 V19.8.0 clause 5.9.4.4). */
+    if (ogs_mbs_service_area_intended_count(service_area) > 0) {
+        NGAP_ProtocolExtensionContainer_14713P201_t *ext = NULL;
+        NGAP_MBS_ServiceAreaInformation_ExtIEs_t *extIe = NULL;
+        NGAP_MBS_IntendedServiceAreaList_t *isa_list = NULL;
+        ogs_intended_service_area_t *isa = NULL;
+
+        ext = CALLOC(1, sizeof(*ext));
+        ogs_assert(ext);
+        extIe = CALLOC(1, sizeof(*extIe));
+        ogs_assert(extIe);
+        ASN_SEQUENCE_ADD(&ext->list, extIe);
+        extIe->id = NGAP_ProtocolIE_ID_id_MBS_IntendedServiceAreaList;
+        extIe->criticality = NGAP_Criticality_ignore;
+        extIe->extensionValue.present =
+            NGAP_MBS_ServiceAreaInformation_ExtIEs__extensionValue_PR_MBS_IntendedServiceAreaList;
+        isa_list = CALLOC(1, sizeof(*isa_list));
+        ogs_assert(isa_list);
+        extIe->extensionValue.choice.MBS_IntendedServiceAreaList = isa_list;
+
+        ogs_list_for_each(service_area->intended_area_list, isa) {
+            NGAP_IntendedServiceAreaCoordinates_t *coordinates = NULL;
+            uint8_t octets[OGS_MAX_SDU_LEN];
+            int len;
+
+            len = ogs_base64_decode_to_buffer(octets, sizeof(octets), isa->bytes);
+            if (len <= 0) {
+                ogs_error("MBS Intended Service Area: not base64 octets, left out [%.40s]", isa->bytes);
+                continue;
+            }
+            coordinates = CALLOC(1, sizeof(*coordinates));
+            ogs_assert(coordinates);
+            ogs_asn_buffer_to_OCTET_STRING(octets, len, coordinates);
+            ASN_SEQUENCE_ADD(&isa_list->list, coordinates);
+        }
+
+        if (isa_list->list.count > 0) {
+            info->iE_Extensions = (struct NGAP_ProtocolExtensionContainer *)ext;
+        } else {
+            /* nothing to carry: no empty list (the IE is 1..N) */
+            ASN_STRUCT_FREE(asn_DEF_NGAP_ProtocolExtensionContainer_14713P201, ext);
+        }
+    }
 }
 
 /*

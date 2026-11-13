@@ -1316,11 +1316,25 @@ void ogs_ncgi_tai_free(ogs_ncgi_tai_t *ncgi_tai);
  * MBS Service Area
  * 3GPP TS 29.571 Ch. 5.9.4.4 - MbsServiceArea
  */
+typedef struct ogs_intended_service_area_s {
+    ogs_lnode_t lnode;           /* A node of list_t */
+    char *bytes;                 /* IntendedServiceArea: base64 text, kept as received (the MB-SMF and AMF only relay it) */
+} ogs_intended_service_area_t;
+
+/* TS 29.571 V19.8.0 clause 5.9.4.4: intendedServAreaList, "The NR NTN Intended Service Area ... contains information
+ * that shall only be used by the NG-RAN, i.e. the MB-SMF and AMF shall transfer this information transparently." */
+#define OGS_MAX_NUM_OF_INTENDED_SERVICE_AREA 65536  /* maxnoofIntendedAreasforMBS, TS 38.413 V19.4.0 clause 9.3.1.209 */
+
 typedef struct ogs_mbs_service_area_s {
     ogs_lnode_t lnode;           /* A node of list_t */
     ogs_list_t *ncgi_tai_list;   /* list of ogs_ncgi_tai_t */
     ogs_list_t *tai_list;        /* list of ogs_tai_t */
+    ogs_list_t *intended_area_list; /* list of ogs_intended_service_area_t, NULL when there is none */
 } ogs_mbs_service_area_t;
+
+/* Whether the NR NTN Intended Service Area lists of two service areas are the same, in order */
+bool ogs_mbs_service_area_intended_equal(const ogs_mbs_service_area_t *a, const ogs_mbs_service_area_t *b);
+int ogs_mbs_service_area_intended_count(const ogs_mbs_service_area_t *area);
 
 void ogs_mbs_service_area_free(ogs_mbs_service_area_t *mbs_service_area);
 

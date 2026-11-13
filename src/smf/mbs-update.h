@@ -90,6 +90,7 @@ const char *smf_json_patch_apply(cJSON *doc, OpenAPI_list_t *patch_items);
 
 /* The MBS service area of the OpenAPI model as the session holds it. Returns false when a PLMN is malformed. */
 bool smf_mbs_service_area_from_openapi(OpenAPI_mbs_service_area_t *api_area, ogs_mbs_service_area_t **out);
+bool smf_mbs_service_area_take_intended(ogs_mbs_service_area_t **area, OpenAPI_list_t *list);
 
 /* The MBS QoS flows of the MBS service information: one for each media component with a QoS requirement, keyed
  * by the media component number, QFI and PDR not set; with no such component the default flow of 5QI 9. */

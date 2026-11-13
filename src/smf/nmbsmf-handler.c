@@ -1063,6 +1063,19 @@ bool smf_nmbsmf_handle_mbs_session_create(
                 tai = NULL;
             }
         }
+
+        /* The NR NTN Intended Service Areas (TS 29.571 V19.8.0 clause 5.9.4.4, intendedServAreaList), kept as received */
+        if (CreateReqData->mbs_session->mbs_service_area->intended_serv_area_list) {
+            if (!smf_mbs_service_area_take_intended(&mbs_service_area,
+                        CreateReqData->mbs_session->mbs_service_area->intended_serv_area_list)) {
+                ogs_error("MBS Session Create: invalid intendedServAreaList");
+                ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST, message,
+                        "Invalid intendedServAreaList",
+                        "intendedServAreaList: an empty IntendedServiceArea or more entries than the NGAP list holds", NULL);
+                rv = OGS_ERROR;
+                goto cleanup;
+            }
+        }
     }
 
     // Extract External MBS Service Area if present

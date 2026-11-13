@@ -352,6 +352,47 @@ static bool parse_tai(ogs_tai_t *tai, OpenAPI_tai_t *api_tai)
     return true;
 }
 
+/*
+ * Adds the NR NTN Intended Service Areas of an intendedServAreaList to \p *area (created when there is none): false, and
+ * \p *area as it was, for an empty entry or more entries than the MBS Intended Service Area List of NGAP has room for
+ * (TS 38.413 V19.4.0 clause 9.3.1.209, maxnoofIntendedAreasforMBS).
+ */
+bool smf_mbs_service_area_take_intended(ogs_mbs_service_area_t **area, OpenAPI_list_t *list)
+{
+    OpenAPI_lnode_t *node;
+    ogs_mbs_service_area_t *target;
+
+    ogs_assert(area);
+    ogs_assert(list);
+
+    if (list->count > OGS_MAX_NUM_OF_INTENDED_SERVICE_AREA) {
+        ogs_error("intendedServAreaList: %d entries, at most %d fit in the MBS Intended Service Area List of NGAP",
+                (int)list->count, OGS_MAX_NUM_OF_INTENDED_SERVICE_AREA);
+        return false;
+    }
+    OpenAPI_list_for_each(list, node) {
+        if (!node->data || !*(char *)node->data) {
+            ogs_error("intendedServAreaList: an empty IntendedServiceArea");
+            return false;
+        }
+    }
+    if (!list->count)
+        return true;
+
+    if (!*area)
+        *area = ogs_calloc(1, sizeof(**area));
+    target = *area;
+    if (!target->intended_area_list)
+        target->intended_area_list = ogs_calloc(1, sizeof(*target->intended_area_list));
+    OpenAPI_list_for_each(list, node) {
+        ogs_intended_service_area_t *isa = ogs_calloc(1, sizeof(*isa));
+
+        isa->bytes = ogs_strdup(node->data);
+        ogs_list_add(target->intended_area_list, isa);
+    }
+    return true;
+}
+
 bool smf_mbs_service_area_from_openapi(OpenAPI_mbs_service_area_t *api_area, ogs_mbs_service_area_t **out)
 {
     OpenAPI_lnode_t *node, *cell_node;
@@ -413,6 +454,12 @@ bool smf_mbs_service_area_from_openapi(OpenAPI_mbs_service_area_t *api_area, ogs
             }
             ogs_list_add(area->tai_list, tai);
         }
+    }
+
+    /* intendedServAreaList (TS 29.571 V19.8.0 clause 5.9.4.4): kept as received, for the NG-RAN */
+    if (api_area->intended_serv_area_list && !smf_mbs_service_area_take_intended(&area, api_area->intended_serv_area_list)) {
+        ogs_mbs_service_area_free(area);
+        return false;
     }
 
     *out = area;

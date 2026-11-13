@@ -5320,6 +5320,91 @@ static void test_associated_session_id(void)
     if (mbs_sess) smf_mbs_sess_release(mbs_sess);
 }
 
+/* The NR NTN Intended Service Area (TS 29.571 V19.8.0 clause 5.9.4.4, intendedServAreaList, "the MB-SMF and AMF shall
+ * transfer this information transparently"; TS 23.247 V19.3.0 clauses 6.21 and 7.3.1): the MB-SMF keeps the list of an
+ * Nmbsmf request and forwards it, as received, in the mbsServiceArea of the Namf_MBSBroadcast ContextCreate. */
+static void test_intended_service_area(void)
+{
+    static const char *with_isa = "{\"taiList\":[{\"plmnId\":{\"mcc\":\"999\",\"mnc\":\"70\"},\"tac\":\"000001\"}],"
+        "\"intendedServAreaList\":[\"AQIDBA==\",\"BQY=\"]}";
+    cJSON *json = cJSON_Parse(with_isa);
+    OpenAPI_mbs_service_area_t *api = OpenAPI_mbs_service_area_parseFromJSON(json);
+    ogs_mbs_service_area_t *area = NULL;
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    ogs_sbi_request_t *request;
+    ogs_intended_service_area_t *isa;
+
+    cJSON_Delete(json);
+    CHECK(api != NULL && smf_mbs_service_area_from_openapi(api, &area) && area != NULL);
+    CHECK(ogs_mbs_service_area_intended_count(area) == 2);
+    if (ogs_mbs_service_area_intended_count(area) == 2) {
+        isa = ogs_list_first(area->intended_area_list);
+        CHECK(!strcmp(isa->bytes, "AQIDBA=="));
+        isa = ogs_list_next(isa);
+        CHECK(!strcmp(isa->bytes, "BQY="));
+    }
+    if (api) OpenAPI_mbs_service_area_free(api);
+
+    if (mbs_sess && area) {
+        mbs_sess->mbs_service_area = area;
+        area = NULL;
+        mbs_sess->location_dependent = false;
+        request = smf_namf_build_mbs_broadcast_context_create_request(mbs_sess, NULL);
+        CHECK(request != NULL);
+        if (request) {
+            CHECK(request->http.content && strstr(request->http.content, "\"intendedServAreaList\":[\"AQIDBA==\",\"BQY=\"]"));
+            ogs_sbi_request_free(request);
+        }
+
+        /* a location dependent MBS service over NR NTN is not supported: not forwarded */
+        mbs_sess->location_dependent = true;
+        request = smf_namf_build_mbs_broadcast_context_create_request(mbs_sess, NULL);
+        CHECK(request != NULL);
+        if (request) {
+            CHECK(request->http.content && !strstr(request->http.content, "intendedServAreaList"));
+            ogs_sbi_request_free(request);
+        }
+        mbs_sess->location_dependent = false;
+    }
+    if (area) ogs_mbs_service_area_free(area);
+
+    /* an empty IntendedServiceArea, and more entries than the NGAP list has room for, are refused */
+    json = cJSON_Parse("{\"taiList\":[{\"plmnId\":{\"mcc\":\"999\",\"mnc\":\"70\"},\"tac\":\"000001\"}],"
+            "\"intendedServAreaList\":[\"\"]}");
+    api = OpenAPI_mbs_service_area_parseFromJSON(json);
+    cJSON_Delete(json);
+    area = NULL;
+    CHECK(api != NULL && !smf_mbs_service_area_from_openapi(api, &area) && area == NULL);
+    if (api) OpenAPI_mbs_service_area_free(api);
+
+    {
+        cJSON *doc = cJSON_CreateObject(), *tais = cJSON_AddArrayToObject(doc, "taiList"), *tai = cJSON_CreateObject();
+        cJSON *list = cJSON_AddArrayToObject(doc, "intendedServAreaList");
+        int i;
+
+        cJSON_AddItemToArray(tais, tai);
+        cJSON_AddItemToObject(tai, "plmnId", cJSON_Parse("{\"mcc\":\"999\",\"mnc\":\"70\"}"));
+        cJSON_AddStringToObject(tai, "tac", "000001");
+        for (i = 0; i < OGS_MAX_NUM_OF_INTENDED_SERVICE_AREA; i++)
+            cJSON_AddItemToArray(list, cJSON_CreateString("AQ=="));
+        api = OpenAPI_mbs_service_area_parseFromJSON(doc);
+        area = NULL;
+        CHECK(api != NULL && smf_mbs_service_area_from_openapi(api, &area) &&
+                ogs_mbs_service_area_intended_count(area) == OGS_MAX_NUM_OF_INTENDED_SERVICE_AREA);
+        if (area) ogs_mbs_service_area_free(area);
+        if (api) OpenAPI_mbs_service_area_free(api);
+
+        cJSON_AddItemToArray(list, cJSON_CreateString("AQ=="));
+        api = OpenAPI_mbs_service_area_parseFromJSON(doc);
+        area = NULL;
+        CHECK(api != NULL && !smf_mbs_service_area_from_openapi(api, &area) && area == NULL);
+        if (api) OpenAPI_mbs_service_area_free(api);
+        cJSON_Delete(doc);
+    }
+
+    if (mbs_sess) smf_mbs_sess_release(mbs_sess);
+}
+
 /* TS 23.247 V18.8.0 clause 7.1.1.7 step 8: with an MBS Policy Association the MB-SMF sends the Update to the PCF
  * when told "that the PCF has to be contacted" or when it has new MBS service information; contactPcfInd "false"
  * means that the PCF shall not be contacted (TS 29.532 V18.6.0 table 6.2.6.2.4-1) */
@@ -5967,6 +6052,7 @@ int main(void)
     test_mbs_pcf_create_request();
     test_area_session_policy_id();
     test_associated_session_id();
+    test_intended_service_area();
     test_mbs_pcf_update();
     test_mbs_pcf_release_continue();
 

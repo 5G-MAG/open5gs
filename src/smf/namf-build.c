@@ -202,6 +202,7 @@ static void smf_namf_build_mbs_service_area(smf_mbs_sess_t *mbs_sess, const char
     OpenAPI_tai_t *tai_list_item = NULL;
     OpenAPI_list_t *tai_list = NULL;
     OpenAPI_list_t *ncgi_list = NULL;
+    OpenAPI_list_t *intended_list = NULL;
 
     // Forward the TAI list and NCGI-TAI list this session's own MBS Session Create request actually
     // carried (mbs_sess->mbs_service_area->tai_list/ncgi_tai_list, populated by
@@ -251,13 +252,29 @@ static void smf_namf_build_mbs_service_area(smf_mbs_sess_t *mbs_sess, const char
                 "sending an empty TAI list", operation);
     }
 
+    /* The NR NTN Intended Service Areas are transferred as they came (TS 29.571 V19.8.0 clause 5.9.4.4, NOTE 2). A
+     * location dependent MBS service over NR NTN is not supported (TS 23.247 V19.3.0 clause 6.21, NOTE 3), so the
+     * areas of a location dependent session are not forwarded. */
+    if (mbs_sess->mbs_service_area && mbs_sess->mbs_service_area->intended_area_list) {
+        if (mbs_sess->location_dependent) {
+            ogs_warn("MBS Broadcast %s: the NR NTN Intended Service Area of a location dependent MBS session is not "
+                    "forwarded", operation);
+        } else {
+            ogs_intended_service_area_t *isa = NULL;
+
+            intended_list = OpenAPI_list_create();
+            ogs_list_for_each(mbs_sess->mbs_service_area->intended_area_list, isa)
+                OpenAPI_list_add(intended_list, ogs_strdup(isa->bytes));
+        }
+    }
+
     if (mbs_sess->location_dependent) {
         *mbs_service_area_info_list = OpenAPI_list_create();
         OpenAPI_list_add(*mbs_service_area_info_list,
                 OpenAPI_mbs_service_area_info_create(mbs_sess->area_session_id,
                         OpenAPI_mbs_service_area_create(ncgi_list, tai_list, NULL)));
     } else {
-        *mbs_service_area = OpenAPI_mbs_service_area_create(ncgi_list, tai_list, NULL);
+        *mbs_service_area = OpenAPI_mbs_service_area_create(ncgi_list, tai_list, intended_list);
     }
 
 }

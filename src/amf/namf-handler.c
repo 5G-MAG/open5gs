@@ -2217,6 +2217,29 @@ static void amf_namf_parse_mbs_service_area(ogs_mbs_service_area_t **out, OpenAP
             ogs_list_add((*out)->ncgi_tai_list, ncgi_tai);
         }
     }
+
+    /* The NR NTN Intended Service Areas are for the NG-RAN: transferred as received (TS 29.571 V19.8.0 clause 5.9.4.4,
+     * NOTE 2: "the MB-SMF and AMF shall transfer this information transparently") */
+    if (api_area->intended_serv_area_list) {
+        OpenAPI_list_for_each(api_area->intended_serv_area_list, node) {
+            ogs_intended_service_area_t *isa = NULL;
+
+            if (!node->data || !*(char *)node->data)
+                continue;
+            isa = ogs_calloc(1, sizeof(*isa));
+            ogs_assert(isa);
+            isa->bytes = ogs_strdup(node->data);
+            if (!*out) {
+                *out = ogs_calloc(1, sizeof(**out));
+                ogs_assert(*out);
+            }
+            if (!(*out)->intended_area_list) {
+                (*out)->intended_area_list = ogs_calloc(1, sizeof(*(*out)->intended_area_list));
+                ogs_assert((*out)->intended_area_list);
+            }
+            ogs_list_add((*out)->intended_area_list, isa);
+        }
+    }
 }
 
 /* Whether \p gnb serves the TAI \p tai: its NG Setup Request listed the TAC with the PLMN */
@@ -2280,6 +2303,11 @@ static bool amf_namf_gnb_affected_by_area_change(const amf_gnb_t *gnb,
         const ogs_mbs_service_area_t *old_area, const ogs_mbs_service_area_t *new_area)
 {
     ogs_tai_t *tai = NULL;
+
+    /* A change of the NR NTN Intended Service Areas is for every NG-RAN node that takes the session (TS 38.413 V19.4.0
+     * clause 8.17.2.2: "the NG-RAN node shall, if supported, update the intended service area information") */
+    if (!ogs_mbs_service_area_intended_equal(old_area, new_area))
+        return true;
 
     if (!old_area || !old_area->tai_list || ogs_list_count(old_area->tai_list) == 0 ||
         !new_area || !new_area->tai_list || ogs_list_count(new_area->tai_list) == 0)

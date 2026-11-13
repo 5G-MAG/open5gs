@@ -1395,7 +1395,38 @@ void ogs_mbs_service_area_free(ogs_mbs_service_area_t *mbs_service_area)
         }
         ogs_free(mbs_service_area->tai_list);
     }
+    if (mbs_service_area->intended_area_list) {
+        ogs_intended_service_area_t *isa, *next;
+        ogs_list_for_each_safe(mbs_service_area->intended_area_list, next, isa) {
+            ogs_list_remove(mbs_service_area->intended_area_list, isa);
+            ogs_free(isa->bytes);
+            ogs_free(isa);
+        }
+        ogs_free(mbs_service_area->intended_area_list);
+    }
     ogs_free(mbs_service_area);
+}
+
+int ogs_mbs_service_area_intended_count(const ogs_mbs_service_area_t *area)
+{
+    return (area && area->intended_area_list) ? (int)ogs_list_count(area->intended_area_list) : 0;
+}
+
+bool ogs_mbs_service_area_intended_equal(const ogs_mbs_service_area_t *a, const ogs_mbs_service_area_t *b)
+{
+    ogs_intended_service_area_t *ia, *ib;
+
+    if (ogs_mbs_service_area_intended_count(a) != ogs_mbs_service_area_intended_count(b))
+        return false;
+    if (!ogs_mbs_service_area_intended_count(a))
+        return true;
+    ib = ogs_list_first(b->intended_area_list);
+    ogs_list_for_each(a->intended_area_list, ia) {
+        if (strcmp(ia->bytes, ib->bytes) != 0)
+            return false;
+        ib = ogs_list_next(ib);
+    }
+    return true;
 }
 
 void ogs_geographic_area_free(ogs_geographic_area_t *geographic_area)
