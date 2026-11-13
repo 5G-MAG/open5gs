@@ -6388,9 +6388,10 @@ components:
           allOf:
             - $ref: '#/components/schemas/Uri'
           readOnly: true
+      # notifyUri is Write-Only (TS 29.571 table 5.9.4.7-1): the response of an MBS session creation that includes a
+      # subscription does not carry it, so it is not required of the data type here
       required:
         - eventList
-        - notifyUri
 
     MbsSessionEventReportList:
       description: MBS session event report list

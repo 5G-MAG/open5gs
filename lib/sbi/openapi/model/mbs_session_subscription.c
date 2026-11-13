@@ -129,13 +129,11 @@ cJSON *OpenAPI_mbs_session_subscription_convertToJSON(OpenAPI_mbs_session_subscr
         cJSON_AddItemToArray(event_listList, itemLocal);
     }
 
-    if (!mbs_session_subscription->notify_uri) {
-        ogs_error("OpenAPI_mbs_session_subscription_convertToJSON() failed [notify_uri]");
-        return NULL;
-    }
+    if (mbs_session_subscription->notify_uri) {
     if (cJSON_AddStringToObject(item, "notifyUri", mbs_session_subscription->notify_uri) == NULL) {
         ogs_error("OpenAPI_mbs_session_subscription_convertToJSON() failed [notify_uri]");
         goto end;
+    }
     }
 
     if (mbs_session_subscription->notify_correlation_id) {
@@ -230,13 +228,11 @@ OpenAPI_mbs_session_subscription_t *OpenAPI_mbs_session_subscription_parseFromJS
         }
 
     notify_uri = cJSON_GetObjectItemCaseSensitive(mbs_session_subscriptionJSON, "notifyUri");
-    if (!notify_uri) {
+    if (notify_uri) {
+    if (!cJSON_IsString(notify_uri) && !cJSON_IsNull(notify_uri)) {
         ogs_error("OpenAPI_mbs_session_subscription_parseFromJSON() failed [notify_uri]");
         goto end;
     }
-    if (!cJSON_IsString(notify_uri)) {
-        ogs_error("OpenAPI_mbs_session_subscription_parseFromJSON() failed [notify_uri]");
-        goto end;
     }
 
     notify_correlation_id = cJSON_GetObjectItemCaseSensitive(mbs_session_subscriptionJSON, "notifyCorrelationId");
@@ -277,7 +273,7 @@ OpenAPI_mbs_session_subscription_t *OpenAPI_mbs_session_subscription_parseFromJS
         area_session_id ? true : false,
         area_session_id ? area_session_id->valuedouble : 0,
         event_listList,
-        ogs_strdup(notify_uri->valuestring),
+        notify_uri && !cJSON_IsNull(notify_uri) ? ogs_strdup(notify_uri->valuestring) : NULL,
         notify_correlation_id && !cJSON_IsNull(notify_correlation_id) ? ogs_strdup(notify_correlation_id->valuestring) : NULL,
         expiry_time && !cJSON_IsNull(expiry_time) ? ogs_strdup(expiry_time->valuestring) : NULL,
         nfc_instance_id && !cJSON_IsNull(nfc_instance_id) ? ogs_strdup(nfc_instance_id->valuestring) : NULL,

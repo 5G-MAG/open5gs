@@ -1,7 +1,7 @@
 /*
  * associated_session_id.h
  *
- * an associated Session Id used in MOCN
+ * An associated Session Id used in MOCN
  */
 
 #ifndef _OpenAPI_associated_session_id_H_
@@ -12,22 +12,24 @@
 #include "../include/list.h"
 #include "../include/keyValuePair.h"
 #include "../include/binary.h"
-typedef struct OpenAPI_associated_session_id_s OpenAPI_associated_session_id_t;
-#include "ip_addr.h"
 #include "ssm.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-struct OpenAPI_associated_session_id_s {
-    struct OpenAPI_ip_addr_s *source_ip_addr;
-    struct OpenAPI_ip_addr_s *dest_ip_addr;
-};
+/* TS 29.571 V18.12.0 cl. 5.9.4.21.1: AssociatedSessionId is an anyOf of an Ssm and a string; this is the
+ * representation of whichever of the two the value is (exactly one member is set). Hand-written like the other
+ * Release 18 additions to this model tree, not generated. */
+typedef struct OpenAPI_associated_session_id_s OpenAPI_associated_session_id_t;
+typedef struct OpenAPI_associated_session_id_s {
+    struct OpenAPI_ssm_s *ssm;
+    char *string;
+} OpenAPI_associated_session_id_t;
 
 OpenAPI_associated_session_id_t *OpenAPI_associated_session_id_create(
-    OpenAPI_ip_addr_t *source_ip_addr,
-    OpenAPI_ip_addr_t *dest_ip_addr
+    OpenAPI_ssm_t *ssm,
+    char *string
 );
 void OpenAPI_associated_session_id_free(OpenAPI_associated_session_id_t *associated_session_id);
 OpenAPI_associated_session_id_t *OpenAPI_associated_session_id_parseFromJSON(cJSON *associated_session_idJSON);
@@ -39,4 +41,3 @@ OpenAPI_associated_session_id_t *OpenAPI_associated_session_id_copy(OpenAPI_asso
 #endif
 
 #endif /* _OpenAPI_associated_session_id_H_ */
-
