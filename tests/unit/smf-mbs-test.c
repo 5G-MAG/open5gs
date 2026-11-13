@@ -685,6 +685,61 @@ static void test_reduced_area_is_used(void)
     ogs_mbs_service_area_free(coverage);
 }
 
+static int count_area_tais(ogs_mbs_service_area_t *area)
+{
+    ogs_tai_t *tai;
+    int count = 0;
+
+    if (area && area->tai_list)
+        ogs_list_for_each(area->tai_list, tai) count++;
+    return count;
+}
+
+/* The same TAC in any spelling is the same TAC: the coverage of an MB-SMF is written in its configuration ("1"), a
+ * consumer sends the SBI spelling ("000001"), and a TAC in letters is the same in either case. What is not a number
+ * is compared as text. The reduced area keeps the spelling of the request. */
+static void test_tac_spelling_is_not_significant(void)
+{
+    ogs_mbs_service_area_t *saved = smf_self()->mbs_service_area;
+    ogs_mbs_service_area_t *coverage = area_of_tacs("1", "ff");
+    ogs_mbs_service_area_t *requested, *reduced = NULL;
+
+    smf_self()->mbs_service_area = coverage;
+
+    /* requested 000001 and 0000FF, covered 1 and ff: nothing is reduced */
+    requested = area_of_tacs("000001", "0000FF");
+    CHECK(!smf_mbs_service_area_reduce(requested, &reduced));
+    CHECK(reduced == NULL);
+    ogs_mbs_service_area_free(requested);
+
+    /* requested 000001 and 000063, covered 1 and ff: 000001 stays, in the spelling of the request */
+    requested = area_of_tacs("000001", "000063");
+    CHECK(smf_mbs_service_area_reduce(requested, &reduced));
+    CHECK(count_area_tais(reduced) == 1);
+    if (reduced && reduced->tai_list)
+        CHECK_STR("000001", ((ogs_tai_t *)ogs_list_first(reduced->tai_list))->tac);
+    ogs_mbs_service_area_free(reduced);
+    reduced = NULL;
+    ogs_mbs_service_area_free(requested);
+
+    /* a TAC that is not a number is compared as text */
+    smf_self()->mbs_service_area = NULL;
+    ogs_mbs_service_area_free(coverage);
+    coverage = area_of_tacs("zz", NULL);
+    smf_self()->mbs_service_area = coverage;
+    requested = area_of_tacs("zz", NULL);
+    CHECK(!smf_mbs_service_area_reduce(requested, &reduced));
+    ogs_mbs_service_area_free(requested);
+    requested = area_of_tacs("0", NULL);
+    CHECK(smf_mbs_service_area_reduce(requested, &reduced));
+    CHECK(count_area_tais(reduced) == 0);
+    ogs_mbs_service_area_free(reduced);
+    ogs_mbs_service_area_free(requested);
+
+    smf_self()->mbs_service_area = saved;
+    ogs_mbs_service_area_free(coverage);
+}
+
 /* TS 29.532 V18.6.0 cl. 5.3.2.2.1, step 2a: the response contains "list of MBS FSA IDs, if any, for a broadcast
  * MBS session" (six hexadecimal digits, TS 23.003 V18.8.0 cl. 30.4). */
 /* TS 29.571 V18.12.0, type MbsSession, attribute nrRedCapUeInfo (NrRedCapUeInfo, O, 0..1): "Indicates whether the
@@ -5854,6 +5909,7 @@ int main(void)
     test_tmgi_index_after_refresh();
     test_create_outcomes();
     test_reduced_area_is_used();
+    test_tac_spelling_is_not_significant();
     test_reduced_area_cells();
     test_nr_red_cap_ue_info_model();
     test_nr_red_cap_ue_info_n2();

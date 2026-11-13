@@ -5253,13 +5253,42 @@ bool smf_mbs_service_area_reduce(
     return true;
 }
 
+/* A TAC string read as a hexadecimal number of at most 24 bits, the way the AMF reads one (ogs_uint24_from_string()).
+ * False for anything else, such as an empty string, a sign, a "0x" prefix or a longer number. */
+static bool smf_tac_value(const char *tac, uint32_t *value)
+{
+    uint32_t v = 0;
+
+    if (!tac || !*tac) return false;
+    for (; *tac; tac++) {
+        unsigned char c = (unsigned char)*tac;
+
+        if (!isxdigit(c)) return false;
+        v = v * 16 + (uint32_t)(c <= '9' ? c - '0' : tolower(c) - 'a' + 10);
+        if (v > 0xFFFFFF) return false;
+    }
+    *value = v;
+    return true;
+}
+
+/* The same TAC in any spelling ("1", "000001", "0000FF" and "ff") is the same TAC, as it is for the AMF; what is not a
+ * number is compared as text. */
+static bool smf_tac_equal(const char *a, const char *b)
+{
+    uint32_t va, vb;
+
+    if (!a || !b) return !a && !b;
+    if (smf_tac_value(a, &va) && smf_tac_value(b, &vb)) return va == vb;
+    return strcmp(a, b) == 0;
+}
+
 static bool smf_tai_equal(const ogs_tai_t *a, const ogs_tai_t *b)
 {
     if (!a && !b) return true;
     if (!a || !b) return false;
     if (ogs_plmn_id_mcc(&a->plmn_id) == ogs_plmn_id_mcc(&b->plmn_id) &&
         ogs_plmn_id_mnc(&a->plmn_id) == ogs_plmn_id_mnc(&b->plmn_id)) {
-        if (strcmp(a->tac, b->tac) == 0) {
+        if (smf_tac_equal(a->tac, b->tac)) {
             if (!a->nid && !b->nid) return true;
             if (!a->nid || !b->nid) return false;
             return (strcmp(a->nid, b->nid) == 0);
