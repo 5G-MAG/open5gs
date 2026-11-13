@@ -1,0 +1,41 @@
+/*
+ * context_create_request.h
+ *
+ * 
+ */
+
+#ifndef _OpenAPI_context_create_request_H_
+#define _OpenAPI_context_create_request_H_
+
+#include <string.h>
+#include "../external/cJSON.h"
+#include "../include/list.h"
+#include "../include/keyValuePair.h"
+#include "../include/binary.h"
+typedef struct OpenAPI_context_create_request_s OpenAPI_context_create_request_t;
+#include "context_create_req_data.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+struct OpenAPI_context_create_request_s {
+    struct OpenAPI_context_create_req_data_s *json_data;
+    OpenAPI_binary_t* binary_data_n2_information;
+};
+
+OpenAPI_context_create_request_t *OpenAPI_context_create_request_create(
+    OpenAPI_context_create_req_data_t *json_data,
+    OpenAPI_binary_t* binary_data_n2_information
+);
+void OpenAPI_context_create_request_free(OpenAPI_context_create_request_t *context_create_request);
+OpenAPI_context_create_request_t *OpenAPI_context_create_request_parseFromJSON(cJSON *context_create_requestJSON);
+cJSON *OpenAPI_context_create_request_convertToJSON(OpenAPI_context_create_request_t *context_create_request);
+OpenAPI_context_create_request_t *OpenAPI_context_create_request_copy(OpenAPI_context_create_request_t *dst, OpenAPI_context_create_request_t *src);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* _OpenAPI_context_create_request_H_ */
+

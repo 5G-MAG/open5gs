@@ -4579,6 +4579,19 @@ components:
           - PC5_QOS_PARA
           - EARLY_STATUS_TRANS_CONTAINER
           - UE_RADIO_CAPABILITY_FOR_PAGING
+          # From: TS29532_Nmbsmf_MBSSession.yaml
+          - MBS_DIS_SETUP_REQ
+          - MBS_DIS_SETUP_RSP
+          - MBS_DIS_SETUP_FAIL
+          - MBS_DIS_REL_REQ
+          # From: TS29518_Namf_MBSBroadcast.yaml
+          - MBS_SES_REQ
+          - MBS_SES_RSP
+          - MBS_SES_FAIL
+          - MBS_SES_REL_RSP
+          - BC_TRA_REQ
+          - BC_TRA_RSP
+          - BC_TRA_FAIL
       - type: string
     N2InfoNotifyReason:
       description: N2 Information Notify Reason
