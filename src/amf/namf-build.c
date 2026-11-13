@@ -155,3 +155,299 @@ ogs_sbi_request_t *amf_namf_comm_build_registration_status_update(
 
     return request;
 }
+
+/* Namf_MBSBroadcast Service - shared helpers */
+
+OpenAPI_mbs_session_id_t *amf_namf_build_mbs_session_id(const ogs_tmgi_t *tmgi)
+{
+    char *mcc, *mnc;
+    OpenAPI_plmn_id_t *plmn_id = NULL;
+    OpenAPI_tmgi_t *Tmgi = NULL;
+
+    ogs_assert(tmgi);
+    ogs_assert(tmgi->mbs_service_id);
+
+    mcc = ogs_plmn_id_mcc_string(&tmgi->plmn_id);
+    mnc = ogs_plmn_id_mnc_string(&tmgi->plmn_id);
+    plmn_id = OpenAPI_plmn_id_create(mcc, mnc);
+
+    Tmgi = OpenAPI_tmgi_create(ogs_strdup(tmgi->mbs_service_id), plmn_id);
+
+    // TODO: fill NID when present (see the ContextCreate request builder's own identical TODO)
+    return OpenAPI_mbs_session_id_create(Tmgi, NULL, NULL);
+}
+
+/*
+ * Content-IDs of the binary parts that carry the transfer IEs of a message's n2MbsSmInfoList, one per entry (at most
+ * OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO, the cardinality of the list). The Content-ID is only a reference from
+ * N2MbsSmInfo.ngapData.contentId to its part (TS 29.518 cl. 6.5.2.4).
+ */
+static const char *n2_mbs_sm_info_content_id[] = {
+    OGS_SBI_CONTENT_NGAP_SM_ID "-0", OGS_SBI_CONTENT_NGAP_SM_ID "-1",
+    OGS_SBI_CONTENT_NGAP_SM_ID "-2", OGS_SBI_CONTENT_NGAP_SM_ID "-3",
+    OGS_SBI_CONTENT_NGAP_SM_ID "-4", OGS_SBI_CONTENT_NGAP_SM_ID "-5",
+    OGS_SBI_CONTENT_NGAP_SM_ID "-6", OGS_SBI_CONTENT_NGAP_SM_ID "-7",
+    OGS_SBI_CONTENT_NGAP_SM_ID "-8", OGS_SBI_CONTENT_NGAP_SM_ID "-9",
+};
+_Static_assert(OGS_ARRAY_SIZE(n2_mbs_sm_info_content_id) == OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO,
+        "one Content-ID for each entry of n2MbsSmInfoList");
+
+/*
+ * The gNB ID as TS 29.571 V18.12.0 clause 5.4.4.29 writes GNbId.gNBValue: "The padding 0 shall be added to make multiple
+ * nibbles, the most significant character representing the padding 0 if required together with the 4 most significant
+ * bits of the gNB ID shall appear first in the string, and the character representing the 4 least significant bit of the
+ * gNB ID shall appear last in the string", e.g. "A 22 bit value "2A3F47" indicates a gNB ID with value 0x2A3F47".
+ * \p gnb_id_buf holds the NGAP BIT STRING of the gNB ID, which starts at the first bit of the first byte and ends before
+ * the unused bits of the last one, so the value is shifted right by them. \p out has room for 9 characters.
+ */
+static bool gnb_id_value_string(const uint8_t *gnb_id_buf, size_t gnb_id_buf_size, uint8_t gnb_id_bit_length, char *out)
+{
+    int size = (gnb_id_bit_length + 7) / 8;
+    uint32_t value = 0;
+    int i;
+
+    if (size == 0 || size > (int)gnb_id_buf_size || size > 4)
+        return false;
+
+    for (i = 0; i < size; i++)
+        value = (value << 8) | gnb_id_buf[i];
+    value >>= (size * 8 - gnb_id_bit_length);
+    snprintf(out, 9, "%0*X", (gnb_id_bit_length + 3) / 4, (unsigned)value);
+    return true;
+}
+
+static OpenAPI_global_ran_node_id_t *build_global_ran_node_id(
+        const ogs_plmn_id_t *plmn_id, const uint8_t *gnb_id_buf, size_t gnb_id_buf_size, uint8_t gnb_id_bit_length)
+{
+    OpenAPI_gnb_id_t *gnb_id = NULL;
+    char value[9];
+
+    /* TS 29.571 GNbId.gNBValue: the gNB ID in hexadecimal digits; bitLength: its length in bits */
+    if (!gnb_id_value_string(gnb_id_buf, gnb_id_buf_size, gnb_id_bit_length, value))
+        return NULL;
+
+    gnb_id = OpenAPI_gnb_id_create(gnb_id_bit_length, ogs_strdup(value));
+    ogs_assert(gnb_id);
+
+    return OpenAPI_global_ran_node_id_create(
+            ogs_sbi_build_plmn_id((ogs_plmn_id_t *)plmn_id), NULL, gnb_id, NULL, NULL, NULL, NULL, NULL);
+}
+
+static OpenAPI_global_ran_node_id_t *build_ran_id(amf_mbs_n2_info_t *n2_info)
+{
+    return build_global_ran_node_id(&n2_info->ran_plmn_id,
+            n2_info->ran_gnb_id_buf, sizeof(n2_info->ran_gnb_id_buf), n2_info->ran_gnb_id_bit_length);
+}
+
+bool amf_namf_ran_id_is_gnb(const amf_gnb_t *gnb, OpenAPI_global_ran_node_id_t *ran_id)
+{
+    char value[9];
+    char *mcc = NULL, *mnc = NULL;
+    bool same = false;
+
+    ogs_assert(gnb);
+
+    if (!ran_id || !ran_id->g_nb_id || !ran_id->g_nb_id->g_nb_value || !ran_id->plmn_id ||
+            !ran_id->plmn_id->mcc || !ran_id->plmn_id->mnc)
+        return false;
+    if (!gnb_id_value_string(gnb->gnb_id_buf, sizeof(gnb->gnb_id_buf), gnb->gnb_id_bit_length, value))
+        return false;
+
+    /* The digits of the gNB ID are hexadecimal of either case (pattern '^[A-Fa-f0-9]{6,8}$'). */
+    if (ran_id->g_nb_id->bit_length != gnb->gnb_id_bit_length ||
+            strcasecmp(ran_id->g_nb_id->g_nb_value, value) != 0)
+        return false;
+
+    mcc = ogs_plmn_id_mcc_string(&gnb->plmn_id);
+    mnc = ogs_plmn_id_mnc_string(&gnb->plmn_id);
+    same = strcmp(ran_id->plmn_id->mcc, mcc) == 0 && strcmp(ran_id->plmn_id->mnc, mnc) == 0;
+    ogs_free(mcc);
+    ogs_free(mnc);
+    return same;
+}
+
+bool amf_namf_ran_id_list_has_gnb(const OpenAPI_list_t *ran_id_list, const amf_gnb_t *gnb)
+{
+    OpenAPI_lnode_t *node = NULL;
+
+    if (!ran_id_list)
+        return false;
+
+    OpenAPI_list_for_each(ran_id_list, node) {
+        if (amf_namf_ran_id_is_gnb(gnb, node->data))
+            return true;
+    }
+
+    return false;
+}
+
+/*
+ * Builds the n2MbsSmInfoList of a ContextCreate or ContextUpdate response or of a ContextStatusNotify request from
+ * \p n2_info_list (amf_mbs_n2_info_t items) and adds each transfer IE to \p message as a binary part. The list has
+ * at most OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO entries (TS 29.518 V18.14.0 Table 6.5.6.2.4-1, n2MbsSmInfoList,
+ * cardinality "1..10"): the caller carries no more in one message (amf_mbs_n2_info_split()); items beyond that are
+ * reported as an error and are not in the message. Returns NULL when there is none. The parts reference the pkbufs of
+ * the items, so \p n2_info_list must outlive the message's use. Free the result with
+ * amf_namf_free_n2_mbs_sm_info_list().
+ */
+OpenAPI_list_t *amf_namf_build_n2_mbs_sm_info_list(ogs_sbi_message_t *message, ogs_list_t *n2_info_list)
+{
+    OpenAPI_list_t *list = NULL;
+    amf_mbs_n2_info_t *n2_info = NULL;
+    int count = 0;
+
+    ogs_assert(message);
+    ogs_assert(n2_info_list);
+
+    ogs_list_for_each(n2_info_list, n2_info) {
+        OpenAPI_ref_to_binary_data_t *ngap_data = NULL;
+
+        /* A receiver stores the JSON root part and the binary parts together in OGS_SBI_MAX_NUM_OF_PART */
+        if (count >= OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO || message->num_of_part >= OGS_SBI_MAX_NUM_OF_PART - 1) {
+            ogs_error("n2MbsSmInfoList: more than %d containers (TS 29.518 cardinality 1..10), the rest are not sent",
+                    OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO);
+            break;
+        }
+
+        if (!list)
+            list = OpenAPI_list_create();
+        ogs_assert(list);
+
+        ngap_data = OpenAPI_ref_to_binary_data_create(ogs_strdup(n2_mbs_sm_info_content_id[count]));
+        OpenAPI_list_add(list, OpenAPI_n2_mbs_sm_info_create(
+                    n2_info->ngap_ie_type, ngap_data, build_ran_id(n2_info)));
+
+        message->part[message->num_of_part].pkbuf = n2_info->pkbuf;
+        message->part[message->num_of_part].content_id = (char *)n2_mbs_sm_info_content_id[count];
+        message->part[message->num_of_part].content_type = (char *)OGS_SBI_CONTENT_NGAP_TYPE;
+        message->num_of_part++;
+        count++;
+    }
+
+    return list;
+}
+
+void amf_namf_free_n2_mbs_sm_info_list(OpenAPI_list_t *list)
+{
+    OpenAPI_lnode_t *node = NULL;
+
+    if (!list)
+        return;
+
+    OpenAPI_list_for_each(list, node)
+        OpenAPI_n2_mbs_sm_info_free(node->data);
+    OpenAPI_list_free(list);
+}
+
+/*
+ * 3GPP TS 29.518 - V18.14.0
+ * Ch. 5.6.2.5 - Namf_MBSBroadcast Service API - ContextStatusNotify service operation
+ *
+ * Builds the POST request; the caller (amf_sbi_send_mbs_broadcast_context_status_notify(), sbi-path.c)
+ * sends it to mbs_context->notify_client. \p n2_info_list holds the containers to carry (may be empty);
+ * \p operation_status is OpenAPI_operation_status_NULL when the notification does not report the completion
+ * or incompletion of an operation. \p released_ind true sets releasedInd (TS 29.518 V18.14.0 Table 6.5.6.2.4-1:
+ * "This shall be present and set to "true" if all NG-RANs serving the Broadcast MBS session requested the AMF to
+ * release the Broadcast MBS session and the Broadcast MBS session (context) has been released in the AMF.").
+ * \p required_release_gnb, when not NULL, is reported as an operation event of type NG_RAN_EVENT with an
+ * ngranFailureEvent NG_RAN_REQUIRED_RELEASE for that NG-RAN (TS 29.518 V18.14.0 cl. 5.6.2.5: "report the Broadcast MBS
+ * Session release to the MB-SMF by including the operationEvent attribute in the MBS Context Status Notification
+ * request with the opEventType set to "NG_RAN_EVENT" together with a list of "ngranFailureEvent" for each NG-RAN that
+ * requested to release the Broadcast MBS Session").
+ */
+ogs_sbi_request_t *amf_namf_build_mbs_broadcast_context_status_notify(
+        amf_mbs_context_t *mbs_context, ogs_list_t *n2_info_list, OpenAPI_operation_status_e operation_status,
+        bool released_ind, const amf_gnb_t *required_release_gnb)
+{
+    return amf_namf_build_mbs_broadcast_context_status_notify_event(mbs_context, n2_info_list, operation_status,
+            released_ind, required_release_gnb, OpenAPI_ngran_failure_indication_NG_RAN_REQUIRED_RELEASE);
+}
+
+/*
+ * As amf_namf_build_mbs_broadcast_context_status_notify(), with the NG-RAN event \p ngran_gnb reported as \p indication
+ * (the operation event is NG_RAN_EVENT with one ngranFailureEvent, TS 29.518 V18.14.0 Table 6.5.6.2.9-1: "ngranId ...
+ * The IE shall contain the gNB ID." and "ngranFailureIndication ... information related to the NG-RAN failure").
+ */
+ogs_sbi_request_t *amf_namf_build_mbs_broadcast_context_status_notify_event(
+        amf_mbs_context_t *mbs_context, ogs_list_t *n2_info_list, OpenAPI_operation_status_e operation_status,
+        bool released_ind, const amf_gnb_t *required_release_gnb, OpenAPI_ngran_failure_indication_e indication)
+{
+    ogs_sbi_message_t message;
+    ogs_sbi_request_t *request = NULL;
+
+    OpenAPI_context_status_notification_t ContextStatusNotification;
+
+    ogs_assert(mbs_context);
+    ogs_assert(n2_info_list);
+
+    if (!mbs_context->notify_uri) {
+        ogs_error("MBS Broadcast ContextStatusNotify: no notifyUri");
+        return NULL;
+    }
+
+    memset(&message, 0, sizeof(message));
+    message.h.method = (char *) OGS_SBI_HTTP_METHOD_POST;
+    message.h.uri = mbs_context->notify_uri;
+
+    memset(&ContextStatusNotification, 0, sizeof(ContextStatusNotification));
+    ContextStatusNotification.mbs_session_id = amf_namf_build_mbs_session_id(&mbs_context->tmgi);
+
+    /* TS 29.518 Table 6.5.6.2.4-1, areaSessionId: "This IE shall be present if this is a Location dependent
+     * broadcast MBS service." */
+    // The attribute holds one Area Session ID (cardinality 0..1): it is set when the session has one. With several, the
+    // notification cannot name one, and none is set (see the commit that introduced the list of Area Session IDs).
+    if (mbs_context->location_dependent && ogs_list_count(&mbs_context->area_items) <= 1) {
+        ContextStatusNotification.is_area_session_id = true;
+        ContextStatusNotification.area_session_id = mbs_context->area_session_id;
+    }
+
+    ContextStatusNotification.n2_mbs_sm_info_list =
+        amf_namf_build_n2_mbs_sm_info_list(&message, n2_info_list);
+
+    ContextStatusNotification.operation_status = operation_status;
+
+    if (released_ind)
+    {
+        ContextStatusNotification.is_released_ind = true;
+        ContextStatusNotification.released_ind = true;
+    }
+
+    if (required_release_gnb) {
+        OpenAPI_global_ran_node_id_t *ran_id = build_global_ran_node_id(&required_release_gnb->plmn_id,
+                required_release_gnb->gnb_id_buf, sizeof(required_release_gnb->gnb_id_buf),
+                required_release_gnb->gnb_id_bit_length);
+
+        // The gNB ID is mandatory in an ngranFailureEvent (Table 6.5.6.2.9-1): no event without it.
+        if (ran_id) {
+            OpenAPI_list_t *events = OpenAPI_list_create();
+            OpenAPI_list_t *failure_events = OpenAPI_list_create();
+
+            OpenAPI_list_add(failure_events, OpenAPI_ngran_failure_event_create(ran_id, indication));
+            OpenAPI_list_add(events, OpenAPI_operation_event_create(
+                        OpenAPI_op_event_type_NG_RAN_EVENT, NULL, failure_events));
+            ContextStatusNotification.operation_events = events;
+        } else
+            ogs_warn("MBS Broadcast ContextStatusNotify: the gNB ID of the NG-RAN is not known, no operation event");
+    }
+
+    message.ContextStatusNotification = &ContextStatusNotification;
+
+    message.http.accept = (char *) (OGS_SBI_CONTENT_JSON_TYPE ","
+        OGS_SBI_CONTENT_NGAP_TYPE "," OGS_SBI_CONTENT_PROBLEM_TYPE);
+
+    request = ogs_sbi_build_request(&message);
+    ogs_expect(request);
+
+    if (ContextStatusNotification.mbs_session_id)
+        OpenAPI_mbs_session_id_free(ContextStatusNotification.mbs_session_id);
+    amf_namf_free_n2_mbs_sm_info_list(ContextStatusNotification.n2_mbs_sm_info_list);
+    if (ContextStatusNotification.operation_events) {
+        OpenAPI_lnode_t *node = NULL;
+
+        OpenAPI_list_for_each(ContextStatusNotification.operation_events, node)
+            OpenAPI_operation_event_free(node->data);
+        OpenAPI_list_free(ContextStatusNotification.operation_events);
+    }
+
+    return request;
+}

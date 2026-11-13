@@ -77,6 +77,39 @@ ogs_pkbuf_t *ngap_build_downlink_ran_status_transfer(
     ran_ue_t *target_ue,
     NGAP_RANStatusTransfer_TransparentContainer_t *transfer);
 
+ogs_pkbuf_t *ngap_build_broadcast_session_setup_request(
+    amf_mbs_context_t *mbs_context, ogs_pkbuf_t *pkbuf);
+ogs_pkbuf_t *ngap_build_broadcast_session_release_request(
+    amf_mbs_context_t *mbs_context);
+ogs_pkbuf_t *ngap_build_broadcast_session_modification_request(
+    amf_mbs_context_t *mbs_context, bool has_service_area, ogs_pkbuf_t *pkbuf);
+
+/* The Broadcast Transport Failure Transfer (TS 38.413 clause 9.3.5.17) the AMF builds itself when it is the one that
+ * cannot set up the shared NG-U transport, and the messages of the Broadcast Session Transport procedure (clause
+ * 8.17.5) that answer a BROADCAST SESSION TRANSPORT REQUEST: the transfers are the MB-SMF's, relayed unchanged. */
+ogs_pkbuf_t *ngap_build_broadcast_transport_failure_transfer(
+    const ogs_tmgi_t *tmgi, NGAP_Cause_PR group, long cause);
+ogs_pkbuf_t *ngap_build_broadcast_session_transport_response(
+    const ogs_tmgi_t *tmgi, const uint8_t *transfer, size_t transfer_len);
+ogs_pkbuf_t *ngap_build_broadcast_session_transport_failure(
+    const ogs_tmgi_t *tmgi, const uint8_t *transfer, size_t transfer_len, NGAP_Cause_PR group, long cause);
+
+/*
+ * Namf_MBSCommunication_N2MessageTransfer relays (TS 29.518 cl.5.7.2.2): the caller (MB-SMF) has already
+ * ASN.1-encoded the transfer IE's own content into \p pkbuf; these functions only wrap it into a complete
+ * top-level NGAP PDU with the MBS Session ID (built from \p tmgi), mirroring
+ * ngap_build_broadcast_session_modification_request()'s own OCTET-STRING-embedding pattern exactly.
+ */
+ogs_pkbuf_t *ngap_build_multicast_session_activation_request(
+    ogs_tmgi_t *tmgi, ogs_pkbuf_t *pkbuf);
+ogs_pkbuf_t *ngap_build_multicast_session_deactivation_request(
+    ogs_tmgi_t *tmgi, ogs_pkbuf_t *pkbuf);
+/* has_area_session_id/area_session_id: TS 38.413's own MulticastSessionUpdateRequestIEs marks
+ * MBS-AreaSessionID Optional -- location-dependent multicast sessions carry it, non-location-dependent
+ * ones omit it. */
+ogs_pkbuf_t *ngap_build_multicast_session_update_request(
+    ogs_tmgi_t *tmgi, bool has_area_session_id, uint16_t area_session_id, ogs_pkbuf_t *pkbuf);
+
 #ifdef __cplusplus
 }
 #endif

@@ -16,6 +16,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
+#include <inttypes.h>
 
 #include "ngap-path.h"
 
@@ -29,6 +30,8 @@ static OGS_POOL(amf_ue_pool, amf_ue_t);
 static OGS_POOL(ran_ue_pool, ran_ue_t);
 static OGS_POOL(amf_sess_pool, amf_sess_t);
 
+static OGS_POOL(amf_mbs_context_pool, amf_mbs_context_t);
+
 static OGS_POOL(m_tmsi_pool, amf_m_tmsi_t);
 
 static int context_initialized = 0;
@@ -41,6 +44,381 @@ static void stats_remove_ran_ue(void);
 static void stats_add_amf_session(void);
 static void stats_remove_amf_session(void);
 static bool amf_namf_comm_parse_guti(ogs_nas_5gs_guti_t *guti, char *ue_context_id);
+
+/*
+ * Keeps a copy of \p transfer (an MBS Session Setup, Modification or Release response or failure transfer IE) with the
+ * identity of \p gnb, the NG-RAN node that sent it. The caller owns the item: it adds it to a list, which is emptied
+ * with amf_mbs_n2_info_remove_all().
+ */
+amf_mbs_n2_info_t *amf_mbs_n2_info_create(amf_gnb_t *gnb,
+        OpenAPI_ngap_ie_type_e ngap_ie_type, const uint8_t *transfer, size_t transfer_len)
+{
+    amf_mbs_n2_info_t *n2_info = NULL;
+
+    ogs_assert(gnb);
+    ogs_assert(transfer);
+
+    n2_info = ogs_calloc(1, sizeof(*n2_info));
+    if (!n2_info) {
+        ogs_error("ogs_calloc() failed");
+        return NULL;
+    }
+
+    n2_info->pkbuf = ogs_pkbuf_alloc(NULL, transfer_len);
+    if (!n2_info->pkbuf) {
+        ogs_error("ogs_pkbuf_alloc() failed");
+        ogs_free(n2_info);
+        return NULL;
+    }
+    ogs_pkbuf_put_data(n2_info->pkbuf, transfer, transfer_len);
+
+    n2_info->ngap_ie_type = ngap_ie_type;
+    n2_info->ran_plmn_id = gnb->plmn_id;
+    memcpy(n2_info->ran_gnb_id_buf, gnb->gnb_id_buf, sizeof(n2_info->ran_gnb_id_buf));
+    n2_info->ran_gnb_id_bit_length = gnb->gnb_id_bit_length;
+
+    return n2_info;
+}
+
+/* Records that \p gnb has been sent a Broadcast Session Setup or Modification Request of the context, which it has not
+ * answered yet (the record is made once) */
+void amf_mbs_context_involve_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *gnb)
+{
+    amf_mbs_gnb_t *involved = NULL;
+
+    ogs_assert(amf_mbs_context);
+    ogs_assert(gnb);
+
+    ogs_list_for_each(&amf_mbs_context->involved_gnb_list, involved) {
+        if (involved->gnb_id == gnb->id) {
+            involved->awaiting = true;
+            involved->update_setup = false;
+            involved->awaiting_modification = false;
+            return;
+        }
+    }
+
+    involved = ogs_calloc(1, sizeof(*involved));
+    if (!involved) {
+        ogs_error("ogs_calloc() failed");
+        return;
+    }
+    involved->gnb_id = gnb->id;
+    involved->awaiting = true;
+    involved->ran_plmn_id = gnb->plmn_id;
+    memcpy(involved->ran_gnb_id_buf, gnb->gnb_id_buf, sizeof(involved->ran_gnb_id_buf));
+    involved->ran_gnb_id_bit_length = gnb->gnb_id_bit_length;
+    ogs_list_add(&amf_mbs_context->involved_gnb_list, involved);
+}
+
+/* The record of \p gnb in the context, NULL if the gNB has not been sent a request of the session */
+amf_mbs_gnb_t *amf_mbs_context_find_involved_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *gnb)
+{
+    amf_mbs_gnb_t *involved = NULL;
+
+    ogs_assert(amf_mbs_context);
+    ogs_assert(gnb);
+
+    ogs_list_for_each(&amf_mbs_context->involved_gnb_list, involved) {
+        if (involved->gnb_id == gnb->id)
+            return involved;
+    }
+
+    return NULL;
+}
+
+/*
+ * The earliest amf_mbs_gnb_t.reestablish_at of the context's records, 0 when none is set (amf.mbs.reestablish_after: one
+ * timer of the context serves every NG-RAN, and is armed for this time).
+ */
+ogs_time_t amf_mbs_context_earliest_reestablish(amf_mbs_context_t *amf_mbs_context)
+{
+    amf_mbs_gnb_t *involved = NULL;
+    ogs_time_t earliest = 0;
+
+    ogs_assert(amf_mbs_context);
+
+    ogs_list_for_each(&amf_mbs_context->involved_gnb_list, involved) {
+        if (involved->reestablish_at && (!earliest || involved->reestablish_at < earliest))
+            earliest = involved->reestablish_at;
+    }
+
+    return earliest;
+}
+
+/* What the gNB of the record \p involved still owes the AMF */
+amf_mbs_owes_e amf_mbs_gnb_owes(const amf_mbs_gnb_t *involved)
+{
+    ogs_assert(involved);
+
+    if (!involved->awaiting)
+        return AMF_MBS_OWES_NOTHING;
+    if (involved->restoring)
+        return AMF_MBS_OWES_RESTORATION_RESPONSE;
+    if (involved->awaiting_modification || involved->update_setup)
+        return AMF_MBS_OWES_UPDATE_RESPONSE;
+    return AMF_MBS_OWES_SETUP_RESPONSE;
+}
+
+bool amf_mbs_context_release_answered(amf_mbs_context_t *amf_mbs_context, amf_mbs_gnb_t *involved, bool *first, bool *last)
+{
+    ogs_assert(amf_mbs_context);
+    ogs_assert(involved);
+    ogs_assert(first);
+    ogs_assert(last);
+
+    *first = *last = false;
+    if (!amf_mbs_context->release_pending || !involved->release_sent)
+        return false;
+
+    involved->release_sent = false;
+    amf_mbs_context->gnb_response_count++;
+    *first = amf_mbs_context->gnb_response_count == 1;
+    *last = amf_mbs_context->gnb_response_count >= amf_mbs_context->gnb_request_count;
+    return true;
+}
+
+/*
+ * Whether the gNB of the record \p involved holds the session: it did not fail its Setup, did not ask for the release
+ * and was not released for leaving the service area.
+ */
+bool amf_mbs_gnb_holds_session(const amf_mbs_gnb_t *involved)
+{
+    ogs_assert(involved);
+
+    return !involved->setup_failed && !involved->release_required && !involved->area_released;
+}
+
+/* Whether the record \p involved was made for a gNB with the Global RAN Node ID of \p gnb */
+bool amf_mbs_gnb_has_ran_id(const amf_mbs_gnb_t *involved, const amf_gnb_t *gnb)
+{
+    ogs_assert(involved);
+    ogs_assert(gnb);
+
+    return involved->ran_gnb_id_bit_length == gnb->gnb_id_bit_length &&
+        memcmp(&involved->ran_plmn_id, &gnb->plmn_id, sizeof(ogs_plmn_id_t)) == 0 &&
+        memcmp(involved->ran_gnb_id_buf, gnb->gnb_id_buf, sizeof(gnb->gnb_id_buf)) == 0;
+}
+
+/*
+ * The record of a gNB that was involved in the context, is not connected any more, and has the Global RAN Node ID of
+ * \p gnb: the same gNB, connected anew. NULL if there is none.
+ */
+amf_mbs_gnb_t *amf_mbs_context_find_stale_involved_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *gnb)
+{
+    amf_mbs_gnb_t *involved = NULL;
+
+    ogs_assert(amf_mbs_context);
+    ogs_assert(gnb);
+
+    ogs_list_for_each(&amf_mbs_context->involved_gnb_list, involved) {
+        if (amf_gnb_find_by_id(involved->gnb_id))
+            continue;
+        if (amf_mbs_gnb_has_ran_id(involved, gnb))
+            return involved;
+    }
+
+    return NULL;
+}
+
+/* Frees the items of \p items and empties it */
+void amf_mbs_area_items_free(ogs_list_t *items)
+{
+    amf_mbs_area_item_t *item = NULL, *next = NULL;
+
+    ogs_assert(items);
+
+    ogs_list_for_each_safe(items, next, item) {
+        ogs_list_remove(items, item);
+        if (item->area)
+            ogs_mbs_service_area_free(item->area);
+        ogs_free(item);
+    }
+}
+
+/*
+ * Applies the service area of an update. An update that \p carries_area replaces the state of the context completely:
+ * \p new_area (NULL when the request gave no cell or TAI) becomes the service area, and the session is a location
+ * dependent one with the Area Session IDs of \p new_items when that list is not empty (the items move to the context,
+ * the list is left empty), a location independent one otherwise. TS 29.518 V18.14.0 cl. 5.6.2.3: "updated MBS service area,
+ * for a Local broadcast MBS session." and "updated list of Area Session ID and related MBS service area, for a Location
+ * dependent broadcast MBS session." An update that carries no area changes none. \p undo takes the earlier values; the
+ * caller ends with amf_mbs_context_undo_area() or amf_mbs_context_keep_area(). \p new_area is owned by the context from
+ * here.
+ */
+void amf_mbs_context_apply_area(amf_mbs_context_t *amf_mbs_context, bool carries_area, ogs_mbs_service_area_t *new_area,
+        ogs_list_t *new_items, amf_mbs_area_undo_t *undo)
+{
+    ogs_assert(amf_mbs_context);
+    ogs_assert(undo);
+
+    memset(undo, 0, sizeof(*undo));
+    ogs_list_init(&undo->old_items);
+    undo->applied = true;
+    undo->old_location_dependent = amf_mbs_context->location_dependent;
+    undo->old_area_session_id = amf_mbs_context->area_session_id;
+
+    if (!carries_area) {
+        ogs_assert(!new_area);
+        return;
+    }
+
+    undo->old_area = amf_mbs_context->mbs_service_area;
+    undo->replaced = true;
+    amf_mbs_context->mbs_service_area = new_area;
+
+    undo->old_items = amf_mbs_context->area_items;
+    undo->items_replaced = true;
+    ogs_list_init(&amf_mbs_context->area_items);
+    if (new_items && !ogs_list_empty(new_items)) {
+        amf_mbs_area_item_t *first = (amf_mbs_area_item_t *)ogs_list_first(new_items);
+
+        amf_mbs_context->area_items = *new_items;
+        ogs_list_init(new_items);
+        amf_mbs_context->location_dependent = true;
+        amf_mbs_context->area_session_id = first->area_session_id;
+    } else {
+        amf_mbs_context->location_dependent = false;
+        amf_mbs_context->area_session_id = 0;
+    }
+}
+
+/* Puts back what amf_mbs_context_apply_area() replaced, and frees what was applied */
+void amf_mbs_context_undo_area(amf_mbs_context_t *amf_mbs_context, amf_mbs_area_undo_t *undo)
+{
+    ogs_assert(amf_mbs_context);
+    ogs_assert(undo);
+
+    if (!undo->applied)
+        return;
+
+    if (undo->replaced) {
+        ogs_mbs_service_area_free(amf_mbs_context->mbs_service_area);
+        amf_mbs_context->mbs_service_area = undo->old_area;
+    }
+    if (undo->items_replaced) {
+        amf_mbs_area_items_free(&amf_mbs_context->area_items);
+        amf_mbs_context->area_items = undo->old_items;
+    }
+    amf_mbs_context->location_dependent = undo->old_location_dependent;
+    amf_mbs_context->area_session_id = undo->old_area_session_id;
+    memset(undo, 0, sizeof(*undo));
+}
+
+/* The update stays: the area it replaced is freed */
+void amf_mbs_context_keep_area(amf_mbs_area_undo_t *undo)
+{
+    ogs_assert(undo);
+
+    if (undo->old_area)
+        ogs_mbs_service_area_free(undo->old_area);
+    if (undo->items_replaced)
+        amf_mbs_area_items_free(&undo->old_items);
+    memset(undo, 0, sizeof(*undo));
+}
+
+/*
+ * Keeps a copy of \p container as the last N2 MBS SM container of the context (TS 23.527 V18.6.0 cl. 8.3.2.2 step 1),
+ * replacing the one held. Returns false, and keeps the one held, when the copy cannot be made.
+ */
+bool amf_mbs_context_store_n2_container(amf_mbs_context_t *amf_mbs_context, const ogs_pkbuf_t *container)
+{
+    ogs_pkbuf_t *copy = NULL;
+
+    ogs_assert(amf_mbs_context);
+    ogs_assert(container);
+
+    copy = ogs_pkbuf_alloc(NULL, container->len);
+    if (!copy) {
+        ogs_error("ogs_pkbuf_alloc() failed");
+        return false;
+    }
+    ogs_pkbuf_put_data(copy, container->data, container->len);
+
+    if (amf_mbs_context->n2_mbs_sm_request)
+        ogs_pkbuf_free(amf_mbs_context->n2_mbs_sm_request);
+    amf_mbs_context->n2_mbs_sm_request = copy;
+
+    return true;
+}
+
+/*
+ * Keeps the Associated Session ID of a ContextCreate (\p associated_session_id, an SSM or a string, TS 29.571 V18.12.0
+ * cl. 5.9.4.21.1) as the octets of the NGAP Associated Session ID IE, replacing the value held. TS 38.413 V18.8.0 cl.
+ * 9.3.1.262: "Coded as the AssociatedSessionId IE defined in TS 29.571 [35]. The gNB does not interpret the content of the
+ * Associated Session ID IE." The only coding that TS 29.571 defines for the type is its JSON one, which is what the
+ * octets hold (the same for both alternatives, so that equal values of two core networks give equal octets). NULL
+ * \p associated_session_id clears the value. Returns false, and keeps the value held, when it cannot be coded.
+ */
+bool amf_mbs_context_set_associated_session_id(
+        amf_mbs_context_t *amf_mbs_context, OpenAPI_associated_session_id_t *associated_session_id)
+{
+    cJSON *json = NULL;
+    char *text = NULL;
+
+    ogs_assert(amf_mbs_context);
+
+    if (associated_session_id) {
+        json = OpenAPI_associated_session_id_convertToJSON(associated_session_id);
+        if (!json) {
+            ogs_error("The Associated Session ID cannot be coded");
+            return false;
+        }
+        text = cJSON_PrintUnformatted(json);
+        cJSON_Delete(json);
+        if (!text) {
+            ogs_error("cJSON_PrintUnformatted() failed");
+            return false;
+        }
+    }
+
+    if (amf_mbs_context->associated_session_id)
+        ogs_free(amf_mbs_context->associated_session_id);
+    amf_mbs_context->associated_session_id = (uint8_t *)text;
+    amf_mbs_context->associated_session_id_len = text ? strlen(text) : 0;
+
+    return true;
+}
+
+/* \p n2_info must not be on a list */
+void amf_mbs_n2_info_free(amf_mbs_n2_info_t *n2_info)
+{
+    ogs_assert(n2_info);
+
+    if (n2_info->pkbuf)
+        ogs_pkbuf_free(n2_info->pkbuf);
+    ogs_free(n2_info);
+}
+
+void amf_mbs_n2_info_remove_all(ogs_list_t *n2_info_list)
+{
+    amf_mbs_n2_info_t *n2_info = NULL, *next = NULL;
+
+    ogs_assert(n2_info_list);
+
+    ogs_list_for_each_safe(n2_info_list, next, n2_info) {
+        ogs_list_remove(n2_info_list, n2_info);
+        amf_mbs_n2_info_free(n2_info);
+    }
+}
+
+void amf_mbs_n2_info_split(ogs_list_t *n2_info_list, ogs_list_t *rest, int keep)
+{
+    amf_mbs_n2_info_t *n2_info = NULL, *next = NULL;
+    int n = 0;
+
+    ogs_assert(n2_info_list);
+    ogs_assert(rest);
+
+    ogs_list_for_each_safe(n2_info_list, next, n2_info) {
+        if (n++ < keep)
+            continue;
+        ogs_list_remove(n2_info_list, n2_info);
+        ogs_list_add(rest, n2_info);
+    }
+}
+
+static void amf_mbs_context_remove_all(void);
 
 void amf_context_init(void)
 {
@@ -66,6 +444,10 @@ void amf_context_init(void)
     /* Increase size of TMSI pool (#1827) */
     ogs_pool_init(&m_tmsi_pool, ogs_global_conf()->max.ue*2);
     ogs_pool_random_id_generate(&m_tmsi_pool);
+
+    ogs_pool_init(&amf_mbs_context_pool, ogs_global_conf()->max.mbs.mbs_sessions);
+    ogs_list_init(&self.amf_mbs_context_list);
+
 #if 0 /* For debugging : Verify whether there are duplicates of M_TMSI. */
     ogs_pool_assert_if_has_duplicate(&m_tmsi_pool);
 #endif
@@ -93,6 +475,7 @@ void amf_context_final(void)
 
     amf_gnb_remove_all();
     amf_ue_remove_all();
+    amf_mbs_context_remove_all();
 
     ogs_assert(self.gnb_addr_hash);
     ogs_hash_destroy(self.gnb_addr_hash);
@@ -111,6 +494,7 @@ void amf_context_final(void)
     ogs_pool_final(&amf_ue_pool);
     ogs_pool_final(&ran_ue_pool);
     ogs_pool_final(&amf_gnb_pool);
+    ogs_pool_final(&amf_mbs_context_pool);
 
     context_initialized = 0;
 }
@@ -228,6 +612,43 @@ int amf_context_parse_config(void)
                 if (!strcmp(amf_key, "relative_capacity")) {
                     const char *v = ogs_yaml_iter_value(&amf_iter);
                     if (v) self.relative_capacity = atoi(v);
+                } else if (!strcmp(amf_key, "mbs")) {
+                    ogs_yaml_iter_t mbs_iter;
+                    ogs_yaml_iter_recurse(&amf_iter, &mbs_iter);
+                    while (ogs_yaml_iter_next(&mbs_iter)) {
+                        const char *mbs_key = ogs_yaml_iter_key(&mbs_iter);
+                        ogs_assert(mbs_key);
+                        if (!strcmp(mbs_key, "report_required_release"))
+                            self.mbs_report_required_release = ogs_yaml_iter_bool(&mbs_iter);
+                        else if (!strcmp(mbs_key, "report_ng_ran_failure"))
+                            self.mbs_report_ng_ran_failure = ogs_yaml_iter_bool(&mbs_iter);
+                        else if (!strcmp(mbs_key, "restoration")) {
+                            const char *v = ogs_yaml_iter_value(&mbs_iter);
+
+                            if (v && !strcmp(v, "amf"))
+                                self.mbs_restoration = AMF_MBS_RESTORATION_BY_AMF;
+                            else if (v && !strcmp(v, "mb-smf"))
+                                self.mbs_restoration = AMF_MBS_RESTORATION_BY_MBSMF;
+                            else {
+                                ogs_error("Invalid amf.mbs.restoration `%s` in '%s': `amf` or `mb-smf`",
+                                        v ? v : "", ogs_app()->file);
+                                return OGS_ERROR;
+                            }
+                        } else if (!strcmp(mbs_key, "reestablish_after")) {
+                            const char *v = ogs_yaml_iter_value(&mbs_iter);
+                            char *end = NULL;
+                            unsigned long seconds = (v && *v && *v != '-') ? strtoul(v, &end, 10) : 0;
+
+                            if (!v || !*v || *v == '-' || *end || seconds > UINT32_MAX) {
+                                ogs_error("Invalid amf.mbs.reestablish_after `%s` in '%s': a number of seconds",
+                                        v ? v : "", ogs_app()->file);
+                                return OGS_ERROR;
+                            }
+                            self.mbs_reestablish = true;
+                            self.mbs_reestablish_after = (uint32_t)seconds;
+                        } else
+                            ogs_warn("unknown key `%s`", mbs_key);
+                    }
                 } else if (!strcmp(amf_key, "ngap")) {
                     ogs_yaml_iter_t ngap_iter;
                     ogs_yaml_iter_recurse(&amf_iter, &ngap_iter);
@@ -3298,4 +3719,183 @@ void amf_ue_save_to_release_session_list(amf_ue_t *amf_ue)
             OpenAPI_list_add(amf_ue->to_release_session_list, psi);
         }
     }
+}
+
+static amf_mbs_context_t *amf_mbs_context_add(void)
+{
+    amf_mbs_context_t *amf_mbs_context = NULL;
+
+    ogs_pool_alloc(&amf_mbs_context_pool, &amf_mbs_context);
+    if (!amf_mbs_context) {
+        ogs_error("Maximum number of MBS Contexts[%" PRIu64 "] reached",
+                    ogs_global_conf()->max.mbs.mbs_sessions);
+        return NULL;
+    }
+    memset(amf_mbs_context, 0, sizeof *amf_mbs_context);
+
+    amf_mbs_context->index = ogs_pool_index(&amf_mbs_context_pool, amf_mbs_context);
+    ogs_assert(amf_mbs_context->index > 0 && amf_mbs_context->index <= ogs_global_conf()->max.mbs.mbs_sessions);
+
+    // Set mbsContextRef
+    amf_mbs_context->mbs_context_ref = ogs_msprintf("%d", amf_mbs_context->index);
+    ogs_assert(amf_mbs_context->mbs_context_ref);
+
+    ogs_list_add(&self.amf_mbs_context_list, amf_mbs_context);
+
+    ogs_info("[Added] Number of MBS Contexts in AMF is now %d",
+            ogs_list_count(&self.amf_mbs_context_list));
+
+    return amf_mbs_context;
+}
+
+// Non-static, and paired with amf_mbs_context_find_by_ref() below, so a ContextDelete handler can locate an
+// amf_mbs_context_t from the mbsContextRef path segment the DELETE request addresses, and remove it.
+void amf_mbs_context_remove(amf_mbs_context_t *amf_mbs_context)
+{
+    ogs_assert(amf_mbs_context);
+
+    ogs_list_remove(&self.amf_mbs_context_list, amf_mbs_context);
+
+        // Free the owned copies made in amf_mbs_context_create() (see the note on the copies there).
+    if (amf_mbs_context->tmgi.mbs_service_id)
+        ogs_free(amf_mbs_context->tmgi.mbs_service_id);
+    if (amf_mbs_context->tmgi.expiration_time)
+        ogs_free(amf_mbs_context->tmgi.expiration_time);
+        // mbs_context_ref is ogs_msprintf()'d in amf_mbs_context_add(), so it is owned here and freed on
+        // removal.
+    if (amf_mbs_context->mbs_context_ref)
+        ogs_free(amf_mbs_context->mbs_context_ref);
+    if (amf_mbs_context->mbs_service_area)
+        ogs_mbs_service_area_free(amf_mbs_context->mbs_service_area);
+    amf_mbs_area_items_free(&amf_mbs_context->area_items);
+    amf_mbs_n2_info_remove_all(&amf_mbs_context->pending_n2_info_list);
+    if (amf_mbs_context->n2_mbs_sm_request)
+        ogs_pkbuf_free(amf_mbs_context->n2_mbs_sm_request);
+    if (amf_mbs_context->associated_session_id)
+        ogs_free(amf_mbs_context->associated_session_id);
+    {
+        amf_mbs_gnb_t *involved = NULL, *next = NULL;
+
+        ogs_list_for_each_safe(&amf_mbs_context->involved_gnb_list, next, involved) {
+            ogs_list_remove(&amf_mbs_context->involved_gnb_list, involved);
+            ogs_free(involved);
+        }
+    }
+    if (amf_mbs_context->notify_uri)
+        ogs_free(amf_mbs_context->notify_uri);
+    if (amf_mbs_context->t_response)
+        ogs_timer_delete(amf_mbs_context->t_response);
+    if (amf_mbs_context->t_reestablish)
+        ogs_timer_delete(amf_mbs_context->t_reestablish);
+
+    ogs_pool_free(&amf_mbs_context_pool, amf_mbs_context);
+
+    ogs_info("[Removed] Number of MBS Contexts in AMF is now %d",
+            ogs_list_count(&self.amf_mbs_context_list));
+}
+
+static void amf_mbs_context_remove_all(void)
+{
+    amf_mbs_context_t *amf_mbs_context = NULL, *next = NULL;
+
+    ogs_list_for_each_safe(&self.amf_mbs_context_list, next, amf_mbs_context)
+        amf_mbs_context_remove(amf_mbs_context);
+}
+
+amf_mbs_context_t *amf_mbs_context_create(ogs_tmgi_t *tmgi)
+{
+    amf_mbs_context_t *amf_mbs_context = NULL;
+
+    ogs_assert(tmgi);
+
+    if ((amf_mbs_context = amf_mbs_context_add()) == NULL) {
+        ogs_error("amf_mbs_context_create() failed");
+        return NULL;
+    }
+
+        // mbs_service_id and expiration_time are char* (ogs_tmgi_t, lib/proto/types.h) and are copied by value
+        // here, not by pointer. The `tmgi` argument is a short-lived caller-owned struct whose string fields
+        // point into the incoming ContextCreateReqData: ogs_sbi_parse_tmgi() assigns
+        // "tmgi->mbs_service_id = Tmgi->mbs_service_id;", a raw pointer. Once
+        // amf_namf_handle_mbs_broadcast_context_create() returns and that request data is freed, a pointer copy
+        // would leave amf_mbs_context->tmgi.mbs_service_id dangling, and the NGAP
+        // BroadcastSessionReleaseRequest built from it later would carry a TMGI the gNB cannot match
+        // ("Dropping ... Cause: NGAP MBS Session context does not exist").
+    amf_mbs_context->tmgi.mbs_service_id = ogs_strdup(tmgi->mbs_service_id);
+    amf_mbs_context->tmgi.plmn_id = tmgi->plmn_id;
+    if (tmgi->expiration_time)
+        amf_mbs_context->tmgi.expiration_time = ogs_strdup(tmgi->expiration_time);
+
+    amf_mbs_context->stream_id = OGS_INVALID_POOL_ID;
+
+    amf_mbs_context->t_response = ogs_timer_add(ogs_app()->timer_mgr,
+            amf_timer_mbs_response_expire, OGS_UINT_TO_POINTER(amf_mbs_context->index));
+    if (!amf_mbs_context->t_response) {
+        ogs_error("ogs_timer_add() failed");
+        amf_mbs_context_remove(amf_mbs_context);
+        return NULL;
+    }
+
+    amf_mbs_context->t_reestablish = ogs_timer_add(ogs_app()->timer_mgr,
+            amf_timer_mbs_reestablish_expire, OGS_UINT_TO_POINTER(amf_mbs_context->index));
+    if (!amf_mbs_context->t_reestablish) {
+        ogs_error("ogs_timer_add() failed");
+        amf_mbs_context_remove(amf_mbs_context);
+        return NULL;
+    }
+
+    return amf_mbs_context;
+}
+
+// Locates the context a DELETE addresses by its mbsContextRef
+// (/namf-mbs-bc/v1/mbs-contexts/{mbsContextRef}, TS 29.518 cl.5.6.2.4), so it can be released.
+amf_mbs_context_t *amf_mbs_context_find_by_ref(const char *mbs_context_ref)
+{
+    amf_mbs_context_t *amf_mbs_context = NULL;
+
+    ogs_assert(mbs_context_ref);
+
+    ogs_list_for_each(&self.amf_mbs_context_list, amf_mbs_context) {
+        if (amf_mbs_context->mbs_context_ref &&
+                strcmp(amf_mbs_context->mbs_context_ref, mbs_context_ref) == 0)
+            return amf_mbs_context;
+    }
+
+    return NULL;
+}
+
+amf_mbs_context_t *amf_mbs_context_find_by_index(uint32_t index)
+{
+    amf_mbs_context_t *amf_mbs_context = NULL;
+
+    ogs_list_for_each(&self.amf_mbs_context_list, amf_mbs_context) {
+        if (amf_mbs_context->index == index)
+            return amf_mbs_context;
+    }
+
+    return NULL;
+}
+
+// Finds an existing context by TMGI, so ContextCreate can deduplicate rather than always allocating.
+// The MBS Service ID is six hexadecimal digits of either case (TS 29.571 Tmgi.mbsServiceId pattern '^[A-Fa-f0-9]{6}$'),
+// so "00001a" and "00001A" are the same TMGI.
+// A retried or duplicate ContextCreate for the same broadcast session, after a lost response say, would
+// otherwise consume another slot in the fixed-size pool (OGS_MAX_NUM_OF_MBS_SESSIONS) and orphan the
+// earlier context: the SMF tracks only the last mbsContextRef it received, so it can never reach the
+// earlier one through ContextDelete. Mirrors amf_mbs_context_find_by_ref() above.
+amf_mbs_context_t *amf_mbs_context_find_by_tmgi(const ogs_tmgi_t *tmgi)
+{
+    amf_mbs_context_t *amf_mbs_context = NULL;
+
+    ogs_assert(tmgi);
+    ogs_assert(tmgi->mbs_service_id);
+
+    ogs_list_for_each(&self.amf_mbs_context_list, amf_mbs_context) {
+        if (amf_mbs_context->tmgi.mbs_service_id &&
+                strcasecmp(amf_mbs_context->tmgi.mbs_service_id, tmgi->mbs_service_id) == 0 &&
+                memcmp(&amf_mbs_context->tmgi.plmn_id, &tmgi->plmn_id, sizeof(tmgi->plmn_id)) == 0)
+            return amf_mbs_context;
+    }
+
+    return NULL;
 }

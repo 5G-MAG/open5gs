@@ -86,6 +86,21 @@ void ngap_handle_ng_reset(
 void ngap_handle_error_indication(
         amf_gnb_t *gnb, ogs_ngap_message_t *message);
 
+void ngap_handle_broadcast_session_setup_response(
+        amf_gnb_t *gnb, ogs_ngap_message_t *message);
+void ngap_handle_broadcast_session_setup_failure(
+        amf_gnb_t *gnb, ogs_ngap_message_t *message);
+void ngap_handle_broadcast_session_modification_response(
+        amf_gnb_t *gnb, ogs_ngap_message_t *message);
+void ngap_handle_broadcast_session_transport_request(
+        amf_gnb_t *gnb, ogs_ngap_message_t *message);
+void ngap_handle_broadcast_session_release_required(
+        amf_gnb_t *gnb, ogs_ngap_message_t *message);
+void ngap_handle_broadcast_session_release_response(
+        amf_gnb_t *gnb, ogs_ngap_message_t *message);
+void ngap_handle_broadcast_session_modification_failure(
+        amf_gnb_t *gnb, ogs_ngap_message_t *message);
+
 #ifdef __cplusplus
 }
 #endif

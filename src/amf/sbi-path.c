@@ -21,6 +21,8 @@
 #include "nas-path.h"
 #include "ngap-path.h"
 #include "nnrf-handler.h"
+#include "namf-build.h"
+#include "namf-handler.h"
 
 int amf_sbi_open(void)
 {
@@ -47,6 +49,31 @@ int amf_sbi_open(void)
                     service, OGS_SBI_API_V1, OGS_SBI_API_V1_0_0, NULL);
         ogs_sbi_nf_service_add_allowed_nf_type(service, OpenAPI_nf_type_SMF);
         ogs_sbi_nf_service_add_allowed_nf_type(service, OpenAPI_nf_type_AMF);
+    }
+
+    /* Build NF service information. It will be transmitted to NRF. */
+    if (ogs_sbi_nf_service_is_available(OpenAPI_service_name_namf_mbs_bc)) {
+        service = ogs_sbi_nf_service_build_default(
+                    nf_instance, OpenAPI_service_name_namf_mbs_bc);
+        ogs_assert(service);
+        ogs_sbi_nf_service_add_version(
+                    service, OGS_SBI_API_V1, OGS_SBI_API_V1_0_0, NULL);
+        ogs_sbi_nf_service_add_allowed_nf_type(service, OpenAPI_nf_type_SMF);
+        ogs_sbi_nf_service_add_allowed_nf_type(service, OpenAPI_nf_type_MB_SMF);
+    }
+
+    /* Build NF service information. It will be transmitted to NRF.
+     * TS 29.518 cl.5.7.1: "This service enables an NF Service Consumer (e.g. MB-SMF) to request the
+     * AMF to transfer MBS multicast related N2 message towards NG-RAN(s) serving a multicast MBS
+     * session..." -- the multicast counterpart of Namf_MBSBroadcast above, same consumer (MB-SMF). */
+    if (ogs_sbi_nf_service_is_available(OpenAPI_service_name_namf_mbs_comm)) {
+        service = ogs_sbi_nf_service_build_default(
+                    nf_instance, OpenAPI_service_name_namf_mbs_comm);
+        ogs_assert(service);
+        ogs_sbi_nf_service_add_version(
+                    service, OGS_SBI_API_V1, OGS_SBI_API_V1_0_0, NULL);
+        ogs_sbi_nf_service_add_allowed_nf_type(service, OpenAPI_nf_type_SMF);
+        ogs_sbi_nf_service_add_allowed_nf_type(service, OpenAPI_nf_type_MB_SMF);
     }
 
     /* Initialize NRF NF Instance */
@@ -795,6 +822,193 @@ bool amf_sbi_send_n1_n2_failure_notify(
     rc = ogs_sbi_send_request_to_client(
             client, client_notify_cb, request, NULL);
     ogs_expect(rc == true);
+
+    ogs_sbi_request_free(request);
+
+    return rc;
+}
+
+/*
+ * B-2: Namf_MBSBroadcast_ContextStatusNotify (TS 29.518 V18.14.0 cl.5.6.2.5). Sends to
+ * mbs_context->notify_client -- see its own comment (context.h) for how that client is set up (the same
+ * caller-supplied-URI idiom as sess->paging.client above), and amf_namf_build_mbs_broadcast_context_status_notify()
+ * (namf-build.c) for what the request carries. Reuses client_notify_cb: cl.5.6.2.5 2a says the NF Service
+ * Consumer returns "204 No Content" on success in the common case (no Broadcast Session Transport Request
+ * Transfer IE in the notification, which this fork never sends), the same response client_notify_cb
+ * already expects for N1N2MessageTransferFailureNotify.
+ */
+static bool send_mbs_broadcast_context_status_notify(
+        amf_mbs_context_t *mbs_context, ogs_list_t *n2_info_list, OpenAPI_operation_status_e operation_status,
+        bool released_ind, const amf_gnb_t *ngran_gnb, OpenAPI_ngran_failure_indication_e indication)
+{
+    bool rc;
+    ogs_sbi_request_t *request = NULL;
+
+    ogs_assert(mbs_context);
+
+    if (!mbs_context->notify_client) {
+        ogs_warn("MBS Broadcast ContextStatusNotify: no notify_client for this session, not sent");
+        return false;
+    }
+
+    request = amf_namf_build_mbs_broadcast_context_status_notify_event(
+            mbs_context, n2_info_list, operation_status, released_ind, ngran_gnb, indication);
+    if (!request) {
+        ogs_error("amf_namf_build_mbs_broadcast_context_status_notify_event() failed");
+        return false;
+    }
+
+    rc = ogs_sbi_send_request_to_client(
+            mbs_context->notify_client, client_notify_cb, request, NULL);
+    ogs_expect(rc == true);
+
+    ogs_sbi_request_free(request);
+
+    return rc;
+}
+
+bool amf_sbi_send_mbs_broadcast_context_status_notify(
+        amf_mbs_context_t *mbs_context, ogs_list_t *n2_info_list, OpenAPI_operation_status_e operation_status,
+        bool released_ind, const amf_gnb_t *required_release_gnb)
+{
+    return send_mbs_broadcast_context_status_notify(mbs_context, n2_info_list, operation_status, released_ind,
+            required_release_gnb, OpenAPI_ngran_failure_indication_NG_RAN_REQUIRED_RELEASE);
+}
+
+bool amf_sbi_send_mbs_broadcast_ngran_event(
+        amf_mbs_context_t *mbs_context, const amf_gnb_t *ngran_gnb, OpenAPI_ngran_failure_indication_e indication)
+{
+    ogs_list_t n2_info_list;
+
+    ogs_list_init(&n2_info_list);
+    return send_mbs_broadcast_context_status_notify(
+            mbs_context, &n2_info_list, OpenAPI_operation_status_NULL, false, ngran_gnb, indication);
+}
+
+int amf_sbi_parse_context_status_notify_response(ogs_sbi_message_t *message, ogs_sbi_response_t *response)
+{
+    char *uri = NULL;
+    int rv;
+
+    ogs_assert(message);
+    ogs_assert(response);
+
+    // The response carries the URI that was requested, the consumer's own: the resource is set from the request that
+    // was made. The response is put back as it was.
+    uri = response->h.uri;
+    response->h.uri = (char *)"/" OGS_SBI_SERVICE_NAME_NAMF_MBS_BC "/" OGS_SBI_API_V1
+        "/" OGS_SBI_RESOURCE_NAME_MBS_CONTEXT_STATUS_NOTIFY;
+    rv = ogs_sbi_parse_response(message, response);
+    response->h.uri = uri;
+
+    return rv;
+}
+
+/* What the answer of the MB-SMF to a Broadcast Session Transport Request needs: the NG-RAN node that asked and the
+ * session, which may be gone by then. */
+typedef struct transport_request_s {
+    ogs_pool_id_t gnb_id;
+    ogs_tmgi_t tmgi;
+} transport_request_t;
+
+static void transport_request_free(transport_request_t *request)
+{
+    if (request->tmgi.mbs_service_id)
+        ogs_free(request->tmgi.mbs_service_id);
+    ogs_free(request);
+}
+
+/*
+ * TS 29.518 V18.14.0 clause 5.6.2.5 step 2a: "the MB-SMF shall return a "200 OK" with the ContextStatusNotification
+ * Response containing one or more N2 MBS Session Management containers encapsulating a Broadcast Session Transport
+ * Response Transfer IE or a Broadcast Session Transport Failure Transfer IE." Each becomes the answer to the NG-RAN
+ * node that asked (TS 38.413 V18.8.0 clause 8.17.5); anything else, and a failure to reach the MB-SMF, is a BROADCAST
+ * SESSION TRANSPORT FAILURE (clause 8.17.5.3).
+ */
+static int client_transport_cb(int status, ogs_sbi_response_t *response, void *data)
+{
+    transport_request_t *request = data;
+    amf_gnb_t *gnb = NULL;
+    ogs_sbi_message_t message;
+    ogs_pkbuf_t *answers[OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO];
+    int i, count = 0;
+
+    ogs_assert(request);
+
+    gnb = amf_gnb_find_by_id(request->gnb_id);
+
+    memset(&message, 0, sizeof(message));
+    if (status == OGS_OK && response) {
+        if (amf_sbi_parse_context_status_notify_response(&message, response) != OGS_OK)
+            ogs_error("BROADCAST SESSION TRANSPORT: cannot parse the HTTP response of the MB-SMF");
+        else if (message.res_status == OGS_SBI_HTTP_STATUS_OK && gnb)
+            count = amf_namf_mbs_transport_answers(gnb, &request->tmgi, &message, answers, OGS_ARRAY_SIZE(answers));
+        else if (message.res_status != OGS_SBI_HTTP_STATUS_OK)
+            ogs_error("BROADCAST SESSION TRANSPORT: the MB-SMF answered [%d], not 200", message.res_status);
+    } else if (status != OGS_DONE) {
+        ogs_warn("BROADCAST SESSION TRANSPORT: the MB-SMF could not be reached [%d]", status);
+    }
+
+    if (!gnb) {
+        ogs_warn("BROADCAST SESSION TRANSPORT: the NG-RAN node is gone");
+    } else if (count > 0) {
+        for (i = 0; i < count; i++)
+            ngap_send_to_gnb(gnb, answers[i], NGAP_NON_UE_SIGNALLING);
+    } else if (status != OGS_DONE) {
+        amf_namf_send_transport_failure(gnb, &request->tmgi, NGAP_Cause_PR_transport,
+                NGAP_CauseTransport_transport_resource_unavailable);
+    }
+
+    ogs_sbi_message_free(&message);
+    if (response)
+        ogs_sbi_response_free(response);
+    transport_request_free(request);
+    return status == OGS_OK ? OGS_OK : OGS_ERROR;
+}
+
+bool amf_sbi_send_mbs_broadcast_transport_request(
+        amf_mbs_context_t *mbs_context, amf_gnb_t *gnb, const uint8_t *transfer, size_t transfer_len)
+{
+    bool rc;
+    ogs_sbi_request_t *request = NULL;
+    transport_request_t *data = NULL;
+    amf_mbs_n2_info_t *n2_info = NULL;
+    ogs_list_t n2_info_list;
+
+    ogs_assert(mbs_context);
+    ogs_assert(gnb);
+    ogs_assert(transfer);
+
+    if (!mbs_context->notify_client) {
+        ogs_warn("MBS Broadcast ContextStatusNotify: no notify_client for this session, not sent");
+        return false;
+    }
+
+    n2_info = amf_mbs_n2_info_create(gnb, OpenAPI_ngap_ie_type_BC_TRA_REQ, transfer, transfer_len);
+    if (!n2_info)
+        return false;
+    ogs_list_init(&n2_info_list);
+    ogs_list_add(&n2_info_list, n2_info);
+
+    request = amf_namf_build_mbs_broadcast_context_status_notify(
+            mbs_context, &n2_info_list, OpenAPI_operation_status_NULL, false, NULL);
+    amf_mbs_n2_info_remove_all(&n2_info_list);
+    if (!request) {
+        ogs_error("amf_namf_build_mbs_broadcast_context_status_notify() failed");
+        return false;
+    }
+
+    data = ogs_calloc(1, sizeof(*data));
+    ogs_assert(data);
+    data->gnb_id = gnb->id;
+    data->tmgi.plmn_id = mbs_context->tmgi.plmn_id;
+    data->tmgi.mbs_service_id = ogs_strdup(mbs_context->tmgi.mbs_service_id);
+    ogs_assert(data->tmgi.mbs_service_id);
+
+    rc = ogs_sbi_send_request_to_client(mbs_context->notify_client, client_transport_cb, request, data);
+    ogs_expect(rc == true);
+    if (!rc)
+        transport_request_free(data);
 
     ogs_sbi_request_free(request);
 

@@ -21,6 +21,7 @@
 #include "ngap-path.h"
 #include "sbi-path.h"
 #include "nas-path.h"
+#include "namf-handler.h"
 
 static bool maximum_number_of_gnbs_is_reached(void)
 {
@@ -631,10 +632,27 @@ void ngap_handle_ng_setup_request(amf_gnb_t *gnb, ogs_ngap_message_t *message)
 
     ogs_assert(OGS_OK == amf_gnb_set_gnb_id(gnb, gnb_id, gnb_id_length));
 
+    /* Kept as received: the Global RAN Node ID of this gNB, which the AMF sends to the MB-SMF in n2MbsSmInfoList */
+    {
+        const BIT_STRING_t *gnb_id_bits = &globalGNB_ID->gNB_ID->choice.gNB_ID;
+
+        memset(gnb->gnb_id_buf, 0, sizeof(gnb->gnb_id_buf));
+        if (gnb_id_bits->size > 0 && gnb_id_bits->size <= sizeof(gnb->gnb_id_buf)) {
+            memcpy(gnb->gnb_id_buf, gnb_id_bits->buf, gnb_id_bits->size);
+            gnb->gnb_id_bit_length = gnb_id_bits->size * 8 - gnb_id_bits->bits_unused;
+        } else {
+            gnb->gnb_id_bit_length = 0;
+        }
+    }
+
     gnb->state.ng_setup_success = true;
     r = ngap_send_ng_setup_response(gnb);
     ogs_expect(r == OGS_OK);
     ogs_assert(r != OGS_ERROR);
+
+    /* TS 23.527 V18.6.0 cl. 8.3.2.2 step 3: "The AMF detects that the NG-RAN has restarted (e.g. upon receiving NG Setup
+     * Request message)" */
+    amf_namf_handle_mbs_broadcast_ng_setup(gnb);
 }
 
 void ngap_handle_initial_ue_message(amf_gnb_t *gnb, ogs_ngap_message_t *message)
@@ -5465,4 +5483,474 @@ void ngap_handle_error_indication(amf_gnb_t *gnb, ogs_ngap_message_t *message)
             ran_ue_remove(ran_ue);
         }
     }
+}
+
+/*
+ * BROADCAST SESSION RELEASE REQUIRED: the NG-RAN lacks the resources to continue the session (TS 38.413 V18.8.0
+ * cl. 8.17.4.2). The IEs are the MBS Session ID and the Cause, both mandatory (cl. 9.2.16.9). The AMF releases the
+ * session in that NG-RAN (amf_namf_handle_mbs_broadcast_release_required()).
+ */
+void ngap_handle_broadcast_session_release_required(
+        amf_gnb_t *gnb, ogs_ngap_message_t *message)
+{
+    int i;
+
+    NGAP_InitiatingMessage_t *initiatingMessage = NULL;
+    NGAP_BroadcastSessionReleaseRequired_t *BroadcastSessionReleaseRequired = NULL;
+    NGAP_BroadcastSessionReleaseRequiredIEs_t *ie = NULL;
+    NGAP_MBS_SessionID_t *MBS_SessionID = NULL;
+    NGAP_Cause_t *Cause = NULL;
+
+    ogs_tmgi_t tmgi;
+    amf_mbs_context_t *mbs_context = NULL;
+
+    ogs_assert(gnb);
+    ogs_assert(gnb->sctp.sock);
+
+    ogs_assert(message);
+    initiatingMessage = message->choice.initiatingMessage;
+    ogs_assert(initiatingMessage);
+
+    BroadcastSessionReleaseRequired = initiatingMessage->value.choice.BroadcastSessionReleaseRequired;
+
+    ogs_debug("BROADCAST SESSION RELEASE REQUIRED");
+
+    for (i = 0; i < OGS_ASN_LIST_COUNT(BroadcastSessionReleaseRequired->protocolIEs); i++) {
+        ie = OGS_ASN_LIST_GET(BroadcastSessionReleaseRequired->protocolIEs, i);
+        switch (ie->value.present) {
+        case NGAP_BroadcastSessionReleaseRequiredIEs__value_PR_MBS_SessionID:
+            MBS_SessionID = ie->value.choice.MBS_SessionID;
+            break;
+        case NGAP_BroadcastSessionReleaseRequiredIEs__value_PR_Cause:
+            Cause = ie->value.choice.Cause;
+            break;
+        default:
+            break;
+        }
+    }
+
+    if (!MBS_SessionID) {
+        ogs_error("BROADCAST SESSION RELEASE REQUIRED: No MBS-SessionID IE");
+        return;
+    }
+
+    if (Cause)
+        ogs_warn("BROADCAST SESSION RELEASE REQUIRED from gNB %i, Cause[Group:%d]", gnb->gnb_id, Cause->present);
+    else
+        ogs_warn("BROADCAST SESSION RELEASE REQUIRED from gNB %i, no Cause IE", gnb->gnb_id);
+
+    memset(&tmgi, 0, sizeof(tmgi));
+    ogs_ngap_ASN_to_5gs_tmgi(&MBS_SessionID->tMGI, &tmgi);
+
+    mbs_context = amf_mbs_context_find_by_tmgi(&tmgi);
+    if (mbs_context)
+        amf_namf_handle_mbs_broadcast_release_required(mbs_context, gnb);
+    else
+        ogs_warn("BROADCAST SESSION RELEASE REQUIRED: no MBS context found for the given TMGI");
+
+    ogs_free(tmgi.mbs_service_id);
+}
+
+/*
+ * BROADCAST SESSION TRANSPORT REQUEST (TS 38.413 V18.8.0 clause 8.17.5.2): "The NG-RAN node initiates the procedure by
+ * sending a BROADCAST SESSION TRANSPORT REQUEST message to the AMF." The MBS Session ID names the context; the
+ * Broadcast Transport Request Transfer is the MB-SMF's (clause 9.2.16.10: "Containing the Broadcast Transport Request
+ * Transfer IE specified in subclause 9.3.5.15") and goes to it in a ContextStatusNotify
+ * (amf_namf_handle_mbs_broadcast_transport_request()).
+ */
+void ngap_handle_broadcast_session_transport_request(
+        amf_gnb_t *gnb, ogs_ngap_message_t *message)
+{
+    int i;
+
+    NGAP_InitiatingMessage_t *initiatingMessage = NULL;
+    NGAP_BroadcastSessionTransportRequest_t *BroadcastSessionTransportRequest = NULL;
+    NGAP_BroadcastSessionTransportRequestIEs_t *ie = NULL;
+    NGAP_MBS_SessionID_t *MBS_SessionID = NULL;
+    OCTET_STRING_t *transfer = NULL;
+
+    ogs_tmgi_t tmgi;
+
+    ogs_assert(gnb);
+    ogs_assert(gnb->sctp.sock);
+
+    ogs_assert(message);
+    initiatingMessage = message->choice.initiatingMessage;
+    ogs_assert(initiatingMessage);
+
+    BroadcastSessionTransportRequest = initiatingMessage->value.choice.BroadcastSessionTransportRequest;
+
+    ogs_debug("BROADCAST SESSION TRANSPORT REQUEST");
+
+    for (i = 0; i < OGS_ASN_LIST_COUNT(BroadcastSessionTransportRequest->protocolIEs); i++) {
+        ie = OGS_ASN_LIST_GET(BroadcastSessionTransportRequest->protocolIEs, i);
+        switch (ie->value.present) {
+        case NGAP_BroadcastSessionTransportRequestIEs__value_PR_MBS_SessionID:
+            MBS_SessionID = ie->value.choice.MBS_SessionID;
+            break;
+        case NGAP_BroadcastSessionTransportRequestIEs__value_PR_OCTET_STRING_CONTAINING_BroadcastTransportRequestTransfer_:
+            transfer = &ie->value.choice.OCTET_STRING_CONTAINING_BroadcastTransportRequestTransfer_;
+            break;
+        default:
+            break;
+        }
+    }
+
+    if (!MBS_SessionID || !transfer) {
+        ogs_error("BROADCAST SESSION TRANSPORT REQUEST: No MBS-SessionID or Broadcast Transport Request Transfer IE");
+        return;
+    }
+
+    memset(&tmgi, 0, sizeof(tmgi));
+    ogs_ngap_ASN_to_5gs_tmgi(&MBS_SessionID->tMGI, &tmgi);
+
+    amf_namf_handle_mbs_broadcast_transport_request(gnb, &tmgi, transfer->buf, transfer->size);
+
+    ogs_free(tmgi.mbs_service_id);
+}
+
+/*
+ * BROADCAST SESSION RELEASE RESPONSE: the NG-RAN has released the session. The deferred ContextRelease response
+ * is sent on the first one (TS 23.247 V18.8.0 cl. 7.3.2 step 7 then step 8); the answer of an NG-RAN to a release it
+ * asked for (BROADCAST SESSION RELEASE REQUIRED) is reported to the MB-SMF instead.
+ */
+void ngap_handle_broadcast_session_release_response(
+        amf_gnb_t *gnb, ogs_ngap_message_t *message)
+{
+    int i;
+
+    NGAP_SuccessfulOutcome_t *successfulOutcome = NULL;
+    NGAP_BroadcastSessionReleaseResponse_t *BroadcastSessionReleaseResponse = NULL;
+    NGAP_BroadcastSessionReleaseResponseIEs_t *ie = NULL;
+    NGAP_MBS_SessionID_t *MBS_SessionID = NULL;
+    OCTET_STRING_t *transfer = NULL;
+
+    ogs_tmgi_t tmgi;
+    amf_mbs_context_t *mbs_context = NULL;
+
+    ogs_assert(gnb);
+    ogs_assert(gnb->sctp.sock);
+
+    ogs_assert(message);
+    successfulOutcome = message->choice.successfulOutcome;
+    ogs_assert(successfulOutcome);
+
+    BroadcastSessionReleaseResponse = successfulOutcome->value.choice.BroadcastSessionReleaseResponse;
+
+    ogs_debug("BROADCAST SESSION RELEASE RESPONSE");
+
+    for (i = 0; i < OGS_ASN_LIST_COUNT(BroadcastSessionReleaseResponse->protocolIEs); i++) {
+        ie = OGS_ASN_LIST_GET(BroadcastSessionReleaseResponse->protocolIEs, i);
+        if (ie->value.present == NGAP_BroadcastSessionReleaseResponseIEs__value_PR_MBS_SessionID)
+            MBS_SessionID = ie->value.choice.MBS_SessionID;
+        else if (ie->value.present ==
+                NGAP_BroadcastSessionReleaseResponseIEs__value_PR_OCTET_STRING_CONTAINING_MBSSessionReleaseResponseTransfer_)
+            transfer = &ie->value.choice.OCTET_STRING_CONTAINING_MBSSessionReleaseResponseTransfer_;
+    }
+
+    if (!MBS_SessionID) {
+        ogs_error("BROADCAST SESSION RELEASE RESPONSE: No MBS-SessionID IE");
+        return;
+    }
+
+    memset(&tmgi, 0, sizeof(tmgi));
+    ogs_ngap_ASN_to_5gs_tmgi(&MBS_SessionID->tMGI, &tmgi);
+
+    mbs_context = amf_mbs_context_find_by_tmgi(&tmgi);
+    if (mbs_context && amf_namf_handle_mbs_broadcast_required_release_response(mbs_context, gnb, transfer))
+        ;   // the answer to a release that this NG-RAN asked for
+    else if (mbs_context && amf_namf_handle_mbs_broadcast_area_release_response(mbs_context, gnb, transfer))
+        ;   // the answer to a release for a gNB that left the service area
+    else if (mbs_context && mbs_context->release_pending)
+        amf_namf_send_mbs_broadcast_context_release_response(mbs_context, gnb, transfer);
+    else
+        ogs_warn("BROADCAST SESSION RELEASE RESPONSE: no MBS context waiting for its release for the given TMGI");
+
+    ogs_free(tmgi.mbs_service_id);
+}
+
+/*
+ * BROADCAST SESSION SETUP RESPONSE, SETUP FAILURE, MODIFICATION RESPONSE and MODIFICATION FAILURE: read the MBS
+ * Session ID (TS 38.413 V18.8.0 cl. 9.2.16.2 to 9.2.16.6 table rows: M), the transfer IE and the Criticality
+ * Diagnostics (O), correlate the message to the AMF's amf_mbs_context_t by TMGI, and hand the outcome to
+ * amf_namf_handle_mbs_broadcast_ran_response(), which decides what goes to the MB-SMF.
+ */
+void ngap_handle_broadcast_session_setup_response(
+        amf_gnb_t *gnb, ogs_ngap_message_t *message)
+{
+    int i;
+
+    NGAP_SuccessfulOutcome_t *successfulOutcome = NULL;
+    NGAP_BroadcastSessionSetupResponse_t *BroadcastSessionSetupResponse = NULL;
+    NGAP_BroadcastSessionSetupResponseIEs_t *ie = NULL;
+    NGAP_MBS_SessionID_t *MBS_SessionID = NULL;
+    OCTET_STRING_t *transfer = NULL;
+    NGAP_CriticalityDiagnostics_t *CriticalityDiagnostics = NULL;
+
+    ogs_tmgi_t tmgi;
+    amf_mbs_context_t *mbs_context = NULL;
+
+    ogs_assert(gnb);
+    ogs_assert(gnb->sctp.sock);
+
+    ogs_assert(message);
+    successfulOutcome = message->choice.successfulOutcome;
+    ogs_assert(successfulOutcome);
+
+    BroadcastSessionSetupResponse = successfulOutcome->value.choice.BroadcastSessionSetupResponse;
+    ogs_assert(BroadcastSessionSetupResponse);
+
+    ogs_warn("BROADCAST SESSION SETUP RESPONSE");
+
+    for (i = 0; i < OGS_ASN_LIST_COUNT(BroadcastSessionSetupResponse->protocolIEs); i++) {
+        ie = OGS_ASN_LIST_GET(BroadcastSessionSetupResponse->protocolIEs, i);
+        switch (ie->value.present) {
+        case NGAP_BroadcastSessionSetupResponseIEs__value_PR_MBS_SessionID:
+            MBS_SessionID = ie->value.choice.MBS_SessionID;
+            break;
+        case NGAP_BroadcastSessionSetupResponseIEs__value_PR_OCTET_STRING_CONTAINING_MBSSessionSetupOrModResponseTransfer_:
+            transfer = &ie->value.choice.OCTET_STRING_CONTAINING_MBSSessionSetupOrModResponseTransfer_;
+            break;
+        case NGAP_BroadcastSessionSetupResponseIEs__value_PR_CriticalityDiagnostics:
+            CriticalityDiagnostics = ie->value.choice.CriticalityDiagnostics;
+            break;
+        default:
+            break;
+        }
+    }
+
+    if (!MBS_SessionID) {
+        // Mandatory IE missing -- malformed message, nothing to correlate against.
+        ogs_error("BROADCAST SESSION SETUP RESPONSE: No MBS-SessionID IE");
+        return;
+    }
+
+    if (CriticalityDiagnostics)
+        ogs_warn("    Criticality Diagnostics present (no action is defined for it)");
+
+    memset(&tmgi, 0, sizeof(tmgi));
+    ogs_ngap_ASN_to_5gs_tmgi(&MBS_SessionID->tMGI, &tmgi);
+
+    mbs_context = amf_mbs_context_find_by_tmgi(&tmgi);
+    if (mbs_context)
+        amf_namf_handle_mbs_broadcast_ran_response(mbs_context, gnb,
+                false, true, OpenAPI_ngap_ie_type_MBS_SES_RSP, transfer);
+    else
+        ogs_warn("BROADCAST SESSION SETUP RESPONSE: no MBS context found for the given TMGI");
+
+    ogs_free(tmgi.mbs_service_id);
+}
+
+void ngap_handle_broadcast_session_setup_failure(
+        amf_gnb_t *gnb, ogs_ngap_message_t *message)
+{
+    int i;
+
+    NGAP_UnsuccessfulOutcome_t *unsuccessfulOutcome = NULL;
+    NGAP_BroadcastSessionSetupFailure_t *BroadcastSessionSetupFailure = NULL;
+    NGAP_BroadcastSessionSetupFailureIEs_t *ie = NULL;
+    NGAP_MBS_SessionID_t *MBS_SessionID = NULL;
+    OCTET_STRING_t *transfer = NULL;
+    NGAP_CriticalityDiagnostics_t *CriticalityDiagnostics = NULL;
+    NGAP_Cause_t *Cause = NULL;
+
+    ogs_tmgi_t tmgi;
+    amf_mbs_context_t *mbs_context = NULL;
+
+    ogs_assert(gnb);
+    ogs_assert(gnb->sctp.sock);
+
+    ogs_assert(message);
+    unsuccessfulOutcome = message->choice.unsuccessfulOutcome;
+    ogs_assert(unsuccessfulOutcome);
+
+    BroadcastSessionSetupFailure = unsuccessfulOutcome->value.choice.BroadcastSessionSetupFailure;
+    ogs_assert(BroadcastSessionSetupFailure);
+
+    ogs_warn("BROADCAST SESSION SETUP FAILURE");
+
+    for (i = 0; i < OGS_ASN_LIST_COUNT(BroadcastSessionSetupFailure->protocolIEs); i++) {
+        ie = OGS_ASN_LIST_GET(BroadcastSessionSetupFailure->protocolIEs, i);
+        switch (ie->value.present) {
+        case NGAP_BroadcastSessionSetupFailureIEs__value_PR_MBS_SessionID:
+            MBS_SessionID = ie->value.choice.MBS_SessionID;
+            break;
+        case NGAP_BroadcastSessionSetupFailureIEs__value_PR_OCTET_STRING_CONTAINING_MBSSessionSetupOrModFailureTransfer_:
+            transfer = &ie->value.choice.OCTET_STRING_CONTAINING_MBSSessionSetupOrModFailureTransfer_;
+            break;
+        case NGAP_BroadcastSessionSetupFailureIEs__value_PR_Cause:
+            Cause = ie->value.choice.Cause;
+            break;
+        case NGAP_BroadcastSessionSetupFailureIEs__value_PR_CriticalityDiagnostics:
+            CriticalityDiagnostics = ie->value.choice.CriticalityDiagnostics;
+            break;
+        default:
+            break;
+        }
+    }
+
+    if (!MBS_SessionID) {
+        // Mandatory IE missing -- malformed message, nothing to correlate against.
+        ogs_error("BROADCAST SESSION SETUP FAILURE: No MBS-SessionID IE");
+        return;
+    }
+
+    if (CriticalityDiagnostics)
+        ogs_warn("    Criticality Diagnostics present (no action is defined for it)");
+    if (Cause) {
+        ogs_warn("    Cause[Group:%d Cause:%d]", Cause->present, (int)Cause->choice.radioNetwork);
+    }
+
+
+    memset(&tmgi, 0, sizeof(tmgi));
+    ogs_ngap_ASN_to_5gs_tmgi(&MBS_SessionID->tMGI, &tmgi);
+
+    mbs_context = amf_mbs_context_find_by_tmgi(&tmgi);
+    if (mbs_context)
+        amf_namf_handle_mbs_broadcast_ran_response(mbs_context, gnb,
+                false, false, OpenAPI_ngap_ie_type_MBS_SES_FAIL, transfer);
+    else
+        ogs_warn("BROADCAST SESSION SETUP FAILURE: no MBS context found for the given TMGI");
+
+    ogs_free(tmgi.mbs_service_id);
+}
+
+void ngap_handle_broadcast_session_modification_response(
+        amf_gnb_t *gnb, ogs_ngap_message_t *message)
+{
+    int i;
+
+    NGAP_SuccessfulOutcome_t *successfulOutcome = NULL;
+    NGAP_BroadcastSessionModificationResponse_t *BroadcastSessionModificationResponse = NULL;
+    NGAP_BroadcastSessionModificationResponseIEs_t *ie = NULL;
+    NGAP_MBS_SessionID_t *MBS_SessionID = NULL;
+    OCTET_STRING_t *transfer = NULL;
+    NGAP_CriticalityDiagnostics_t *CriticalityDiagnostics = NULL;
+
+    ogs_tmgi_t tmgi;
+    amf_mbs_context_t *mbs_context = NULL;
+
+    ogs_assert(gnb);
+    ogs_assert(gnb->sctp.sock);
+
+    ogs_assert(message);
+    successfulOutcome = message->choice.successfulOutcome;
+    ogs_assert(successfulOutcome);
+
+    BroadcastSessionModificationResponse = successfulOutcome->value.choice.BroadcastSessionModificationResponse;
+    ogs_assert(BroadcastSessionModificationResponse);
+
+    ogs_warn("BROADCAST SESSION MODIFICATION RESPONSE");
+
+    for (i = 0; i < OGS_ASN_LIST_COUNT(BroadcastSessionModificationResponse->protocolIEs); i++) {
+        ie = OGS_ASN_LIST_GET(BroadcastSessionModificationResponse->protocolIEs, i);
+        switch (ie->value.present) {
+        case NGAP_BroadcastSessionModificationResponseIEs__value_PR_MBS_SessionID:
+            MBS_SessionID = ie->value.choice.MBS_SessionID;
+            break;
+        case NGAP_BroadcastSessionModificationResponseIEs__value_PR_OCTET_STRING_CONTAINING_MBSSessionSetupOrModResponseTransfer_:
+            transfer = &ie->value.choice.OCTET_STRING_CONTAINING_MBSSessionSetupOrModResponseTransfer_;
+            break;
+        case NGAP_BroadcastSessionModificationResponseIEs__value_PR_CriticalityDiagnostics:
+            CriticalityDiagnostics = ie->value.choice.CriticalityDiagnostics;
+            break;
+        default:
+            break;
+        }
+    }
+
+    if (!MBS_SessionID) {
+        // Mandatory IE missing -- malformed message, nothing to correlate against.
+        ogs_error("BROADCAST SESSION MODIFICATION RESPONSE: No MBS-SessionID IE");
+        return;
+    }
+
+    if (CriticalityDiagnostics)
+        ogs_warn("    Criticality Diagnostics present (no action is defined for it)");
+
+    memset(&tmgi, 0, sizeof(tmgi));
+    ogs_ngap_ASN_to_5gs_tmgi(&MBS_SessionID->tMGI, &tmgi);
+
+    mbs_context = amf_mbs_context_find_by_tmgi(&tmgi);
+    if (mbs_context)
+        amf_namf_handle_mbs_broadcast_ran_response(mbs_context, gnb,
+                true, true, OpenAPI_ngap_ie_type_MBS_SES_RSP, transfer);
+    else
+        ogs_warn("BROADCAST SESSION MODIFICATION RESPONSE: no MBS context found for the given TMGI");
+
+    ogs_free(tmgi.mbs_service_id);
+}
+
+void ngap_handle_broadcast_session_modification_failure(
+        amf_gnb_t *gnb, ogs_ngap_message_t *message)
+{
+    int i;
+
+    NGAP_UnsuccessfulOutcome_t *unsuccessfulOutcome = NULL;
+    NGAP_BroadcastSessionModificationFailure_t *BroadcastSessionModificationFailure = NULL;
+    NGAP_BroadcastSessionModificationFailureIEs_t *ie = NULL;
+    NGAP_MBS_SessionID_t *MBS_SessionID = NULL;
+    OCTET_STRING_t *transfer = NULL;
+    NGAP_CriticalityDiagnostics_t *CriticalityDiagnostics = NULL;
+    NGAP_Cause_t *Cause = NULL;
+
+    ogs_tmgi_t tmgi;
+    amf_mbs_context_t *mbs_context = NULL;
+
+    ogs_assert(gnb);
+    ogs_assert(gnb->sctp.sock);
+
+    ogs_assert(message);
+    unsuccessfulOutcome = message->choice.unsuccessfulOutcome;
+    ogs_assert(unsuccessfulOutcome);
+
+    BroadcastSessionModificationFailure = unsuccessfulOutcome->value.choice.BroadcastSessionModificationFailure;
+    ogs_assert(BroadcastSessionModificationFailure);
+
+    ogs_warn("BROADCAST SESSION MODIFICATION FAILURE");
+
+    for (i = 0; i < OGS_ASN_LIST_COUNT(BroadcastSessionModificationFailure->protocolIEs); i++) {
+        ie = OGS_ASN_LIST_GET(BroadcastSessionModificationFailure->protocolIEs, i);
+        switch (ie->value.present) {
+        case NGAP_BroadcastSessionModificationFailureIEs__value_PR_MBS_SessionID:
+            MBS_SessionID = ie->value.choice.MBS_SessionID;
+            break;
+        case NGAP_BroadcastSessionModificationFailureIEs__value_PR_OCTET_STRING_CONTAINING_MBSSessionSetupOrModFailureTransfer_:
+            transfer = &ie->value.choice.OCTET_STRING_CONTAINING_MBSSessionSetupOrModFailureTransfer_;
+            break;
+        case NGAP_BroadcastSessionModificationFailureIEs__value_PR_Cause:
+            Cause = ie->value.choice.Cause;
+            break;
+        case NGAP_BroadcastSessionModificationFailureIEs__value_PR_CriticalityDiagnostics:
+            CriticalityDiagnostics = ie->value.choice.CriticalityDiagnostics;
+            break;
+        default:
+            break;
+        }
+    }
+
+    if (!MBS_SessionID) {
+        // Mandatory IE missing -- malformed message, nothing to correlate against.
+        ogs_error("BROADCAST SESSION MODIFICATION FAILURE: No MBS-SessionID IE");
+        return;
+    }
+
+    if (CriticalityDiagnostics)
+        ogs_warn("    Criticality Diagnostics present (no action is defined for it)");
+    if (Cause) {
+        ogs_warn("    Cause[Group:%d Cause:%d]", Cause->present, (int)Cause->choice.radioNetwork);
+    }
+
+
+    memset(&tmgi, 0, sizeof(tmgi));
+    ogs_ngap_ASN_to_5gs_tmgi(&MBS_SessionID->tMGI, &tmgi);
+
+    mbs_context = amf_mbs_context_find_by_tmgi(&tmgi);
+    if (mbs_context)
+        amf_namf_handle_mbs_broadcast_ran_response(mbs_context, gnb,
+                true, false, OpenAPI_ngap_ie_type_MBS_SES_FAIL, transfer);
+    else
+        ogs_warn("BROADCAST SESSION MODIFICATION FAILURE: no MBS context found for the given TMGI");
+
+    ogs_free(tmgi.mbs_service_id);
 }

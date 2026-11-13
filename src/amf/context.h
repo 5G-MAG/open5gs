@@ -107,6 +107,33 @@ typedef struct amf_context_s {
     /* NGSetupResponse */
     uint8_t         relative_capacity;
 
+    /* amf.mbs.report_required_release: report a release that an NG-RAN asked for to the MB-SMF in an operationEvents
+     * attribute (TS 29.518 V18.14.0 cl. 5.6.2.5: "based on operator's policy, the AMF may: report ..."); false
+     * unless configured. */
+    bool            mbs_report_required_release;
+
+    /* amf.mbs.restoration: how a Broadcast MBS session is restored in an NG-RAN that restarts or that gets into
+     * service to serve a TAI of its service area (TS 23.527 V18.6.0 cl. 8.3.2: "may be restored by the AMF as specified
+     * in clause 8.3.2.2 or by the MB-SMF as specified in clause 8.3.2.3"; cl. 8.3.1: "Restoration procedures for NG-RAN
+     * failure with or without restart are optional to support."). None unless configured. */
+    enum {
+        AMF_MBS_RESTORATION_NONE = 0,
+        AMF_MBS_RESTORATION_BY_AMF,
+        AMF_MBS_RESTORATION_BY_MBSMF,
+    }               mbs_restoration;
+
+    /* amf.mbs.reestablish_after: seconds after which the AMF sets a Broadcast MBS session up again in an NG-RAN that
+     * asked for its release (TS 29.518 V18.14.0 cl. 5.6.2.5: "attempt to re-establish the MBS session after some
+     * operator configurable time in these NG-RANs by performing the Broadcast MBS session restoration by AMF procedure
+     * specified in clause 8.3.2.2 of TS 23.527"). No document gives a value: without the key the AMF does not
+     * re-establish. */
+    bool            mbs_reestablish;
+    uint32_t        mbs_reestablish_after;
+
+    /* amf.mbs.report_ng_ran_failure: report an NG-RAN whose association is lost to the MB-SMF for each Broadcast MBS
+     * session it served (TS 23.527 V18.6.0 cl. 8.3.3, optional to support); false unless configured. */
+    bool            mbs_report_ng_ran_failure;
+
     /* Generator for unique identification */
     uint64_t        amf_ue_ngap_id; /* amf_ue_ngap_id generator */
 
@@ -130,6 +157,8 @@ typedef struct amf_context_s {
         } t3502, t3512;
     } time;
 
+    ogs_list_t      amf_mbs_context_list;
+
 } amf_context_t;
 
 typedef struct amf_gnb_s {
@@ -148,6 +177,8 @@ typedef struct amf_gnb_s {
      * deployment use of short identifiers; the spec PrintableString
      * upper bound is 150 but real-world names are short. */
     char            ran_node_name[64];
+    uint8_t         gnb_id_buf[4];      /* gNB ID bit string of the NG Setup Request, as received */
+    uint8_t         gnb_id_bit_length;  /* its length in bits (22 to 32) */
     ogs_plmn_id_t   plmn_id;    /* gNB PLMN-ID received from gNB */
     ogs_sctp_sock_t sctp;       /* SCTP socket */
 
@@ -982,6 +1013,187 @@ typedef struct amf_sess_s {
 
 } amf_sess_t;
 
+/*
+ * One N2 MBS Session Management container received from an NG-RAN node (the transfer IE of a Broadcast Session
+ * Setup, Modification or Release response or failure), held until it is sent to the MB-SMF together with the
+ * identity of the NG-RAN node that generated it (TS 29.518 cl. 5.6.2.2: "the AMF shall insert the identifier of
+ * the NG-RAN node that generated it in the corresponding entry of the n2MbsSmInfoList attribute").
+ */
+typedef struct amf_mbs_n2_info_s {
+    ogs_lnode_t lnode;
+
+    OpenAPI_ngap_ie_type_e ngap_ie_type;
+    ogs_pkbuf_t *pkbuf;                 /* the transfer IE, as received */
+
+    ogs_plmn_id_t ran_plmn_id;          /* Global RAN Node ID of the NG-RAN node (a gNB) */
+    uint8_t ran_gnb_id_buf[4];
+    uint8_t ran_gnb_id_bit_length;
+} amf_mbs_n2_info_t;
+
+/* A gNB that a Broadcast Session Setup or Modification Request of a context has been sent to */
+typedef struct amf_mbs_gnb_s {
+    ogs_lnode_t lnode;
+
+    ogs_pool_id_t gnb_id;   /* amf_gnb_t.id; the gNB may have disconnected since */
+
+    /* A Setup or Modification Request has been sent to the gNB and it has not answered it yet. */
+    bool awaiting;
+    /* The gNB answered the last Setup Request with a failure and no later request succeeded: it does not serve the
+     * session. */
+    bool setup_failed;
+    /* The gNB sent a BROADCAST SESSION RELEASE REQUIRED for the session (TS 38.413 V18.8.0 cl. 8.17.4); the AMF
+     * has released the session in it, and released is set once that release has been answered (or could not be
+     * sent). */
+    bool release_required;
+    bool released;
+    /* The request outstanding is a Broadcast Session Setup Request sent as part of a ContextUpdate (TS 23.527
+     * V18.6.0 cl. 8.3.2.3 step 7), not of the ContextCreate: its response completes the update. */
+    bool update_setup;
+    /* The request outstanding is a Broadcast Session Modification Request (not a Setup Request) */
+    bool awaiting_modification;
+    /* The AMF has released the session in the gNB because it left the MBS service area (TS 23.247 V18.8.0 cl. 7.3.3
+     * step 3), and area_release_pending is set until the gNB has answered that release. The gNB holds no session. */
+    bool area_released;
+    bool area_release_pending;
+    /* The ContextRelease of the context has sent the gNB a Broadcast Session Release Request that it has not answered */
+    bool release_sent;
+    /* The outstanding Setup Request restores the session in a gNB that restarted (TS 23.527 V18.6.0 cl. 8.3.2.2 step
+     * 4): its response is not one of the responses of a ContextCreate or ContextUpdate. */
+    bool restoring;
+
+    /* The monotonic time at which the session is set up again in the gNB after it asked for the release, 0 for none
+     * (amf.mbs.reestablish_after) */
+    ogs_time_t reestablish_at;
+
+    /* The Global RAN Node ID of the gNB, kept as the gNB had it, to find the record again when the gNB connects anew
+     * (amf_gnb_t.id then differs) */
+    ogs_plmn_id_t ran_plmn_id;
+    uint8_t ran_gnb_id_buf[4];
+    uint8_t ran_gnb_id_bit_length;
+} amf_mbs_gnb_t;
+
+typedef struct amf_mbs_context_s {
+    ogs_lnode_t lnode;      /* A node of list_t */
+
+    uint32_t index;         /* An index of this node */
+    char *mbs_context_ref;  /* mbsContextRef */
+
+    ogs_tmgi_t tmgi; /* Only TMGI is needed */
+    char *service_type; /* To differenciate between BROADCAST and MULTICAST sessions */
+
+    /*
+     * ContextCreateReqData's own S-NSSAI and MBS Service Area (both TAI list and NCGI-TAI list), as
+     * actually received from the MB-SMF -- both mandatory fields of the request
+     * (amf_namf_handle_mbs_broadcast_context_create() already validates their presence). Used by
+     * ngap_build_broadcast_session_setup_request() instead of the hardcoded values it used before.
+     */
+    ogs_s_nssai_t s_nssai;
+    ogs_mbs_service_area_t *mbs_service_area; /* NULL if the request instead used mbsServiceAreaInfoList */
+
+    /*
+     * mbsServiceAreaInfoList of the request: the Area Session IDs and their MBS service areas of a location dependent
+     * session (TS 29.518 V18.14.0 Table 6.5.6.2.2-1: "List of MBS service areas and their related Area Session IDs", 1..N),
+     * kept in the order received; items are amf_mbs_area_item_t. location_dependent is false (and the list empty) when
+     * the request instead used mbsServiceArea. mbs_service_area is then the union of the areas of the items, which the
+     * choice of the NG-RANs uses. area_session_id is the ID of the first item.
+     */
+    bool location_dependent;
+    uint16_t area_session_id;
+    ogs_list_t area_items;
+
+    /*
+     * BUG FIX: Namf_MBSBroadcast_ContextCreate used to send its 201 Created SBI response
+     * immediately after broadcasting the NGAP BROADCAST SESSION SETUP REQUEST to every gNB, never
+     * waiting for any of them to actually respond -- see amf_namf_handle_mbs_broadcast_context_create()'s
+     * own comment. Per TS 29.518 V18.14.0 clause 5.6.2.2 step 2a: "The AMF should respond success
+     * when it receives the first successful response from the NG-RAN(s)." stream_id holds the
+     * deferred SBI stream (looked up again via ogs_sbi_stream_find_by_id(), the same safe idiom
+     * amf-sm.c itself uses, since the raw pointer could be invalidated while we wait) until
+     * ngap_handle_broadcast_session_setup_response() completes it on the first response;
+     * OGS_INVALID_POOL_ID once the response has been sent (or never set at all, e.g. a stale
+     * context found via a late/duplicate response after the client already gave up).
+     */
+    ogs_pool_id_t stream_id;
+
+    /*
+     * B-2: Namf_MBSBroadcast_ContextStatusNotify (TS 29.518 V18.14.0 clause 5.6.2.5). Two obligations,
+     * each quoted contiguously rather than joined by elisions:
+     *
+     *   "the AMF shall transfer such information by sending one or more
+     *   Namf_MBSBroadcast_ContextStatusNotify requests to the MB-SMF"
+     *
+     *   "When the AMF receives the response from all NG-RANs, the AMF shall include an indication of
+     *   the completion of the operation in the Namf_MBSBroadcast_ContextStatusNotify request."
+     *
+     * The first applies on receipt of subsequent responses from other NG-RANs after the 201 Created
+     * response, where additional information needs transferring to the MB-SMF.
+     *
+     * notify_client is the NF Service Consumer's own caller-supplied notify_uri (ContextCreateReqData,
+     * not a discovered NF), set up the same way sess->paging.client is for N1N2MessageTransfer
+     * (namf-handler.c). gnb_request_count/gnb_response_count track completion: once
+     * gnb_response_count reaches gnb_request_count, the ContextStatusNotify carries operationStatus =
+     * COMPLETED.
+     */
+    ogs_sbi_client_t *notify_client;
+    char *notify_uri;       /* the consumer's notifyUri: the target of every ContextStatusNotify request */
+    uint32_t gnb_request_count;
+    uint32_t gnb_response_count;
+
+    /*
+     * Set while a ContextRelease waits for the first NG-RAN release response: TS 23.247 V18.8.0 cl. 7.3.2
+     * puts "The NG-RAN reports successful release ... to the AMF(s)" (step 7) before "The AMF sends
+     * Namf_MBSBroadcast_ContextRelease response" (step 8). stream_id then holds the consumer's DELETE.
+     */
+    bool release_pending;
+
+    /*
+     * Containers received before the deferred ContextCreate or ContextUpdate response could be sent (a Setup or
+     * Modification Failure Transfer that preceded the first success): sent with that response (TS 29.518
+     * cl. 5.6.2.2: the 201 Created "may contain one or more N2 MBS Session Management containers"). Items are
+     * amf_mbs_n2_info_t.
+     */
+    ogs_list_t pending_n2_info_list;
+
+    /*
+     * The gNBs that have been involved in the session: those a Broadcast Session Setup or Modification Request has
+     * been sent to. TS 23.247 V18.8.0 cl. 7.3.2 step 4: "The AMF sends an N2 message to all RAN nodes that have been
+     * involved to release MBS session." Items are amf_mbs_gnb_t.
+     */
+    ogs_list_t involved_gnb_list;
+
+    /*
+     * The last N2 MBS SM container (the MBS Session Setup or Modification Request Transfer IE) received from the
+     * MB-SMF, in a ContextCreate or in a ContextUpdate that carried one. TS 23.527 V18.6.0 cl. 8.3.2.2 step 1:
+     * "The AMF stores the last N2 MBS SM container (i.e. MBS Session Setup or Modification Request Transfer IE
+     * defined in 3GPP TS 38.413 [11]) received from the MB-SMF during the establishment of the broadcast MBS session
+     * or during a broadcast MBS session update." NULL until one has been stored.
+     */
+    ogs_pkbuf_t *n2_mbs_sm_request;
+
+    /*
+     * The Associated Session ID of the ContextCreate (TS 29.518 V18.14.0 cl. 5.6.2.2: "The NF Service Consumer may also
+     * include the MBS associated session ID to enable NG-RAN to identify the multiple MBS sessions delivering the same
+     * content when AF creates multiple broadcast MBS Sessions via different Core Networks to deliver the same
+     * content."), as the octets of the NGAP Associated Session ID IE of every Broadcast Session Setup Request of the
+     * session, the restoration of the session in a gNB included. NULL, with a length of 0, when the ContextCreate
+     * carried none.
+     */
+    uint8_t *associated_session_id;
+    size_t associated_session_id_len;
+
+    /*
+     * The maximum response time of the ContextCreate or ContextUpdate in progress (TS 29.518 V18.14.0 cl. 5.6.2.2:
+     * "since the reception of the Namf_MBSBroadcast_ContextCreate Request"): armed only when the request carried
+     * maxResponseTime. response_deadline guards against an event of a timer that was stopped or of a context
+     * that has been replaced since.
+     */
+    ogs_timer_t *t_response;
+    ogs_timer_t *t_reestablish;     /* armed for the earliest amf_mbs_gnb_t.reestablish_at */
+    ogs_time_t response_deadline;
+    bool response_window_is_update;
+
+} amf_mbs_context_t;
+
 void amf_context_init(void);
 void amf_context_final(void);
 amf_context_t *amf_self(void);
@@ -1154,6 +1366,68 @@ bool amf_update_allowed_nssai(amf_ue_t *amf_ue);
 bool amf_ue_is_rat_restricted(amf_ue_t *amf_ue);
 int amf_instance_get_load(void);
 void amf_ue_save_to_release_session_list(amf_ue_t *amf_ue);
+
+amf_mbs_context_t *amf_mbs_context_create(ogs_tmgi_t *tmgi);
+amf_mbs_context_t *amf_mbs_context_find_by_ref(const char *mbs_context_ref);
+amf_mbs_context_t *amf_mbs_context_find_by_tmgi(const ogs_tmgi_t *tmgi);
+amf_mbs_context_t *amf_mbs_context_find_by_index(uint32_t index);
+void amf_mbs_context_remove(amf_mbs_context_t *amf_mbs_context);
+
+amf_mbs_n2_info_t *amf_mbs_n2_info_create(amf_gnb_t *gnb,
+        OpenAPI_ngap_ie_type_e ngap_ie_type, const uint8_t *transfer, size_t transfer_len);
+void amf_mbs_context_involve_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *gnb);
+amf_mbs_gnb_t *amf_mbs_context_find_involved_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *gnb);
+ogs_time_t amf_mbs_context_earliest_reestablish(amf_mbs_context_t *amf_mbs_context);
+/* What a gNB still owes: the response to the request outstanding at the gNB of the record */
+typedef enum {
+    AMF_MBS_OWES_NOTHING,
+    AMF_MBS_OWES_SETUP_RESPONSE,        /* to the Setup Request of the ContextCreate */
+    AMF_MBS_OWES_UPDATE_RESPONSE,       /* to a Modification Request, or to a Setup Request of a ContextUpdate */
+    AMF_MBS_OWES_RESTORATION_RESPONSE,  /* to the Setup Request that restores the session */
+} amf_mbs_owes_e;
+amf_mbs_owes_e amf_mbs_gnb_owes(const amf_mbs_gnb_t *involved);
+/*
+ * The release the ContextRelease sent to the gNB of \p involved has been answered (or the gNB is lost): counts it.
+ * Returns false when no release was waiting for it. \p first is set when it is the first answer, \p last when every
+ * gNB the release was sent to has answered.
+ */
+bool amf_mbs_context_release_answered(amf_mbs_context_t *amf_mbs_context, amf_mbs_gnb_t *involved, bool *first, bool *last);
+bool amf_mbs_gnb_holds_session(const amf_mbs_gnb_t *involved);
+bool amf_mbs_gnb_has_ran_id(const amf_mbs_gnb_t *involved, const amf_gnb_t *gnb);
+amf_mbs_gnb_t *amf_mbs_context_find_stale_involved_gnb(amf_mbs_context_t *amf_mbs_context, amf_gnb_t *gnb);
+bool amf_mbs_context_store_n2_container(amf_mbs_context_t *amf_mbs_context, const ogs_pkbuf_t *container);
+bool amf_mbs_context_set_associated_session_id(
+        amf_mbs_context_t *amf_mbs_context, OpenAPI_associated_session_id_t *associated_session_id);
+/*
+ * The service area of a context as an update applies it, with what is needed to put the earlier one back: an update that
+ * is refused after the area was replaced must leave the area as it was (all or none).
+ */
+typedef struct amf_mbs_area_undo_s {
+    bool applied;                       /* amf_mbs_context_apply_area() has been called, and not undone or kept */
+    ogs_mbs_service_area_t *old_area;   /* the area replaced, owned here; NULL if none was replaced */
+    bool replaced;                      /* the area was replaced */
+    ogs_list_t old_items;               /* the items replaced, owned here */
+    bool items_replaced;
+    bool old_location_dependent;
+    uint16_t old_area_session_id;
+} amf_mbs_area_undo_t;
+
+/* One Area Session ID of a location dependent session and its MBS service area (NULL when the request gave none) */
+typedef struct amf_mbs_area_item_s {
+    ogs_lnode_t lnode;
+    uint16_t area_session_id;
+    ogs_mbs_service_area_t *area;
+} amf_mbs_area_item_t;
+
+void amf_mbs_area_items_free(ogs_list_t *items);
+void amf_mbs_context_apply_area(amf_mbs_context_t *amf_mbs_context, bool carries_area, ogs_mbs_service_area_t *new_area,
+        ogs_list_t *new_items, amf_mbs_area_undo_t *undo);
+void amf_mbs_context_undo_area(amf_mbs_context_t *amf_mbs_context, amf_mbs_area_undo_t *undo);
+void amf_mbs_context_keep_area(amf_mbs_area_undo_t *undo);
+void amf_mbs_n2_info_free(amf_mbs_n2_info_t *n2_info);
+void amf_mbs_n2_info_remove_all(ogs_list_t *n2_info_list);
+/* Moves the items of \p n2_info_list after its first \p keep to \p rest, in order (\p rest is appended to) */
+void amf_mbs_n2_info_split(ogs_list_t *n2_info_list, ogs_list_t *rest, int keep);
 
 #ifdef __cplusplus
 }

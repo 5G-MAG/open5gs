@@ -17,12 +17,19 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <ctype.h>
+
 #include "namf-handler.h"
 #include "nsmf-handler.h"
 
 #include "nas-path.h"
 #include "ngap-path.h"
 #include "sbi-path.h"
+#include "namf-build.h"
+
+static bool amf_namf_parse_tai(ogs_tai_t *tai, OpenAPI_tai_t *api_tai);
+static bool amf_namf_parse_ncgi(ogs_ncgi_t *ncgi, OpenAPI_ncgi_t *api_ncgi);
+static void amf_namf_parse_mbs_service_area(ogs_mbs_service_area_t **out, OpenAPI_mbs_service_area_t *api_area);
 
 int amf_namf_comm_handle_n1_n2_message_transfer(
         ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg)
@@ -1636,9 +1643,6 @@ static ogs_nas_5gmm_capability_t
     if (len <= 0)
         ogs_error("Gmm capability not decoded");
 
-    ogs_assert(sizeof(gmm_capability_octets_string) <=
-            sizeof(gmm_capability) + 1);
-
     gmm_capability_iei = // not copied anywhere for now
             gmm_capability_octets_string[0];
     if (gmm_capability_iei !=
@@ -1670,9 +1674,6 @@ static ogs_nas_ue_security_capability_t
     ogs_base64_decode_to_buffer(
             (uint8_t *)ue_security_capability_octets_string,
             sizeof(ue_security_capability) + 1, encoded);
-
-    ogs_assert(sizeof(ue_security_capability_octets_string) <=
-            sizeof(ogs_nas_ue_security_capability_t) + 1);
 
     ue_security_capability_iei = // not copied anywhere for now
             ue_security_capability_octets_string[0];
@@ -2038,3 +2039,2595 @@ int amf_namf_comm_handle_registration_status_update_response(
 
     return OGS_OK;
 }
+
+/* Namf_MBSBroadcast Service API */
+
+/*
+ * 3GPP TS 29.518 - Release 17.11.0
+ * 5G System; Access and Mobility Management Services; Stage 3
+ * Ch. 5.6.2.2 - Namf_MBSBroadcast Service API - MBS Broadcast ContextCreate service operation
+ */
+/*
+ * Sets mbs_context->notify_client from a caller-supplied notifyUri (ContextCreateReqData's own,
+ * ContextUpdateReqData's own re-set) -- notifyUri is a caller-supplied URI, not a discovered NF, so this
+ * cannot go through NRF discovery; same idiom as sess->paging.client for N1N2MessageTransfer. Factored out
+ * of amf_namf_handle_mbs_broadcast_context_create() (item B-3 needs the identical logic a second time, in
+ * amf_namf_handle_mbs_broadcast_context_update(), below).
+ */
+/*
+ * Whether \p notify_uri can be the target of the notifications: a URI with a scheme and an address. TS 29.518 V18.14.0
+ * Table 6.5.6.2.2-1: "notifyUri | Uri | M | 1 | This IE shall contain the notification URI where to be notified about the
+ * status change of the broadcast MBS session context." A session whose consumer cannot be notified is not created.
+ */
+bool amf_namf_notify_uri_is_valid(const char *notify_uri)
+{
+    bool rc;
+    OpenAPI_uri_scheme_e scheme = OpenAPI_uri_scheme_NULL;
+    char *fqdn = NULL;
+    uint16_t fqdn_port = 0;
+    ogs_sockaddr_t *addr = NULL, *addr6 = NULL;
+
+    if (!notify_uri || !*notify_uri)
+        return false;
+
+    rc = ogs_sbi_getaddr_from_uri(&scheme, &fqdn, &fqdn_port, &addr, &addr6, (char *)notify_uri);
+    if (rc == true && scheme != OpenAPI_uri_scheme_NULL && (addr || addr6 || fqdn))
+        rc = true;
+    else
+        rc = false;
+
+    ogs_free(fqdn);
+    ogs_freeaddrinfo(addr);
+    ogs_freeaddrinfo(addr6);
+
+    return rc;
+}
+
+bool amf_namf_set_mbs_context_notify_client(
+        amf_mbs_context_t *mbs_context, const char *notify_uri, const char *op_name)
+{
+    bool                 uri_rc, rc = false;
+    OpenAPI_uri_scheme_e scheme = OpenAPI_uri_scheme_NULL;
+    char                *fqdn = NULL;
+    uint16_t             fqdn_port = 0;
+    ogs_sockaddr_t      *addr = NULL, *addr6 = NULL;
+    ogs_sbi_client_t    *client = NULL;
+
+    uri_rc = ogs_sbi_getaddr_from_uri(&scheme, &fqdn, &fqdn_port, &addr, &addr6, (char *)notify_uri);
+    if (uri_rc == false || scheme == OpenAPI_uri_scheme_NULL) {
+        ogs_error("MBS Broadcast %s: invalid notifyUri [%s]", op_name, notify_uri);
+    } else {
+        client = ogs_sbi_client_find(scheme, fqdn, fqdn_port, addr, addr6);
+        if (!client)
+            client = ogs_sbi_client_add(scheme, fqdn, fqdn_port, addr, addr6);
+        if (!client)
+            ogs_error("MBS Broadcast %s: ogs_sbi_client_add() failed for notifyUri", op_name);
+        else {
+            char *uri = ogs_strdup(notify_uri);
+
+            if (!uri) {
+                ogs_error("MBS Broadcast %s: ogs_strdup() failed for notifyUri", op_name);
+            } else {
+                // The client holds the address only; the request's target is the whole URI. The earlier client and
+                // URI stay until the new ones are both in hand: a failure leaves the notifications going where they
+                // went.
+                if (mbs_context->notify_uri)
+                    ogs_free(mbs_context->notify_uri);
+                mbs_context->notify_uri = uri;
+                mbs_context->notify_client = client;
+                rc = true;
+            }
+        }
+    }
+    ogs_free(fqdn);
+    ogs_freeaddrinfo(addr);
+    ogs_freeaddrinfo(addr6);
+
+    return rc;
+}
+
+/* Mirrors smf_nmbsmf_parse_tai() (src/smf/nmbsmf-handler.c), the SMF-side equivalent for the same
+ * OpenAPI_tai_t -> ogs_tai_t conversion; no shared helper exists between the two NFs in this codebase. */
+static bool amf_namf_parse_tai(ogs_tai_t *tai, OpenAPI_tai_t *api_tai)
+{
+    if (!ogs_sbi_parse_plmn_id(&tai->plmn_id, api_tai->plmn_id)) {
+        ogs_error("MBS Broadcast: TAI: unable to parse the PLMN Id");
+        return false;
+    }
+    if (api_tai->tac) tai->tac = ogs_strdup(api_tai->tac);
+    if (api_tai->nid) tai->nid = ogs_strdup(api_tai->nid);
+    return true;
+}
+
+/* Mirrors smf_nmbsmf_parse_ncgi() (src/smf/nmbsmf-handler.c), same reasoning as amf_namf_parse_tai(). */
+static bool amf_namf_parse_ncgi(ogs_ncgi_t *ncgi, OpenAPI_ncgi_t *api_ncgi)
+{
+    if (!ogs_sbi_parse_plmn_id(&ncgi->plmn_id, api_ncgi->plmn_id)) {
+        ogs_error("MBS Broadcast: NCGI: unable to parse the PLMN Id");
+        return false;
+    }
+    if (api_ncgi->nr_cell_id) ncgi->nr_cell_id = ogs_strdup(api_ncgi->nr_cell_id);
+    if (api_ncgi->nid) ncgi->nid = ogs_strdup(api_ncgi->nid);
+    return true;
+}
+
+/* Fills (allocating as needed) *out with api_area's own tai_list and ncgi_list, converted. Shared by
+ * both branches of amf_namf_handle_mbs_broadcast_context_create() (mbsServiceArea and each entry of
+ * mbsServiceAreaInfoList carry the same OpenAPI_mbs_service_area_t shape). */
+static void amf_namf_parse_mbs_service_area(ogs_mbs_service_area_t **out, OpenAPI_mbs_service_area_t *api_area)
+{
+    OpenAPI_lnode_t *node;
+
+    if (api_area->tai_list) {
+        OpenAPI_list_for_each(api_area->tai_list, node) {
+            OpenAPI_tai_t *api_tai = (OpenAPI_tai_t *)node->data;
+            ogs_tai_t *tai = ogs_calloc(1, sizeof(*tai));
+            ogs_assert(tai);
+            if (!amf_namf_parse_tai(tai, api_tai)) {
+                ogs_free(tai);
+                continue;
+            }
+            if (!*out) {
+                *out = ogs_calloc(1, sizeof(**out));
+                ogs_assert(*out);
+            }
+            if (!(*out)->tai_list) {
+                (*out)->tai_list = ogs_calloc(1, sizeof(*(*out)->tai_list));
+                ogs_assert((*out)->tai_list);
+            }
+            ogs_list_add((*out)->tai_list, tai);
+        }
+    }
+
+    if (api_area->ncgi_list) {
+        OpenAPI_list_for_each(api_area->ncgi_list, node) {
+            OpenAPI_ncgi_tai_t *api_ncgi_tai = (OpenAPI_ncgi_tai_t *)node->data;
+            OpenAPI_lnode_t *cell_node;
+            ogs_ncgi_tai_t *ncgi_tai = NULL;
+
+            if (!api_ncgi_tai->tai) continue;
+            ncgi_tai = ogs_calloc(1, sizeof(*ncgi_tai));
+            ogs_assert(ncgi_tai);
+            if (!amf_namf_parse_tai(&ncgi_tai->tai, api_ncgi_tai->tai)) {
+                ogs_free(ncgi_tai);
+                continue;
+            }
+
+            if (api_ncgi_tai->cell_list) {
+                OpenAPI_list_for_each(api_ncgi_tai->cell_list, cell_node) {
+                    OpenAPI_ncgi_t *api_ncgi = (OpenAPI_ncgi_t *)cell_node->data;
+                    ogs_ncgi_t *ncgi = ogs_calloc(1, sizeof(*ncgi));
+                    ogs_assert(ncgi);
+                    if (!amf_namf_parse_ncgi(ncgi, api_ncgi)) {
+                        ogs_free(ncgi);
+                        continue;
+                    }
+                    ogs_list_add(&ncgi_tai->cell_list, ncgi);
+                }
+            }
+
+            if (!*out) {
+                *out = ogs_calloc(1, sizeof(**out));
+                ogs_assert(*out);
+            }
+            if (!(*out)->ncgi_tai_list) {
+                (*out)->ncgi_tai_list = ogs_calloc(1, sizeof(*(*out)->ncgi_tai_list));
+                ogs_assert((*out)->ncgi_tai_list);
+            }
+            ogs_list_add((*out)->ncgi_tai_list, ncgi_tai);
+        }
+    }
+}
+
+/* Whether \p gnb serves the TAI \p tai: its NG Setup Request listed the TAC with the PLMN */
+static bool amf_namf_gnb_serves_tai(const amf_gnb_t *gnb, const ogs_tai_t *tai)
+{
+    ogs_uint24_t tac = ogs_uint24_from_string_hexadecimal(tai->tac ? tai->tac : (char *)"0");
+    int i, j;
+
+    for (i = 0; i < gnb->num_of_supported_ta_list; i++) {
+        if (gnb->supported_ta_list[i].tac.v != tac.v)
+            continue;
+        for (j = 0; j < gnb->supported_ta_list[i].num_of_bplmn_list; j++) {
+            if (memcmp(&gnb->supported_ta_list[i].bplmn_list[j].plmn_id, &tai->plmn_id,
+                        sizeof(ogs_plmn_id_t)) == 0)
+                return true;
+        }
+    }
+
+    return false;
+}
+
+/*
+ * Whether \p gnb serves one of the TAIs of \p area, or \p area does not narrow the choice (none given, or without a TAI
+ * list: NCGI matching is not implemented).
+ */
+static bool amf_namf_gnb_serves_tai_list(const amf_gnb_t *gnb, const ogs_mbs_service_area_t *area)
+{
+    ogs_tai_t *tai = NULL;
+
+    if (!area || !area->tai_list || ogs_list_count(area->tai_list) == 0)
+        return true;
+
+    ogs_list_for_each(area->tai_list, tai) {
+        if (amf_namf_gnb_serves_tai(gnb, tai))
+            return true;
+    }
+
+    return false;
+}
+
+static bool amf_namf_area_has_tai(const ogs_mbs_service_area_t *area, const ogs_tai_t *tai)
+{
+    ogs_tai_t *other = NULL;
+
+    ogs_list_for_each(area->tai_list, other) {
+        if (ogs_uint24_from_string_hexadecimal(other->tac ? other->tac : (char *)"0").v ==
+                ogs_uint24_from_string_hexadecimal(tai->tac ? tai->tac : (char *)"0").v &&
+                memcmp(&other->plmn_id, &tai->plmn_id, sizeof(ogs_plmn_id_t)) == 0)
+            return true;
+    }
+
+    return false;
+}
+
+/*
+ * Whether the change of the MBS service area from \p old_area to \p new_area affects \p gnb: it serves a TAI that is in
+ * one of them and not in the other. When either area has no TAI list (none given, or NCGIs only) the change cannot be
+ * told by TAI and every node is taken to be affected: NCGI matching is not implemented.
+ */
+static bool amf_namf_gnb_affected_by_area_change(const amf_gnb_t *gnb,
+        const ogs_mbs_service_area_t *old_area, const ogs_mbs_service_area_t *new_area)
+{
+    ogs_tai_t *tai = NULL;
+
+    if (!old_area || !old_area->tai_list || ogs_list_count(old_area->tai_list) == 0 ||
+        !new_area || !new_area->tai_list || ogs_list_count(new_area->tai_list) == 0)
+        return true;
+
+    ogs_list_for_each(new_area->tai_list, tai) {
+        if (!amf_namf_area_has_tai(old_area, tai) && amf_namf_gnb_serves_tai(gnb, tai))
+            return true;
+    }
+    ogs_list_for_each(old_area->tai_list, tai) {
+        if (!amf_namf_area_has_tai(new_area, tai) && amf_namf_gnb_serves_tai(gnb, tai))
+            return true;
+    }
+
+    return false;
+}
+
+/*
+ * Whether an MBS session's setup or modification goes to \p gnb. TS 23.247 V18.8.0 cl. 7.3.1 step 3: "The AMF transfers
+ * the MBS Session Resource Setup Request message ... to all NG-RANs which support MBS in the MBS service area."
+ * A gNB that has not completed NG Setup is not reachable for non-UE signalling. When the stored service area carries
+ * TAIs, the gNB must serve one of them. A service area without TAIs (none given, or NCGIs only) does not narrow the
+ * choice here. NOT IMPLEMENTED: whether the gNB supports MBS (no NGAP indication of it is held), NCGI matching.
+ */
+static bool amf_gnb_takes_mbs_session(amf_gnb_t *gnb, amf_mbs_context_t *mbs_context)
+{
+    ogs_assert(gnb);
+    ogs_assert(mbs_context);
+
+    if (!gnb->state.ng_setup_success)
+        return false;
+
+    return amf_namf_gnb_serves_tai_list(gnb, mbs_context->mbs_service_area);
+}
+
+/*
+ * What a ContextUpdate of \p mbs_context does at \p gnb. Without a ranIdList: the NG-RAN nodes that take the session
+ * get a Broadcast Session Modification Request, except one that released it at its own request. With a ranIdList (TS 29.518
+ * V18.14.0 cl. 5.6.2.3: "the MB-SMF may include one or more ranIds attibutes to request the AMF to setup the Broadcast MBS
+ * session in a list of NG-RANs as identified by the NG-RAN ID(s), as specified in clause 8.3.2.3 of TS 23.527"): the listed
+ * NG-RAN nodes get a Broadcast Session Setup Request and no other node gets anything (TS 23.527 V18.6.0 cl. 8.3.2.3 step 7:
+ * "The AMF sends the N2 MBS Session Setup Request message to the NG-RAN node(s) including the MBS Session Setup or
+ * Modification Request Transfer IE."). A node that enters the service area (serves the new one and did not serve the old
+ * one) gets a Setup Request, not a Modification Request, and a node that holds the session and leaves it gets a Release
+ * Request. With n2MbsInfoChangeInd false (plan->n2_info_unchanged) the nodes that the change
+ * of the service area does not affect get nothing. With noNgapSignallingInd true (TS 29.518 V18.14.0 Table 6.5.6.2.5-1: "true: the AMF
+ * may consider to not trigger a NGAP signaling message to any NG-RAN."; TS 23.527 V18.6.0 cl. 8.3.2.4 step 8: "The AMF
+ * may consider to not trigger any NGAP signalling towards NG-RANs covering the MBS service area.") no node gets anything.
+ */
+amf_mbs_update_action_e amf_namf_mbs_update_action(
+        amf_mbs_context_t *mbs_context, amf_gnb_t *gnb, const amf_mbs_update_plan_t *plan)
+{
+    amf_mbs_gnb_t *involved = NULL;
+
+    ogs_assert(mbs_context);
+    ogs_assert(gnb);
+    ogs_assert(plan);
+
+    if (plan->no_ngap_signalling || !gnb->state.ng_setup_success)
+        return AMF_MBS_UPDATE_SKIP;
+
+    if (plan->ran_id_list)
+        return amf_namf_ran_id_list_has_gnb(plan->ran_id_list, gnb) ?
+            AMF_MBS_UPDATE_SETUP : AMF_MBS_UPDATE_SKIP;
+
+    involved = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
+
+    if (!amf_gnb_takes_mbs_session(gnb, mbs_context)) {
+        // TS 23.247 V18.8.0 cl. 7.3.3 step 3: "the AMF may send ... MBS Session Resource Release to some other NG-RANs in
+        // old MBS service area": a node that holds the session, served the old service area and does not serve the new
+        // one leaves it.
+        if (involved && amf_mbs_gnb_holds_session(involved) && amf_namf_gnb_serves_tai_list(gnb, plan->old_area))
+            return AMF_MBS_UPDATE_RELEASE;
+        return AMF_MBS_UPDATE_SKIP;
+    }
+
+    // The session has been released in this gNB at its own request (BROADCAST SESSION RELEASE REQUIRED): it holds no
+    // session to modify.
+    if (involved && involved->release_required)
+        return AMF_MBS_UPDATE_SKIP;
+
+    // TS 23.247 V18.8.0 cl. 7.3.3 step 3: "Depending on the change of the MBS service area, the AMF may send MBS Session
+    // Resource Setup to some NG-RANs in new MBS service area (see clause 7.3.1)": a node that serves the new service area
+    // and did not serve the old one holds no session, so it gets a Setup Request, not a Modification Request.
+    if (!amf_namf_gnb_serves_tai_list(gnb, plan->old_area))
+        return AMF_MBS_UPDATE_SETUP;
+
+    // TS 29.518 V18.14.0 cl. 5.6.2.3: "If the n2MbsInfoChangeInd IE is present in the request and set to "false", the AMF
+    // does not need to contact NG-RAN nodes unaffected by the MBS service area change."
+    if (plan->n2_info_unchanged &&
+            !amf_namf_gnb_affected_by_area_change(gnb, plan->old_area, mbs_context->mbs_service_area))
+        return AMF_MBS_UPDATE_UNAFFECTED;
+
+    return AMF_MBS_UPDATE_MODIFY;
+}
+
+/*
+ * Arms the response window of \p mbs_context: TS 29.518 V18.14.0 cl. 5.6.2.2: "If the AMF does not receive responses
+ * from all NG-RAN nodes before the maximum response time elapses since the reception of the
+ * Namf_MBSBroadcast_ContextCreate Request, then the AMF should send one Namf_MBSBroadcast_ContextStatusNotify
+ * request indicating the incompletion of the Broadcast MBS session establishment." The time is the request's
+ * maxResponseTime, in seconds (TS 29.571 DurationSec). A request without it has no window: the specification
+ * names no default (Table 6.5.6.2.3-1, NOTE, case (b): "the AMF has not received the maximum response timer in the
+ * request from the MB-SMF").
+ */
+static void amf_mbs_context_start_response_window(
+        amf_mbs_context_t *mbs_context, int max_response_time, bool update)
+{
+    ogs_time_t duration = ogs_time_from_sec(max_response_time);
+
+    ogs_assert(mbs_context);
+    ogs_assert(mbs_context->t_response);
+
+    // DurationSec allows 0, a response time that has elapsed already; a timer cannot be armed with no duration.
+    if (duration < 1)
+        duration = 1;
+
+    mbs_context->response_window_is_update = update;
+    mbs_context->response_deadline = ogs_get_monotonic_time() + duration;
+    ogs_timer_start(mbs_context->t_response, duration);
+}
+
+/*
+ * The maximum response time has elapsed (event AMF_EVENT_MBS_TIMER): if not every NG-RAN has answered, one
+ * ContextStatusNotify request says that the establishment or the update is incomplete. The context may have been
+ * released or replaced since the timer was armed.
+ */
+void amf_namf_handle_mbs_broadcast_response_timeout(uint32_t mbs_context_index)
+{
+    amf_mbs_context_t *mbs_context = amf_mbs_context_find_by_index(mbs_context_index);
+    ogs_list_t n2_info_list;
+
+    if (!mbs_context) {
+        ogs_debug("MBS Broadcast response window: the context has been removed");
+        return;
+    }
+
+    // A context that has armed no window (a context created after the one the event was for was removed, in the same
+    // pool slot) has nothing to report.
+    if (!mbs_context->response_deadline || ogs_get_monotonic_time() < mbs_context->response_deadline) {
+        ogs_debug("MBS Broadcast response window: stale timer event");
+        return;
+    }
+
+    if (mbs_context->gnb_response_count >= mbs_context->gnb_request_count)
+        return;
+
+    ogs_warn("MBS Broadcast [%s]: %d of %d NG-RANs have answered when the maximum response time elapsed",
+            mbs_context->mbs_context_ref, (int)mbs_context->gnb_response_count,
+            (int)mbs_context->gnb_request_count);
+
+    ogs_list_init(&n2_info_list);
+    amf_sbi_send_mbs_broadcast_context_status_notify(mbs_context, &n2_info_list,
+            mbs_context->response_window_is_update ?
+                OpenAPI_operation_status_MBS_SESSION_UPDATE_INCOMPLETE :
+                OpenAPI_operation_status_MBS_SESSION_START_INCOMPLETE, false, NULL);
+}
+
+/*
+ * Whether \p area fits the MBS Service Area of NGAP: TS 38.413 V18.11.0 cl. 9.3.1.208, "MBS Service Area Cell List ...
+ * 0..<maxnoofCellsforMBS>" with "maxnoofCellsforMBS | Maximum no. of cells allowed within one MBS Service Area. Value is 8192."
+ * and "MBS Service Area TAI List ... 0..<maxnoofTAIforMBS>" with "maxnoofTAIforMBS | Maximum no. of TAs allowed within one MBS
+ * Service Area. Value is 1024." (the ASN.1 types are SEQUENCE (SIZE(1.. maxnoofCellsforMBS)) OF NR-CGI and
+ * SEQUENCE (SIZE(1.. maxnoofTAIforMBS)) OF TAI). An area that does not is refused, not left to the encoder.
+ */
+bool amf_namf_service_area_is_valid(const OpenAPI_mbs_service_area_t *area)
+{
+    OpenAPI_lnode_t *node = NULL;
+    long cells = 0;
+
+    if (!area)
+        return true;
+
+    if (area->tai_list && area->tai_list->count > 1024)
+        return false;
+
+    if (area->ncgi_list) {
+        OpenAPI_list_for_each(area->ncgi_list, node) {
+            const OpenAPI_ncgi_tai_t *ncgi_tai = node->data;
+
+            if (ncgi_tai && ncgi_tai->cell_list)
+                cells += ncgi_tai->cell_list->count;
+        }
+    }
+
+    return cells <= 8192;
+}
+
+/*
+ * Whether \p list, the mbsServiceAreaInfoList of a request, can be applied: it has 1 to 256 items (TS 29.518 V18.14.0
+ * Table 6.5.6.2.2-1: "array(MbsServiceAreaInfo) ... 1..N"; TS 38.413 V18.11.0 clause 9.3.1.208: "maxnoofMBSServiceAreaInformation
+ * ... Value is 256" for the MBS Service Area Information Location Dependent List the AMF sends), each Area Session ID is in
+ * 0..65535 (TS 29.571 AreaSessionId, Uint16; TS 38.413 MBS-AreaSessionID ::= INTEGER (0..65535, ...)) and no ID is used twice
+ * (TS 23.247 V18.8.0 clause 6.2.3: "MB-SMF allocates Area Session ID for each MBS services area which is unique within the
+ * MBS session."), and the area of each item fits the NGAP MBS Service Area (amf_namf_service_area_is_valid()).
+ */
+bool amf_namf_area_info_list_is_valid(const OpenAPI_list_t *list)
+{
+    OpenAPI_lnode_t *node = NULL, *other = NULL;
+
+    if (!list || list->count < 1 || list->count > 256)
+        return false;
+
+    OpenAPI_list_for_each(list, node) {
+        const OpenAPI_mbs_service_area_info_t *info = node->data;
+
+        if (!info || info->area_session_id < 0 || info->area_session_id > 65535 ||
+                !amf_namf_service_area_is_valid(info->mbs_service_area))
+            return false;
+        for (other = node->next; other; other = other->next) {
+            const OpenAPI_mbs_service_area_info_t *o = other->data;
+
+            if (o && o->area_session_id == info->area_session_id)
+                return false;
+        }
+    }
+
+    return true;
+}
+
+/*
+ * Parses a validated mbsServiceAreaInfoList into \p items (an amf_mbs_area_item_t per entry, in order) and adds the
+ * areas of all its entries to \p union_area, which the choice of the NG-RANs uses.
+ */
+static void amf_namf_parse_area_info_list(const OpenAPI_list_t *list, ogs_list_t *items, ogs_mbs_service_area_t **union_area)
+{
+    OpenAPI_lnode_t *node = NULL;
+
+    OpenAPI_list_for_each(list, node) {
+        OpenAPI_mbs_service_area_info_t *info = node->data;
+        amf_mbs_area_item_t *item = ogs_calloc(1, sizeof(*item));
+
+        ogs_assert(item);
+        item->area_session_id = (uint16_t)info->area_session_id;
+        if (info->mbs_service_area) {
+            amf_namf_parse_mbs_service_area(&item->area, info->mbs_service_area);
+            amf_namf_parse_mbs_service_area(union_area, info->mbs_service_area);
+        }
+        ogs_list_add(items, item);
+    }
+}
+
+/*
+ * Whether \p tmgi can be used as the TMGI of an MBS session: the MBS Service ID is six hexadecimal digits and the PLMN
+ * is an MCC of three digits and an MNC of two or three. The OpenAPI model does not check that the object, or its members,
+ * are present (TS 29.571 R17 TS29571_CommonData.yaml, Tmgi: "mbsServiceId" with pattern '^[A-Fa-f0-9]{6}$', both members
+ * required; PlmnId: mcc and mnc required), and ogs_sbi_parse_tmgi() asserts on what it is given.
+ */
+bool amf_namf_tmgi_is_valid(const OpenAPI_tmgi_t *tmgi)
+{
+    const char *id = NULL, *mcc = NULL, *mnc = NULL;
+    size_t i;
+
+    if (!tmgi || !tmgi->mbs_service_id || !tmgi->plmn_id)
+        return false;
+
+    id = tmgi->mbs_service_id;
+    mcc = tmgi->plmn_id->mcc;
+    mnc = tmgi->plmn_id->mnc;
+    if (!mcc || !mnc || strlen(id) != 6 || strlen(mcc) != 3 || (strlen(mnc) != 2 && strlen(mnc) != 3))
+        return false;
+
+    for (i = 0; i < 6; i++)
+        if (!isxdigit((unsigned char)id[i]))
+            return false;
+    for (i = 0; i < 3; i++)
+        if (!isdigit((unsigned char)mcc[i]))
+            return false;
+    for (i = 0; mnc[i]; i++)
+        if (!isdigit((unsigned char)mnc[i]))
+            return false;
+
+    return true;
+}
+
+/*
+ * A Broadcast Session Setup, Modification or Release Request could not be sent to \p gnb. TS 29.518 V18.14.0 cl. 5.6.2.2:
+ * "The AMF may send one or more Namf_MBSBroadcast_ContextStatusNotify request including an operationEvents attribute to
+ * report the MB-SMF about failure to reach one or more NG-RANs."; cl. 6.5.6.3.6, NG_RAN_NOT_REACHABLE: "This value
+ * indicates that the AMF has failed to reach the NG-RAN when sending a NGAP MBS Session Setup/Modification/Release Request
+ * message." The other NG-RANs are still sent theirs.
+ */
+static void amf_mbs_context_gnb_not_reached(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb)
+{
+    ogs_error("MBS Broadcast [%s]: gNB %i could not be reached", mbs_context->mbs_context_ref, gnb->gnb_id);
+    amf_sbi_send_mbs_broadcast_ngran_event(mbs_context, gnb, OpenAPI_ngran_failure_indication_NG_RAN_NOT_REACHABLE);
+}
+
+int amf_namf_handle_mbs_broadcast_context_create(
+        ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg)
+{
+    // TODO (borieher): Not handling the 307 Temporary Redirect and 308 Permanent Redirect errors for now
+    ogs_debug("MBS Broadcast ContextCreate request received");
+
+    OpenAPI_context_create_req_data_t *ContextCreateReqData = NULL;
+
+    OpenAPI_ref_to_binary_data_t *n2_mbs_sm_info = NULL;
+    ogs_pkbuf_t *n2mbssmbuf = NULL;
+    ogs_pkbuf_t *n2msgreq = NULL;
+    amf_gnb_t *gnb = NULL;
+
+    amf_mbs_context_t *mbs_context = NULL;
+    ogs_tmgi_t tmgi;
+
+    ogs_assert(stream);
+    ogs_assert(recvmsg);
+
+    int rv = OGS_OK;
+    int gnb_rv = OGS_OK;
+
+    ContextCreateReqData = recvmsg->ContextCreateReqData;
+
+    if (!ContextCreateReqData) {
+        ogs_error("MBS Broadcast ContextCreate: No ContextCreateReqData");
+        // Extracted from the OpenAPI spec, not the 3GPP TS
+        // ContextCreateReqData must be present, send error (400)
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request", "Requested MBS Broadcast ContextCreate failed, no ContextCreateReqData", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    n2_mbs_sm_info = ContextCreateReqData->n2_mbs_sm_info->ngap_data;
+
+    if (!n2_mbs_sm_info || !n2_mbs_sm_info->content_id) {
+        ogs_error("MBS Broadcast ContextCreate: n2_mbs_sm_info not present");
+        // Extracted from the OpenAPI spec, not the 3GPP TS
+        // n2_mbs_sm_info must be present, send error (400)
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request", "Requested MBS Broadcast ContextCreate failed, no n2MbsSmInfo", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    // Grab the N2 MBS SM info from the multipart message
+    // This contains the MBS Session Setup or Modification Request Transfer IE
+    n2mbssmbuf = ogs_sbi_find_part_by_content_id(recvmsg, n2_mbs_sm_info->content_id);
+
+    if(!n2mbssmbuf) {
+        ogs_error("MBS Broadcast ContextCreate: n2mbssmbuf not found in the multipart message");
+        // n2mbssmbuf not found in the multipart message, send error (400)
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request", "Requested MBS Broadcast ContextCreate failed, N2 MBS SM info not found in the multipart message", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    if(!ContextCreateReqData->mbs_session_id) {
+        ogs_error("MBS Broadcast ContextCreate: mbs_session_id not present");
+        // mbs_session_id must be present, send error (400)
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request", "Requested MBS Broadcast ContextCreate failed, no mbsSessionId", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    if(!ContextCreateReqData->notify_uri) {
+        ogs_error("MBS Broadcast ContextCreate: notify_uri not present");
+        // notify_uri must be present, send error (400)
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request", "Requested MBS Broadcast ContextCreate failed, no notifyUri", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    if(!ContextCreateReqData->snssai) {
+        ogs_error("MBS Broadcast ContextCreate: snssai not present");
+        // snssai must be present, send error (400)
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request", "Requested MBS Broadcast ContextCreate failed, no snssai", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    if(!ContextCreateReqData->mbs_service_area && !ContextCreateReqData->mbs_service_area_info_list) {
+        ogs_error("MBS Broadcast ContextCreate: mbs_service_area or mbs_service_area_info_list not present");
+        // mbs_service_area or mbs_service_area_info_list should be present, send error (400)
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request",
+            "Requested MBS Broadcast ContextCreate failed, no [mbsServiceArea] nor [mbsServiceAreaInfoList] present", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+        // ContextCreateReqData's schema is a oneOf over mbsServiceArea and mbsServiceAreaInfoList, so exactly
+        // one must be present. The check above rejects only the both-absent case; this rejects both-present.
+    if (ContextCreateReqData->mbs_service_area && ContextCreateReqData->mbs_service_area_info_list) {
+        ogs_error("MBS Broadcast ContextCreate: mbs_service_area and mbs_service_area_info_list are mutually exclusive");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request",
+            "Requested MBS Broadcast ContextCreate failed, [mbsServiceArea] and [mbsServiceAreaInfoList] are mutually exclusive", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    if (!amf_namf_service_area_is_valid(ContextCreateReqData->mbs_service_area)) {
+        ogs_error("MBS Broadcast ContextCreate: mbsServiceArea has more than 1024 TAIs or 8192 cells");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request",
+            "Requested MBS Broadcast ContextCreate failed, [mbsServiceArea] holds more than 1024 TAIs or 8192 cells", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    if (ContextCreateReqData->mbs_service_area_info_list &&
+            !amf_namf_area_info_list_is_valid(ContextCreateReqData->mbs_service_area_info_list)) {
+        ogs_error("MBS Broadcast ContextCreate: mbsServiceAreaInfoList is not valid");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request",
+            "Requested MBS Broadcast ContextCreate failed, [mbsServiceAreaInfoList] must hold 1 to 256 entries with distinct Area Session IDs", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    if (!amf_namf_tmgi_is_valid(ContextCreateReqData->mbs_session_id->tmgi)) {
+        ogs_error("MBS Broadcast ContextCreate: mbsSessionId carries no valid TMGI");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request", "Requested MBS Broadcast ContextCreate failed, no valid TMGI in mbsSessionId", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    if (!amf_namf_notify_uri_is_valid(ContextCreateReqData->notify_uri)) {
+        ogs_error("MBS Broadcast ContextCreate: notifyUri [%s] cannot be used", ContextCreateReqData->notify_uri);
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request", "Requested MBS Broadcast ContextCreate failed, [notifyUri] is not a usable URI", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    ogs_sbi_parse_tmgi(&tmgi, ContextCreateReqData->mbs_session_id->tmgi);
+
+        // Remove any stale context for this TMGI first, so a retried or duplicate ContextCreate does not
+        // allocate a second one; see amf_mbs_context_find_by_tmgi().
+    {
+        amf_mbs_context_t *stale_mbs_context = amf_mbs_context_find_by_tmgi(&tmgi);
+        if (stale_mbs_context) {
+            ogs_sbi_stream_t *pending = ogs_sbi_stream_find_by_id(stale_mbs_context->stream_id);
+
+            ogs_warn("MBS Broadcast ContextCreate: replacing existing context [%s] for the same TMGI",
+                    stale_mbs_context->mbs_context_ref);
+            // The operation of the replaced context that still waits for its NG-RANs will never be answered by them:
+            // its consumer is answered (no clause names the status: 500, as for a context released before the NG-RANs
+            // answered).
+            if (pending)
+                ogs_sbi_server_send_error(pending, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR, NULL,
+                        "MBS Broadcast context replaced",
+                        "The Broadcast MBS session context has been replaced by a ContextCreate of the same MBS session", NULL);
+            amf_mbs_context_remove(stale_mbs_context);
+        }
+    }
+
+    mbs_context = amf_mbs_context_create(&tmgi);
+
+        // amf_mbs_context_create() returns NULL when its fixed-size pool is exhausted (amf_mbs_context_add()
+        // logs "Maximum number of MBS Contexts[%d] reached"), and the result must be checked before use:
+        // ngap_build_broadcast_session_setup_request() dereferences mbs_context->tmgi near its start, so an
+        // unchecked NULL ends the process rather than reporting the failure. This is the only call site.
+    if (!mbs_context) {
+        ogs_error("MBS Broadcast ContextCreate: amf_mbs_context_create() failed");
+        // No clause governs the pool's own size or this failure's status code; matching the sibling
+        // TMGI-pool-exhaustion case in MB-SMF's own nmbsmf-handler.c ("Cannot allocate TMGIs", 403).
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
+            recvmsg, "Forbidden", "Requested MBS Broadcast ContextCreate failed, no MBS context available", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    // B-2: Namf_MBSBroadcast_ContextStatusNotify (TS 29.518 V18.14.0 cl.5.6.2.5) posts to this same
+    // notify_uri for any gNB response after the first.
+    amf_namf_set_mbs_context_notify_client(mbs_context, ContextCreateReqData->notify_uri, "ContextCreate");
+
+        // Store the requested S-NSSAI and MBS Service Area, both validated as present just above, so
+        // ngap_build_broadcast_session_setup_request() can send what was actually asked for rather than
+        // hardcoded values.
+    mbs_context->s_nssai.sst = ContextCreateReqData->snssai->sst;
+    mbs_context->s_nssai.sd = ogs_s_nssai_sd_from_string(ContextCreateReqData->snssai->sd);
+
+    if (ContextCreateReqData->mbs_service_area) {
+        amf_namf_parse_mbs_service_area(&mbs_context->mbs_service_area, ContextCreateReqData->mbs_service_area);
+        if (!mbs_context->mbs_service_area)
+            ogs_warn("MBS Broadcast ContextCreate: mbsServiceArea carried neither a TAI nor an NCGI; "
+                    "NGAP will fall back to all connected gNBs");
+    } else if (ContextCreateReqData->mbs_service_area_info_list) {
+                // TS 29.518 V18.14.0 cl. 5.6.2.2 lists, among the content of the POST request, "list of Area Session ID and
+                // related MBS service area, for a Location dependent broadcast MBS service". Every entry is kept (the
+                // list was validated above); the NG-RAN gets them all in one message (TS 23.247 V18.8.0 cl. 7.3.4: "which
+                // additionally includes the Area Session IDs and MBS service areas").
+        mbs_context->location_dependent = true;
+        amf_namf_parse_area_info_list(ContextCreateReqData->mbs_service_area_info_list,
+                &mbs_context->area_items, &mbs_context->mbs_service_area);
+        mbs_context->area_session_id = ((amf_mbs_area_item_t *)ogs_list_first(&mbs_context->area_items))->area_session_id;
+    }
+
+    // TS 23.527 V18.6.0 cl. 8.3.2.2 step 1: the AMF keeps the last N2 MBS SM container, for the restoration of the
+    // session in an NG-RAN.
+    if (!amf_mbs_context_store_n2_container(mbs_context, n2mbssmbuf))
+        ogs_warn("MBS Broadcast ContextCreate: the N2 MBS SM container could not be kept for restoration");
+
+    // TS 29.518 V18.14.0 cl. 5.6.2.2: the NF Service Consumer "may also include the MBS associated session ID": it goes
+    // into the Broadcast Session Setup Request (TS 38.413 V18.8.0 cl. 9.2.16.1) of the session, and so into the ones of its
+    // restoration.
+    if (!amf_mbs_context_set_associated_session_id(mbs_context, ContextCreateReqData->associated_session_id)) {
+        ogs_error("MBS Broadcast ContextCreate: the Associated Session ID cannot be coded");
+        amf_mbs_context_remove(mbs_context);
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+            recvmsg, "Internal Server Error",
+            "Requested MBS Broadcast ContextCreate failed, the associatedSessionId cannot be coded", "UNSPECIFIED_NF_FAILURE");
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    // NGAP BROADCAST SESSION SETUP REQUEST message with MBS Session Setup or Modification Request Transfer IE
+    n2msgreq = ngap_build_broadcast_session_setup_request(mbs_context, n2mbssmbuf);
+
+        // The 201 is deferred until an NG-RAN answers (below), so a request that reaches no NG-RAN would never
+        // be answered and its context never freed, and once the pool is exhausted every later ContextCreate
+        // fails. Two cases: the NGAP message cannot be built (with no gNB connected its MBS-ServiceAreaTAIList is
+        // empty, which the encoder rejects), checked here, and no gNB accepting it, checked after the loop. No
+        // clause names the status for this; UNSPECIFIED_NF_FAILURE is TS 29.500 Table 5.2.7.2-1's generic 500
+        // cause.
+    if (!n2msgreq) {
+        ogs_error("MBS Broadcast ContextCreate: the Broadcast Session Setup Request could not be built");
+        amf_mbs_context_remove(mbs_context);
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+            recvmsg, "Internal Server Error",
+            "Requested MBS Broadcast ContextCreate failed, no NG-RAN reachable", "UNSPECIFIED_NF_FAILURE");
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+        // Each gNB gets its own copy of the message. ngap_send_to_gnb() takes ownership of the pkbuf it is
+        // given: it frees it on failure, and on success, for SOCK_STREAM gNBs, splices its embedded lnode into
+        // that gNB's write_queue. Passing one buffer to every gNB in this loop would use an already-freed
+        // buffer after the first iteration, or splice the same list node into a second queue while the first
+        // still references it. The shared template is freed once after the loop, never being sent itself.
+    ogs_list_for_each(&amf_self()->gnb_list, gnb) {
+        if (!amf_gnb_takes_mbs_session(gnb, mbs_context))
+            continue;
+        ogs_pkbuf_t *n2msgreq_copy = ogs_pkbuf_copy(n2msgreq);
+        if (!n2msgreq_copy) {
+            ogs_error("ogs_pkbuf_copy() failed");
+            amf_mbs_context_gnb_not_reached(mbs_context, gnb);
+            continue;
+        }
+        ogs_debug("Sending N2 MBS SM info to gNB %i", gnb->gnb_id);
+        gnb_rv = ngap_send_to_gnb(gnb, n2msgreq_copy, NGAP_NON_UE_SIGNALLING);
+        if (gnb_rv != OGS_OK) {
+            ogs_error("ngap_send_to_gnb() failed");
+            amf_mbs_context_gnb_not_reached(mbs_context, gnb);
+            continue;
+        } else {
+            ogs_debug("Sent to gnb [%i]", gnb->gnb_id);
+            // B-2: how many gNBs the request actually reached, so ngap_handle_broadcast_session_setup_response()
+            // can tell when every one of them has responded (ContextStatusNotify's operationStatus).
+            mbs_context->gnb_request_count++;
+            amf_mbs_context_involve_gnb(mbs_context, gnb);
+        }
+    }
+    ogs_pkbuf_free(n2msgreq);
+
+    if (mbs_context->gnb_request_count == 0) {
+        ogs_error("MBS Broadcast ContextCreate: the Broadcast Session Setup Request reached no NG-RAN");
+        amf_mbs_context_remove(mbs_context);
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+            recvmsg, "Internal Server Error",
+            "Requested MBS Broadcast ContextCreate failed, no NG-RAN reachable", "UNSPECIFIED_NF_FAILURE");
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    if (ContextCreateReqData->is_max_response_time)
+        amf_mbs_context_start_response_window(mbs_context, ContextCreateReqData->max_response_time, false);
+
+        // The response is deferred onto mbs_context->stream_id rather than sent as soon as the NGAP request is
+        // broadcast. TS 29.518 V18.14.0 clause 5.6.2.2 step 2a: "The AMF should respond success when it
+        // receives the first successful response from the NG-RAN(s)."
+        // ngap_handle_broadcast_session_setup_response() completes it once the first gNB replies, through
+        // amf_namf_send_mbs_broadcast_context_create_response() below.
+    mbs_context->stream_id = ogs_sbi_id_from_stream(stream);
+
+cleanup:
+    if (rv == OGS_OK)
+        return true;
+    else
+        return false;
+}
+
+static void amf_mbs_context_release(amf_mbs_context_t *mbs_context);
+static void amf_mbs_context_restoration_response(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb, bool success,
+        const OCTET_STRING_t *transfer);
+
+/*
+ * A ContextCreate or ContextUpdate response carries at most OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO containers (TS 29.518
+ * V18.14.0 Tables 6.5.6.2.3-1 and 6.5.6.2.6-1, n2MbsSmInfoList, cardinality "1..10"). The containers of
+ * \p n2_info_list beyond them move to \p rest, to be sent by amf_namf_notify_remaining_n2_info() after the response
+ * (cl. 5.6.2.2: "if additional information (...) needs to be transferred to the MB-SMF, the AMF shall transfer such
+ * information by sending one or more Namf_MBSBroadcast_ContextStatusNotify requests to the MB-SMF."). Returns the
+ * operation status the response reports: that of \p operation_status, unless containers follow, when the last
+ * notification reports it ("When the AMF receives the response from all NG-RANs, the AMF shall include an indication of
+ * the completion of the operation in the Namf_MBSBroadcast_ContextStatusNotify request.").
+ */
+static OpenAPI_operation_status_e amf_namf_limit_response_n2_info(
+        ogs_list_t *n2_info_list, ogs_list_t *rest, OpenAPI_operation_status_e operation_status)
+{
+    amf_mbs_n2_info_split(n2_info_list, rest, OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO);
+    return ogs_list_empty(rest) ? operation_status : OpenAPI_operation_status_NULL;
+}
+
+/*
+ * Sends the containers of \p rest (amf_namf_limit_response_n2_info()) in ContextStatusNotify requests of at most
+ * OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO each, the last one with \p operation_status, and empties \p rest.
+ */
+static void amf_namf_notify_remaining_n2_info(
+        amf_mbs_context_t *mbs_context, ogs_list_t *rest, OpenAPI_operation_status_e operation_status)
+{
+    while (!ogs_list_empty(rest)) {
+        ogs_list_t batch;
+        amf_mbs_n2_info_t *n2_info = NULL;
+        int n = 0;
+
+        ogs_list_init(&batch);
+        while (n < OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO && (n2_info = ogs_list_first(rest)) != NULL) {
+            ogs_list_remove(rest, n2_info);
+            ogs_list_add(&batch, n2_info);
+            n++;
+        }
+
+        if (!amf_sbi_send_mbs_broadcast_context_status_notify(mbs_context, &batch,
+                    ogs_list_empty(rest) ? operation_status : OpenAPI_operation_status_NULL, false, NULL))
+            ogs_error("MBS Broadcast ContextStatusNotify: %d containers could not be sent", n);
+        amf_mbs_n2_info_remove_all(&batch);
+    }
+}
+
+/*
+ * Builds and sends the deferred Namf_MBSBroadcast_ContextCreate response (OGS_SBI_HTTP_STATUS_CREATED),
+ * once amf_namf_handle_mbs_broadcast_ran_response() has correlated the first successful NG-RAN response to \p
+ * mbs_context. Split out of amf_namf_handle_mbs_broadcast_context_create() itself since that function
+ * returns to its SBI caller long before this can run -- see mbs_context->stream_id's own comment
+ * (context.h) for why the stream must be re-looked-up rather than captured by raw pointer.
+ *
+ * \p n2_info_list holds the containers of the NG-RAN responses received so far and \p operation_status is
+ * START_COMPLETE when every NG-RAN the request was sent to has responded (TS 29.518 cl. 5.6.2.2: "If the AMF
+ * received the NG-RAN responses from all involved NG-RAN(s) ... the AMF shall include an indication of completion
+ * of the operation in all NG-RANs in the 201 Created response."), OpenAPI_operation_status_NULL otherwise.
+ */
+static void amf_namf_send_mbs_broadcast_context_create_response(amf_mbs_context_t *mbs_context,
+        ogs_list_t *n2_info_list, OpenAPI_operation_status_e operation_status)
+{
+    OpenAPI_context_create_rsp_data_t *ContextCreateRspData = NULL;
+    OpenAPI_tmgi_t *tmgi_copy = NULL;
+    OpenAPI_mbs_session_id_t *mbs_session_id_copy = NULL;
+    OpenAPI_list_t *n2_mbs_sm_info_list = NULL;
+    OpenAPI_operation_status_e response_status;
+    ogs_list_t rest;
+
+    ogs_sbi_message_t sendmsg;
+    ogs_sbi_stream_t *stream = NULL;
+    ogs_sbi_server_t *server = NULL;
+    ogs_sbi_header_t header;
+    ogs_sbi_response_t *response = NULL;
+
+    ogs_assert(mbs_context);
+    ogs_assert(n2_info_list);
+
+    stream = ogs_sbi_stream_find_by_id(mbs_context->stream_id);
+    if (!stream) {
+        // The consumer's stream is gone by the time the first gNB responded: the MB-SMF released its session
+        // (or gave up) before this ContextCreate was answered, so no consumer holds this context's mbsContextRef
+        // and none can ever delete it. It is released here instead of being kept for ever.
+        ogs_warn("MBS Broadcast ContextCreate: stream [%d] no longer exists, response not sent; "
+                "releasing the context", (int)mbs_context->stream_id);
+        mbs_context->stream_id = OGS_INVALID_POOL_ID;
+        amf_mbs_context_release(mbs_context);
+        return;
+    }
+
+    memset(&sendmsg, 0, sizeof(sendmsg));
+
+    // Build MBS Session ID / TMGI directly from the stored context (rather than the original
+    // ContextCreateReqData, which is long gone by the time this runs).
+    tmgi_copy = OpenAPI_tmgi_create(
+        ogs_strdup(mbs_context->tmgi.mbs_service_id),
+        ogs_sbi_build_plmn_id(&mbs_context->tmgi.plmn_id));
+    ogs_assert(tmgi_copy);
+
+    mbs_session_id_copy = OpenAPI_mbs_session_id_create(tmgi_copy, NULL, NULL);
+    ogs_assert(mbs_session_id_copy);
+
+    ogs_list_init(&rest);
+    response_status = amf_namf_limit_response_n2_info(n2_info_list, &rest, operation_status);
+    n2_mbs_sm_info_list = amf_namf_build_n2_mbs_sm_info_list(&sendmsg, n2_info_list);
+
+    ContextCreateRspData = OpenAPI_context_create_rsp_data_create(
+            mbs_session_id_copy, n2_mbs_sm_info_list, response_status);
+
+    server = ogs_sbi_server_from_stream(stream);
+    ogs_assert(server);
+
+    // Adding the mbsContextRef in the headers for the created resource
+    memset(&header, 0, sizeof(header));
+    header.service.name = (char *) OGS_SBI_SERVICE_NAME_NAMF_MBS_BC;
+    header.api.version = (char *) OGS_SBI_API_V1;
+    header.resource.component[0] =
+        (char *) OGS_SBI_RESOURCE_NAME_MBS_CONTEXTS;
+    header.resource.component[1] = mbs_context->mbs_context_ref;
+
+    sendmsg.http.location = ogs_sbi_server_uri(server, &header);
+    ogs_assert(sendmsg.http.location);
+
+    sendmsg.ContextCreateRspData = ContextCreateRspData;
+
+    response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_CREATED);
+    ogs_assert(response);
+
+    ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+
+    if (ContextCreateRspData) {
+        // ContextCreateRspData owns n2_mbs_sm_info_list, which is freed with it
+        OpenAPI_context_create_rsp_data_free(ContextCreateRspData);
+        n2_mbs_sm_info_list = NULL;
+    }
+
+    if (sendmsg.http.location)
+        ogs_free(sendmsg.http.location);
+
+    // Mark as answered so a second/subsequent gNB response does not re-trigger this same 201 Created a second
+    // time.
+    mbs_context->stream_id = OGS_INVALID_POOL_ID;
+
+    amf_namf_free_n2_mbs_sm_info_list(n2_mbs_sm_info_list);
+    amf_mbs_n2_info_remove_all(n2_info_list);
+
+    // What did not fit in the response follows in notifications, now that the consumer has the context's reference.
+    amf_namf_notify_remaining_n2_info(mbs_context, &rest, operation_status);
+}
+
+/*
+ * What a ContextUpdate request asks for. Every attribute of ContextUpdateReqData is optional (TS 29.518 V18.14.0
+ * Table 6.5.6.2.5-1, P column "O" for all of them), and the notification URI is one of the things the request "may
+ * contain" (cl. 5.6.2.3 step 1: "Notification URI, if the NF Service Consumer wishes to modify the notification URI
+ * where to be notified about the status change of the broadcast MBS session context"), so a request that carries that
+ * alone is a request to change the URI and nothing NG-RAN-facing.
+ */
+amf_mbs_update_req_kind_e amf_namf_mbs_update_req_kind(bool has_service_area, bool has_n2_info, bool has_notify_uri)
+{
+    if (has_service_area || has_n2_info)
+        return AMF_MBS_UPDATE_REQ_NG_RAN;
+    if (has_notify_uri)
+        return AMF_MBS_UPDATE_REQ_NOTIFY_URI_ONLY;
+    return AMF_MBS_UPDATE_REQ_EMPTY;
+}
+
+/*
+ * 3GPP TS 29.518 V18.14.0 cl.5.6.2.3 - Namf_MBSBroadcast Service API - ContextUpdate service operation
+ * (item B-3). "The ContextUpdate service operation shall be used by the NF Service Consumer (e.g. MB-SMF)
+ * to request the AMF to update a broadcast MBS session context ... by using the HTTP POST method"
+ * targeting the individual resource (POST /namf-mbs-bc/v1/mbs-contexts/{mbsContextRef}).
+ *
+ * Scope, deliberately bounded (see ngap_build_broadcast_session_modification_request()'s own comment):
+ * this handler forwards whichever of mbsServiceArea/mbsServiceAreaInfoList and n2MbsSmInfo the request
+ * carries to NG-RAN; ranIdList/noNgapSignallingInd (restoration-procedure fields, TS 23.527 cl.8.3.2.3/
+ * 8.3.2.4) and maxResponseTime/n2MbsInfoChangeInd are read off the request but not yet acted on -- no
+ * restoration procedure exists anywhere in this AMF to react to ranIdList/noNgapSignallingInd, and
+ * maxResponseTime's own timeout-driven "incomplete" ContextStatusNotify (cl.5.6.2.3's own text) needs a
+ * timer this handler does not yet start (same TODO as ContextCreate's own "start timer to wait for
+ * reception").
+ */
+/*
+ * The ContextUpdate is accepted: its service area stays, the container it carries becomes the last one received (TS 23.527
+ * V18.6.0 cl. 8.3.2.2 step 1: "The AMF stores the last N2 MBS SM container ... received from the MB-SMF during the
+ * establishment of the broadcast MBS session or during a broadcast MBS session update."), and the notification URI it
+ * carries replaces the earlier one (TS 29.518 V18.14.0 cl. 5.6.2.3: "if the NF Service Consumer wishes to modify the
+ * notification URI where to be notified about the status change of the broadcast MBS session context").
+ */
+static void amf_mbs_update_accept(amf_mbs_context_t *mbs_context, amf_mbs_area_undo_t *area_undo,
+        ogs_pkbuf_t *n2mbssmbuf, char *notify_uri)
+{
+    amf_mbs_context_keep_area(area_undo);
+    if (n2mbssmbuf && !amf_mbs_context_store_n2_container(mbs_context, n2mbssmbuf))
+        ogs_warn("MBS Broadcast ContextUpdate: the N2 MBS SM container could not be kept for restoration");
+    if (notify_uri)
+        amf_namf_set_mbs_context_notify_client(mbs_context, notify_uri, "ContextUpdate");
+}
+
+int amf_namf_handle_mbs_broadcast_context_update(
+        ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg)
+{
+    ogs_debug("MBS Broadcast ContextUpdate request received");
+
+    OpenAPI_context_update_req_data_t *ContextUpdateReqData = NULL;
+
+    const char *mbs_context_ref = NULL;
+    amf_mbs_context_t *mbs_context = NULL;
+    ogs_pkbuf_t *n2mbssmbuf = NULL;
+    ogs_pkbuf_t *n2msgreq = NULL;       /* the Modification Request, sent to the nodes that hold the session */
+    ogs_pkbuf_t *n2setupreq = NULL;     /* the Setup Request, sent to the nodes that are to get the session */
+    ogs_pkbuf_t *n2releasereq = NULL;   /* the Release Request, sent to the nodes that left the service area */
+    int released = 0;
+    amf_gnb_t *gnb = NULL;
+    amf_mbs_update_plan_t plan;
+    ogs_mbs_service_area_t *new_area = NULL;    /* the service area of the request, applied once it is accepted */
+    ogs_list_t new_items;                       /* its Area Session IDs, when it carries the list */
+    amf_mbs_area_undo_t area_undo;              /* what applying it replaced */
+    bool has_service_area = false;
+    amf_mbs_update_req_kind_e req_kind;
+    int unaffected = 0;
+    bool send_failed = false;
+
+    int rv = OGS_OK;
+    int gnb_rv = OGS_OK;
+
+    ogs_assert(stream);
+    ogs_assert(recvmsg);
+
+    memset(&plan, 0, sizeof(plan));
+    memset(&area_undo, 0, sizeof(area_undo));
+    ogs_list_init(&new_items);
+
+    mbs_context_ref = recvmsg->h.resource.component[1];
+    if (!mbs_context_ref) {
+        ogs_error("MBS Broadcast ContextUpdate: No mbsContextRef in the request path");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request", "Requested MBS Broadcast ContextUpdate failed, no mbsContextRef", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    mbs_context = amf_mbs_context_find_by_ref(mbs_context_ref);
+    if (!mbs_context) {
+        ogs_error("MBS Broadcast ContextUpdate: mbsContextRef[%s] not found", mbs_context_ref);
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_NOT_FOUND,
+            recvmsg, "Not Found", "Requested MBS Broadcast ContextUpdate failed, mbsContextRef not found", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+        // One deferred response per context: the stream, the request count and the response count are shared by
+        // ContextCreate, ContextUpdate and ContextRelease. An update that arrived now would take the stream of the
+        // operation in progress and leave it unanswered. No clause names the status; UNSPECIFIED_NF_FAILURE is
+        // TS 29.500 Table 5.2.7.2-1's generic 500 cause.
+    if (ogs_sbi_stream_find_by_id(mbs_context->stream_id) || mbs_context->release_pending) {
+        ogs_error("MBS Broadcast ContextUpdate: mbsContextRef[%s] has an operation in progress", mbs_context_ref);
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+            recvmsg, "Internal Server Error",
+            "Requested MBS Broadcast ContextUpdate failed, another operation on the context is in progress",
+            "UNSPECIFIED_NF_FAILURE");
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    ContextUpdateReqData = recvmsg->ContextUpdateReqData;
+    if (!ContextUpdateReqData) {
+        ogs_error("MBS Broadcast ContextUpdate: No ContextUpdateReqData");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request", "Requested MBS Broadcast ContextUpdate failed, no ContextUpdateReqData", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+        // Schema (oneOf, the same shape as ContextCreateReqData's): mbsServiceArea and
+        // mbsServiceAreaInfoList are mutually exclusive.
+    if (ContextUpdateReqData->mbs_service_area && ContextUpdateReqData->mbs_service_area_info_list) {
+        ogs_error("MBS Broadcast ContextUpdate: mbs_service_area and mbs_service_area_info_list are mutually exclusive");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request",
+            "Requested MBS Broadcast ContextUpdate failed, [mbsServiceArea] and [mbsServiceAreaInfoList] are mutually exclusive", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+    if (!amf_namf_service_area_is_valid(ContextUpdateReqData->mbs_service_area)) {
+        ogs_error("MBS Broadcast ContextUpdate: mbsServiceArea has more than 1024 TAIs or 8192 cells");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request",
+            "Requested MBS Broadcast ContextUpdate failed, [mbsServiceArea] holds more than 1024 TAIs or 8192 cells", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    if (ContextUpdateReqData->mbs_service_area_info_list &&
+            !amf_namf_area_info_list_is_valid(ContextUpdateReqData->mbs_service_area_info_list)) {
+        ogs_error("MBS Broadcast ContextUpdate: mbsServiceAreaInfoList is not valid");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request",
+            "Requested MBS Broadcast ContextUpdate failed, [mbsServiceAreaInfoList] must hold 1 to 256 entries with distinct Area Session IDs", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+    if (ContextUpdateReqData->notify_uri && !amf_namf_notify_uri_is_valid(ContextUpdateReqData->notify_uri)) {
+        ogs_error("MBS Broadcast ContextUpdate: notifyUri [%s] cannot be used", ContextUpdateReqData->notify_uri);
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request", "Requested MBS Broadcast ContextUpdate failed, [notifyUri] is not a usable URI", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+    has_service_area = ContextUpdateReqData->mbs_service_area ||
+        ContextUpdateReqData->mbs_service_area_info_list;
+
+        // The service area this Update carries is parsed here and applied only once the request has been accepted
+        // (see the apply below): an update that is refused leaves the service area as it was. Without it
+        // ngap_build_broadcast_session_modification_request() has nothing real to send and falls back to every
+        // connected gNB's own TAI. This Update's mbsServiceArea replaces whatever ContextCreate stored, being
+        // this update's authoritative value.
+    if (ContextUpdateReqData->mbs_service_area) {
+        amf_namf_parse_mbs_service_area(&new_area, ContextUpdateReqData->mbs_service_area);
+        if (!new_area)
+            ogs_warn("MBS Broadcast ContextUpdate: mbsServiceArea carried neither a TAI nor an NCGI; "
+                    "the service area becomes one that names none");
+    } else if (has_service_area && ContextUpdateReqData->mbs_service_area_info_list &&
+            ContextUpdateReqData->mbs_service_area_info_list->count > 0) {
+                // mbsServiceAreaInfoList replaces the Area Session IDs and their areas (TS 29.518 V18.14.0 cl. 5.6.2.3:
+                // "updated list of Area Session ID and related MBS service area, for a Location dependent broadcast MBS
+                // session."), as ContextCreate takes the list; it was validated above.
+        amf_namf_parse_area_info_list(ContextUpdateReqData->mbs_service_area_info_list, &new_items, &new_area);
+    } else if (has_service_area) {
+        // mbsServiceAreaInfoList present but empty -- genuinely nothing to apply, distinct from the
+        // real forwarding case just above.
+        ogs_warn("MBS Broadcast ContextUpdate: request's mbsServiceAreaInfoList carried no entries; "
+                "NGAP will use whatever service area was previously stored, or fall back further");
+    }
+
+    // n2MbsSmInfo (O): grab the transfer IE from the multipart message, same lookup as ContextCreate's own.
+    if (ContextUpdateReqData->n2_mbs_sm_info && ContextUpdateReqData->n2_mbs_sm_info->ngap_data &&
+            ContextUpdateReqData->n2_mbs_sm_info->ngap_data->content_id) {
+        n2mbssmbuf = ogs_sbi_find_part_by_content_id(
+                recvmsg, ContextUpdateReqData->n2_mbs_sm_info->ngap_data->content_id);
+        if (!n2mbssmbuf) {
+            ogs_error("MBS Broadcast ContextUpdate: n2mbssmbuf not found in the multipart message");
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                recvmsg, "Bad Request",
+                "Requested MBS Broadcast ContextUpdate failed, N2 MBS SM info not found in the multipart message", NULL);
+            rv = OGS_ERROR;
+            goto cleanup;
+        }
+    }
+
+    req_kind = amf_namf_mbs_update_req_kind(has_service_area, n2mbssmbuf != NULL, ContextUpdateReqData->notify_uri != NULL);
+    if (req_kind == AMF_MBS_UPDATE_REQ_EMPTY) {
+        ogs_error("MBS Broadcast ContextUpdate: nothing in this request maps to an update "
+                "(no notifyUri, no mbsServiceArea/mbsServiceAreaInfoList, no n2MbsSmInfo)");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request", "Requested MBS Broadcast ContextUpdate failed, nothing to update", NULL);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    // ranIdList (O): the update is performed in those NG-RANs only, with a Broadcast Session Setup Request that
+    // carries the container of the request (TS 23.527 V18.6.0 cl. 8.3.2.3 step 6: "...ContextUpdate Request ...
+    // including the MBS Session Setup or Modification Request Transfer IE and the NG-RAN ID").
+    plan.no_ngap_signalling =
+        ContextUpdateReqData->is_no_ngap_signalling_ind && ContextUpdateReqData->no_ngap_signalling_ind;
+    plan.n2_info_unchanged = ContextUpdateReqData->is_n2_mbs_info_change_ind && !ContextUpdateReqData->n2_mbs_info_change_ind;
+
+    if (!plan.no_ngap_signalling && ContextUpdateReqData->ran_id_list && ContextUpdateReqData->ran_id_list->count > 0) {
+        if (!n2mbssmbuf) {
+            ogs_error("MBS Broadcast ContextUpdate: ranIdList without n2MbsSmInfo");
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                recvmsg, "Bad Request",
+                "Requested MBS Broadcast ContextUpdate failed, [ranIdList] needs the N2 MBS SM info to set the session up with", NULL);
+            rv = OGS_ERROR;
+            goto cleanup;
+        }
+        plan.ran_id_list = ContextUpdateReqData->ran_id_list;
+    }
+
+    // Only the notification URI changes (the checks above refuse the request that carries a ranIdList without the
+    // container to set the session up with): nothing NG-RAN-facing does, so nothing goes to an NG-RAN node, whatever
+    // noNgapSignallingInd says, and nothing waits for a response. The 204 No Content is step 2b of TS 29.518 V18.14.0
+    // cl. 5.6.2.3: "On success, "204 No Content" shall be returned if no additional information needs to be returned
+    // in the response." A URI that could not be set up leaves the earlier one, and the update is refused.
+    if (req_kind == AMF_MBS_UPDATE_REQ_NOTIFY_URI_ONLY) {
+        ogs_sbi_message_t sendmsg;
+        ogs_sbi_response_t *response = NULL;
+
+        if (!amf_namf_set_mbs_context_notify_client(mbs_context, ContextUpdateReqData->notify_uri, "ContextUpdate")) {
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+                recvmsg, "Internal Server Error",
+                "Requested MBS Broadcast ContextUpdate failed, [notifyUri] could not be set up", "UNSPECIFIED_NF_FAILURE");
+            rv = OGS_ERROR;
+            goto cleanup;
+        }
+        memset(&sendmsg, 0, sizeof(sendmsg));
+        response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
+        ogs_assert(response);
+        ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+        goto cleanup;
+    }
+
+    // The request is valid: its service area is applied. Until amf_mbs_update_accept() keeps it, every exit that
+    // refuses the update puts the earlier service area back (all or none).
+    amf_mbs_context_apply_area(mbs_context, has_service_area, new_area, &new_items, &area_undo);
+    new_area = NULL;
+    plan.old_area = area_undo.replaced ? area_undo.old_area : mbs_context->mbs_service_area;
+
+    // noNgapSignallingInd: this AMF takes over the session (TS 23.527 V18.6.0 cl. 8.3.2.4 step 8: "...to request the
+    // AMF2 to be the AMF for the Broadcast MBS Session to handle subsequent MBS session signaling and be responsible
+    // for triggering restoration procedures for NG-RAN failure with or without restart") and keeps the service area and
+    // the container, both stored above, "just to store it for future potential NG-RAN restoration" (cl. 8.3.2.4).
+    // Nothing is sent to an NG-RAN, so nothing waits for a response: step 9, "The AMF responds the
+    // Namf_MBSBroadcast_ContextUpdate Request message.", is a 204 No Content (TS 29.518 cl. 5.6.2.3 step 2b).
+    if (plan.no_ngap_signalling) {
+        ogs_sbi_message_t sendmsg;
+        ogs_sbi_response_t *response = NULL;
+
+        amf_mbs_update_accept(mbs_context, &area_undo, n2mbssmbuf, ContextUpdateReqData->notify_uri);
+        memset(&sendmsg, 0, sizeof(sendmsg));
+        response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
+        ogs_assert(response);
+        ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+        goto cleanup;
+    }
+
+    // Reset B-2's completion-tracking counters: ContextCreate's own use of them has already finished by
+    // the time an Update can happen (this AMF creates exactly one context per TMGI, and ContextCreate
+    // always completes -- successfully or not -- before an SMF would send it an Update for the same
+    // context), so reusing them here for this Update's own completion tracking is safe.
+    mbs_context->gnb_request_count = 0;
+    mbs_context->gnb_response_count = 0;
+    amf_mbs_n2_info_remove_all(&mbs_context->pending_n2_info_list);
+    ogs_timer_stop(mbs_context->t_response);
+
+    if (!plan.ran_id_list)
+        n2msgreq = ngap_build_broadcast_session_modification_request(mbs_context, has_service_area, n2mbssmbuf);
+
+        // As in ContextCreate: a request that cannot be built, or that no gNB accepts, is answered here, since
+        // no NG-RAN response will ever complete the deferred one. No clause names the status for this;
+        // UNSPECIFIED_NF_FAILURE is TS 29.500 Table 5.2.7.2-1's generic 500 cause. The context itself stays: an
+        // update that failed does not end the session.
+    if (!n2msgreq && !plan.ran_id_list) {
+        ogs_error("MBS Broadcast ContextUpdate: the Broadcast Session Modification Request could not be built");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+            recvmsg, "Internal Server Error",
+            "Requested MBS Broadcast ContextUpdate failed, no NG-RAN reachable", "UNSPECIFIED_NF_FAILURE");
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+        // Each gNB gets its own copy, for the ownership reason given in ContextCreate's send loop.
+    ogs_list_for_each(&amf_self()->gnb_list, gnb) {
+        amf_mbs_update_action_e action = amf_namf_mbs_update_action(mbs_context, gnb, &plan);
+        ogs_pkbuf_t *n2msgreq_copy = NULL;
+
+        if (action == AMF_MBS_UPDATE_UNAFFECTED)
+            unaffected++;
+        if (action == AMF_MBS_UPDATE_SKIP || action == AMF_MBS_UPDATE_UNAFFECTED)
+            continue;
+        if (action == AMF_MBS_UPDATE_RELEASE) {
+            // A node that left the service area is released; nothing waits for its answer, which goes to the MB-SMF in
+            // a ContextStatusNotify request (amf_namf_handle_mbs_broadcast_area_release_response()).
+            amf_mbs_gnb_t *leaving = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
+
+            if (!n2releasereq)
+                n2releasereq = ngap_build_broadcast_session_release_request(mbs_context);
+            n2msgreq_copy = n2releasereq ? ogs_pkbuf_copy(n2releasereq) : NULL;
+            if (!n2msgreq_copy || ngap_send_to_gnb(gnb, n2msgreq_copy, NGAP_NON_UE_SIGNALLING) != OGS_OK) {
+                ogs_error("MBS Broadcast ContextUpdate: the Broadcast Session Release Request could not be sent to gNB %i",
+                        gnb->gnb_id);
+                send_failed = true;
+                amf_mbs_context_gnb_not_reached(mbs_context, gnb);
+                continue;
+            }
+            if (leaving) {
+                leaving->area_released = true;
+                leaving->area_release_pending = true;
+            }
+            released++;
+            continue;
+        }
+        // The Setup Request carries the container of the request, or else the last one received (TS 23.527 V18.6.0
+        // cl. 8.3.2.2 step 1).
+        if (action == AMF_MBS_UPDATE_SETUP && !n2setupreq) {
+            ogs_pkbuf_t *container = n2mbssmbuf ? n2mbssmbuf : mbs_context->n2_mbs_sm_request;
+
+            if (container)
+                n2setupreq = ngap_build_broadcast_session_setup_request(mbs_context, container);
+            if (!n2setupreq) {
+                ogs_error("MBS Broadcast ContextUpdate: the Broadcast Session Setup Request could not be built");
+                send_failed = true;
+                continue;
+            }
+        }
+        n2msgreq_copy = ogs_pkbuf_copy(action == AMF_MBS_UPDATE_SETUP ? n2setupreq : n2msgreq);
+        if (!n2msgreq_copy) {
+            ogs_error("ogs_pkbuf_copy() failed");
+            send_failed = true;
+            amf_mbs_context_gnb_not_reached(mbs_context, gnb);
+            continue;
+        }
+        ogs_debug("Sending N2 MBS SM info (ContextUpdate) to gNB %i", gnb->gnb_id);
+        gnb_rv = ngap_send_to_gnb(gnb, n2msgreq_copy, NGAP_NON_UE_SIGNALLING);
+        if (gnb_rv != OGS_OK) {
+            ogs_error("ngap_send_to_gnb() failed");
+            send_failed = true;
+            amf_mbs_context_gnb_not_reached(mbs_context, gnb);
+            continue;
+        } else {
+            amf_mbs_gnb_t *involved = NULL;
+
+            mbs_context->gnb_request_count++;
+            amf_mbs_context_involve_gnb(mbs_context, gnb);
+            involved = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
+            if (involved && action == AMF_MBS_UPDATE_MODIFY)
+                involved->awaiting_modification = true;
+            if (involved && action == AMF_MBS_UPDATE_SETUP) {
+                // The session is set up in the node again: it serves it, whatever it asked for or failed before.
+                involved->update_setup = true;
+                involved->release_required = false;
+                involved->released = false;
+                involved->setup_failed = false;
+                involved->area_released = false;
+                involved->area_release_pending = false;
+            }
+        }
+    }
+    if (n2msgreq)
+        ogs_pkbuf_free(n2msgreq);
+    if (n2setupreq)
+        ogs_pkbuf_free(n2setupreq);
+    if (n2releasereq)
+        ogs_pkbuf_free(n2releasereq);
+
+    // Every node that takes the session was left out as not affected by the change (n2MbsInfoChangeInd false), or has
+    // been released as it left the service area: there is nothing to wait for, and "the AMF does not need to contact
+    // NG-RAN nodes unaffected by the MBS service area change" (TS 29.518 V18.14.0 cl. 5.6.2.3). 204 No Content: no
+    // additional information is to be returned (step 2b).
+    if (mbs_context->gnb_request_count == 0 && unaffected + released > 0 && !send_failed) {
+        ogs_sbi_message_t sendmsg;
+        ogs_sbi_response_t *response = NULL;
+
+        amf_mbs_update_accept(mbs_context, &area_undo, n2mbssmbuf, ContextUpdateReqData->notify_uri);
+        memset(&sendmsg, 0, sizeof(sendmsg));
+        response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
+        ogs_assert(response);
+        ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+        goto cleanup;
+    }
+
+    if (mbs_context->gnb_request_count == 0) {
+        ogs_error("MBS Broadcast ContextUpdate: the Broadcast Session Modification Request reached no NG-RAN");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+            recvmsg, "Internal Server Error",
+            "Requested MBS Broadcast ContextUpdate failed, no NG-RAN reachable", "UNSPECIFIED_NF_FAILURE");
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
+    amf_mbs_update_accept(mbs_context, &area_undo, n2mbssmbuf, ContextUpdateReqData->notify_uri);
+
+    if (ContextUpdateReqData->is_max_response_time)
+        amf_mbs_context_start_response_window(mbs_context, ContextUpdateReqData->max_response_time, true);
+
+    // Defer the SBI response the same way ContextCreate does -- cl.5.6.2.3 step 2a/2b: "On success, '200
+    // OK' shall be returned if additional information needs to be returned ... '204 No Content' shall be
+    // returned if no additional information needs to be returned", both conditioned on NG-RAN responses
+    // this AMF has not received yet.
+    mbs_context->stream_id = ogs_sbi_id_from_stream(stream);
+
+cleanup:
+    // An update that was refused leaves the service area as it was; one that was not applied frees its area.
+    if (mbs_context)
+        amf_mbs_context_undo_area(mbs_context, &area_undo);
+    if (new_area)
+        ogs_mbs_service_area_free(new_area);
+    amf_mbs_area_items_free(&new_items);
+    if (rv == OGS_OK)
+        return true;
+    else
+        return false;
+}
+
+/*
+ * Builds and sends the deferred Namf_MBSBroadcast_ContextUpdate response, once
+ * amf_namf_handle_mbs_broadcast_ran_response() has correlated the first successful NG-RAN response to \p mbs_context.
+ * TS 29.518 cl. 5.6.2.3: "On success, "200 OK" shall be returned if additional information needs to be returned in
+ * the response." and "On success, "204 No Content" shall be returned if no additional information needs to be
+ * returned in the response." The additional information is the containers of the NG-RAN responses received so far
+ * (\p n2_info_list) and the indication of completion (\p operation_status, UPDATE_COMPLETE when every NG-RAN the
+ * request was sent to has responded).
+ */
+static void amf_namf_send_mbs_broadcast_context_update_response(amf_mbs_context_t *mbs_context,
+        ogs_list_t *n2_info_list, OpenAPI_operation_status_e operation_status)
+{
+    OpenAPI_context_update_rsp_data_t ContextUpdateRspData;
+    OpenAPI_list_t *n2_mbs_sm_info_list = NULL;
+    OpenAPI_operation_status_e response_status;
+    ogs_list_t rest;
+    ogs_sbi_message_t sendmsg;
+    ogs_sbi_stream_t *stream = NULL;
+    ogs_sbi_response_t *response = NULL;
+
+    ogs_assert(mbs_context);
+    ogs_assert(n2_info_list);
+
+    stream = ogs_sbi_stream_find_by_id(mbs_context->stream_id);
+    if (!stream) {
+        ogs_warn("MBS Broadcast ContextUpdate: stream [%d] no longer exists, response not sent",
+                (int)mbs_context->stream_id);
+        mbs_context->stream_id = OGS_INVALID_POOL_ID;
+        amf_mbs_n2_info_remove_all(n2_info_list);
+        return;
+    }
+
+    memset(&sendmsg, 0, sizeof(sendmsg));
+
+    ogs_list_init(&rest);
+    response_status = amf_namf_limit_response_n2_info(n2_info_list, &rest, operation_status);
+    n2_mbs_sm_info_list = amf_namf_build_n2_mbs_sm_info_list(&sendmsg, n2_info_list);
+
+    if (n2_mbs_sm_info_list || response_status != OpenAPI_operation_status_NULL) {
+        memset(&ContextUpdateRspData, 0, sizeof(ContextUpdateRspData));
+        ContextUpdateRspData.n2_mbs_sm_info_list = n2_mbs_sm_info_list;
+        ContextUpdateRspData.operation_status = response_status;
+        sendmsg.ContextUpdateRspData = &ContextUpdateRspData;
+
+        response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_OK);
+    } else {
+        response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
+    }
+    ogs_assert(response);
+
+    ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+
+    amf_namf_free_n2_mbs_sm_info_list(n2_mbs_sm_info_list);
+    amf_mbs_n2_info_remove_all(n2_info_list);
+
+    mbs_context->stream_id = OGS_INVALID_POOL_ID;
+
+    // What did not fit in the response follows in notifications.
+    amf_namf_notify_remaining_n2_info(mbs_context, &rest, operation_status);
+}
+
+/*
+ * Handles one NG-RAN node's response to a Broadcast Session Setup (\p update false) or Modification (\p update true)
+ * Request: a BROADCAST SESSION SETUP or MODIFICATION RESPONSE (\p success) or FAILURE, with the MBS Session Setup or
+ * Modification Response or Failure Transfer IE \p transfer if the node sent one (\p ngap_ie_type tells which). Decides
+ * what goes to the MB-SMF, TS 29.518 cl. 5.6.2.2 and 5.6.2.3:
+ *
+ *   - the deferred ContextCreate or ContextUpdate response, on the first successful response; it carries the
+ *     containers received so far and, when every NG-RAN has responded, the indication of completion;
+ *   - a ContextStatusNotify request for each later response that has a container, and for the one that completes the
+ *     set of responses, which carries the indication of completion;
+ *   - a failure status when every NG-RAN a ContextCreate was sent to failed, or when the first response to a
+ *     ContextUpdate is a failure.
+ */
+void amf_namf_handle_mbs_broadcast_ran_response(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb,
+        bool update, bool success, OpenAPI_ngap_ie_type_e ngap_ie_type, const OCTET_STRING_t *transfer)
+{
+    const char *operation = update ? "ContextUpdate" : "ContextCreate";
+    OpenAPI_operation_status_e operation_status = OpenAPI_operation_status_NULL;
+    amf_mbs_n2_info_t *n2_info = NULL;
+    bool completed;
+    bool update_setup = false;
+
+    ogs_assert(mbs_context);
+    ogs_assert(gnb);
+
+    {
+        amf_mbs_gnb_t *involved = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
+
+        // Each gNB counts once per request: a response from a gNB that was not sent the request, or a second
+        // response to the same request, is not one of the responses the consumer waits for.
+        if (!involved || !involved->awaiting) {
+            ogs_warn("%s: response from gNB %i, which has no request outstanding, ignored", operation, gnb->gnb_id);
+            return;
+        }
+        involved->awaiting = false;
+        update_setup = involved->update_setup;
+
+        // The answer to the Setup Request that restores the session in a gNB that restarted is not one of the answers a
+        // ContextCreate or ContextUpdate waits for.
+        if (involved->restoring) {
+            involved->restoring = false;
+            amf_mbs_context_restoration_response(mbs_context, gnb, success, transfer);
+            return;
+        }
+
+        // A failed Setup means the node does not serve the session (it is then not one of "all the NG-RANs serving
+        // the Broadcast MBS session", TS 29.518 cl. 5.6.2.5); any success, or a failure of a Modification, leaves
+        // it as it was.
+        if (involved && success)
+            involved->setup_failed = false;
+        else if (involved && !update)
+            involved->setup_failed = true;
+    }
+
+    // The response of a node to the Setup Request that a ContextUpdate sent it (ranIdList) completes that update.
+    if (update_setup) {
+        update = true;
+        operation = "ContextUpdate";
+    }
+
+    mbs_context->gnb_response_count++;
+    completed = mbs_context->gnb_response_count >= mbs_context->gnb_request_count;
+    if (completed)
+        ogs_timer_stop(mbs_context->t_response);
+    if (completed)
+        operation_status = update ?
+            OpenAPI_operation_status_MBS_SESSION_UPDATE_COMPLETE : OpenAPI_operation_status_MBS_SESSION_START_COMPLETE;
+
+    if (transfer && transfer->size > 0)
+        n2_info = amf_mbs_n2_info_create(gnb, ngap_ie_type, transfer->buf, transfer->size);
+
+    if (mbs_context->stream_id == OGS_INVALID_POOL_ID) {
+        // The ContextCreate or ContextUpdate response has been sent: what this node reports goes in a
+        // ContextStatusNotify request, if it has a container or completes the set of responses.
+        ogs_list_t n2_info_list;
+
+        if (!n2_info && !completed) {
+            ogs_debug("%s: additional response carries nothing to notify, ignored", operation);
+            return;
+        }
+
+        ogs_list_init(&n2_info_list);
+        if (n2_info)
+            ogs_list_add(&n2_info_list, n2_info);
+        amf_sbi_send_mbs_broadcast_context_status_notify(mbs_context, &n2_info_list, operation_status, false, NULL);
+        amf_mbs_n2_info_remove_all(&n2_info_list);
+        return;
+    }
+
+    if (success) {
+        if (n2_info)
+            ogs_list_add(&mbs_context->pending_n2_info_list, n2_info);
+        if (update)
+            amf_namf_send_mbs_broadcast_context_update_response(
+                    mbs_context, &mbs_context->pending_n2_info_list, operation_status);
+        else
+            amf_namf_send_mbs_broadcast_context_create_response(
+                    mbs_context, &mbs_context->pending_n2_info_list, operation_status);
+        return;
+    }
+
+    if (!update && !completed) {
+        // No NG-RAN has succeeded yet and another may still: the ContextCreate is answered by that success (cl.
+        // 5.6.2.2: "The AMF should respond success when it receives the first successful response from the
+        // NG-RAN(s)."). This node's Failure Transfer goes in that response.
+        // One container for each NG-RAN node that answered, so no more than the nodes the request was sent to
+        // (gnb_request_count); the response carries up to OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO of them and the
+        // notifications that follow it the rest.
+        if (n2_info)
+            ogs_list_add(&mbs_context->pending_n2_info_list, n2_info);
+        return;
+    }
+
+    // A ContextCreate that every NG-RAN it reached has failed, or a ContextUpdate whose first response is a failure.
+    // No clause names the failure status; a ProblemDetails cannot carry the container.
+    {
+        ogs_sbi_stream_t *stream = ogs_sbi_stream_find_by_id(mbs_context->stream_id);
+        mbs_context->stream_id = OGS_INVALID_POOL_ID;
+
+        if (stream) {
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR, NULL,
+                    update ? "Requested MBS Broadcast ContextUpdate failed" :
+                             "Requested MBS Broadcast ContextCreate failed",
+                    update ? "NG-RAN reported a Broadcast Session Modification Failure" :
+                             "NG-RAN reported a Broadcast Session Setup Failure", NULL);
+        } else {
+            ogs_warn("%s: stream no longer exists, response not sent", operation);
+        }
+    }
+
+    if (n2_info)
+        amf_mbs_n2_info_free(n2_info);
+
+    // A ContextCreate that failed leaves the consumer no mbsContextRef to delete: the context is not kept. A
+    // ContextUpdate that failed does not end the session.
+    if (!update)
+        amf_mbs_context_remove(mbs_context);
+}
+
+/*
+ * TS 23.527 V18.6.0 cl. 8.3.3: "When the AMF detects NG-RAN failure without restart, e.g. using SCTP path failure
+ * detection mechanism, it shall report such event to the MB-SMF for each of MBS session(s) affected by this failure, to
+ * enable the MB-SMF to remove the DL F-TEID allocated by the failed NG-RAN in the MB-UPF when unicast transport is used
+ * over N3mb interface." Step 3: "The AMF sends Namf_MBSBroadcast_ContextStatusNotify Request message to the MB-SMF for each
+ * affected MBS session including the MBS Session ID, the NG-RAN ID and an indication of the NG-RAN failure without restart
+ * event." The sessions affected are those the node holds: it did not fail its Setup, did not ask for the release and was
+ * not released for leaving the service area. Whatever the option, the answers the lost node still owes to a
+ * ContextCreate or ContextUpdate are taken as refusals, so that the operation ends.
+ */
+void amf_namf_handle_mbs_broadcast_gnb_lost(amf_gnb_t *gnb)
+{
+    amf_mbs_context_t *mbs_context = NULL, *next = NULL;
+
+    ogs_assert(gnb);
+
+    // The context may be removed while it is handled (a ContextCreate whose every NG-RAN has failed).
+    ogs_list_for_each_safe(&amf_self()->amf_mbs_context_list, next, mbs_context) {
+        amf_mbs_gnb_t *involved = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
+
+        if (!involved)
+            continue;
+
+        if (amf_self()->mbs_report_ng_ran_failure && amf_mbs_gnb_holds_session(involved)) {
+            ogs_info("MBS Broadcast [%s]: gNB %i failed, the MB-SMF is told", mbs_context->mbs_context_ref, gnb->gnb_id);
+            amf_sbi_send_mbs_broadcast_ngran_event(
+                    mbs_context, gnb, OpenAPI_ngran_failure_indication_NG_RAN_FAILURE_WITHOUT_RESTART);
+        }
+
+        // The answers the gNB owes will not come: the operation they belong to goes on as if the gNB had refused the
+        // request. TS 29.518 V18.14.0 cl. 5.6.2.2 and 5.6.2.3 name the outcome for NG-RANs that fail ("The AMF should respond
+        // success when it receives the first successful response from the NG-RAN(s)" and failure when every one failed,
+        // TS 23.247 V18.8.0 cl. 7.3.1 step 7: "if all NG-RAN(s) report failure, the AMF should respond failure"), and say
+        // nothing about a lost association.
+        involved->area_release_pending = false;
+        // The release a ContextRelease sent to the gNB will not be answered: it counts as answered, without a transfer.
+        if (mbs_context->release_pending && involved->release_sent) {
+            amf_namf_send_mbs_broadcast_context_release_response(mbs_context, gnb, NULL);
+            continue;
+        }
+        switch (amf_mbs_gnb_owes(involved)) {
+        case AMF_MBS_OWES_SETUP_RESPONSE:
+            amf_namf_handle_mbs_broadcast_ran_response(mbs_context, gnb, false, false, OpenAPI_ngap_ie_type_MBS_SES_FAIL, NULL);
+            break;
+        case AMF_MBS_OWES_UPDATE_RESPONSE:
+            amf_namf_handle_mbs_broadcast_ran_response(mbs_context, gnb, true, false, OpenAPI_ngap_ie_type_MBS_SES_FAIL, NULL);
+            break;
+        case AMF_MBS_OWES_RESTORATION_RESPONSE:
+            involved->awaiting = false;
+            involved->restoring = false;
+            break;
+        default:
+            break;
+        }
+    }
+}
+
+/*
+ * Restores the session of \p mbs_context in \p gnb, which restarted or is new (TS 23.527 V18.6.0 cl. 8.3.2.2 step 4:
+ * "The AMF re-establishes the broadcast MBS session in the restarted NG-RAN, by sending an NGAP Broadcast Session Setup
+ * Request including the last N2 (NGAP) MBS Session Setup or Modification Request Transfer IE that was stored."). Its
+ * response is handled by amf_mbs_context_restoration_response(). Returns false when nothing was sent.
+ */
+static bool amf_mbs_context_restore_in_gnb(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb)
+{
+    ogs_pkbuf_t *n2msgreq = NULL;
+    amf_mbs_gnb_t *involved = NULL;
+
+    ogs_assert(mbs_context);
+    ogs_assert(gnb);
+
+    if (!mbs_context->n2_mbs_sm_request) {
+        ogs_warn("MBS Broadcast [%s]: no N2 MBS SM container is held, the session is not restored in gNB %i",
+                mbs_context->mbs_context_ref, gnb->gnb_id);
+        return false;
+    }
+
+    n2msgreq = ngap_build_broadcast_session_setup_request(mbs_context, mbs_context->n2_mbs_sm_request);
+    if (!n2msgreq) {
+        ogs_error("MBS Broadcast [%s]: the Broadcast Session Setup Request could not be built", mbs_context->mbs_context_ref);
+        return false;
+    }
+    if (ngap_send_to_gnb(gnb, n2msgreq, NGAP_NON_UE_SIGNALLING) != OGS_OK) {
+        ogs_error("MBS Broadcast [%s]: the Broadcast Session Setup Request could not be sent to gNB %i",
+                mbs_context->mbs_context_ref, gnb->gnb_id);
+        amf_mbs_context_gnb_not_reached(mbs_context, gnb);
+        return false;
+    }
+
+    // The same gNB, connected anew, keeps its record; a gNB the session has not been sent to gets one.
+    involved = amf_mbs_context_find_stale_involved_gnb(mbs_context, gnb);
+    if (involved) {
+        involved->gnb_id = gnb->id;
+        involved->awaiting = true;
+    } else {
+        amf_mbs_context_involve_gnb(mbs_context, gnb);
+        involved = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
+    }
+    if (involved) {
+        involved->restoring = true;
+        involved->update_setup = false;
+        involved->release_required = false;
+        involved->released = false;
+        involved->setup_failed = false;
+        involved->area_released = false;
+        involved->area_release_pending = false;
+    }
+
+    ogs_info("MBS Broadcast [%s]: the session is restored in gNB %i", mbs_context->mbs_context_ref, gnb->gnb_id);
+    return true;
+}
+
+static void amf_mbs_context_schedule_reestablish(amf_mbs_context_t *mbs_context, amf_mbs_gnb_t *involved);
+
+/*
+ * The answer of \p gnb to the Setup Request that restores the session. TS 23.527 V18.6.0 cl. 8.3.2.2 step 5: "If an N2
+ * MBS SM Container (i.e. N2 (NGAP) MBS Session Setup or Modification Response Transfer IE) was received from the NG-RAN
+ * in step 4, the AMF sends an Namf_MBSBroadcast_ContextStatusNotify Request to the MB-SMF including the N2 MBS SM
+ * Container and the RAN-ID of the NG-RAN." The answer is not one of the responses a ContextCreate or ContextUpdate waits
+ * for. A failure is only logged: the clause says nothing to send for it.
+ */
+static void amf_mbs_context_restoration_response(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb, bool success,
+        const OCTET_STRING_t *transfer)
+{
+    amf_mbs_n2_info_t *n2_info = NULL;
+    ogs_list_t n2_info_list;
+
+    if (!success) {
+        amf_mbs_gnb_t *involved = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
+
+        ogs_warn("MBS Broadcast [%s]: gNB %i did not take the restored session", mbs_context->mbs_context_ref, gnb->gnb_id);
+        if (involved) {
+            involved->setup_failed = true;
+            // A gNB that restarts finishes its NG Setup before its DU and its CU-UP are connected, and then answers the
+            // restoring Setup Request with a Failure. When amf.mbs.reestablish_after is set, the session is set up in it
+            // again after that time (TS 29.518 V18.14.0 cl. 5.6.2.5: "attempt to re-establish the MBS session after some
+            // operator configurable time in these NG-RANs by performing the Broadcast MBS session restoration by AMF
+            // procedure specified in clause 8.3.2.2 of TS 23.527").
+            amf_mbs_context_schedule_reestablish(mbs_context, involved);
+        }
+        return;
+    }
+
+    if (!transfer || transfer->size == 0)
+        return;
+
+    n2_info = amf_mbs_n2_info_create(gnb, OpenAPI_ngap_ie_type_MBS_SES_RSP, transfer->buf, transfer->size);
+    if (!n2_info)
+        return;
+    ogs_list_init(&n2_info_list);
+    ogs_list_add(&n2_info_list, n2_info);
+    amf_sbi_send_mbs_broadcast_context_status_notify(
+            mbs_context, &n2_info_list, OpenAPI_operation_status_NULL, false, NULL);
+    amf_mbs_n2_info_remove_all(&n2_info_list);
+}
+
+void amf_namf_handle_mbs_broadcast_ng_setup(amf_gnb_t *gnb)
+{
+    amf_mbs_context_t *mbs_context = NULL;
+
+    ogs_assert(gnb);
+
+    if (amf_self()->mbs_restoration == AMF_MBS_RESTORATION_NONE)
+        return;
+
+    // TS 23.527 V18.6.0 cl. 8.3.2.2 step 3: the NG-RAN "serves at least one TAI or one cell being part of the MBS service
+    // area of an existing MBS session". A session that is being released is not restored.
+    ogs_list_for_each(&amf_self()->amf_mbs_context_list, mbs_context) {
+        if (mbs_context->release_pending || !amf_gnb_takes_mbs_session(gnb, mbs_context))
+            continue;
+
+        if (amf_self()->mbs_restoration == AMF_MBS_RESTORATION_BY_AMF)
+            amf_mbs_context_restore_in_gnb(mbs_context, gnb);
+        else if (amf_self()->mbs_restoration == AMF_MBS_RESTORATION_BY_MBSMF) {
+            // TS 23.527 V18.6.0 cl. 8.3.2.3 step 3: "The AMF sends Namf_MBSBroadcast_ContextStatusNotify Request message to
+            // the MB-SMF for each affected MBS session including the MBS Session ID, the NG-RAN ID and an indication of
+            // the event, either NG-RAN restart, or NG-RAN failure without restart, or a (new) NG-RAN getting into
+            // service to serve a TAI that is part of the MBS session service area." The MB-SMF then restores the session
+            // with a ContextUpdate that names the NG-RAN in ranIdList (step 6).
+            ogs_info("MBS Broadcast [%s]: gNB %i (re)started, the MB-SMF is told", mbs_context->mbs_context_ref, gnb->gnb_id);
+            amf_sbi_send_mbs_broadcast_ngran_event(mbs_context, gnb, OpenAPI_ngran_failure_indication_NG_RAN_RESTART_OR_START);
+        }
+    }
+}
+
+/*
+ * The release that NG-RAN \p involved asked for is over: when amf.mbs.reestablish_after is set, the session is set up
+ * again in it after that time (TS 29.518 V18.14.0 cl. 5.6.2.5: "attempt to re-establish the MBS session after some
+ * operator configurable time in these NG-RANs by performing the Broadcast MBS session restoration by AMF procedure
+ * specified in clause 8.3.2.2 of TS 23.527"). One timer of the context serves every NG-RAN: it is armed for the
+ * earliest time.
+ */
+static void amf_mbs_context_schedule_reestablish(amf_mbs_context_t *mbs_context, amf_mbs_gnb_t *involved)
+{
+    ogs_time_t now = ogs_get_monotonic_time(), duration;
+
+    ogs_assert(mbs_context);
+    ogs_assert(involved);
+
+    if (!amf_self()->mbs_reestablish)
+        return;
+
+    // A timer cannot be armed with no duration; 0 seconds is "at once".
+    involved->reestablish_at = now + ogs_time_from_sec(amf_self()->mbs_reestablish_after);
+    if (involved->reestablish_at <= now)
+        involved->reestablish_at = now + 1;
+
+    duration = amf_mbs_context_earliest_reestablish(mbs_context) - now;
+    if (duration < 1)
+        duration = 1;
+    ogs_timer_start(mbs_context->t_reestablish, duration);
+}
+
+/*
+ * The time to set the session up again in the NG-RANs that asked for its release has elapsed (event
+ * AMF_EVENT_MBS_TIMER, AMF_TIMER_MBS_REESTABLISH): the NG-RANs whose time it is get the session as after a restart
+ * (amf_mbs_context_restore_in_gnb()), if they are still connected and the session is not being released. The timer is
+ * armed again for the next of the others. The context may have been released since the timer was armed.
+ */
+void amf_namf_handle_mbs_broadcast_reestablish_timeout(uint32_t mbs_context_index)
+{
+    amf_mbs_context_t *mbs_context = amf_mbs_context_find_by_index(mbs_context_index);
+    amf_mbs_gnb_t *involved = NULL;
+    ogs_time_t now = ogs_get_monotonic_time(), next;
+
+    if (!mbs_context) {
+        ogs_debug("MBS Broadcast re-establishment: the context has been removed");
+        return;
+    }
+
+    ogs_list_for_each(&mbs_context->involved_gnb_list, involved) {
+        amf_gnb_t *gnb = NULL;
+
+        if (!involved->reestablish_at || involved->reestablish_at > now)
+            continue;
+        involved->reestablish_at = 0;
+
+        gnb = amf_gnb_find_by_id(involved->gnb_id);
+        if (!gnb || mbs_context->release_pending ||
+                !((involved->release_required && involved->released) || involved->setup_failed) ||
+                !amf_gnb_takes_mbs_session(gnb, mbs_context)) {
+            ogs_debug("MBS Broadcast [%s]: the session is not set up again in gNB %u",
+                    mbs_context->mbs_context_ref, (unsigned)involved->gnb_id);
+            continue;
+        }
+
+        amf_mbs_context_restore_in_gnb(mbs_context, gnb);
+    }
+
+    next = amf_mbs_context_earliest_reestablish(mbs_context);
+    if (next)
+        ogs_timer_start(mbs_context->t_reestablish, next > now ? next - now : 1);
+}
+
+/*
+ * Sends the NGAP BROADCAST SESSION RELEASE REQUEST for \p mbs_context to the gNBs that have been involved in the
+ * session and are still connected (TS 23.247 V18.8.0 cl. 7.3.2 step 4: "The AMF sends an N2 message to all RAN nodes
+ * that have been involved to release MBS session."), and returns how many it reached. Used by ContextDelete and when
+ * a ContextCreate's consumer is gone before it could be answered.
+ */
+static int amf_mbs_context_send_release(amf_mbs_context_t *mbs_context)
+{
+    ogs_pkbuf_t *n2msgreq = NULL;
+    amf_mbs_gnb_t *involved = NULL;
+    amf_gnb_t *gnb = NULL;
+    int gnb_rv = OGS_OK;
+    int reached = 0;
+
+    // NGAP BROADCAST SESSION RELEASE REQUEST message
+    n2msgreq = ngap_build_broadcast_session_release_request(mbs_context);
+    if (!n2msgreq)
+        ogs_error("The Broadcast Session Release Request could not be built");
+
+        // Each gNB gets its own copy and the shared template is freed once after the loop, for the ownership
+        // reason given in amf_namf_handle_mbs_broadcast_context_create()'s send loop above.
+    ogs_list_for_each(&mbs_context->involved_gnb_list, involved) {
+        ogs_pkbuf_t *n2msgreq_copy = NULL;
+
+        gnb = amf_gnb_find_by_id(involved->gnb_id);
+        if (!gnb) {
+            ogs_debug("A gNB involved in the MBS session has disconnected, no release sent to it");
+            continue;
+        }
+        if (involved->release_required) {
+            ogs_debug("gNB %i has asked for the release and has already been sent it", gnb->gnb_id);
+            continue;
+        }
+        if (involved->area_released) {
+            ogs_debug("gNB %i left the service area and has already been sent the release", gnb->gnb_id);
+            continue;
+        }
+        if (involved->setup_failed) {
+            ogs_debug("gNB %i failed the Setup of the session: it holds nothing to release", gnb->gnb_id);
+            continue;
+        }
+
+        // A request that cannot be built reaches none of the gNBs it was to be sent to (TS 29.518 V18.14.0 cl. 5.6.2.4:
+        // "The AMF may send one or more Namf_MBSBroadcast_ContextStatusNotify request including an operationEvents
+        // attribute to report the MB-SMF about failure to reach one or more NG-RANs.").
+        n2msgreq_copy = n2msgreq ? ogs_pkbuf_copy(n2msgreq) : NULL;
+        if (!n2msgreq_copy) {
+            ogs_error("The Broadcast Session Release Request for gNB %i could not be made", gnb->gnb_id);
+            amf_mbs_context_gnb_not_reached(mbs_context, gnb);
+            continue;
+        }
+        ogs_debug("Sending N2 MBS Session Release to gNB %i", gnb->gnb_id);
+        gnb_rv = ngap_send_to_gnb(gnb, n2msgreq_copy, NGAP_NON_UE_SIGNALLING);
+        if (gnb_rv != OGS_OK) {
+            ogs_error("ngap_send_to_gnb() failed");
+            amf_mbs_context_gnb_not_reached(mbs_context, gnb);
+            continue;
+        }
+        involved->release_sent = true;
+        reached++;
+    }
+    if (n2msgreq)
+        ogs_pkbuf_free(n2msgreq);
+
+    return reached;
+}
+
+static void amf_mbs_context_release(amf_mbs_context_t *mbs_context)
+{
+    amf_mbs_context_send_release(mbs_context);
+    amf_mbs_context_remove(mbs_context);
+}
+
+/*
+ * An NG-RAN has answered the release that the ContextRelease sent it (ngap_handle_broadcast_session_release_response()),
+ * or it is lost and never will. TS 38.413 V18.8.0 cl. 8.17.3.2: "Upon reception of the BROADCAST SESSION RELEASE RESPONSE
+ * message, the AMF shall transfer transparently the Broadcast Session Release Response Transfer IE, if available, to the
+ * MB-SMF." The 204 cannot carry it (TS 29.518 cl. 5.6.2.4), so each answer's transfer goes in its own ContextStatusNotify
+ * request (cl. 5.6.2.5), with the identity of the NG-RAN. TS 23.247 V18.8.0 cl. 7.3.2 step 7: "The NG-RAN reports successful
+ * release of resources for the MBS Session by sending MBS Session Resource Release Response (TMGI) message(s) to the AMF(s)."
+ * and step 8: "The AMF sends Namf_MBSBroadcast_ContextRelease response (TMGI) to the MB-SMF." The clause does not say after
+ * which answer: the 204 is sent on the first, so that an NG-RAN that never answers cannot keep the consumer waiting, and
+ * the context, which the later answers are matched to, is removed after the last. If the consumer's stream is gone, only
+ * the notifications and the removal are done.
+ */
+void amf_namf_send_mbs_broadcast_context_release_response(amf_mbs_context_t *mbs_context,
+        amf_gnb_t *gnb, const OCTET_STRING_t *transfer)
+{
+    ogs_sbi_message_t sendmsg;
+    ogs_sbi_stream_t *stream = NULL;
+    ogs_sbi_response_t *response = NULL;
+    ogs_list_t n2_info_list;
+    amf_mbs_n2_info_t *n2_info = NULL;
+    amf_mbs_gnb_t *involved = NULL;
+    bool first, last;
+
+    ogs_assert(mbs_context);
+    ogs_assert(gnb);
+
+    involved = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
+    if (!involved || !amf_mbs_context_release_answered(mbs_context, involved, &first, &last)) {
+        ogs_warn("BROADCAST SESSION RELEASE RESPONSE from gNB %i, which was sent no release by the ContextRelease, ignored",
+                gnb->gnb_id);
+        return;
+    }
+
+    if (transfer && transfer->size > 0)
+        n2_info = amf_mbs_n2_info_create(gnb, OpenAPI_ngap_ie_type_MBS_SES_REL_RSP, transfer->buf, transfer->size);
+    if (n2_info) {
+        ogs_list_init(&n2_info_list);
+        ogs_list_add(&n2_info_list, n2_info);
+        amf_sbi_send_mbs_broadcast_context_status_notify(
+                mbs_context, &n2_info_list, OpenAPI_operation_status_NULL, false, NULL);
+        amf_mbs_n2_info_remove_all(&n2_info_list);
+    }
+
+    if (first) {
+        stream = ogs_sbi_stream_find_by_id(mbs_context->stream_id);
+        if (!stream) {
+            ogs_warn("MBS Broadcast ContextRelease: stream [%d] no longer exists, response not sent",
+                    (int)mbs_context->stream_id);
+        } else {
+            memset(&sendmsg, 0, sizeof(sendmsg));
+            response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
+            ogs_assert(response);
+            ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+        }
+        mbs_context->stream_id = OGS_INVALID_POOL_ID;
+    }
+
+    if (last)
+        amf_mbs_context_remove(mbs_context);
+}
+
+/*
+ * Sends a ContextStatusNotify request that reports a release that NG-RAN \p gnb asked for: the Broadcast Session
+ * Release Response Transfer IE it returned, if any (\p transfer), and releasedInd when \p released_ind.
+ */
+static void amf_mbs_context_notify_required_release(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb,
+        const OCTET_STRING_t *transfer, bool released_ind)
+{
+    ogs_list_t n2_info_list;
+    amf_mbs_n2_info_t *n2_info = NULL;
+    bool report;
+
+    if (gnb && transfer && transfer->size > 0)
+        n2_info = amf_mbs_n2_info_create(gnb, OpenAPI_ngap_ie_type_MBS_SES_REL_RSP, transfer->buf, transfer->size);
+
+    report = amf_self()->mbs_report_required_release && gnb;
+
+    if (!n2_info && !released_ind && !report)
+        return;
+
+    ogs_list_init(&n2_info_list);
+    if (n2_info)
+        ogs_list_add(&n2_info_list, n2_info);
+    amf_sbi_send_mbs_broadcast_context_status_notify(
+            mbs_context, &n2_info_list, OpenAPI_operation_status_NULL, released_ind, report ? gnb : NULL);
+    amf_mbs_n2_info_remove_all(&n2_info_list);
+}
+
+/*
+ * True when every NG-RAN serving the session has asked for its release and has been released: each gNB of the record
+ * that is still connected and did not fail its Setup (TS 29.518 V18.14.0 cl. 5.6.2.5: "If all the NG-RANs serving the
+ * Broadcast MBS session requested the AMF to release the Broadcast MBS session"). False when no gNB serves it.
+ */
+static bool amf_mbs_context_all_released_on_request(amf_mbs_context_t *mbs_context)
+{
+    amf_mbs_gnb_t *involved = NULL;
+    int serving = 0;
+
+    ogs_list_for_each(&mbs_context->involved_gnb_list, involved) {
+        if (!amf_gnb_find_by_id(involved->gnb_id) || involved->setup_failed || involved->area_released)
+            continue;
+        if (!involved->release_required || !involved->released)
+            return false;
+        serving++;
+    }
+
+    return serving > 0;
+}
+
+/*
+ * The release asked for by NG-RAN \p gnb is over (it answered, \p transfer is the Broadcast Session Release Response
+ * Transfer IE if it sent one, or the request could not be sent): tell the MB-SMF, and when this was the last of all the
+ * NG-RANs serving the session, release the context (TS 29.518 V18.14.0 cl. 5.6.2.5: "the AMF shall release the
+ * Broadcast MBS session context and send a notification with the releaseInd attribute set to true to report to the
+ * MB-SMF that the Broadcast MBS session (context) is released at the AMF and NG-RANs.").
+ */
+static void amf_mbs_context_required_release_done(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb,
+        const OCTET_STRING_t *transfer)
+{
+    bool all;
+
+    ogs_assert(mbs_context);
+    ogs_assert(gnb);
+
+    all = !mbs_context->release_pending && amf_mbs_context_all_released_on_request(mbs_context);
+
+    // TS 23.247 V18.8.0 cl. 7.3.6 step 3: "The AMF notifies the MB-SMF about the DL tunnel release via
+    // Namf_MBSBroadcast_ContextStatusNotify with N3mb DL Tunnel Info and corresponding NG-RAN ID." The container is
+    // what the NG-RAN returned (TS 38.413 V18.8.0 cl. 8.17.3.2), with the identity of the node.
+    amf_mbs_context_notify_required_release(mbs_context, gnb, transfer, all);
+
+    if (!all) {
+        amf_mbs_gnb_t *involved = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
+
+        if (involved)
+            amf_mbs_context_schedule_reestablish(mbs_context, involved);
+        return;
+    }
+
+    // A ContextCreate or ContextUpdate still waiting for its NG-RAN responses will never be answered by them. No
+    // clause names the status (as for the failure of a Setup).
+    if (mbs_context->stream_id != OGS_INVALID_POOL_ID) {
+        ogs_sbi_stream_t *stream = ogs_sbi_stream_find_by_id(mbs_context->stream_id);
+
+        mbs_context->stream_id = OGS_INVALID_POOL_ID;
+        if (stream)
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR, NULL,
+                    "MBS Broadcast context released",
+                    "Every NG-RAN asked for the release of the Broadcast MBS session", NULL);
+    }
+
+    amf_mbs_context_remove(mbs_context);
+}
+
+/*
+ * BROADCAST SESSION RELEASE REQUIRED of NG-RAN \p gnb for \p mbs_context. TS 38.413 V18.8.0 cl. 8.17.4.2: "Upon
+ * reception of the BROADCAST SESSION RELEASE REQUIRED message, the AMF shall realize that the NG-RAN node is lacking
+ * adequate MBS session resources for a previously established broadcast MBS session and initiate the release of the
+ * MBS session resources." TS 23.247 V18.8.0 cl. 7.3.6 step 2: "The AMF initiates Broadcast Session Release towards
+ * the NG-RAN as defined in steps 4 - 7 in clause 7.3.2." The release goes to that NG-RAN only; the context goes when
+ * all the NG-RANs serving the session have asked (amf_mbs_context_required_release_done()).
+ */
+void amf_namf_handle_mbs_broadcast_release_required(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb)
+{
+    amf_mbs_gnb_t *involved = NULL;
+    ogs_pkbuf_t *n2msgreq = NULL;
+
+    ogs_assert(mbs_context);
+    ogs_assert(gnb);
+
+    involved = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
+    if (!involved) {
+        ogs_warn("BROADCAST SESSION RELEASE REQUIRED from gNB %i, which has not been sent the session, ignored",
+                gnb->gnb_id);
+        return;
+    }
+    if (involved->release_required) {
+        ogs_warn("BROADCAST SESSION RELEASE REQUIRED from gNB %i, which has asked before, ignored", gnb->gnb_id);
+        return;
+    }
+    if (involved->area_released) {
+        ogs_warn("BROADCAST SESSION RELEASE REQUIRED from gNB %i, which left the service area, ignored", gnb->gnb_id);
+        return;
+    }
+    if (mbs_context->release_pending) {
+        // The consumer's ContextRelease is releasing the session in every NG-RAN.
+        ogs_warn("BROADCAST SESSION RELEASE REQUIRED from gNB %i while the context is being released, ignored",
+                gnb->gnb_id);
+        return;
+    }
+
+    involved->release_required = true;
+
+    n2msgreq = ngap_build_broadcast_session_release_request(mbs_context);
+    if (!n2msgreq || ngap_send_to_gnb(gnb, n2msgreq, NGAP_NON_UE_SIGNALLING) != OGS_OK) {
+        // No release response will come: the NG-RAN has asked for the release and counts as released.
+        ogs_error("The Broadcast Session Release Request could not be sent to gNB %i", gnb->gnb_id);
+        amf_mbs_context_gnb_not_reached(mbs_context, gnb);
+        involved->released = true;
+        amf_mbs_context_required_release_done(mbs_context, gnb, NULL);
+    }
+}
+
+/*
+ * BROADCAST SESSION RELEASE RESPONSE of NG-RAN \p gnb to the release the AMF sent it because it left the service area.
+ * Returns false when it is not the answer to such a release. TS 38.413 V18.8.0 cl. 8.17.3.2: "Upon reception of the
+ * BROADCAST SESSION RELEASE RESPONSE message, the AMF shall transfer transparently the Broadcast Session Release Response
+ * Transfer IE, if available, to the MB-SMF." It goes in a ContextStatusNotify request (TS 29.518 V18.14.0 cl. 5.6.2.5).
+ */
+bool amf_namf_handle_mbs_broadcast_area_release_response(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb,
+        const OCTET_STRING_t *transfer)
+{
+    amf_mbs_gnb_t *involved = NULL;
+    amf_mbs_n2_info_t *n2_info = NULL;
+    ogs_list_t n2_info_list;
+
+    ogs_assert(mbs_context);
+    ogs_assert(gnb);
+
+    involved = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
+    if (!involved || !involved->area_release_pending)
+        return false;
+
+    involved->area_release_pending = false;
+
+    if (transfer && transfer->size > 0)
+        n2_info = amf_mbs_n2_info_create(gnb, OpenAPI_ngap_ie_type_MBS_SES_REL_RSP, transfer->buf, transfer->size);
+    if (n2_info) {
+        ogs_list_init(&n2_info_list);
+        ogs_list_add(&n2_info_list, n2_info);
+        amf_sbi_send_mbs_broadcast_context_status_notify(
+                mbs_context, &n2_info_list, OpenAPI_operation_status_NULL, false, NULL);
+        amf_mbs_n2_info_remove_all(&n2_info_list);
+    }
+
+    return true;
+}
+
+/*
+ * BROADCAST SESSION RELEASE RESPONSE of NG-RAN \p gnb to a release that it asked for. Returns false when it is not
+ * the answer to such a release.
+ */
+bool amf_namf_handle_mbs_broadcast_required_release_response(amf_mbs_context_t *mbs_context, amf_gnb_t *gnb,
+        const OCTET_STRING_t *transfer)
+{
+    amf_mbs_gnb_t *involved = NULL;
+
+    ogs_assert(mbs_context);
+    ogs_assert(gnb);
+
+    involved = amf_mbs_context_find_involved_gnb(mbs_context, gnb);
+    if (!involved || !involved->release_required || involved->released)
+        return false;
+
+    involved->released = true;
+    amf_mbs_context_required_release_done(mbs_context, gnb, transfer);
+    return true;
+}
+
+/*
+ * 3GPP TS 29.518 - Release 17.11.0
+ * 5G System; Access and Mobility Management Services; Stage 3
+ * Ch. 5.6.2.4 - Namf_MBSBroadcast Service API - MBS Broadcast ContextRelease service operation
+ * (this operation is named ContextRelease per the TS 29.518 table of contents -- 5.6.2.3 is
+ * ContextUpdate, item B-3, implemented above; this DELETE-triggered handler's behaviour was already
+ * correct, only the cited clause number and operation name were wrong)
+ *
+ * BUG FIX: this handler did not exist before -- the SBI dispatcher (amf-sm.c) had no DELETE case at all,
+ * so nothing ever called this. Without it, a broadcast session's AMF-side context lived forever and no
+ * NGAP BroadcastSessionRelease was ever sent, leaving the gNB's MCCH content and MAC/scheduler resources
+ * permanently allocated for a session the SMF believes has been released.
+ */
+int amf_namf_handle_mbs_broadcast_context_delete(
+        ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg)
+{
+    ogs_debug("MBS Broadcast ContextDelete request received");
+
+    const char *mbs_context_ref = NULL;
+    amf_mbs_context_t *mbs_context = NULL;
+
+    ogs_sbi_message_t sendmsg;
+    ogs_sbi_response_t *response = NULL;
+
+    ogs_assert(stream);
+    ogs_assert(recvmsg);
+
+    mbs_context_ref = recvmsg->h.resource.component[1];
+    if (!mbs_context_ref) {
+        ogs_error("MBS Broadcast ContextDelete: No mbsContextRef in the request path");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request", "Requested MBS Broadcast ContextDelete failed, no mbsContextRef", NULL);
+        return OGS_ERROR;
+    }
+
+    mbs_context = amf_mbs_context_find_by_ref(mbs_context_ref);
+    if (!mbs_context) {
+        ogs_error("MBS Broadcast ContextDelete: mbsContextRef[%s] not found", mbs_context_ref);
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_NOT_FOUND,
+            recvmsg, "Not Found", "Requested MBS Broadcast ContextDelete failed, mbsContextRef not found", NULL);
+        return OGS_ERROR;
+    }
+
+    if (mbs_context->release_pending) {
+        ogs_error("MBS Broadcast ContextDelete: mbsContextRef[%s] is already being released", mbs_context_ref);
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+            recvmsg, "Internal Server Error",
+            "Requested MBS Broadcast ContextDelete failed, the release is already in progress", "UNSPECIFIED_NF_FAILURE");
+        return OGS_ERROR;
+    }
+
+    // A ContextCreate or ContextUpdate still waiting for its NG-RAN responses is ended by the release: its stream is
+    // answered here, since the Delete takes the stream over below. No clause names the status (as for a failed Setup).
+    {
+        ogs_sbi_stream_t *pending = ogs_sbi_stream_find_by_id(mbs_context->stream_id);
+
+        mbs_context->stream_id = OGS_INVALID_POOL_ID;
+        if (pending)
+            ogs_sbi_server_send_error(pending, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR, NULL,
+                    "MBS Broadcast context released",
+                    "The Broadcast MBS session context has been released before the NG-RANs answered", NULL);
+    }
+
+    ogs_timer_stop(mbs_context->t_response);
+    mbs_context->gnb_request_count = 0;
+    mbs_context->gnb_response_count = 0;
+    mbs_context->gnb_request_count = amf_mbs_context_send_release(mbs_context);
+
+    if (mbs_context->gnb_request_count > 0) {
+        // TS 23.247 V18.8.0 cl. 7.3.2 step 8, "The AMF sends Namf_MBSBroadcast_ContextRelease response (TMGI) to the
+        // MB-SMF", follows step 7, the NG-RAN's release response: the 204 waits for the first one.
+        mbs_context->release_pending = true;
+        mbs_context->stream_id = ogs_sbi_id_from_stream(stream);
+        return OGS_OK;
+    }
+
+    // No NG-RAN was reached: none holds the session, so there is nothing to wait for.
+    amf_mbs_context_remove(mbs_context);
+
+    /*********************************************************************
+     * Send OGS_SBI_HTTP_STATUS_NO_CONTENT (/namf-mbs-bc/v1/mbs-contexts/{mbsContextRef}) to the consumer NF
+     *********************************************************************/
+
+    memset(&sendmsg, 0, sizeof(sendmsg));
+
+    response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
+    ogs_assert(response);
+
+    ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+
+    return OGS_OK;
+}
+
+/*
+ * Namf_MBSCommunication Service - N2MessageTransfer service operation (TS 29.518 cl.5.7.2.2): "The
+ * N2MessageTransfer service operation shall be used by the NF Service Consumer (e.g. MB-SMF) to request
+ * the AMF to transfer an MBS related N2 message to the NG-RAN nodes serving the multicast MBS session."
+ *
+ * TARGET SELECTION LIMITATION: cl.5.7.2.2 also states that without the optional RAN-ID-LIST feature (which
+ * this vendored TS 29.518 V17.8.0 copy predates -- see the register), "the AMF distributes the MBS related
+ * N2 message to the list of NG-RAN nodes having established shared delivery that the AMF stores locally."
+ * That registry -- which NG-RAN node(s) have established shared delivery for a given MBS session, per
+ * TS 23.247 cl.7.2.1.4 -- does not exist in this codebase yet; cl.7.2.1.4's own NGAP-level mapping (which
+ * top-level NGAP procedure a gNB uses to report establishing shared delivery to the AMF) is not yet
+ * confirmed against the pinned ASN.1 module either. Until that exists, this handler relays to every
+ * currently-connected gNB, mirroring the same simplification already established and documented for
+ * Namf_MBSBroadcast (amf_namf_handle_mbs_broadcast_context_delete() above) -- correct for this project's
+ * single-cell reference deployment (there is only ever one gNB to target), not a general multi-gNB
+ * solution. See open5gs.md's own account of this limitation before relying on it in a multi-gNB
+ * deployment.
+ */
+int amf_namf_mbs_comm_handle_n2_message_transfer(
+        ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg)
+{
+    ogs_debug("Namf_MBSCommunication N2MessageTransfer request received");
+
+    OpenAPI_mbs_n2_message_transfer_req_data_t *MbsN2MessageTransferReqData = NULL;
+    OpenAPI_ref_to_binary_data_t *n2_mbs_sm_info = NULL;
+    ogs_pkbuf_t *n2mbssmbuf = NULL;
+    ogs_pkbuf_t *n2msgreq = NULL;
+    amf_gnb_t *gnb = NULL;
+    int gnb_rv = OGS_OK;
+
+    ogs_tmgi_t tmgi;
+
+    ogs_sbi_message_t sendmsg;
+    ogs_sbi_response_t *response = NULL;
+    OpenAPI_mbs_n2_message_transfer_rsp_data_t MbsN2MessageTransferRspData;
+
+    ogs_assert(stream);
+    ogs_assert(recvmsg);
+
+    MbsN2MessageTransferReqData = recvmsg->MbsN2MessageTransferReqData;
+
+    if (!MbsN2MessageTransferReqData) {
+        ogs_error("N2MessageTransfer: No MbsN2MessageTransferReqData");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request",
+            "Requested N2MessageTransfer failed, no MbsN2MessageTransferReqData", NULL);
+        return OGS_ERROR;
+    }
+
+    if (!MbsN2MessageTransferReqData->mbs_session_id ||
+            !amf_namf_tmgi_is_valid(MbsN2MessageTransferReqData->mbs_session_id->tmgi)) {
+        ogs_error("N2MessageTransfer: mbsSessionId not present");
+        // TS 29.518 cl.5.7.2.2 step 1: "The MbsN2MessageTransferReqData shall contain: - MBS Session ID"
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request",
+            "Requested N2MessageTransfer failed, no mbsSessionId", NULL);
+        return OGS_ERROR;
+    }
+
+    if (!MbsN2MessageTransferReqData->n2_mbs_sm_info) {
+        ogs_error("N2MessageTransfer: n2MbsSmInfo not present");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request",
+            "Requested N2MessageTransfer failed, no n2MbsSmInfo", NULL);
+        return OGS_ERROR;
+    }
+
+    n2_mbs_sm_info = MbsN2MessageTransferReqData->n2_mbs_sm_info->ngap_data;
+    if (!n2_mbs_sm_info || !n2_mbs_sm_info->content_id) {
+        ogs_error("N2MessageTransfer: n2MbsSmInfo.ngapData not present");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request",
+            "Requested N2MessageTransfer failed, no n2MbsSmInfo.ngapData", NULL);
+        return OGS_ERROR;
+    }
+
+    // Grab the N2 MBS SM info (the already-encoded transfer IE) from the multipart message, same
+    // mechanism Namf_MBSBroadcast's ContextCreate/ContextUpdate already use.
+    n2mbssmbuf = ogs_sbi_find_part_by_content_id(recvmsg, n2_mbs_sm_info->content_id);
+    if (!n2mbssmbuf) {
+        ogs_error("N2MessageTransfer: n2mbssmbuf not found in the multipart message");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request",
+            "Requested N2MessageTransfer failed, N2 MBS SM info not found in the multipart message", NULL);
+        return OGS_ERROR;
+    }
+
+    ogs_sbi_parse_tmgi(&tmgi, MbsN2MessageTransferReqData->mbs_session_id->tmgi);
+
+    switch (MbsN2MessageTransferReqData->n2_mbs_sm_info->ngap_ie_type) {
+    case OpenAPI_mbs_ngap_ie_type_MBS_SES_ACT_REQ:
+        n2msgreq = ngap_build_multicast_session_activation_request(&tmgi, n2mbssmbuf);
+        break;
+    case OpenAPI_mbs_ngap_ie_type_MBS_SES_DEACT_REQ:
+        n2msgreq = ngap_build_multicast_session_deactivation_request(&tmgi, n2mbssmbuf);
+        break;
+    case OpenAPI_mbs_ngap_ie_type_MBS_SES_UPD_REQ:
+        n2msgreq = ngap_build_multicast_session_update_request(&tmgi,
+                MbsN2MessageTransferReqData->is_area_session_id,
+                (uint16_t)MbsN2MessageTransferReqData->area_session_id, n2mbssmbuf);
+        break;
+    default:
+        ogs_error("N2MessageTransfer: unsupported ngapIeType [%d]",
+                MbsN2MessageTransferReqData->n2_mbs_sm_info->ngap_ie_type);
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Bad Request",
+            "Requested N2MessageTransfer failed, unsupported ngapIeType", NULL);
+        return OGS_ERROR;
+    }
+
+    if (!n2msgreq) {
+        ogs_error("N2MessageTransfer: failed to build the NGAP PDU");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+            recvmsg, "Internal Server Error",
+            "Requested N2MessageTransfer failed, could not build the NGAP PDU", NULL);
+        return OGS_ERROR;
+    }
+
+    // See this function's own doc comment above for the target-selection limitation this loop rests on.
+    ogs_list_for_each(&amf_self()->gnb_list, gnb) {
+        ogs_pkbuf_t *n2msgreq_copy = ogs_pkbuf_copy(n2msgreq);
+        if (!n2msgreq_copy) {
+            ogs_error("ogs_pkbuf_copy() failed");
+            break;
+        }
+        ogs_debug("Sending N2 Message Transfer (ngapIeType=%d) to gNB %i",
+                MbsN2MessageTransferReqData->n2_mbs_sm_info->ngap_ie_type, gnb->gnb_id);
+        gnb_rv = ngap_send_to_gnb(gnb, n2msgreq_copy, NGAP_NON_UE_SIGNALLING);
+        if (gnb_rv != OGS_OK) {
+            ogs_error("ngap_send_to_gnb() failed");
+            break;
+        }
+    }
+    ogs_pkbuf_free(n2msgreq);
+
+    /*********************************************************************
+     * Send 200 OK (MbsN2MessageTransferRspData) to the consumer NF
+     *********************************************************************/
+
+    memset(&sendmsg, 0, sizeof(sendmsg));
+    memset(&MbsN2MessageTransferRspData, 0, sizeof(MbsN2MessageTransferRspData));
+
+    // TS 29.518 cl.5.7.2.2 step 2a: "On success, the AMF shall respond with a '200 OK' status code with
+    // MbsN2MessageTransferRspData data structure." No failureList: this pass has no per-gNB response
+    // correlation (see the doc comment above -- there is no NGAP response handler for these three
+    // procedures yet either, so per-target success/failure cannot be tracked).
+    MbsN2MessageTransferRspData.result =
+        OpenAPI_n2_information_transfer_result_N2_INFO_TRANSFER_INITIATED;
+
+    sendmsg.MbsN2MessageTransferRspData = &MbsN2MessageTransferRspData;
+
+    response = ogs_sbi_build_response(&sendmsg, OGS_SBI_HTTP_STATUS_OK);
+    ogs_assert(response);
+
+    ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+
+    return OGS_OK;
+}
+
+/* The Cause of a Broadcast Transport Failure Transfer (TS 38.413 clause 9.3.5.17: "Cause | M"). */
+static bool transport_failure_cause(ogs_pkbuf_t *pkbuf, NGAP_Cause_PR *group, long *cause)
+{
+    NGAP_BroadcastTransportFailureTransfer_t transfer;
+    bool ok = true;
+
+    memset(&transfer, 0, sizeof(transfer));
+    if (ogs_asn_decode(&asn_DEF_NGAP_BroadcastTransportFailureTransfer, &transfer, sizeof(transfer), pkbuf) !=
+            OGS_OK)
+        return false;
+
+    if (!transfer.cause) {
+        ogs_asn_free(&asn_DEF_NGAP_BroadcastTransportFailureTransfer, &transfer);
+        return false;
+    }
+    *group = transfer.cause->present;
+    switch (transfer.cause->present) {
+    case NGAP_Cause_PR_radioNetwork: *cause = transfer.cause->choice.radioNetwork; break;
+    case NGAP_Cause_PR_transport: *cause = transfer.cause->choice.transport; break;
+    case NGAP_Cause_PR_nas: *cause = transfer.cause->choice.nas; break;
+    case NGAP_Cause_PR_protocol: *cause = transfer.cause->choice.protocol; break;
+    case NGAP_Cause_PR_misc: *cause = transfer.cause->choice.misc; break;
+    default: ok = false; break;
+    }
+    ogs_asn_free(&asn_DEF_NGAP_BroadcastTransportFailureTransfer, &transfer);
+    return ok;
+}
+
+int amf_namf_mbs_transport_answers(const amf_gnb_t *gnb, const ogs_tmgi_t *tmgi, ogs_sbi_message_t *message,
+        ogs_pkbuf_t **out, int max)
+{
+    OpenAPI_context_status_notification_response_t *response = NULL;
+    OpenAPI_lnode_t *node = NULL;
+    int count = 0;
+
+    ogs_assert(gnb);
+    ogs_assert(tmgi);
+    ogs_assert(message);
+    ogs_assert(out);
+
+    response = message->ContextStatusNotificationResponse;
+    if (!response || !response->n2_mbs_sm_info_list)
+        return 0;
+
+    /* TS 29.518 V18.14.0 Table 6.5.6.2.10-1: n2MbsSmInfoList, cardinality "1..10". The response of the MB-SMF is the one
+     * to refuse (it is not an answer the AMF can use), not to take the first ten of. */
+    if (response->n2_mbs_sm_info_list->count > OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO) {
+        ogs_error("Broadcast Session Transport: the MB-SMF sent %d containers, more than the %d of n2MbsSmInfoList",
+                (int)response->n2_mbs_sm_info_list->count, OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO);
+        return 0;
+    }
+
+    OpenAPI_list_for_each(response->n2_mbs_sm_info_list, node) {
+        OpenAPI_n2_mbs_sm_info_t *info = node->data;
+        ogs_pkbuf_t *transfer = NULL, *ngap = NULL;
+
+        if (!info)
+            continue;
+        if (info->ngap_ie_type != OpenAPI_ngap_ie_type_BC_TRA_RSP &&
+                info->ngap_ie_type != OpenAPI_ngap_ie_type_BC_TRA_FAIL)
+            continue;
+        /* TS 29.518 V18.14.0 clause 5.6.2.5: "the MB-SMF shall insert the identifier of the NG-RAN node to which the
+         * information in the container relates"; an entry that names another node is not this node's answer. */
+        if (info->ran_id && !amf_namf_ran_id_is_gnb(gnb, info->ran_id)) {
+            ogs_warn("Broadcast Session Transport: a container of the MB-SMF names another NG-RAN node");
+            continue;
+        }
+        if (info->ngap_data && info->ngap_data->content_id)
+            transfer = ogs_sbi_find_part_by_content_id(message, info->ngap_data->content_id);
+        if (!transfer) {
+            ogs_warn("Broadcast Session Transport: a container of the MB-SMF is not in the message");
+            continue;
+        }
+
+        if (info->ngap_ie_type == OpenAPI_ngap_ie_type_BC_TRA_RSP) {
+            ngap = ngap_build_broadcast_session_transport_response(tmgi, transfer->data, transfer->len);
+        } else {
+            NGAP_Cause_PR group = NGAP_Cause_PR_NOTHING;
+            long cause = 0;
+
+            /* The message carries the Cause beside the transfer (clause 9.2.16.12); it is the one of the transfer. */
+            if (!transport_failure_cause(transfer, &group, &cause)) {
+                ogs_warn("Broadcast Session Transport: the Failure Transfer of the MB-SMF cannot be decoded");
+                continue;
+            }
+            ngap = ngap_build_broadcast_session_transport_failure(tmgi, transfer->data, transfer->len, group, cause);
+        }
+        if (ngap) {
+            if (count >= max) {
+                ogs_error("Broadcast Session Transport: no room for more than %d answers, the rest are not sent", max);
+                ogs_pkbuf_free(ngap);
+                break;
+            }
+            out[count++] = ngap;
+        }
+    }
+
+    return count;
+}
+
+void amf_namf_send_transport_failure(amf_gnb_t *gnb, const ogs_tmgi_t *tmgi, NGAP_Cause_PR group, long cause)
+{
+    ogs_pkbuf_t *transfer = NULL;
+
+    ogs_assert(gnb);
+    ogs_assert(tmgi);
+
+    transfer = ngap_build_broadcast_transport_failure_transfer(tmgi, group, cause);
+    if (!transfer) {
+        ogs_error("ngap_build_broadcast_transport_failure_transfer() failed");
+        return;
+    }
+    ngap_send_broadcast_session_transport_failure(gnb, tmgi, transfer->data, transfer->len, group, cause);
+    ogs_pkbuf_free(transfer);
+}
+
+void amf_namf_handle_mbs_broadcast_transport_request(amf_gnb_t *gnb, const ogs_tmgi_t *tmgi,
+        const uint8_t *transfer, size_t transfer_len)
+{
+    amf_mbs_context_t *mbs_context = NULL;
+
+    ogs_assert(gnb);
+    ogs_assert(tmgi);
+    ogs_assert(transfer);
+
+    mbs_context = amf_mbs_context_find_by_tmgi(tmgi);
+    if (!mbs_context) {
+        /* TS 38.413 V18.8.0 clause 8.17.5.3: "In case the shared NG-U transport cannot be setup successfully, the AMF
+         * shall respond with the BROADCAST SESSION TRANSPORT FAILURE message to the NG-RAN node with an appropriate
+         * cause value." and clause 9.3.1.2: "Unknown MBS Session ID | The action failed because the MBS Session ID is
+         * unknown." */
+        ogs_warn("BROADCAST SESSION TRANSPORT REQUEST: no MBS context found for the given TMGI");
+        amf_namf_send_transport_failure(gnb, tmgi, NGAP_Cause_PR_radioNetwork,
+                NGAP_CauseRadioNetwork_unknown_MBS_Session_ID);
+        return;
+    }
+
+    if (!amf_sbi_send_mbs_broadcast_transport_request(mbs_context, gnb, transfer, transfer_len))
+        amf_namf_send_transport_failure(gnb, tmgi, NGAP_Cause_PR_transport,
+                NGAP_CauseTransport_transport_resource_unavailable);
+}
+

@@ -3252,3 +3252,915 @@ ogs_pkbuf_t *ngap_build_downlink_ran_status_transfer(
 
     return ogs_ngap_encode(&pdu);
 }
+
+/*
+ * The number of NR CGIs in \p service_area's NCGI-TAI list (the wire's MBS-ServiceAreaCellList is a flat NR-CGI list).
+ */
+static int mbs_service_area_num_cells(const ogs_mbs_service_area_t *service_area)
+{
+    ogs_ncgi_tai_t *ncgi_tai = NULL;
+    int count = 0;
+
+    if (!service_area || !service_area->ncgi_tai_list)
+        return 0;
+
+    ogs_list_for_each(service_area->ncgi_tai_list, ncgi_tai)
+        count += ogs_list_count(&ncgi_tai->cell_list);
+
+    return count;
+}
+
+/*
+ * Adds the TAI list and the cell list of \p service_area to \p info. TS 38.413 V18.8.0 cl. 9.3.1.209 makes both lists
+ * optional ("MBS Service Area Cell List ... 0..<maxnoofCellsforMBS>", "MBS Service Area TAI List ...
+ * 0..<maxnoofTAIforMBS>"): a list that the request does not carry is left out, not replaced by the gNBs the AMF
+ * knows.
+ */
+static void mbs_service_area_information_set(
+        NGAP_MBS_ServiceAreaInformation_t *info, const ogs_mbs_service_area_t *service_area)
+{
+    ogs_assert(info);
+
+    if (service_area && service_area->tai_list && ogs_list_count(service_area->tai_list) > 0) {
+        NGAP_MBS_ServiceAreaTAIList_t *tai_list = CALLOC(1, sizeof(NGAP_MBS_ServiceAreaTAIList_t));
+        ogs_tai_t *tai_entry = NULL;
+
+        ogs_assert(tai_list);
+        info->mBS_ServiceAreaTAIList = tai_list;
+
+        ogs_list_for_each(service_area->tai_list, tai_entry) {
+            ogs_5gs_tai_t tai;
+            NGAP_TAI_t *tAI = CALLOC(1, sizeof(NGAP_TAI_t));
+            ogs_assert(tAI);
+            ASN_SEQUENCE_ADD(tai_list, tAI);
+
+            tai.plmn_id = tai_entry->plmn_id;
+            tai.tac = ogs_uint24_from_string_hexadecimal(tai_entry->tac ? tai_entry->tac : (char *)"0");
+
+            ogs_ngap_5gs_tai_to_ASN(&tai, tAI);
+        }
+    }
+
+    if (mbs_service_area_num_cells(service_area) > 0) {
+        NGAP_MBS_ServiceAreaCellList_t *cell_list = CALLOC(1, sizeof(NGAP_MBS_ServiceAreaCellList_t));
+        ogs_ncgi_tai_t *ncgi_tai = NULL;
+
+        ogs_assert(cell_list);
+        info->mBS_ServiceAreaCellList = cell_list;
+
+        ogs_list_for_each(service_area->ncgi_tai_list, ncgi_tai) {
+            ogs_ncgi_t *ncgi_entry = NULL;
+
+            ogs_list_for_each(&ncgi_tai->cell_list, ncgi_entry) {
+                ogs_nr_cgi_t nr_cgi;
+                NGAP_NR_CGI_t *nR_CGI = CALLOC(1, sizeof(NGAP_NR_CGI_t));
+                ogs_assert(nR_CGI);
+                ASN_SEQUENCE_ADD(cell_list, nR_CGI);
+
+                nr_cgi.plmn_id = ncgi_entry->plmn_id;
+                // NrCellId (TS 29.571): 9 hex chars, 36 bits -- same encoding ogs_nr_cgi_t.cell_id
+                // already expects.
+                nr_cgi.cell_id = ncgi_entry->nr_cell_id ?
+                    ogs_uint64_from_string_hexadecimal((char *)ncgi_entry->nr_cell_id) : 0;
+
+                ogs_ngap_nr_cgi_to_ASN(&nr_cgi, nR_CGI);
+            }
+        }
+    }
+}
+
+/*
+ * Fills the MBS Service Area IE \p mBS_ServiceArea of a Broadcast Session Setup or Modification Request from \p mbs_context.
+ * A session with an mbsServiceAreaInfoList takes the "locationdependent" arm with one item for each Area Session ID and its
+ * MBS service area, in the order received (TS 38.413 V18.11.0 cl. 9.3.1.208: "maxnoofMBSServiceAreaInformation ... Value is
+ * 256" items; TS 23.247 V18.8.0 cl. 7.3.4: "which additionally includes the Area Session IDs and MBS service areas"); any other
+ * takes "locationindependent" with the one MBS service area.
+ */
+static void mbs_service_area_arm_set(NGAP_MBS_ServiceArea_t *mBS_ServiceArea, amf_mbs_context_t *mbs_context)
+{
+    ogs_assert(mBS_ServiceArea);
+    ogs_assert(mbs_context);
+
+    if (mbs_context->location_dependent && !ogs_list_empty(&mbs_context->area_items)) {
+        NGAP_MBS_ServiceAreaInformationList_t *service_area_info_list =
+                CALLOC(1, sizeof(NGAP_MBS_ServiceAreaInformationList_t));
+        amf_mbs_area_item_t *item = NULL;
+
+        ogs_assert(service_area_info_list);
+        mBS_ServiceArea->present = NGAP_MBS_ServiceArea_PR_locationdependent;
+        mBS_ServiceArea->choice.locationdependent = service_area_info_list;
+
+        ogs_list_for_each(&mbs_context->area_items, item) {
+            NGAP_MBS_ServiceAreaInformationItem_t *service_area_info_item =
+                    CALLOC(1, sizeof(NGAP_MBS_ServiceAreaInformationItem_t));
+
+            ogs_assert(service_area_info_item);
+            ASN_SEQUENCE_ADD(service_area_info_list, service_area_info_item);
+            service_area_info_item->mBS_AreaSessionID = item->area_session_id;
+            service_area_info_item->mBS_ServiceAreaInformation =
+                CALLOC(1, sizeof(*service_area_info_item->mBS_ServiceAreaInformation));
+            ogs_assert(service_area_info_item->mBS_ServiceAreaInformation);
+            mbs_service_area_information_set(service_area_info_item->mBS_ServiceAreaInformation, item->area);
+        }
+    } else {
+        NGAP_MBS_ServiceAreaInformation_t *mBS_ServiceAreaInformation =
+                CALLOC(1, sizeof(NGAP_MBS_ServiceAreaInformation_t));
+
+        ogs_assert(mBS_ServiceAreaInformation);
+        mBS_ServiceArea->present = NGAP_MBS_ServiceArea_PR_locationindependent;
+        mBS_ServiceArea->choice.locationindependent = mBS_ServiceAreaInformation;
+        mbs_service_area_information_set(mBS_ServiceAreaInformation, mbs_context->mbs_service_area);
+    }
+}
+
+ogs_pkbuf_t *ngap_build_broadcast_session_setup_request(amf_mbs_context_t *mbs_context, ogs_pkbuf_t *pkbuf)
+{
+    /*
+    maxnoofMBSServiceAreaInformation - Maximum no. of MBS Service Area Information elements in the MBS
+        Service Area Information Location Dependent List IE. Value is 256.
+    */
+
+    NGAP_NGAP_PDU_t pdu;
+    NGAP_InitiatingMessage_t *initiatingMessage = NULL;
+    NGAP_BroadcastSessionSetupRequest_t *BroadcastSessionSetupRequest = NULL;
+
+    NGAP_BroadcastSessionSetupRequestIEs_t *ie = NULL;
+
+    // MBS Session ID
+    NGAP_MBS_SessionID_t *mBS_SessionID = NULL;
+
+    // S-NSSAI
+    NGAP_S_NSSAI_t *s_NSSAI = NULL;
+    NGAP_SD_t *sD = NULL;
+
+    // MBS Service Area
+    NGAP_MBS_ServiceArea_t *mBS_ServiceArea = NULL;
+    // MBS Service Area Information
+
+    // MBS Session Setup Request Transfer
+    OCTET_STRING_t *oCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer = NULL;
+
+    ogs_assert(pkbuf);
+
+    ogs_debug("BROADCAST SESSION SETUP REQUEST");
+
+    memset(&pdu, 0, sizeof (NGAP_NGAP_PDU_t));
+    pdu.present = NGAP_NGAP_PDU_PR_initiatingMessage;
+    pdu.choice.initiatingMessage = CALLOC(1, sizeof(NGAP_InitiatingMessage_t));
+
+    // BROADCAST SESSION SETUP REQUEST
+    initiatingMessage = pdu.choice.initiatingMessage;
+    initiatingMessage->procedureCode = NGAP_ProcedureCode_id_BroadcastSessionSetup;
+    initiatingMessage->criticality = NGAP_Criticality_reject;
+    initiatingMessage->value.present = NGAP_InitiatingMessage__value_PR_BroadcastSessionSetupRequest;
+
+    BroadcastSessionSetupRequest = CALLOC(1, sizeof(*BroadcastSessionSetupRequest));
+
+    ogs_assert(BroadcastSessionSetupRequest);
+
+    initiatingMessage->value.choice.BroadcastSessionSetupRequest = BroadcastSessionSetupRequest;
+
+    BroadcastSessionSetupRequest->protocolIEs =
+
+        ogs_asn_calloc_protocol_ies(&asn_DEF_NGAP_BroadcastSessionSetupRequest);
+
+    ogs_assert(BroadcastSessionSetupRequest->protocolIEs);
+
+    // MBS Session ID - 9.3.1.206 (M)
+    ie = CALLOC(1, sizeof(NGAP_BroadcastSessionSetupRequestIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(BroadcastSessionSetupRequest->protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_MBS_SessionID;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present = NGAP_BroadcastSessionSetupRequestIEs__value_PR_MBS_SessionID;
+
+    mBS_SessionID = CALLOC(1, sizeof(*mBS_SessionID));
+
+    ogs_assert(mBS_SessionID);
+
+    ie->value.choice.MBS_SessionID = mBS_SessionID;
+
+    ogs_ngap_5gs_tmgi_to_ASN(&mbs_context->tmgi, &mBS_SessionID->tMGI);
+
+    // S-NSSAI - 9.3.1.24 (M)
+    ie = CALLOC(1, sizeof(NGAP_BroadcastSessionSetupRequestIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(BroadcastSessionSetupRequest->protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_S_NSSAI;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present = NGAP_BroadcastSessionSetupRequestIEs__value_PR_S_NSSAI;
+
+    s_NSSAI = CALLOC(1, sizeof(*s_NSSAI));
+
+    ogs_assert(s_NSSAI);
+
+    ie->value.choice.S_NSSAI = s_NSSAI;
+
+        // The S-NSSAI comes from the MB-SMF's own ContextCreate request, which
+        // amf_namf_handle_mbs_broadcast_context_create() stores on mbs_context, not from a fixed value.
+    ogs_asn_uint8_to_OCTET_STRING(mbs_context->s_nssai.sst, &s_NSSAI->sST);
+
+    if (mbs_context->s_nssai.sd.v != OGS_S_NSSAI_NO_SD_VALUE) {
+        sD = CALLOC(1, sizeof(NGAP_SD_t));
+        ogs_assert(sD);
+        s_NSSAI->sD = sD;
+
+        ogs_asn_uint24_to_OCTET_STRING(mbs_context->s_nssai.sd, s_NSSAI->sD);
+    }
+
+    // MBS Service Area - 9.3.1.208 (M)
+    ie = CALLOC(1, sizeof(NGAP_BroadcastSessionSetupRequestIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(BroadcastSessionSetupRequest->protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_MBS_ServiceArea;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present = NGAP_BroadcastSessionSetupRequestIEs__value_PR_MBS_ServiceArea;
+
+    mBS_ServiceArea = CALLOC(1, sizeof(*mBS_ServiceArea));
+
+    ogs_assert(mBS_ServiceArea);
+
+    ie->value.choice.MBS_ServiceArea = mBS_ServiceArea;
+
+    mbs_service_area_arm_set(mBS_ServiceArea, mbs_context);
+
+    // MBS Session Setup Request Transfer - OCTET STRING (SIZE(3)) (M)
+    ie = CALLOC(1, sizeof(NGAP_BroadcastSessionSetupRequestIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(BroadcastSessionSetupRequest->protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_MBSSessionSetupRequestTransfer;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present = NGAP_BroadcastSessionSetupRequestIEs__value_PR_OCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer_;
+
+    oCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer = &ie->value.choice.OCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer_;
+    oCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer->buf = CALLOC(pkbuf->len, sizeof(uint8_t));
+    oCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer->size = pkbuf->len;
+
+    memcpy(oCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer->buf, pkbuf->data, pkbuf->len);
+
+    // Associated Session ID - 9.3.1.262 (O, ignore): only when the ContextCreate carried one
+    if (mbs_context->associated_session_id) {
+        ie = CALLOC(1, sizeof(NGAP_BroadcastSessionSetupRequestIEs_t));
+        ogs_assert(ie);
+        ASN_SEQUENCE_ADD(BroadcastSessionSetupRequest->protocolIEs, ie);
+
+        ie->id = NGAP_ProtocolIE_ID_id_AssociatedSessionID;
+        ie->criticality = NGAP_Criticality_ignore;
+        ie->value.present = NGAP_BroadcastSessionSetupRequestIEs__value_PR_AssociatedSessionID;
+
+        ie->value.choice.AssociatedSessionID = CALLOC(1, sizeof(*ie->value.choice.AssociatedSessionID));
+        ogs_assert(ie->value.choice.AssociatedSessionID);
+        ogs_asn_buffer_to_OCTET_STRING(mbs_context->associated_session_id, mbs_context->associated_session_id_len,
+                ie->value.choice.AssociatedSessionID);
+    }
+
+    return ogs_ngap_encode(&pdu);
+}
+
+/*
+ * 3GPP TS 38.413 - BROADCAST SESSION RELEASE REQUEST
+ *
+ * Carries the MBS Session ID (M) of the context and a Cause (release due to 5GC generated reason), which is sent with
+ * criticality ignore.
+ */
+ogs_pkbuf_t *ngap_build_broadcast_session_release_request(amf_mbs_context_t *mbs_context)
+{
+    NGAP_NGAP_PDU_t pdu;
+    NGAP_InitiatingMessage_t *initiatingMessage = NULL;
+    NGAP_BroadcastSessionReleaseRequest_t *BroadcastSessionReleaseRequest = NULL;
+
+    NGAP_BroadcastSessionReleaseRequestIEs_t *ie = NULL;
+
+    // MBS Session ID
+    NGAP_MBS_SessionID_t *mBS_SessionID = NULL;
+
+    // Cause
+    NGAP_Cause_t *Cause = NULL;
+
+    ogs_assert(mbs_context);
+
+    ogs_debug("BROADCAST SESSION RELEASE REQUEST");
+
+    memset(&pdu, 0, sizeof(NGAP_NGAP_PDU_t));
+    pdu.present = NGAP_NGAP_PDU_PR_initiatingMessage;
+    pdu.choice.initiatingMessage = CALLOC(1, sizeof(NGAP_InitiatingMessage_t));
+
+    initiatingMessage = pdu.choice.initiatingMessage;
+    initiatingMessage->procedureCode = NGAP_ProcedureCode_id_BroadcastSessionRelease;
+    initiatingMessage->criticality = NGAP_Criticality_reject;
+    initiatingMessage->value.present = NGAP_InitiatingMessage__value_PR_BroadcastSessionReleaseRequest;
+
+    BroadcastSessionReleaseRequest = CALLOC(1, sizeof(*BroadcastSessionReleaseRequest));
+
+    ogs_assert(BroadcastSessionReleaseRequest);
+
+    initiatingMessage->value.choice.BroadcastSessionReleaseRequest = BroadcastSessionReleaseRequest;
+
+    BroadcastSessionReleaseRequest->protocolIEs =
+
+        ogs_asn_calloc_protocol_ies(&asn_DEF_NGAP_BroadcastSessionReleaseRequest);
+
+    ogs_assert(BroadcastSessionReleaseRequest->protocolIEs);
+
+    // MBS Session ID - 9.3.1.206 (M)
+    ie = CALLOC(1, sizeof(NGAP_BroadcastSessionReleaseRequestIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(BroadcastSessionReleaseRequest->protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_MBS_SessionID;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present = NGAP_BroadcastSessionReleaseRequestIEs__value_PR_MBS_SessionID;
+
+    mBS_SessionID = CALLOC(1, sizeof(*mBS_SessionID));
+
+    ogs_assert(mBS_SessionID);
+
+    ie->value.choice.MBS_SessionID = mBS_SessionID;
+
+    ogs_ngap_5gs_tmgi_to_ASN(&mbs_context->tmgi, &mBS_SessionID->tMGI);
+
+        // Cause - 9.3.1.2 (M)
+        // Cause is mandatory for this message (38413-h30.asn: BroadcastSessionReleaseRequestIEs, "PRESENCE
+        // mandatory"); without it the PDU is malformed and a gNB rejects it ("Mandatory fields are missing",
+        // "Couldn't unpack NGAP PDU"). This is a CN-initiated release rather than a radio-triggered one, hence
+        // radioNetwork/release_due_to_5gc_generated_reason.
+    ie = CALLOC(1, sizeof(NGAP_BroadcastSessionReleaseRequestIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(BroadcastSessionReleaseRequest->protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_Cause;
+    ie->criticality = NGAP_Criticality_ignore;
+    ie->value.present = NGAP_BroadcastSessionReleaseRequestIEs__value_PR_Cause;
+
+    Cause = CALLOC(1, sizeof(*Cause));
+
+    ogs_assert(Cause);
+
+    ie->value.choice.Cause = Cause;
+    Cause->present = NGAP_Cause_PR_radioNetwork;
+    Cause->choice.radioNetwork = NGAP_CauseRadioNetwork_release_due_to_5gc_generated_reason;
+
+    return ogs_ngap_encode(&pdu);
+}
+
+/*
+ * Namf_MBSBroadcast_ContextUpdate (TS 29.518 cl.5.6.2.3) sends this to the gNB(s) already associated with the session.
+ * TS 38.413's own Request IEs: MBS-SessionID (M), MBS-ServiceArea (O), MBS Session Modification Request Transfer (O) --
+ * unlike Setup, no S-NSSAI (fixed at Setup, not resent).
+ *
+ * has_service_area adds the MBS Service Area IE, built from the service area and the Area Session IDs stored in
+ * mbs_context. pkbuf carries the (already re-packed) MBS Session Modification Request Transfer, or NULL if the
+ * ContextUpdateReqData carried no n2MbsSmInfo to forward.
+ */
+ogs_pkbuf_t *ngap_build_broadcast_session_modification_request(
+        amf_mbs_context_t *mbs_context, bool has_service_area, ogs_pkbuf_t *pkbuf)
+{
+    NGAP_NGAP_PDU_t pdu;
+    NGAP_InitiatingMessage_t *initiatingMessage = NULL;
+    NGAP_BroadcastSessionModificationRequest_t *BroadcastSessionModificationRequest = NULL;
+
+    NGAP_BroadcastSessionModificationRequestIEs_t *ie = NULL;
+
+    // MBS Session ID
+    NGAP_MBS_SessionID_t *mBS_SessionID = NULL;
+
+    // MBS Service Area
+    NGAP_MBS_ServiceArea_t *mBS_ServiceArea = NULL;
+
+    // MBS Session Modification Request Transfer
+    OCTET_STRING_t *oCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer = NULL;
+
+    ogs_assert(mbs_context);
+
+    ogs_debug("BROADCAST SESSION MODIFICATION REQUEST");
+
+    memset(&pdu, 0, sizeof(NGAP_NGAP_PDU_t));
+    pdu.present = NGAP_NGAP_PDU_PR_initiatingMessage;
+    pdu.choice.initiatingMessage = CALLOC(1, sizeof(NGAP_InitiatingMessage_t));
+
+    initiatingMessage = pdu.choice.initiatingMessage;
+    initiatingMessage->procedureCode = NGAP_ProcedureCode_id_BroadcastSessionModification;
+    initiatingMessage->criticality = NGAP_Criticality_reject;
+    initiatingMessage->value.present =
+        NGAP_InitiatingMessage__value_PR_BroadcastSessionModificationRequest;
+
+    BroadcastSessionModificationRequest = CALLOC(1, sizeof(*BroadcastSessionModificationRequest));
+
+    ogs_assert(BroadcastSessionModificationRequest);
+
+    initiatingMessage->value.choice.BroadcastSessionModificationRequest = BroadcastSessionModificationRequest;
+
+    BroadcastSessionModificationRequest->protocolIEs =
+
+        ogs_asn_calloc_protocol_ies(&asn_DEF_NGAP_BroadcastSessionModificationRequest);
+
+    ogs_assert(BroadcastSessionModificationRequest->protocolIEs);
+
+    // MBS Session ID - 9.3.1.206 (M)
+    ie = CALLOC(1, sizeof(NGAP_BroadcastSessionModificationRequestIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(BroadcastSessionModificationRequest->protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_MBS_SessionID;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present = NGAP_BroadcastSessionModificationRequestIEs__value_PR_MBS_SessionID;
+
+    mBS_SessionID = CALLOC(1, sizeof(*mBS_SessionID));
+
+    ogs_assert(mBS_SessionID);
+
+    ie->value.choice.MBS_SessionID = mBS_SessionID;
+
+    ogs_ngap_5gs_tmgi_to_ASN(&mbs_context->tmgi, &mBS_SessionID->tMGI);
+
+    // MBS Service Area - 9.3.1.208 (O)
+    if (has_service_area) {
+        ie = CALLOC(1, sizeof(NGAP_BroadcastSessionModificationRequestIEs_t));
+        ogs_assert(ie);
+        ASN_SEQUENCE_ADD(BroadcastSessionModificationRequest->protocolIEs, ie);
+
+        ie->id = NGAP_ProtocolIE_ID_id_MBS_ServiceArea;
+        ie->criticality = NGAP_Criticality_reject;
+        ie->value.present = NGAP_BroadcastSessionModificationRequestIEs__value_PR_MBS_ServiceArea;
+
+        mBS_ServiceArea = CALLOC(1, sizeof(*mBS_ServiceArea));
+
+        ogs_assert(mBS_ServiceArea);
+
+        ie->value.choice.MBS_ServiceArea = mBS_ServiceArea;
+
+        mbs_service_area_arm_set(mBS_ServiceArea, mbs_context);
+    }
+
+    // MBS Session Modification Request Transfer - OCTET STRING (O)
+    if (pkbuf) {
+        ie = CALLOC(1, sizeof(NGAP_BroadcastSessionModificationRequestIEs_t));
+        ogs_assert(ie);
+        ASN_SEQUENCE_ADD(BroadcastSessionModificationRequest->protocolIEs, ie);
+
+        ie->id = NGAP_ProtocolIE_ID_id_MBSSessionModificationRequestTransfer;
+        ie->criticality = NGAP_Criticality_reject;
+        ie->value.present =
+            NGAP_BroadcastSessionModificationRequestIEs__value_PR_OCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer_;
+
+        oCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer = &ie->value.choice.OCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer_;
+        oCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer->buf = CALLOC(pkbuf->len, sizeof(uint8_t));
+        oCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer->size = pkbuf->len;
+
+        memcpy(oCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer->buf, pkbuf->data, pkbuf->len);
+    }
+
+    return ogs_ngap_encode(&pdu);
+}
+
+/*
+ * Namf_MBSCommunication_N2MessageTransfer relays (TS 29.518 cl.5.7.2.2, ngapIeType MBS_SES_ACT_REQ): the
+ * caller (MB-SMF) has already ASN.1-encoded MulticastSessionActivationRequestTransfer's own content into
+ * \p pkbuf (an opaque octet string to this function); this only wraps it into a complete top-level NGAP
+ * PDU with the MBS Session ID, mirroring ngap_build_broadcast_session_modification_request()'s own
+ * OCTET-STRING-embedding pattern. TS 38.413's own IE list (MulticastSessionActivationRequestIEs):
+ * MBS-SessionID (M), MulticastSessionActivationRequestTransfer (M).
+ */
+ogs_pkbuf_t *ngap_build_multicast_session_activation_request(
+        ogs_tmgi_t *tmgi, ogs_pkbuf_t *pkbuf)
+{
+    NGAP_NGAP_PDU_t pdu;
+    NGAP_InitiatingMessage_t *initiatingMessage = NULL;
+    NGAP_MulticastSessionActivationRequest_t *MulticastSessionActivationRequest = NULL;
+
+    NGAP_MulticastSessionActivationRequestIEs_t *ie = NULL;
+
+    NGAP_MBS_SessionID_t *mBS_SessionID = NULL;
+    OCTET_STRING_t *oCTET_STRING_CONTAINING_MulticastSessionActivationRequestTransfer = NULL;
+
+    ogs_assert(tmgi);
+    ogs_assert(pkbuf);
+
+    ogs_debug("MULTICAST SESSION ACTIVATION REQUEST");
+
+    memset(&pdu, 0, sizeof(NGAP_NGAP_PDU_t));
+    pdu.present = NGAP_NGAP_PDU_PR_initiatingMessage;
+    pdu.choice.initiatingMessage = CALLOC(1, sizeof(NGAP_InitiatingMessage_t));
+
+    initiatingMessage = pdu.choice.initiatingMessage;
+    initiatingMessage->procedureCode = NGAP_ProcedureCode_id_MulticastSessionActivation;
+    initiatingMessage->criticality = NGAP_Criticality_reject;
+    initiatingMessage->value.present =
+        NGAP_InitiatingMessage__value_PR_MulticastSessionActivationRequest;
+
+    MulticastSessionActivationRequest = CALLOC(1, sizeof(*MulticastSessionActivationRequest));
+
+    ogs_assert(MulticastSessionActivationRequest);
+
+    initiatingMessage->value.choice.MulticastSessionActivationRequest = MulticastSessionActivationRequest;
+
+    MulticastSessionActivationRequest->protocolIEs =
+
+        ogs_asn_calloc_protocol_ies(&asn_DEF_NGAP_MulticastSessionActivationRequest);
+
+    ogs_assert(MulticastSessionActivationRequest->protocolIEs);
+
+    // MBS Session ID (M)
+    ie = CALLOC(1, sizeof(NGAP_MulticastSessionActivationRequestIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(MulticastSessionActivationRequest->protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_MBS_SessionID;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present = NGAP_MulticastSessionActivationRequestIEs__value_PR_MBS_SessionID;
+
+    mBS_SessionID = CALLOC(1, sizeof(*mBS_SessionID));
+
+    ogs_assert(mBS_SessionID);
+
+    ie->value.choice.MBS_SessionID = mBS_SessionID;
+    ogs_ngap_5gs_tmgi_to_ASN(tmgi, &mBS_SessionID->tMGI);
+
+    // Multicast Session Activation Request Transfer (M)
+    ie = CALLOC(1, sizeof(NGAP_MulticastSessionActivationRequestIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(MulticastSessionActivationRequest->protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_MulticastSessionActivationRequestTransfer;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present =
+        NGAP_MulticastSessionActivationRequestIEs__value_PR_OCTET_STRING_CONTAINING_MulticastSessionActivationRequestTransfer_;
+
+    oCTET_STRING_CONTAINING_MulticastSessionActivationRequestTransfer = &ie->value.choice.OCTET_STRING_CONTAINING_MulticastSessionActivationRequestTransfer_;
+    oCTET_STRING_CONTAINING_MulticastSessionActivationRequestTransfer->buf =
+        CALLOC(pkbuf->len, sizeof(uint8_t));
+    oCTET_STRING_CONTAINING_MulticastSessionActivationRequestTransfer->size = pkbuf->len;
+    memcpy(oCTET_STRING_CONTAINING_MulticastSessionActivationRequestTransfer->buf,
+            pkbuf->data, pkbuf->len);
+
+    return ogs_ngap_encode(&pdu);
+}
+
+/*
+ * Namf_MBSCommunication_N2MessageTransfer relays (TS 29.518 cl.5.7.2.2, ngapIeType MBS_SES_DEACT_REQ).
+ * TS 38.413's own IE list (MulticastSessionDeactivationRequestIEs): MBS-SessionID (M),
+ * MulticastSessionDeactivationRequestTransfer (M). Same shape and reasoning as the Activation builder
+ * above.
+ */
+ogs_pkbuf_t *ngap_build_multicast_session_deactivation_request(
+        ogs_tmgi_t *tmgi, ogs_pkbuf_t *pkbuf)
+{
+    NGAP_NGAP_PDU_t pdu;
+    NGAP_InitiatingMessage_t *initiatingMessage = NULL;
+    NGAP_MulticastSessionDeactivationRequest_t *MulticastSessionDeactivationRequest = NULL;
+
+    NGAP_MulticastSessionDeactivationRequestIEs_t *ie = NULL;
+
+    NGAP_MBS_SessionID_t *mBS_SessionID = NULL;
+    OCTET_STRING_t *oCTET_STRING_CONTAINING_MulticastSessionDeactivationRequestTransfer = NULL;
+
+    ogs_assert(tmgi);
+    ogs_assert(pkbuf);
+
+    ogs_debug("MULTICAST SESSION DEACTIVATION REQUEST");
+
+    memset(&pdu, 0, sizeof(NGAP_NGAP_PDU_t));
+    pdu.present = NGAP_NGAP_PDU_PR_initiatingMessage;
+    pdu.choice.initiatingMessage = CALLOC(1, sizeof(NGAP_InitiatingMessage_t));
+
+    initiatingMessage = pdu.choice.initiatingMessage;
+    initiatingMessage->procedureCode = NGAP_ProcedureCode_id_MulticastSessionDeactivation;
+    initiatingMessage->criticality = NGAP_Criticality_reject;
+    initiatingMessage->value.present =
+        NGAP_InitiatingMessage__value_PR_MulticastSessionDeactivationRequest;
+
+    MulticastSessionDeactivationRequest = CALLOC(1, sizeof(*MulticastSessionDeactivationRequest));
+
+    ogs_assert(MulticastSessionDeactivationRequest);
+
+    initiatingMessage->value.choice.MulticastSessionDeactivationRequest = MulticastSessionDeactivationRequest;
+
+    MulticastSessionDeactivationRequest->protocolIEs =
+
+        ogs_asn_calloc_protocol_ies(&asn_DEF_NGAP_MulticastSessionDeactivationRequest);
+
+    ogs_assert(MulticastSessionDeactivationRequest->protocolIEs);
+
+    // MBS Session ID (M)
+    ie = CALLOC(1, sizeof(NGAP_MulticastSessionDeactivationRequestIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(MulticastSessionDeactivationRequest->protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_MBS_SessionID;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present = NGAP_MulticastSessionDeactivationRequestIEs__value_PR_MBS_SessionID;
+
+    mBS_SessionID = CALLOC(1, sizeof(*mBS_SessionID));
+
+    ogs_assert(mBS_SessionID);
+
+    ie->value.choice.MBS_SessionID = mBS_SessionID;
+    ogs_ngap_5gs_tmgi_to_ASN(tmgi, &mBS_SessionID->tMGI);
+
+    // Multicast Session Deactivation Request Transfer (M)
+    ie = CALLOC(1, sizeof(NGAP_MulticastSessionDeactivationRequestIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(MulticastSessionDeactivationRequest->protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_MulticastSessionDeactivationRequestTransfer;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present =
+        NGAP_MulticastSessionDeactivationRequestIEs__value_PR_OCTET_STRING_CONTAINING_MulticastSessionDeactivationRequestTransfer_;
+
+    oCTET_STRING_CONTAINING_MulticastSessionDeactivationRequestTransfer = &ie->value.choice.OCTET_STRING_CONTAINING_MulticastSessionDeactivationRequestTransfer_;
+    oCTET_STRING_CONTAINING_MulticastSessionDeactivationRequestTransfer->buf =
+        CALLOC(pkbuf->len, sizeof(uint8_t));
+    oCTET_STRING_CONTAINING_MulticastSessionDeactivationRequestTransfer->size = pkbuf->len;
+    memcpy(oCTET_STRING_CONTAINING_MulticastSessionDeactivationRequestTransfer->buf,
+            pkbuf->data, pkbuf->len);
+
+    return ogs_ngap_encode(&pdu);
+}
+
+/*
+ * Namf_MBSCommunication_N2MessageTransfer relays (TS 29.518 cl.5.7.2.2, ngapIeType MBS_SES_UPD_REQ).
+ * TS 38.413's own IE list (MulticastSessionUpdateRequestIEs): MBS-SessionID (M), MBS-AreaSessionID (O,
+ * location-dependent multicast sessions only), MulticastSessionUpdateRequestTransfer (M).
+ */
+ogs_pkbuf_t *ngap_build_multicast_session_update_request(
+        ogs_tmgi_t *tmgi, bool has_area_session_id, uint16_t area_session_id, ogs_pkbuf_t *pkbuf)
+{
+    NGAP_NGAP_PDU_t pdu;
+    NGAP_InitiatingMessage_t *initiatingMessage = NULL;
+    NGAP_MulticastSessionUpdateRequest_t *MulticastSessionUpdateRequest = NULL;
+
+    NGAP_MulticastSessionUpdateRequestIEs_t *ie = NULL;
+
+    NGAP_MBS_SessionID_t *mBS_SessionID = NULL;
+    NGAP_MBS_AreaSessionID_t *mBS_AreaSessionID = NULL;
+    OCTET_STRING_t *oCTET_STRING_CONTAINING_MulticastSessionUpdateRequestTransfer = NULL;
+
+    ogs_assert(tmgi);
+    ogs_assert(pkbuf);
+
+    ogs_debug("MULTICAST SESSION UPDATE REQUEST");
+
+    memset(&pdu, 0, sizeof(NGAP_NGAP_PDU_t));
+    pdu.present = NGAP_NGAP_PDU_PR_initiatingMessage;
+    pdu.choice.initiatingMessage = CALLOC(1, sizeof(NGAP_InitiatingMessage_t));
+
+    initiatingMessage = pdu.choice.initiatingMessage;
+    initiatingMessage->procedureCode = NGAP_ProcedureCode_id_MulticastSessionUpdate;
+    initiatingMessage->criticality = NGAP_Criticality_reject;
+    initiatingMessage->value.present =
+        NGAP_InitiatingMessage__value_PR_MulticastSessionUpdateRequest;
+
+    MulticastSessionUpdateRequest = CALLOC(1, sizeof(*MulticastSessionUpdateRequest));
+
+    ogs_assert(MulticastSessionUpdateRequest);
+
+    initiatingMessage->value.choice.MulticastSessionUpdateRequest = MulticastSessionUpdateRequest;
+
+    MulticastSessionUpdateRequest->protocolIEs =
+
+        ogs_asn_calloc_protocol_ies(&asn_DEF_NGAP_MulticastSessionUpdateRequest);
+
+    ogs_assert(MulticastSessionUpdateRequest->protocolIEs);
+
+    // MBS Session ID (M)
+    ie = CALLOC(1, sizeof(NGAP_MulticastSessionUpdateRequestIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(MulticastSessionUpdateRequest->protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_MBS_SessionID;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present = NGAP_MulticastSessionUpdateRequestIEs__value_PR_MBS_SessionID;
+
+    mBS_SessionID = CALLOC(1, sizeof(*mBS_SessionID));
+
+    ogs_assert(mBS_SessionID);
+
+    ie->value.choice.MBS_SessionID = mBS_SessionID;
+    ogs_ngap_5gs_tmgi_to_ASN(tmgi, &mBS_SessionID->tMGI);
+
+    // MBS Area Session ID (O) -- location-dependent multicast sessions only
+    if (has_area_session_id) {
+        ie = CALLOC(1, sizeof(NGAP_MulticastSessionUpdateRequestIEs_t));
+        ogs_assert(ie);
+        ASN_SEQUENCE_ADD(MulticastSessionUpdateRequest->protocolIEs, ie);
+
+        ie->id = NGAP_ProtocolIE_ID_id_MBS_AreaSessionID;
+        ie->criticality = NGAP_Criticality_reject;
+        ie->value.present = NGAP_MulticastSessionUpdateRequestIEs__value_PR_MBS_AreaSessionID;
+
+        mBS_AreaSessionID = CALLOC(1, sizeof(*mBS_AreaSessionID));
+
+        ogs_assert(mBS_AreaSessionID);
+
+        ie->value.choice.MBS_AreaSessionID = mBS_AreaSessionID;
+        *mBS_AreaSessionID = area_session_id;
+    }
+
+    // Multicast Session Update Request Transfer (M)
+    ie = CALLOC(1, sizeof(NGAP_MulticastSessionUpdateRequestIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(MulticastSessionUpdateRequest->protocolIEs, ie);
+
+    ie->id = NGAP_ProtocolIE_ID_id_MulticastSessionUpdateRequestTransfer;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present =
+        NGAP_MulticastSessionUpdateRequestIEs__value_PR_OCTET_STRING_CONTAINING_MulticastSessionUpdateRequestTransfer_;
+
+    oCTET_STRING_CONTAINING_MulticastSessionUpdateRequestTransfer = &ie->value.choice.OCTET_STRING_CONTAINING_MulticastSessionUpdateRequestTransfer_;
+    oCTET_STRING_CONTAINING_MulticastSessionUpdateRequestTransfer->buf =
+        CALLOC(pkbuf->len, sizeof(uint8_t));
+    oCTET_STRING_CONTAINING_MulticastSessionUpdateRequestTransfer->size = pkbuf->len;
+    memcpy(oCTET_STRING_CONTAINING_MulticastSessionUpdateRequestTransfer->buf,
+            pkbuf->data, pkbuf->len);
+
+    return ogs_ngap_encode(&pdu);
+}
+
+/*
+ * Broadcast Transport Failure Transfer, TS 38.413 V18.8.0 clause 9.3.5.17: "MBS Session ID | M |  | 9.3.1.206",
+ * "Cause | M |  | 9.3.1.2". The MB-SMF builds it when it refuses the transport; the AMF builds it when the AMF is the one
+ * that cannot set up the shared NG-U transport (clause 8.17.5.3: "In case the shared NG-U transport cannot be setup
+ * successfully, the AMF shall respond with the BROADCAST SESSION TRANSPORT FAILURE message to the NG-RAN node with an
+ * appropriate cause value.").
+ */
+ogs_pkbuf_t *ngap_build_broadcast_transport_failure_transfer(const ogs_tmgi_t *tmgi, NGAP_Cause_PR group, long cause)
+{
+    NGAP_BroadcastTransportFailureTransfer_t message;
+
+    ogs_assert(tmgi);
+
+    memset(&message, 0, sizeof(message));
+    message.mBS_SessionID = CALLOC(1, sizeof(*message.mBS_SessionID));
+    ogs_assert(message.mBS_SessionID);
+    ogs_ngap_5gs_tmgi_to_ASN((ogs_tmgi_t *)tmgi, &message.mBS_SessionID->tMGI);
+    message.cause = CALLOC(1, sizeof(*message.cause));
+    ogs_assert(message.cause);
+    message.cause->present = group;
+    switch (group) {
+    case NGAP_Cause_PR_radioNetwork: message.cause->choice.radioNetwork = cause; break;
+    case NGAP_Cause_PR_transport: message.cause->choice.transport = cause; break;
+    case NGAP_Cause_PR_nas: message.cause->choice.nas = cause; break;
+    case NGAP_Cause_PR_protocol: message.cause->choice.protocol = cause; break;
+    default:
+        message.cause->present = NGAP_Cause_PR_misc;
+        message.cause->choice.misc = cause;
+        break;
+    }
+
+    return ogs_asn_encode(&asn_DEF_NGAP_BroadcastTransportFailureTransfer, &message);
+}
+
+/*
+ * BROADCAST SESSION TRANSPORT RESPONSE, TS 38.413 V18.8.0 clause 9.2.16.11: "MBS Session ID | M |  | 9.3.1.206 |  | YES
+ * | reject", "Broadcast Transport Response Transfer | M |  | OCTET STRING | Containing the Broadcast Transport Response
+ * Transfer IE specified in subclause 9.3.5.16 | YES | reject", "Criticality Diagnostics | O" (not sent). Successful
+ * outcome of the procedure of clause 8.17.5.
+ */
+ogs_pkbuf_t *ngap_build_broadcast_session_transport_response(
+        const ogs_tmgi_t *tmgi, const uint8_t *transfer, size_t transfer_len)
+{
+    NGAP_NGAP_PDU_t pdu;
+    NGAP_SuccessfulOutcome_t *successfulOutcome = NULL;
+    NGAP_BroadcastSessionTransportResponse_t *BroadcastSessionTransportResponse = NULL;
+    NGAP_BroadcastSessionTransportResponseIEs_t *ie = NULL;
+
+    ogs_assert(tmgi);
+    ogs_assert(transfer);
+
+    ogs_debug("BROADCAST SESSION TRANSPORT RESPONSE");
+
+    memset(&pdu, 0, sizeof(NGAP_NGAP_PDU_t));
+    pdu.present = NGAP_NGAP_PDU_PR_successfulOutcome;
+    pdu.choice.successfulOutcome = CALLOC(1, sizeof(NGAP_SuccessfulOutcome_t));
+    ogs_assert(pdu.choice.successfulOutcome);
+
+    successfulOutcome = pdu.choice.successfulOutcome;
+    successfulOutcome->procedureCode = NGAP_ProcedureCode_id_BroadcastSessionTransport;
+    successfulOutcome->criticality = NGAP_Criticality_reject;
+    successfulOutcome->value.present = NGAP_SuccessfulOutcome__value_PR_BroadcastSessionTransportResponse;
+
+    BroadcastSessionTransportResponse = CALLOC(1, sizeof(*BroadcastSessionTransportResponse));
+
+    ogs_assert(BroadcastSessionTransportResponse);
+
+    successfulOutcome->value.choice.BroadcastSessionTransportResponse = BroadcastSessionTransportResponse;
+
+    BroadcastSessionTransportResponse->protocolIEs =
+
+        ogs_asn_calloc_protocol_ies(&asn_DEF_NGAP_BroadcastSessionTransportResponse);
+
+    ogs_assert(BroadcastSessionTransportResponse->protocolIEs);
+
+    ie = CALLOC(1, sizeof(NGAP_BroadcastSessionTransportResponseIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(BroadcastSessionTransportResponse->protocolIEs, ie);
+    ie->id = NGAP_ProtocolIE_ID_id_MBS_SessionID;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present = NGAP_BroadcastSessionTransportResponseIEs__value_PR_MBS_SessionID;
+    ie->value.choice.MBS_SessionID = CALLOC(1, sizeof(*ie->value.choice.MBS_SessionID));
+    ogs_assert(ie->value.choice.MBS_SessionID);
+    ogs_ngap_5gs_tmgi_to_ASN((ogs_tmgi_t *)tmgi, &ie->value.choice.MBS_SessionID->tMGI);
+
+    ie = CALLOC(1, sizeof(NGAP_BroadcastSessionTransportResponseIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(BroadcastSessionTransportResponse->protocolIEs, ie);
+    ie->id = NGAP_ProtocolIE_ID_id_BroadcastTransportResponseTransfer;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present =
+        NGAP_BroadcastSessionTransportResponseIEs__value_PR_OCTET_STRING_CONTAINING_BroadcastTransportResponseTransfer_;
+    ogs_asn_buffer_to_OCTET_STRING((void *)transfer, transfer_len,
+            &ie->value.choice.OCTET_STRING_CONTAINING_BroadcastTransportResponseTransfer_);
+
+    return ogs_ngap_encode(&pdu);
+}
+
+/*
+ * BROADCAST SESSION TRANSPORT FAILURE, TS 38.413 V18.8.0 clause 9.2.16.12: "MBS Session ID | M |  | 9.3.1.206 |  | YES
+ * | reject", "Broadcast Transport Failure Transfer | M |  | OCTET STRING | Containing the Broadcast Transport Failure
+ * Transfer IE specified in subclause 9.3.5.17 | YES | ignore", "Cause | M |  | 9.3.1.2 |  | YES | ignore",
+ * "Criticality Diagnostics | O" (not sent). Unsuccessful outcome of the procedure of clause 8.17.5.
+ */
+ogs_pkbuf_t *ngap_build_broadcast_session_transport_failure(
+        const ogs_tmgi_t *tmgi, const uint8_t *transfer, size_t transfer_len, NGAP_Cause_PR group, long cause)
+{
+    NGAP_NGAP_PDU_t pdu;
+    NGAP_UnsuccessfulOutcome_t *unsuccessfulOutcome = NULL;
+    NGAP_BroadcastSessionTransportFailure_t *BroadcastSessionTransportFailure = NULL;
+    NGAP_BroadcastSessionTransportFailureIEs_t *ie = NULL;
+    NGAP_Cause_t *Cause = NULL;
+
+    ogs_assert(tmgi);
+    ogs_assert(transfer);
+
+    ogs_debug("BROADCAST SESSION TRANSPORT FAILURE");
+
+    memset(&pdu, 0, sizeof(NGAP_NGAP_PDU_t));
+    pdu.present = NGAP_NGAP_PDU_PR_unsuccessfulOutcome;
+    pdu.choice.unsuccessfulOutcome = CALLOC(1, sizeof(NGAP_UnsuccessfulOutcome_t));
+    ogs_assert(pdu.choice.unsuccessfulOutcome);
+
+    unsuccessfulOutcome = pdu.choice.unsuccessfulOutcome;
+    unsuccessfulOutcome->procedureCode = NGAP_ProcedureCode_id_BroadcastSessionTransport;
+    unsuccessfulOutcome->criticality = NGAP_Criticality_reject;
+    unsuccessfulOutcome->value.present = NGAP_UnsuccessfulOutcome__value_PR_BroadcastSessionTransportFailure;
+
+    BroadcastSessionTransportFailure = CALLOC(1, sizeof(*BroadcastSessionTransportFailure));
+
+    ogs_assert(BroadcastSessionTransportFailure);
+
+    unsuccessfulOutcome->value.choice.BroadcastSessionTransportFailure = BroadcastSessionTransportFailure;
+
+    BroadcastSessionTransportFailure->protocolIEs =
+
+        ogs_asn_calloc_protocol_ies(&asn_DEF_NGAP_BroadcastSessionTransportFailure);
+
+    ogs_assert(BroadcastSessionTransportFailure->protocolIEs);
+
+    ie = CALLOC(1, sizeof(NGAP_BroadcastSessionTransportFailureIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(BroadcastSessionTransportFailure->protocolIEs, ie);
+    ie->id = NGAP_ProtocolIE_ID_id_MBS_SessionID;
+    ie->criticality = NGAP_Criticality_reject;
+    ie->value.present = NGAP_BroadcastSessionTransportFailureIEs__value_PR_MBS_SessionID;
+    ie->value.choice.MBS_SessionID = CALLOC(1, sizeof(*ie->value.choice.MBS_SessionID));
+    ogs_assert(ie->value.choice.MBS_SessionID);
+    ogs_ngap_5gs_tmgi_to_ASN((ogs_tmgi_t *)tmgi, &ie->value.choice.MBS_SessionID->tMGI);
+
+    ie = CALLOC(1, sizeof(NGAP_BroadcastSessionTransportFailureIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(BroadcastSessionTransportFailure->protocolIEs, ie);
+    ie->id = NGAP_ProtocolIE_ID_id_BroadcastTransportFailureTransfer;
+    ie->criticality = NGAP_Criticality_ignore;
+    ie->value.present =
+        NGAP_BroadcastSessionTransportFailureIEs__value_PR_OCTET_STRING_CONTAINING_BroadcastTransportFailureTransfer_;
+    ogs_asn_buffer_to_OCTET_STRING((void *)transfer, transfer_len,
+            &ie->value.choice.OCTET_STRING_CONTAINING_BroadcastTransportFailureTransfer_);
+
+    ie = CALLOC(1, sizeof(NGAP_BroadcastSessionTransportFailureIEs_t));
+    ogs_assert(ie);
+    ASN_SEQUENCE_ADD(BroadcastSessionTransportFailure->protocolIEs, ie);
+    ie->id = NGAP_ProtocolIE_ID_id_Cause;
+    ie->criticality = NGAP_Criticality_ignore;
+    ie->value.present = NGAP_BroadcastSessionTransportFailureIEs__value_PR_Cause;
+    Cause = CALLOC(1, sizeof(*Cause));
+    ogs_assert(Cause);
+    ie->value.choice.Cause = Cause;
+    Cause->present = group;
+    switch (group) {
+    case NGAP_Cause_PR_radioNetwork: Cause->choice.radioNetwork = cause; break;
+    case NGAP_Cause_PR_transport: Cause->choice.transport = cause; break;
+    case NGAP_Cause_PR_nas: Cause->choice.nas = cause; break;
+    case NGAP_Cause_PR_protocol: Cause->choice.protocol = cause; break;
+    default:
+        Cause->present = NGAP_Cause_PR_misc;
+        Cause->choice.misc = cause;
+        break;
+    }
+
+    return ogs_ngap_encode(&pdu);
+}
+

@@ -305,6 +305,104 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
             END
             break;
 
+        case OpenAPI_service_name_namf_mbs_bc:
+            SWITCH(sbi_message.h.resource.component[0])
+            CASE(OGS_SBI_RESOURCE_NAME_MBS_CONTEXTS)
+                SWITCH(sbi_message.h.method)
+                CASE(OGS_SBI_HTTP_METHOD_POST)
+                                        // component[1], the {mbsContextRef} path segment, decides between ContextCreate and
+                                        // Namf_MBSBroadcast_ContextUpdate (TS 29.518 cl.5.6.2.3, which targets
+                                        // /mbs-contexts/{mbsContextRef}).  Routing every POST to
+                                        // amf_namf_handle_mbs_broadcast_context_create() would reject a genuine ContextUpdate
+                                        // there for carrying the wrong body shape.
+                    if (sbi_message.h.resource.component[1]) {
+                        // TS 29.518 V18.14.0 Table 6.5.3.1-1: the only POST on an individual resource is
+                        // "/mbs-contexts/{mbsContextRef}/update", the ContextUpdate; "/mbs-contexts/{mbsContextRef}" takes
+                        // DELETE only. The status codes are not in the clause (TS 29.500 was not read): 405 for the
+                        // resource that has no POST, 404 for a path that names no resource.
+                        if (!sbi_message.h.resource.component[2]) {
+                            ogs_error("MBS Broadcast: POST on /mbs-contexts/%s, which has no POST",
+                                    sbi_message.h.resource.component[1]);
+                            ogs_assert(true ==
+                                ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_METHOD_NOT_ALLOWED,
+                                    &sbi_message, "Method Not Allowed",
+                                    "POST is only defined on /mbs-contexts and /mbs-contexts/{mbsContextRef}/update", NULL));
+                        } else if (strcmp(sbi_message.h.resource.component[2], OGS_SBI_RESOURCE_NAME_UPDATE) != 0 ||
+                                sbi_message.h.resource.component[3]) {
+                            ogs_error("MBS Broadcast: no resource /mbs-contexts/%s/%s",
+                                    sbi_message.h.resource.component[1], sbi_message.h.resource.component[2]);
+                            ogs_assert(true ==
+                                ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_NOT_FOUND,
+                                    &sbi_message, "Not Found", sbi_message.h.resource.component[2], NULL));
+                        } else {
+                            amf_namf_handle_mbs_broadcast_context_update(
+                                    stream, &sbi_message);
+                        }
+                    } else {
+                        amf_namf_handle_mbs_broadcast_context_create(
+                                stream, &sbi_message);
+                    }
+                    break;
+
+                                // DELETE is dispatched here for Namf_MBSBroadcast ContextDelete
+                                // (DELETE /namf-mbs-bc/v1/mbs-contexts/{mbsContextRef}, TS 29.518 cl.5.6.2.4,
+                                // ContextRelease; cl.5.6.2.3 is ContextUpdate, handled above).  Without this branch it
+                                // falls to the DEFAULT case below and is answered 403 Forbidden, so the NGAP
+                                // BroadcastSessionRelease it triggers is never sent.
+                CASE(OGS_SBI_HTTP_METHOD_DELETE)
+                    amf_namf_handle_mbs_broadcast_context_delete(
+                            stream, &sbi_message);
+                    break;
+
+                DEFAULT
+                    ogs_error("Invalid HTTP method [%s]", sbi_message.h.method);
+                    // NOTE (borieher): Should send HTTP 405 Method Not Allowed?
+                    ogs_assert(true ==
+                        ogs_sbi_server_send_error(stream,
+                            OGS_SBI_HTTP_STATUS_FORBIDDEN, &sbi_message,
+                            "Invalid HTTP method", sbi_message.h.method, NULL));
+                END
+                break;
+
+            DEFAULT
+                ogs_error("Invalid resource name [%s]",
+                        sbi_message.h.resource.component[0]);
+                ogs_assert(true ==
+                    ogs_sbi_server_send_error(stream,
+                        OGS_SBI_HTTP_STATUS_BAD_REQUEST, &sbi_message,
+                        "Invalid resource name",
+                        sbi_message.h.resource.component[0], NULL));
+            END
+            break;
+
+        case OpenAPI_service_name_namf_mbs_comm:
+            SWITCH(sbi_message.h.resource.component[0])
+            CASE(OGS_SBI_RESOURCE_NAME_N2_MESSAGES)
+                SWITCH(sbi_message.h.method)
+                CASE(OGS_SBI_HTTP_METHOD_POST)
+                    amf_namf_mbs_comm_handle_n2_message_transfer(stream, &sbi_message);
+                    break;
+
+                DEFAULT
+                    ogs_error("Invalid HTTP method [%s]", sbi_message.h.method);
+                    ogs_assert(true ==
+                        ogs_sbi_server_send_error(stream,
+                            OGS_SBI_HTTP_STATUS_FORBIDDEN, &sbi_message,
+                            "Invalid HTTP method", sbi_message.h.method, NULL));
+                END
+                break;
+
+            DEFAULT
+                ogs_error("Invalid resource name [%s]",
+                        sbi_message.h.resource.component[0]);
+                ogs_assert(true ==
+                    ogs_sbi_server_send_error(stream,
+                        OGS_SBI_HTTP_STATUS_BAD_REQUEST, &sbi_message,
+                        "Invalid resource name",
+                        sbi_message.h.resource.component[0], NULL));
+            END
+            break;
+
         default:
             ogs_error("Invalid API name [%s]", sbi_message.h.service.name);
             ogs_assert(true ==
@@ -878,6 +976,7 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
             ogs_info("gNB-N2[%s] connection refused!!!", OGS_ADDR(addr, buf));
             amf_sbi_send_deactivate_all_ue_in_gnb(
                     gnb, AMF_REMOVE_S1_CONTEXT_BY_LO_CONNREFUSED);
+            amf_namf_handle_mbs_broadcast_gnb_lost(gnb);
             amf_gnb_remove(gnb);
         } else {
             ogs_warn("gNB-N2[%s] connection refused, Already Removed!",
@@ -1078,6 +1177,13 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
         ogs_assert(OGS_FSM_STATE(&amf_ue->sm));
 
         ogs_fsm_dispatch(&amf_ue->sm, e);
+        break;
+
+    case AMF_EVENT_MBS_TIMER:
+        if (e->h.timer_id == AMF_TIMER_MBS_REESTABLISH)
+            amf_namf_handle_mbs_broadcast_reestablish_timeout(e->mbs_context_index);
+        else
+            amf_namf_handle_mbs_broadcast_response_timeout(e->mbs_context_index);
         break;
 
     default:

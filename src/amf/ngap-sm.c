@@ -127,6 +127,12 @@ void ngap_state_operational(ogs_fsm_t *s, amf_event_t *e)
             case NGAP_ProcedureCode_id_ErrorIndication:
                 ngap_handle_error_indication(gnb, pdu);
                 break;
+            case NGAP_ProcedureCode_id_BroadcastSessionReleaseRequired:
+                ngap_handle_broadcast_session_release_required(gnb, pdu);
+                break;
+            case NGAP_ProcedureCode_id_BroadcastSessionTransport:
+                ngap_handle_broadcast_session_transport_request(gnb, pdu);
+                break;
             default:
                 ogs_error("Not implemented(choice:%d, proc:%d)",
                         pdu->present, (int)initiatingMessage->procedureCode);
@@ -159,6 +165,15 @@ void ngap_state_operational(ogs_fsm_t *s, amf_event_t *e)
             case NGAP_ProcedureCode_id_HandoverResourceAllocation:
                 ngap_handle_handover_request_ack(gnb, pdu);
                 break;
+            case NGAP_ProcedureCode_id_BroadcastSessionSetup:
+                ngap_handle_broadcast_session_setup_response(gnb, pdu);
+                break;
+            case NGAP_ProcedureCode_id_BroadcastSessionModification:
+                ngap_handle_broadcast_session_modification_response(gnb, pdu);
+                break;
+            case NGAP_ProcedureCode_id_BroadcastSessionRelease:
+                ngap_handle_broadcast_session_release_response(gnb, pdu);
+                break;
             default:
                 ogs_error("Not implemented(choice:%d, proc:%d)",
                         pdu->present, (int)successfulOutcome->procedureCode);
@@ -178,6 +193,12 @@ void ngap_state_operational(ogs_fsm_t *s, amf_event_t *e)
                 break;
             case NGAP_ProcedureCode_id_HandoverResourceAllocation :
                 ngap_handle_handover_failure(gnb, pdu);
+                break;
+            case NGAP_ProcedureCode_id_BroadcastSessionModification:
+                ngap_handle_broadcast_session_modification_failure(gnb, pdu);
+                break;
+            case NGAP_ProcedureCode_id_BroadcastSessionSetup:
+                ngap_handle_broadcast_session_setup_failure(gnb, pdu);
                 break;
             default:
                 ogs_error("Not implemented(choice:%d, proc:%d)",

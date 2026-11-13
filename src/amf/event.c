@@ -70,6 +70,8 @@ const char *amf_event_get_name(amf_event_t *e)
         return "AMF_EVENT_5GSM_MESSAGE";
     case AMF_EVENT_5GSM_TIMER:
         return "AMF_EVENT_5GSM_TIMER";
+    case AMF_EVENT_MBS_TIMER:
+        return "AMF_EVENT_MBS_TIMER";
 
     default:
         break;
