@@ -170,6 +170,14 @@ void ogs_sbi_decision_add_us_re_trigger(OpenAPI_sm_policy_decision_t *decision);
 void ogs_sbi_decision_add_qos_data(OpenAPI_list_t *QosDecisionList, ogs_pcc_rule_t *pcc_rule);
 void ogs_sbi_free_qos_data(OpenAPI_qos_data_t *QosData);
 
+bool ogs_sbi_parse_tmgi(ogs_tmgi_t *tmgi, OpenAPI_tmgi_t *Tmgi);
+OpenAPI_tmgi_t *ogs_sbi_build_tmgi(ogs_tmgi_t *tmgi);
+
+bool ogs_sbi_parse_ssm(ogs_ssm_t *ssm, OpenAPI_ssm_t *Ssm);
+OpenAPI_ssm_t *ogs_sbi_build_ssm(ogs_ssm_t *ssm);
+
+OpenAPI_mbs_service_area_t *ogs_sbi_build_mbs_service_area(ogs_mbs_service_area_t *area);
+
 #ifdef __cplusplus
 }
 #endif

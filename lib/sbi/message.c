@@ -68,6 +68,14 @@ void ogs_sbi_message_free(ogs_sbi_message_t *message)
         ogs_free(message->param.fields[i]);
     for (i = 0; i < message->param.num_of_dataset_names; i++)
         ogs_free(message->param.dataset_names[i]);
+    /* URL Query Parameter */
+    if (message->param.tmgi_list) {
+        OpenAPI_lnode_t *node = NULL;
+        OpenAPI_list_for_each(message->param.tmgi_list, node) {
+            OpenAPI_tmgi_free(node->data);
+        }
+        OpenAPI_list_free(message->param.tmgi_list);
+    }
 
     /* JSON Data */
     if (message->NFProfile)
@@ -245,6 +253,54 @@ void ogs_sbi_message_free(ogs_sbi_message_t *message)
 
         ogs_free(message->links);
     }
+    if (message->TmgiAllocate)
+        OpenAPI_tmgi_allocate_free(message->TmgiAllocate);
+    if (message->TmgiAllocated)
+        OpenAPI_tmgi_allocated_free(message->TmgiAllocated);
+    if (message->CreateReqData)
+        OpenAPI_create_req_data_free(message->CreateReqData);
+    if (message->CreateRspData)
+        OpenAPI_create_rsp_data_free(message->CreateRspData);
+    if (message->UpdateRspData)
+        OpenAPI_update_rsp_data_free(message->UpdateRspData);
+    if (message->StatusSubscribeReqData)
+        OpenAPI_status_subscribe_req_data_free(message->StatusSubscribeReqData);
+    if (message->StatusSubscribeRspData)
+        OpenAPI_status_subscribe_rsp_data_free(message->StatusSubscribeRspData);
+    if (message->MbsSessionSubscription)
+        OpenAPI_mbs_session_subscription_free(message->MbsSessionSubscription);
+    if (message->StatusNotifyReqData)
+        OpenAPI_status_notify_req_data_free(message->StatusNotifyReqData);
+    if (message->ContextCreateReqData)
+        OpenAPI_context_create_req_data_free(message->ContextCreateReqData);
+        // ContextCreateRspData is parsed on every 201-Created Namf_MBSBroadcast ContextCreate response and needs
+        // freeing here like its siblings above; otherwise it, and its nested mbs_session_id and
+        // n2_mbs_sm_info_list allocations, leak once per successful MBS broadcast session setup.
+    if (message->ContextCreateRspData)
+        OpenAPI_context_create_rsp_data_free(message->ContextCreateRspData);
+    if (message->ContextStatusNotification)
+        OpenAPI_context_status_notification_free(message->ContextStatusNotification);
+    if (message->ContextStatusNotificationResponse)
+        OpenAPI_context_status_notification_response_free(message->ContextStatusNotificationResponse);
+    if (message->ContextUpdateReqData)
+        OpenAPI_context_update_req_data_free(message->ContextUpdateReqData);
+    if (message->ContextUpdateRspData)
+        OpenAPI_context_update_rsp_data_free(message->ContextUpdateRspData);
+    if (message->MbsN2MessageTransferReqData)
+        OpenAPI_mbs_n2_message_transfer_req_data_free(
+                message->MbsN2MessageTransferReqData);
+    if (message->MbsN2MessageTransferRspData)
+        OpenAPI_mbs_n2_message_transfer_rsp_data_free(
+                message->MbsN2MessageTransferRspData);
+    if (message->MbsPolicyCtxtData)
+        OpenAPI_mbs_policy_ctxt_data_free(message->MbsPolicyCtxtData);
+    if (message->MbsPolicyCtxtDataUpdate)
+        OpenAPI_mbs_policy_ctxt_data_update_free(
+                message->MbsPolicyCtxtDataUpdate);
+    if (message->MbsPolicyData)
+        OpenAPI_mbs_policy_data_free(message->MbsPolicyData);
+    if (message->AcceptableMbsServInfo)
+        cJSON_Delete(message->AcceptableMbsServInfo);
 
     /* HTTP Part */
     for (i = 0; i < message->num_of_part; i++) {
@@ -866,6 +922,24 @@ ogs_sbi_request_t *ogs_sbi_build_request(ogs_sbi_message_t *message)
         }
     }
 
+    if (message->param.tmgi_list) {
+        cJSON *tmgi_list = cJSON_CreateArray();
+        OpenAPI_lnode_t *node;
+
+        OpenAPI_list_for_each(message->param.tmgi_list, node) {
+            OpenAPI_tmgi_t *tmgi = (OpenAPI_tmgi_t*)node->data;
+            if (tmgi) cJSON_AddItemToArray(tmgi_list, OpenAPI_tmgi_convertToJSON(tmgi));
+        }
+
+        if (cJSON_GetArraySize(tmgi_list) > 0) {
+            char *v = cJSON_PrintUnformatted(tmgi_list);
+            ogs_sbi_header_set(request->http.params, OGS_SBI_PARAM_TMGI_LIST, v);
+            ogs_free(v);
+        }
+
+        cJSON_Delete(tmgi_list);
+    }
+
     if (build_content(&request->http, message) == false) {
         ogs_error("build_content() failed");
         ogs_sbi_request_free(request);
@@ -1313,6 +1387,38 @@ int ogs_sbi_parse_request(
                         OpenAPI_tai_free(tai);
                     }
                     cJSON_Delete(item);
+                }
+            }
+        } else if (!strcmp(ogs_hash_this_key(hi), OGS_SBI_PARAM_TMGI_LIST)) {
+            char *v = NULL;
+            char *value_decoded = NULL;
+            char *saveptr = NULL;
+
+            cJSON *item = NULL;
+            cJSON *tmgi = NULL;
+
+            v = ogs_hash_this_val(hi);
+            if (v) {
+                value_decoded = ogs_sbi_parse_uri(v, "=", &saveptr);
+                if (value_decoded) {
+                    item = cJSON_Parse(value_decoded);
+                    if (item) {
+                        if (cJSON_IsArray(item)) {
+                            message->param.tmgi_list = OpenAPI_list_create();
+                            cJSON_ArrayForEach(tmgi, item) {
+                                if (!cJSON_IsObject(tmgi)) {
+                                    ogs_error("tmgi-list param: Cannot decode TMGI JSON object");
+                                } else {
+                                    OpenAPI_tmgi_t *tmgi_list_item = OpenAPI_tmgi_parseFromJSON(tmgi);
+                                    OpenAPI_list_add(message->param.tmgi_list, tmgi_list_item);
+                                }
+                            }
+                        }
+                        cJSON_Delete(item);
+                    } else {
+                        ogs_error("tmgi-list param: Cannot decode TMGI JSON list");
+                    }
+                    ogs_free(value_decoded);
                 }
             }
         }
@@ -1796,6 +1902,82 @@ static char *build_json(ogs_sbi_message_t *message)
         item = OpenAPI_ue_reg_status_update_rsp_data_convertToJSON(
                 message->UeRegStatusUpdateRspData);
         ogs_assert(item);
+    } else if (message->TmgiAllocate) {
+        item = OpenAPI_tmgi_allocate_convertToJSON(
+                message->TmgiAllocate);
+        ogs_assert(item);
+    } else if (message->TmgiAllocated) {
+        item = OpenAPI_tmgi_allocated_convertToJSON(
+                message->TmgiAllocated);
+        ogs_assert(item);
+    } else if (message->CreateRspData) {
+        item = OpenAPI_create_rsp_data_convertToJSON(
+                message->CreateRspData);
+        ogs_assert(item);
+    } else if (message->UpdateRspData) {
+        item = OpenAPI_update_rsp_data_convertToJSON(
+                message->UpdateRspData);
+        ogs_assert(item);
+    } else if (message->StatusSubscribeReqData) {
+        item = OpenAPI_status_subscribe_req_data_convertToJSON(
+                message->StatusSubscribeReqData);
+        ogs_assert(item);
+    } else if (message->StatusSubscribeRspData) {
+        item = OpenAPI_status_subscribe_rsp_data_convertToJSON(
+                message->StatusSubscribeRspData);
+        ogs_assert(item);
+    } else if (message->MbsSessionSubscription) {
+        item = OpenAPI_mbs_session_subscription_convertToJSON(
+                message->MbsSessionSubscription);
+        ogs_assert(item);
+    } else if (message->StatusNotifyReqData) {
+        item = OpenAPI_status_notify_req_data_convertToJSON(
+                message->StatusNotifyReqData);
+        ogs_assert(item);
+    } else if (message->ContextCreateReqData) {
+        item = OpenAPI_context_create_req_data_convertToJSON(
+                message->ContextCreateReqData);
+        ogs_assert(item);
+    } else if (message->ContextCreateRspData) {
+        item = OpenAPI_context_create_rsp_data_convertToJSON(
+                message->ContextCreateRspData);
+        ogs_assert(item);
+    } else if (message->ContextStatusNotification) {
+        item = OpenAPI_context_status_notification_convertToJSON(
+                message->ContextStatusNotification);
+        ogs_assert(item);
+    } else if (message->ContextStatusNotificationResponse) {
+        item = OpenAPI_context_status_notification_response_convertToJSON(
+                message->ContextStatusNotificationResponse);
+        ogs_assert(item);
+    } else if (message->ContextUpdateReqData) {
+        item = OpenAPI_context_update_req_data_convertToJSON(
+                message->ContextUpdateReqData);
+        ogs_assert(item);
+    } else if (message->ContextUpdateRspData) {
+        item = OpenAPI_context_update_rsp_data_convertToJSON(
+                message->ContextUpdateRspData);
+        ogs_assert(item);
+    } else if (message->MbsN2MessageTransferReqData) {
+        item = OpenAPI_mbs_n2_message_transfer_req_data_convertToJSON(
+                message->MbsN2MessageTransferReqData);
+        ogs_assert(item);
+    } else if (message->MbsN2MessageTransferRspData) {
+        item = OpenAPI_mbs_n2_message_transfer_rsp_data_convertToJSON(
+                message->MbsN2MessageTransferRspData);
+        ogs_assert(item);
+    } else if (message->MbsPolicyCtxtData) {
+        item = OpenAPI_mbs_policy_ctxt_data_convertToJSON(
+                message->MbsPolicyCtxtData);
+        ogs_assert(item);
+    } else if (message->MbsPolicyCtxtDataUpdate) {
+        item = OpenAPI_mbs_policy_ctxt_data_update_convertToJSON(
+                message->MbsPolicyCtxtDataUpdate);
+        ogs_assert(item);
+    } else if (message->MbsPolicyData) {
+        item = OpenAPI_mbs_policy_data_convertToJSON(
+                message->MbsPolicyData);
+        ogs_assert(item);
     }
 
     if (item) {
@@ -1836,6 +2018,22 @@ static int parse_json(ogs_sbi_message_t *message,
         !strncmp(content_type, OGS_SBI_CONTENT_PROBLEM_TYPE,
             strlen(OGS_SBI_CONTENT_PROBLEM_TYPE))) {
         message->ProblemDetails = OpenAPI_problem_details_parseFromJSON(item);
+        /* TS 29.537 MbsExtProblemDetails: ProblemDetails with AcceptableMbsServInfo (accMbsServInfo or accMaxMbsBw) */
+        if (cJSON_GetObjectItemCaseSensitive(item, "accMbsServInfo") ||
+                cJSON_GetObjectItemCaseSensitive(item, "accMaxMbsBw")) {
+            cJSON *member;
+
+            message->AcceptableMbsServInfo = cJSON_CreateObject();
+            ogs_assert(message->AcceptableMbsServInfo);
+            member = cJSON_GetObjectItemCaseSensitive(item, "accMbsServInfo");
+            if (member)
+                cJSON_AddItemToObject(message->AcceptableMbsServInfo, "accMbsServInfo",
+                        cJSON_Duplicate(member, 1));
+            member = cJSON_GetObjectItemCaseSensitive(item, "accMaxMbsBw");
+            if (member)
+                cJSON_AddItemToObject(message->AcceptableMbsServInfo, "accMaxMbsBw",
+                        cJSON_Duplicate(member, 1));
+        }
     } else if (content_type &&
                 !strncmp(content_type, OGS_SBI_CONTENT_PATCH_TYPE,
                     strlen(OGS_SBI_CONTENT_PATCH_TYPE))) {
@@ -3216,6 +3414,305 @@ static int parse_json(ogs_sbi_message_t *message,
             END
             break;
 
+        case OpenAPI_service_name_nmbsmf_tmgi:
+            SWITCH(message->h.resource.component[0])
+            CASE(OGS_SBI_RESOURCE_NAME_TMGI)
+                SWITCH(message->h.method)
+                CASE(OGS_SBI_HTTP_METHOD_POST)
+                    if (message->res_status == 0) {
+                        /* client request */
+                        message->TmgiAllocate =
+                            OpenAPI_tmgi_allocate_parseFromJSON(item);
+                        if (!message->TmgiAllocate) {
+                            rv = OGS_ERROR;
+                            ogs_error("JSON parse error");
+                        }
+                    } else {
+                        /* server response */
+                        message->TmgiAllocated =
+                            OpenAPI_tmgi_allocated_parseFromJSON(item);
+                        if (!message->TmgiAllocated) {
+                            rv = OGS_ERROR;
+                            ogs_error("JSON parse error");
+                        }
+                    }
+                    break;
+
+                DEFAULT
+                    rv = OGS_ERROR;
+                    ogs_error("Unknown method [%s]", message->h.method);
+                END
+                break;
+
+            DEFAULT
+                rv = OGS_ERROR;
+                ogs_error("Unknown resource name [%s]",
+                        message->h.resource.component[0]);
+            END
+            break;
+
+        case OpenAPI_service_name_nmbsmf_mbssession:
+            SWITCH(message->h.resource.component[0])
+            CASE(OGS_SBI_RESOURCE_NAME_MBS_SESSIONS)
+                /* The subscriptions of the StatusSubscribe service operation (TS 29.532 V18.6.0 cl. 6.2.3.4 and
+                 * 6.2.3.5): POST /mbs-sessions/subscriptions (StatusSubscribeReqData, the 201 answer
+                 * StatusSubscribeRspData) and PATCH /mbs-sessions/subscriptions/{subscriptionId} (the patch is
+                 * parsed above, the 200 answer is the MbsSessionSubscription). */
+                if (message->h.resource.component[1] &&
+                        !strcmp(message->h.resource.component[1],
+                            OGS_SBI_RESOURCE_NAME_SUBSCRIPTIONS)) {
+                    if (!strcmp(message->h.method, OGS_SBI_HTTP_METHOD_POST)) {
+                        if (message->res_status == 0) {
+                            message->StatusSubscribeReqData =
+                                OpenAPI_status_subscribe_req_data_parseFromJSON(item);
+                            if (!message->StatusSubscribeReqData) {
+                                rv = OGS_ERROR;
+                                ogs_error("JSON parse error");
+                            }
+                        } else if (message->res_status ==
+                                OGS_SBI_HTTP_STATUS_CREATED) {
+                            message->StatusSubscribeRspData =
+                                OpenAPI_status_subscribe_rsp_data_parseFromJSON(item);
+                            if (!message->StatusSubscribeRspData) {
+                                rv = OGS_ERROR;
+                                ogs_error("JSON parse error");
+                            }
+                        }
+                    } else if (!strcmp(message->h.method,
+                                OGS_SBI_HTTP_METHOD_PATCH)) {
+                        if (message->res_status == OGS_SBI_HTTP_STATUS_OK) {
+                            message->MbsSessionSubscription =
+                                OpenAPI_mbs_session_subscription_parseFromJSON(item);
+                            if (!message->MbsSessionSubscription) {
+                                rv = OGS_ERROR;
+                                ogs_error("JSON parse error");
+                            }
+                        }
+                    }
+                    break;
+                }
+
+                SWITCH(message->h.method)
+                CASE(OGS_SBI_HTTP_METHOD_POST)
+                    if (message->res_status == 0) {
+                        message->CreateReqData =
+                            OpenAPI_create_req_data_parseFromJSON(item);
+                        if (!message->CreateReqData) {
+                            rv = OGS_ERROR;
+                            ogs_error("JSON parse error");
+                        }
+                    } else {
+			message->CreateRspData =
+                            OpenAPI_create_rsp_data_parseFromJSON(item);
+                        if (!message->CreateRspData) {
+                            rv = OGS_ERROR;
+                            ogs_error("JSON parse error");
+                        }
+                    }
+                    break;
+
+                CASE(OGS_SBI_HTTP_METHOD_PATCH)
+                    /* PATCH request bodies use the generic "application/json-patch+json"
+                     * content-type, parsed into message->PatchItemList above, before this
+                     * per-service SWITCH is ever reached (see the content_type check near the top
+                     * of this function) -- a PATCH message only reaches here for its response
+                     * body, e.g. the 200 OK UpdateRspData of TS 29.532 V18.6.0 clause 5.3.2.3.1 step 2b. */
+                    message->UpdateRspData =
+                        OpenAPI_update_rsp_data_parseFromJSON(item);
+                    if (!message->UpdateRspData) {
+                        rv = OGS_ERROR;
+                        ogs_error("JSON parse error");
+                    }
+                    break;
+
+                DEFAULT
+                    rv = OGS_ERROR;
+                    ogs_error("Unknown method [%s]", message->h.method);
+                END
+                break;
+
+            DEFAULT
+                rv = OGS_ERROR;
+                ogs_error("Unknown resource name [%s]",
+                        message->h.resource.component[0]);
+            END
+            break;
+
+        case OpenAPI_service_name_namf_mbs_bc:
+            SWITCH(message->h.resource.component[0])
+            CASE(OGS_SBI_RESOURCE_NAME_MBS_CONTEXTS)
+                SWITCH(message->h.method)
+                CASE(OGS_SBI_HTTP_METHOD_POST)
+                                        // component[1], the path segment carrying mbsContextRef, distinguishes a POST on the
+                                        // individual resource (/mbs-contexts/{mbsContextRef}, Namf_MBSBroadcast_ContextUpdate,
+                                        // TS 29.518 cl.5.6.2.3) from a POST on the collection (ContextCreate).  The method
+                                        // alone does not.
+                    if (message->h.resource.component[1]) {
+                        if (message->res_status == 0) {
+                            message->ContextUpdateReqData =
+                                OpenAPI_context_update_req_data_parseFromJSON(item);
+                            if (!message->ContextUpdateReqData) {
+                                rv = OGS_ERROR;
+                                ogs_error("JSON parse error");
+                            }
+                        } else if (message->res_status == OGS_SBI_HTTP_STATUS_OK) {
+                            message->ContextUpdateRspData =
+                                OpenAPI_context_update_rsp_data_parseFromJSON(item);
+                            if (!message->ContextUpdateRspData) {
+                                rv = OGS_ERROR;
+                                ogs_error("JSON parse error");
+                            }
+                        }
+                        // 204 No Content carries no body to parse.
+                    } else if (message->res_status == 0) {
+                        message->ContextCreateReqData =
+                            OpenAPI_context_create_req_data_parseFromJSON(item);
+                        if (!message->ContextCreateReqData) {
+                            rv = OGS_ERROR;
+                            ogs_error("JSON parse error");
+                        }
+                    } else if (message->res_status ==
+                            OGS_SBI_HTTP_STATUS_CREATED) {
+                        message->ContextCreateRspData =
+                            OpenAPI_context_create_rsp_data_parseFromJSON(item);
+                        if (!message->ContextCreateRspData) {
+                            rv = OGS_ERROR;
+                            ogs_error("JSON parse error");
+                        }
+                    }
+                    break;
+
+                DEFAULT
+                    rv = OGS_ERROR;
+                    ogs_error("Unknown method [%s]", message->h.method);
+                END
+                break;
+
+            CASE(OGS_SBI_RESOURCE_NAME_MBS_CONTEXT_STATUS_NOTIFY)
+                SWITCH(message->h.method)
+                CASE(OGS_SBI_HTTP_METHOD_POST)
+                    /* The notification of TS 29.518 V18.14.0 cl. 5.6.2.5 (ContextStatusNotify), sent by the AMF to
+                     * the notifyUri of the MB-SMF; a response carries no body to parse here. */
+                    if (message->res_status == 0) {
+                        message->ContextStatusNotification =
+                            OpenAPI_context_status_notification_parseFromJSON(item);
+                        if (!message->ContextStatusNotification) {
+                            rv = OGS_ERROR;
+                            ogs_error("JSON parse error");
+                        }
+                    }
+                    /* "200 OK" with the ContextStatusNotificationResponse of TS 29.518 V18.14.0 cl. 5.6.2.5 step 2a,
+                     * when the notification carried a Broadcast Session Transport Request Transfer. */
+                    else if (message->res_status == OGS_SBI_HTTP_STATUS_OK) {
+                        message->ContextStatusNotificationResponse =
+                            OpenAPI_context_status_notification_response_parseFromJSON(item);
+                        if (!message->ContextStatusNotificationResponse) {
+                            rv = OGS_ERROR;
+                            ogs_error("JSON parse error");
+                        }
+                    }
+                    break;
+
+                DEFAULT
+                    rv = OGS_ERROR;
+                    ogs_error("Unknown method [%s]", message->h.method);
+                END
+                break;
+
+            DEFAULT
+                rv = OGS_ERROR;
+                ogs_error("Unknown resource name [%s]",
+                        message->h.resource.component[0]);
+            END
+            break;
+
+        case OpenAPI_service_name_npcf_mbspolicycontrol:
+            /* TS 29.537 clause 6.1.3: POST /mbs-policies (Create), POST /mbs-policies/{mbsPolicyId}/update (Update),
+             * DELETE /mbs-policies/{mbsPolicyId}. A body of an error response is a problem details, parsed above. */
+            SWITCH(message->h.resource.component[0])
+            CASE(OGS_SBI_RESOURCE_NAME_MBS_POLICIES)
+                if (!message->h.resource.component[1]) {
+                    if (message->res_status == 0) {
+                        message->MbsPolicyCtxtData =
+                            OpenAPI_mbs_policy_ctxt_data_parseFromJSON(item);
+                        if (!message->MbsPolicyCtxtData) {
+                            rv = OGS_ERROR;
+                            ogs_error("JSON parse error");
+                        }
+                    } else if (message->res_status ==
+                            OGS_SBI_HTTP_STATUS_CREATED) {
+                        message->MbsPolicyData =
+                            OpenAPI_mbs_policy_data_parseFromJSON(item);
+                        if (!message->MbsPolicyData) {
+                            rv = OGS_ERROR;
+                            ogs_error("JSON parse error");
+                        }
+                    }
+                } else if (message->h.resource.component[2] &&
+                        !strcmp(message->h.resource.component[2],
+                            OGS_SBI_RESOURCE_NAME_UPDATE)) {
+                    if (message->res_status == 0) {
+                        message->MbsPolicyCtxtDataUpdate =
+                            OpenAPI_mbs_policy_ctxt_data_update_parseFromJSON(
+                                    item);
+                        if (!message->MbsPolicyCtxtDataUpdate) {
+                            rv = OGS_ERROR;
+                            ogs_error("JSON parse error");
+                        }
+                    } else if (message->res_status ==
+                            OGS_SBI_HTTP_STATUS_OK) {
+                        message->MbsPolicyData =
+                            OpenAPI_mbs_policy_data_parseFromJSON(item);
+                        if (!message->MbsPolicyData) {
+                            rv = OGS_ERROR;
+                            ogs_error("JSON parse error");
+                        }
+                    }
+                }
+                break;
+
+            DEFAULT
+                rv = OGS_ERROR;
+                ogs_error("Unknown resource name [%s]",
+                        message->h.resource.component[0]);
+            END
+            break;
+
+        case OpenAPI_service_name_namf_mbs_comm:
+            SWITCH(message->h.resource.component[0])
+            CASE(OGS_SBI_RESOURCE_NAME_N2_MESSAGES)
+                SWITCH(message->h.method)
+                CASE(OGS_SBI_HTTP_METHOD_POST)
+                    if (message->res_status == 0) {
+                        message->MbsN2MessageTransferReqData =
+                            OpenAPI_mbs_n2_message_transfer_req_data_parseFromJSON(item);
+                        if (!message->MbsN2MessageTransferReqData) {
+                            rv = OGS_ERROR;
+                            ogs_error("JSON parse error");
+                        }
+                    } else if (message->res_status == OGS_SBI_HTTP_STATUS_OK) {
+                        message->MbsN2MessageTransferRspData =
+                            OpenAPI_mbs_n2_message_transfer_rsp_data_parseFromJSON(item);
+                        if (!message->MbsN2MessageTransferRspData) {
+                            rv = OGS_ERROR;
+                            ogs_error("JSON parse error");
+                        }
+                    }
+                    break;
+
+                DEFAULT
+                    rv = OGS_ERROR;
+                    ogs_error("Unknown method [%s]", message->h.method);
+                END
+                break;
+
+            DEFAULT
+                rv = OGS_ERROR;
+                ogs_error("Unknown resource name [%s]",
+                        message->h.resource.component[0]);
+            END
+            break;
+
         default:
             rv = OGS_ERROR;
             ogs_error("Not implemented API name [%s]",
@@ -3284,6 +3781,9 @@ typedef struct multipart_parser_data_s {
     multipart_part_data_t part[OGS_SBI_MAX_NUM_OF_PART];
 
     bool parse_error;
+
+    /* A part came after the last one that fits in part[]: it was not stored */
+    bool overflow;
 
     char *header_field;
 } multipart_parser_data_t;
@@ -3435,9 +3935,10 @@ static int on_part_data_end(multipart_parser *parser)
     data = multipart_parser_get_data(parser);
     ogs_assert(data);
 
-    if (data->num_of_part < OGS_SBI_MAX_NUM_OF_PART) {
+    if (data->num_of_part < OGS_SBI_MAX_NUM_OF_PART)
         data->num_of_part++;
-    }
+    else
+        data->overflow = true;
 
     return 0;
 }
@@ -3532,6 +4033,21 @@ cleanup:
         return OGS_ERROR;
     }
 
+    if (data.overflow) {
+        /* The parts that fit would be a message without the others, which nothing says it may be: refused. */
+        ogs_error("The multipart message has more than %d parts", OGS_SBI_MAX_NUM_OF_PART);
+        for (i = 0; i < data.num_of_part; i++) {
+            if (data.part[i].content_id)
+                ogs_free(data.part[i].content_id);
+            if (data.part[i].content_type)
+                ogs_free(data.part[i].content_type);
+            if (data.part[i].content)
+                ogs_free(data.part[i].content);
+        }
+        if (data.header_field)
+            ogs_free(data.header_field);
+        return OGS_ERROR;
+    }
     for (i = 0; i < data.num_of_part; i++) {
         SWITCH(data.part[i].content_type)
         CASE(OGS_SBI_CONTENT_JSON_TYPE)
@@ -3683,8 +4199,10 @@ static bool build_multipart(
 
     http->content_length = p - http->content;
 
-    content_type = ogs_msprintf("%s; boundary=\"%s\"",
-            OGS_SBI_CONTENT_MULTIPART_TYPE, boundary);
+    /* TS 29.518 V18.14.0 cl. 6.5.2.4: the multipart message includes a "type" parameter (IETF RFC 2387) with the
+     * media type of the root body part, which is the JSON part written first. */
+    content_type = ogs_msprintf("%s; type=\"%s\"; boundary=\"%s\"",
+            OGS_SBI_CONTENT_MULTIPART_TYPE, OGS_SBI_CONTENT_JSON_TYPE, boundary);
     if (!content_type) {
         ogs_error("ogs_msprintf() failed");
         return false;

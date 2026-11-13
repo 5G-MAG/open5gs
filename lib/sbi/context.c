@@ -1235,6 +1235,40 @@ bool ogs_sbi_nf_service_is_available(const OpenAPI_service_name_e name)
     return false;
 }
 
+OpenAPI_collocated_nf_type_e ogs_collocated_nf_type_from_nf_type(OpenAPI_nf_type_e nf_type)
+{
+    switch (nf_type) {
+    case OpenAPI_nf_type_MB_SMF:
+        return OpenAPI_collocated_nf_type_MB_SMF;
+    case OpenAPI_nf_type_MB_UPF:
+        return OpenAPI_collocated_nf_type_MB_UPF;
+    case OpenAPI_nf_type_SMF:
+        return OpenAPI_collocated_nf_type_SMF;
+    case OpenAPI_nf_type_UPF:
+        return OpenAPI_collocated_nf_type_UPF;
+    default:
+        break;
+    }
+    return OpenAPI_collocated_nf_type_NULL;
+}
+
+OpenAPI_nf_type_e ogs_nf_type_from_collocated_nf_type(OpenAPI_collocated_nf_type_e nf_type)
+{
+    switch (nf_type) {
+    case OpenAPI_collocated_nf_type_MB_SMF:
+        return OpenAPI_nf_type_MB_SMF;
+    case OpenAPI_collocated_nf_type_MB_UPF:
+        return OpenAPI_nf_type_MB_UPF;
+    case OpenAPI_collocated_nf_type_SMF:
+        return OpenAPI_nf_type_SMF;
+    case OpenAPI_collocated_nf_type_UPF:
+        return OpenAPI_nf_type_UPF;
+    default:
+        break;
+    }
+    return OpenAPI_nf_type_NULL;
+}
+
 ogs_collocated_nf_instance_t *ogs_collocated_nf_instance_create(
         const char *nf_instance_id, OpenAPI_collocated_nf_type_e nf_type)
 {
@@ -1370,6 +1404,20 @@ bool ogs_sbi_nf_instance_is_allowed_nf_type(
     ogs_error("Not allowed nf-type[%s] in nf-instance[%s]",
             OpenAPI_nf_type_ToString(allowed_nf_type),
             OpenAPI_nf_type_ToString(nf_instance->nf_type));
+    return false;
+}
+
+bool ogs_sbi_nf_instance_is_collocated_nf_type(
+        ogs_sbi_nf_instance_t *nf_instance, OpenAPI_collocated_nf_type_e collocated_nf_type)
+{
+    ogs_assert(nf_instance);
+
+    if (!collocated_nf_type) return false;
+
+    ogs_collocated_nf_instance_t *node;
+    ogs_list_for_each(&nf_instance->collocated_nf_list, node) {
+	if (node->nf_type == collocated_nf_type) return true;
+    }
     return false;
 }
 
@@ -2443,6 +2491,34 @@ bool ogs_sbi_discovery_option_target_plmn_list_is_matched(
     ogs_assert(nf_instance);
     ogs_assert(discovery_option);
 
+    /*
+     * BUG FIX (code-derived, source-derived basis below): TS 29.510 V18.11.0's own NFProfile
+     * plmnList field description: "If neither the plmnList IE nor the snpnList IE are provided,
+     * PLMN ID(s) of the PLMN of the NRF are assumed for the NF." An NF that registered with no
+     * plmnList at all (nf_instance->num_of_plmn_id == 0) must therefore be treated as belonging to
+     * the NRF's own configured PLMN, not as matching nothing.
+     * ogs_sbi_discovery_param_serving_plmn_list_is_matched() (this file) already implements this
+     * exact fallback for the target-plmn-list-ABSENT case (see its own comment, quoting the same
+     * clause for target-plmn-list itself); this function, used when target-plmn-list IS present,
+     * had no equivalent, so a same-PLMN NF with no registered plmnList was wrongly excluded from
+     * every target-plmn-list-filtered discovery, regardless of whether its PLMN was in fact the
+     * one requested.
+     */
+    if (nf_instance->num_of_plmn_id == 0) {
+        if (ogs_local_conf()->num_of_serving_plmn_id == 0)
+            return true; /* nothing configured to assume either; do not filter this NF out */
+        for (i = 0; i < ogs_local_conf()->num_of_serving_plmn_id; i++) {
+            for (j = 0; j < discovery_option->num_of_target_plmn_list; j++) {
+                if (memcmp(&ogs_local_conf()->serving_plmn_id[i],
+                           &discovery_option->target_plmn_list[j],
+                           OGS_PLMN_ID_LEN) == 0) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     for (i = 0; i < nf_instance->num_of_plmn_id; i++) {
         for (j = 0; j < discovery_option->num_of_target_plmn_list; j++) {
             if (memcmp(&nf_instance->plmn_id[i],
@@ -2485,7 +2561,9 @@ bool ogs_sbi_discovery_param_is_matched(
     if (NF_INSTANCE_EXCLUDED_FROM_DISCOVERY(nf_instance))
         return false;
 
-    if (nf_instance->nf_type != target_nf_type)
+    if (nf_instance->nf_type != target_nf_type &&
+        !ogs_sbi_nf_instance_is_collocated_nf_type(
+		nf_instance, ogs_collocated_nf_type_from_nf_type(target_nf_type)))
         return false;
 
     /*

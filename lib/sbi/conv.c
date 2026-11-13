@@ -2160,3 +2160,156 @@ void ogs_sbi_free_qos_data(OpenAPI_qos_data_t *QosData)
 
     ogs_free(QosData);
 }
+
+bool ogs_sbi_parse_tmgi(ogs_tmgi_t *tmgi, OpenAPI_tmgi_t *Tmgi)
+{
+    ogs_assert(tmgi);
+    ogs_assert(Tmgi);
+    ogs_assert(Tmgi->mbs_service_id);
+    ogs_assert(Tmgi->plmn_id);
+
+    tmgi->mbs_service_id = Tmgi->mbs_service_id;
+    ogs_sbi_parse_plmn_id(&tmgi->plmn_id, Tmgi->plmn_id);
+
+    return true;
+}
+
+OpenAPI_tmgi_t *ogs_sbi_build_tmgi(ogs_tmgi_t *tmgi)
+{
+    OpenAPI_tmgi_t *Tmgi = NULL;
+    OpenAPI_plmn_id_t *Plmn_id = NULL;
+    char *mcc = NULL;
+    char *mnc = NULL;
+
+    ogs_assert(tmgi);
+
+    mcc = ogs_plmn_id_mcc_string(&tmgi->plmn_id);
+    mnc = ogs_plmn_id_mnc_string(&tmgi->plmn_id);
+
+    Plmn_id = OpenAPI_plmn_id_create(mcc, mnc);
+    Tmgi = OpenAPI_tmgi_create(ogs_strdup(tmgi->mbs_service_id), Plmn_id);
+
+    return Tmgi;
+}
+
+bool ogs_sbi_parse_ssm(ogs_ssm_t *ssm, OpenAPI_ssm_t *Ssm)
+{
+    ogs_assert(ssm);
+    ogs_assert(Ssm);
+    ogs_assert(Ssm->source_ip_addr);
+    ogs_assert(Ssm->dest_ip_addr);
+
+    if (Ssm->source_ip_addr->ipv4_addr) {
+        ogs_ipv4_from_string(&ssm->src_ip_addr.addr, Ssm->source_ip_addr->ipv4_addr);
+        ssm->src_ip_addr.ipv4 = 1;
+        ssm->src_ip_addr.len = OGS_IPV4_LEN;
+    } else if (Ssm->source_ip_addr->ipv6_addr) {
+        ogs_ipv6addr_from_string(ssm->src_ip_addr.addr6, Ssm->source_ip_addr->ipv6_addr);
+        ssm->src_ip_addr.ipv6 = 1;
+        ssm->src_ip_addr.len = OGS_IPV6_LEN;
+    } else if (Ssm->source_ip_addr->ipv6_prefix) {
+        // TODO (borieher): What to do with the IPv6 prefix?
+        //ogs_ipv6prefix_from_string(ssm->src_ip_addr.addr6, OGS_IPV6_128_PREFIX_LEN, Ssm->source_ip_addr->ipv6_prefix);
+        ogs_error("SSM with IPv6 prefix is not implemented");
+    }
+
+    if (Ssm->dest_ip_addr->ipv4_addr) {
+        ogs_ipv4_from_string(&ssm->dest_ip_addr.addr, Ssm->dest_ip_addr->ipv4_addr);
+        ssm->dest_ip_addr.ipv4 = 1;
+        ssm->dest_ip_addr.len = OGS_IPV4_LEN;
+    } else if (Ssm->dest_ip_addr->ipv6_addr) {
+        ogs_ipv6addr_from_string(ssm->dest_ip_addr.addr6, Ssm->dest_ip_addr->ipv6_addr);
+        ssm->dest_ip_addr.ipv6 = 1;
+        ssm->dest_ip_addr.len = OGS_IPV6_LEN;
+    } else if (Ssm->dest_ip_addr->ipv6_prefix) {
+        // TODO (borieher): What to do with the IPv6 prefix?
+        //ogs_ipv6prefix_from_string(ssm->dst_ip_addr.addr6, OGS_IPV6_128_PREFIX_LEN, Ssm->dest_ip_addr->ipv6_prefix);
+        ogs_error("SSM with IPv6 prefix is not implemented");
+    }
+
+    return true;
+}
+
+OpenAPI_ssm_t *ogs_sbi_build_ssm(ogs_ssm_t *ssm)
+{
+    OpenAPI_ssm_t *Ssm = NULL;
+    OpenAPI_ip_addr_t *Src_ip_addr = NULL;
+    OpenAPI_ip_addr_t *Dest_ip_addr = NULL;
+    char *src_ip_addr = NULL;
+    char *dest_ip_addr = NULL;
+
+    ogs_assert(ssm);
+
+    if (ssm->src_ip_addr.ipv4) {
+        src_ip_addr = ogs_ipv4_to_string(ssm->src_ip_addr.addr);
+        Src_ip_addr = OpenAPI_ip_addr_create(src_ip_addr, NULL, NULL);
+    } else if (ssm->src_ip_addr.ipv6) {
+        src_ip_addr = ogs_ipv6addr_to_string(ssm->src_ip_addr.addr6);
+        Src_ip_addr = OpenAPI_ip_addr_create(NULL, src_ip_addr, NULL);
+    }
+    // TODO (borieher): What to do with the prefix here?
+
+    if (ssm->dest_ip_addr.ipv4) {
+        dest_ip_addr = ogs_ipv4_to_string(ssm->dest_ip_addr.addr);
+        Dest_ip_addr = OpenAPI_ip_addr_create(dest_ip_addr, NULL, NULL);
+    } else if (ssm->dest_ip_addr.ipv6) {
+        dest_ip_addr = ogs_ipv6addr_to_string(ssm->dest_ip_addr.addr6);
+        Dest_ip_addr = OpenAPI_ip_addr_create(NULL, dest_ip_addr, NULL);
+    }
+    // TODO (borieher): What to do with the prefix here?
+
+    Ssm = OpenAPI_ssm_create(Src_ip_addr, Dest_ip_addr);
+
+    return Ssm;
+}
+
+/* The MBS service area of the model: its TAI list and its cells (NcgiTai: a TAI and its cells). Used for the reduced
+ * MBS service area (TS 29.532 V18.6.0 cl. 5.3.2.2.1 and 5.3.2.3.1 step 2b). The conversion of the Namf requests in
+ * src/smf/namf-build.c is not consolidated into this helper.
+ */
+OpenAPI_mbs_service_area_t *ogs_sbi_build_mbs_service_area(ogs_mbs_service_area_t *area)
+{
+    OpenAPI_list_t *tai_list = NULL, *ncgi_list = NULL;
+    ogs_tai_t *tai = NULL;
+
+    ogs_assert(area);
+
+    if (area->tai_list) {
+        tai_list = OpenAPI_list_create();
+        ogs_list_for_each(area->tai_list, tai) {
+            OpenAPI_list_add(tai_list, OpenAPI_tai_create(
+                    OpenAPI_plmn_id_create(
+                            ogs_plmn_id_mcc_string(&tai->plmn_id),
+                            ogs_plmn_id_mnc_string(&tai->plmn_id)),
+                    tai->tac ? ogs_strdup(tai->tac) : NULL,
+                    tai->nid ? ogs_strdup(tai->nid) : NULL));
+        }
+    }
+
+    /* the cells of the area (TS 29.571 MbsServiceArea: ncgiList of NcgiTai, each a TAI and its cells) */
+    if (area->ncgi_tai_list) {
+        ogs_ncgi_tai_t *ncgi_tai = NULL;
+
+        ncgi_list = OpenAPI_list_create();
+        ogs_list_for_each(area->ncgi_tai_list, ncgi_tai) {
+            OpenAPI_list_t *cell_list = OpenAPI_list_create();
+            ogs_ncgi_t *ncgi = NULL;
+
+            ogs_list_for_each(&ncgi_tai->cell_list, ncgi)
+                OpenAPI_list_add(cell_list, OpenAPI_ncgi_create(
+                        OpenAPI_plmn_id_create(ogs_plmn_id_mcc_string(&ncgi->plmn_id),
+                            ogs_plmn_id_mnc_string(&ncgi->plmn_id)),
+                        ncgi->nr_cell_id ? ogs_strdup(ncgi->nr_cell_id) : NULL,
+                        ncgi->nid ? ogs_strdup(ncgi->nid) : NULL));
+            OpenAPI_list_add(ncgi_list, OpenAPI_ncgi_tai_create(
+                    OpenAPI_tai_create(
+                        OpenAPI_plmn_id_create(ogs_plmn_id_mcc_string(&ncgi_tai->tai.plmn_id),
+                            ogs_plmn_id_mnc_string(&ncgi_tai->tai.plmn_id)),
+                        ncgi_tai->tai.tac ? ogs_strdup(ncgi_tai->tai.tac) : NULL,
+                        ncgi_tai->tai.nid ? ogs_strdup(ncgi_tai->tai.nid) : NULL),
+                    cell_list));
+        }
+    }
+
+    return OpenAPI_mbs_service_area_create(ncgi_list, tai_list, NULL);
+}

@@ -154,6 +154,16 @@ extern "C" {
 
 #define OGS_SBI_RESOURCE_NAME_EXCHANGE_CAPABILITY   "exchange-capability"
 
+#define OGS_SBI_RESOURCE_NAME_TMGI                  "tmgi"
+#define OGS_SBI_RESOURCE_NAME_MBS_SESSIONS          "mbs-sessions"
+#define OGS_SBI_RESOURCE_NAME_MBS_POLICIES          "mbs-policies"
+#define OGS_SBI_RESOURCE_NAME_MBS_CONTEXTS          "mbs-contexts"
+#define OGS_SBI_RESOURCE_NAME_N2_MESSAGES           "n2-messages"
+/* This SMF's own callback resource for Namf_MBSBroadcast_ContextStatusNotify (TS 29.518 cl.5.6.2.5) --
+ * the notifyUri is caller-defined (this SMF's own choice, per namf-build.c), named to match
+ * OGS_SBI_RESOURCE_NAME_NF_STATUS_NOTIFY's own "<subject>-notify" convention. */
+#define OGS_SBI_RESOURCE_NAME_MBS_CONTEXT_STATUS_NOTIFY "mbs-context-status-notify"
+
 #define OGS_SBI_PATCH_PATH_NF_STATUS                "/nfStatus"
 #define OGS_SBI_PATCH_PATH_LOAD                     "/load"
 #define OGS_SBI_PATCH_PATH_PLMN_LIST                "/plmnList"
@@ -402,6 +412,7 @@ char *ogs_sbi_features_to_string(uint64_t low, uint64_t high);
 #define OGS_SBI_PARAM_DATASET_NAME_SMF_SEL               "SMF_SEL"
 #define OGS_SBI_PARAM_DATASET_NAME_SM                    "SM"
 #define OGS_SBI_MAX_NUM_OF_DATASETNAMES                   8
+#define OGS_SBI_PARAM_TMGI_LIST                     "tmgi-list"
 
 #define OGS_SBI_CONTENT_JSON_TYPE                   \
     OGS_SBI_APPLICATION_TYPE "/" OGS_SBI_APPLICATION_JSON_TYPE
@@ -573,6 +584,8 @@ typedef struct ogs_sbi_message_s {
         ogs_plmn_id_t home_plmn_id;
         bool tai_presence;
         ogs_5gs_tai_t tai;
+
+        OpenAPI_list_t *tmgi_list;
     } param;
 
     int res_status;
@@ -655,10 +668,40 @@ typedef struct ogs_sbi_message_s {
     OpenAPI_ue_context_transfer_rsp_data_t *UeContextTransferRspData;
     OpenAPI_ue_reg_status_update_req_data_t *UeRegStatusUpdateReqData;
     OpenAPI_ue_reg_status_update_rsp_data_t *UeRegStatusUpdateRspData;
+    OpenAPI_tmgi_allocate_t *TmgiAllocate;
+    OpenAPI_tmgi_allocated_t *TmgiAllocated;
+    OpenAPI_create_req_data_t *CreateReqData;
+    OpenAPI_create_rsp_data_t *CreateRspData;
+    OpenAPI_update_rsp_data_t *UpdateRspData;
+    OpenAPI_status_subscribe_req_data_t *StatusSubscribeReqData;
+    OpenAPI_status_subscribe_rsp_data_t *StatusSubscribeRspData;
+    OpenAPI_mbs_session_subscription_t *MbsSessionSubscription;
+    OpenAPI_status_notify_req_data_t *StatusNotifyReqData;
+    OpenAPI_context_create_req_data_t *ContextCreateReqData;
+    OpenAPI_context_create_rsp_data_t *ContextCreateRspData;
+    OpenAPI_context_status_notification_t *ContextStatusNotification;
+    OpenAPI_context_status_notification_response_t *ContextStatusNotificationResponse;
+    OpenAPI_context_update_req_data_t *ContextUpdateReqData;
+    OpenAPI_context_update_rsp_data_t *ContextUpdateRspData;
+    OpenAPI_mbs_n2_message_transfer_req_data_t *MbsN2MessageTransferReqData;
+    OpenAPI_mbs_n2_message_transfer_rsp_data_t *MbsN2MessageTransferRspData;
+    OpenAPI_mbs_policy_ctxt_data_t *MbsPolicyCtxtData;
+    OpenAPI_mbs_policy_ctxt_data_update_t *MbsPolicyCtxtDataUpdate;
+    OpenAPI_mbs_policy_data_t *MbsPolicyData;
+    /* The AcceptableMbsServInfo members (accMbsServInfo, accMaxMbsBw) of a problem details body of
+     * Npcf_MBSPolicyControl (TS 29.537 MbsExtProblemDetails), as the JSON object; NULL when it has none. */
+    cJSON *AcceptableMbsServInfo;
 
     ogs_sbi_links_t *links;
 
-#define OGS_SBI_MAX_NUM_OF_PART 8
+/*
+ * TS 29.518 V18.14.0 Table 6.5.6.2.4-1 (ContextStatusNotification): the row n2MbsSmInfoList is "array(N2MbsSmInfo)",
+ * "O", cardinality "1..10". Tables 6.5.6.2.3-1, 6.5.6.2.6-1 and 6.5.6.2.10-1 give the same, and the OpenAPI schema has
+ * "maxItems: 10" for each of the four. Each entry refers to one binary part.
+ */
+#define OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO 10
+/* The parts of a multipart message: its JSON root part and one binary part for each n2MbsSmInfoList entry */
+#define OGS_SBI_MAX_NUM_OF_PART (1 + OGS_SBI_MAX_NUM_OF_N2_MBS_SM_INFO)
     int num_of_part;
     ogs_sbi_part_t part[OGS_SBI_MAX_NUM_OF_PART];
 } ogs_sbi_message_t;

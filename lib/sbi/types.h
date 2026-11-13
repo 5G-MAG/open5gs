@@ -33,11 +33,23 @@ extern "C" {
 
 #define OGS_SBI_SERVICE_NAME_N32C_HANDSHAKE "n32c-handshake"
 
+#define OGS_SBI_SERVICE_NAME_NMBSMF_TMGI "nmbsmf-tmgi"
+#define OGS_SBI_SERVICE_NAME_NMBSMF_MBS_SESSION "nmbsmf-mbssession"
+#define OGS_SBI_SERVICE_NAME_NAMF_MBS_BC "namf-mbs-bc"
+#define OGS_SBI_SERVICE_NAME_NAMF_MBS_COMM "namf-mbs-comm"
+#define OGS_SBI_SERVICE_NAME_NMBSF_MBS_US "nmbsf-mbs-us"
+#define OGS_SBI_SERVICE_NAME_NMBSF_MBS_UD_INGEST "nmbsf-mbs-ud-ingest"
+#define OGS_SBI_SERVICE_NAME_NMBSTF_DISTSESSION "nmbstf-distsession"
+
 #define OGS_SBI_SERVICE_NAME_NAMF_CALLBACK "namf-callback"
 #define OGS_SBI_SERVICE_NAME_NSMF_CALLBACK "nsmf-callback"
 #define OGS_SBI_SERVICE_NAME_NAMF_OAM "namf-oam"
 
-#define OGS_SBI_MAX_NUM_OF_SERVICE_NAME 128
+/*
+ * service_name_array[] of ogs_sbi_object_t is indexed by OpenAPI_service_name_e,
+ * so it must have an entry for every enumerator, the last one included.
+ */
+#define OGS_SBI_MAX_NUM_OF_SERVICE_NAME (OpenAPI_service_name_nadm_dmupdate + 1)
 
 /*
  * Internal service-name IDs not defined in OpenAPI_service_name_e

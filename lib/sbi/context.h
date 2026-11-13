@@ -532,6 +532,9 @@ ogs_collocated_nf_instance_t *ogs_collocated_nf_instance_create(
 void ogs_collocated_nf_instance_free(
         ogs_collocated_nf_instance_t *collocated_nf_instance);
 
+OpenAPI_collocated_nf_type_e ogs_collocated_nf_type_from_nf_type(OpenAPI_nf_type_e);
+OpenAPI_nf_type_e ogs_nf_type_from_collocated_nf_type(OpenAPI_collocated_nf_type_e);
+
 ogs_sbi_nf_instance_t *ogs_sbi_nf_instance_add(void);
 void ogs_sbi_nf_instance_set_id(ogs_sbi_nf_instance_t *nf_instance, char *id);
 void ogs_sbi_nf_instance_set_type(
@@ -545,6 +548,8 @@ void ogs_sbi_nf_instance_add_collocated_nf_type(
         OpenAPI_collocated_nf_type_e collocated_nf_type);
 bool ogs_sbi_nf_instance_is_allowed_nf_type(
         ogs_sbi_nf_instance_t *nf_instance, OpenAPI_nf_type_e allowed_nf_type);
+bool ogs_sbi_nf_instance_is_collocated_nf_type(
+        ogs_sbi_nf_instance_t *nf_instance, OpenAPI_collocated_nf_type_e collocated_nf_type);
 void ogs_sbi_nf_instance_clear(ogs_sbi_nf_instance_t *nf_instance);
 void ogs_sbi_nf_instance_remove(ogs_sbi_nf_instance_t *nf_instance);
 void ogs_sbi_nf_instance_remove_all(void);
