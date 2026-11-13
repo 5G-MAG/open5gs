@@ -60,6 +60,13 @@ const char *smf_event_get_name(smf_event_t *e)
     case SMF_EVT_N4_NO_HEARTBEAT:
         return "SMF_EVT_N4_NO_HEARTBEAT";
 
+    case SMF_EVT_MBS_NGRAN_RESTORE:
+        return "SMF_EVT_MBS_NGRAN_RESTORE";
+    case SMF_EVT_MBS_CONTEXT_RETRY:
+        return "SMF_EVT_MBS_CONTEXT_RETRY";
+    case SMF_EVT_MBS_PCF_TIMEOUT:
+        return "SMF_EVT_MBS_PCF_TIMEOUT";
+
     case OGS_EVENT_SBI_SERVER:
         return OGS_EVENT_NAME_SBI_SERVER;
     case OGS_EVENT_SBI_CLIENT:

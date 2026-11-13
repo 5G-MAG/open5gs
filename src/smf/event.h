@@ -42,6 +42,7 @@ typedef struct smf_gtp_node_s smf_gtp_node_t;
 typedef struct ogs_nas_5gs_message_s ogs_nas_5gs_message_t;
 typedef struct NGAP_NGAP_PDU ogs_ngap_message_t;
 typedef long NGAP_ProcedureCode_t;
+typedef struct smf_mbs_sess_s smf_mbs_sess_t;
 
 typedef enum {
     SMF_EVT_BASE = OGS_MAX_NUM_OF_PROTO_EVENT,
@@ -63,6 +64,9 @@ typedef enum {
     SMF_EVT_5GSM_TIMER,
 
     SMF_EVT_SESSION_RELEASE,
+    SMF_EVT_MBS_NGRAN_RESTORE,
+    SMF_EVT_MBS_CONTEXT_RETRY,
+    SMF_EVT_MBS_PCF_TIMEOUT,
 
     SMF_EVT_TOP,
 
@@ -106,6 +110,8 @@ typedef struct smf_event_s {
     } release;
 
     ogs_pool_id_t sess_id;
+    ogs_pool_id_t mbs_sess_id;
+    void *mbs_ngran_restoration;    /* SMF_EVT_MBS_NGRAN_RESTORE: smf_mbs_ngran_restoration_t */
 } smf_event_t;
 
 OGS_STATIC_ASSERT(OGS_EVENT_SIZE >= sizeof(smf_event_t));

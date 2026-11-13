@@ -71,6 +71,15 @@ libsmf_sources = files('''
     local-path.h
     metrics.h
     pdu-info.h
+    nmbsmf-handler.h
+    mbs-update.h
+    mbs-subsc.h
+    mbs-n3mb.h
+    mbs-restore.h
+    mbs-charging.h
+    mbs-pcf.h
+    n4mb-build.h
+    n4mb-handler.h
 
     init.c
     event.c
@@ -115,6 +124,15 @@ libsmf_sources = files('''
     metrics.c
     pdu-info.c
     ../../lib/metrics/prometheus/json_pager.c
+    nmbsmf-handler.c
+    mbs-update.c
+    mbs-subsc.c
+    mbs-n3mb.c
+    mbs-restore.c
+    mbs-charging.c
+    mbs-pcf.c
+    n4mb-build.c
+    n4mb-handler.c
 '''.split())
 
 libsmf = static_library('smf',

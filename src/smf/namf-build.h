@@ -49,6 +49,34 @@ ogs_sbi_request_t *smf_namf_comm_build_n1_n2_message_transfer(
 ogs_sbi_request_t *smf_namf_callback_build_sm_context_status(
         smf_sess_t *sess, void *data);
 
+/* Namf_MBSBroadcast Service API */
+
+ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_create_request(
+        smf_mbs_sess_t *mbs_sess, void *data);
+
+ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_delete_request(
+        smf_mbs_sess_t *mbs_sess, void *data);
+
+/* What a Namf_MBSBroadcast ContextUpdate request is built from (the data of the builder) */
+typedef struct smf_namf_context_update_param_s {
+    smf_mbs_amf_t *amf;         /* the AMF whose context is updated */
+    bool service_area;          /* the request carries the updated MBS service area */
+    bool n2_info_changed;       /* the N2 MBS Session Management information changed (n2MbsInfoChangeInd) */
+    bool no_n2_info_change_ind; /* n2MbsInfoChangeInd is left out: nothing about the information is changed */
+    /* ranIdList: the NG-RANs the update is to be performed in (TS 29.518 V18.14.0 table 6.5.6.2.5-1), each a
+     * GlobalRanNodeId as JSON text (smf_mbs_ran_id_text()); none: all the NG-RANs of the context */
+    const char *const *ran_ids;
+    int num_ran_ids;
+    /* the container carries the MBS NG-U Failure Indication of an N3mb path failure (TS 23.527 V18.6.0 cl. 8.5) */
+    bool n3mb_path_failure;
+    /* noNgapSignallingInd true: the AMF is to take the session over and keep the container without sending it to an
+     * NG-RAN (TS 29.518 V18.14.0 cl. 5.6.2.3; TS 23.527 V18.6.0 cl. 8.3.2.4 step 8). Left out when false. */
+    bool no_ngap_signalling;
+} smf_namf_context_update_param_t;
+
+/* POST /namf-mbs-bc/v1/mbs-contexts/{mbsContextRef}/update, TS 29.518 V18.14.0 cl. 5.6.2.3 */
+ogs_sbi_request_t *smf_namf_build_mbs_broadcast_context_update_request(
+        smf_mbs_sess_t *mbs_sess, void *data);
 
 #ifdef __cplusplus
 }

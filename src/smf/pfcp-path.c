@@ -1185,3 +1185,257 @@ int smf_pfcp_send_session_report_response(
 
     return rv;
 }
+
+static void mbs_sess_5gc_timeout(ogs_pfcp_xact_t *xact, void *data)
+{
+    ogs_pool_id_t mbs_sess_id = OGS_INVALID_POOL_ID;
+    smf_mbs_sess_t *mbs_sess = NULL;
+    ogs_sbi_stream_t *stream = NULL;
+    uint8_t type;
+    int trigger;
+    char *strerror = NULL;
+    smf_event_t *e = NULL;
+    int rv;
+
+    ogs_assert(xact);
+    ogs_assert(data);
+
+    if (xact->assoc_stream_id >= OGS_MIN_POOL_ID &&
+            xact->assoc_stream_id <= OGS_MAX_POOL_ID)
+        stream = ogs_sbi_stream_find_by_id(xact->assoc_stream_id);
+
+    type = xact->seq[0].type;
+
+    mbs_sess_id = OGS_POINTER_TO_UINT(data);
+    ogs_assert(mbs_sess_id >= OGS_MIN_POOL_ID && mbs_sess_id <= OGS_MAX_POOL_ID);
+
+    mbs_sess = smf_mbs_sess_find_by_id(mbs_sess_id);
+    if (!mbs_sess) {
+        ogs_error("MBS Session has already been removed [%d]", type);
+        return;
+    }
+
+    switch (type) {
+    case OGS_PFCP_SESSION_ESTABLISHMENT_REQUEST_TYPE:
+        ogs_warn("No PFCP N4mb session establishment response");
+
+        e = smf_event_new(SMF_EVT_N4_TIMER);
+        ogs_assert(e);
+        e->mbs_sess_id = mbs_sess->id;
+        e->h.timer_id = SMF_TIMER_PFCP_NO_ESTABLISHMENT_RESPONSE;
+        e->pfcp_node = mbs_sess->pfcp_node;
+
+        rv = ogs_queue_push(ogs_app()->queue, e);
+        if (rv != OGS_OK) {
+            ogs_error("ogs_queue_push() failed:%d", (int)rv);
+            ogs_event_free(e);
+        }
+        break;
+    case OGS_PFCP_SESSION_MODIFICATION_REQUEST_TYPE:
+        // TODO (borieher): Add identifiers depending on TMGI or SSM as MBS Session ID
+        strerror = ogs_msprintf("No PFCP N4mb session modification response");
+        ogs_assert(strerror);
+
+        ogs_error("%s", strerror);
+        if (stream) {
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_GATEWAY_TIMEOUT,
+                NULL, "Gateway Timeout", strerror, NULL);
+        }
+        ogs_free(strerror);
+        break;
+    case OGS_PFCP_SESSION_DELETION_REQUEST_TYPE:
+        // TODO (borieher): Add identifiers depending on TMGI or SSM as MBS Session ID
+        trigger = xact->delete_trigger;
+        ogs_assert(trigger);
+
+        // TODO (borieher): Check if triggers make sense in the MBS context
+        strerror = ogs_msprintf("No PFCP N4mb session deletion response [%d]",
+                trigger);
+        ogs_assert(strerror);
+
+        ogs_error("%s", strerror);
+
+        if (trigger == OGS_PFCP_DELETE_TRIGGER_LOCAL_INITIATED ||
+            trigger == OGS_PFCP_DELETE_TRIGGER_PCF_INITIATED) {
+
+            /* Nothing */
+
+        } else if (trigger == OGS_PFCP_DELETE_TRIGGER_UE_REQUESTED ||
+                trigger == OGS_PFCP_DELETE_TRIGGER_AMF_UPDATE_SM_CONTEXT ||
+                trigger == OGS_PFCP_DELETE_TRIGGER_AMF_RELEASE_SM_CONTEXT) {
+
+            ogs_assert(stream);
+            ogs_assert(true ==
+                ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_GATEWAY_TIMEOUT,
+                    NULL, "Gateway Timeout", strerror, NULL));
+        } else {
+            ogs_fatal("Unknown trigger [%d]", trigger);
+            ogs_assert_if_reached();
+        }
+
+        ogs_free(strerror);
+
+        // TODO (borieher): Check if it should be done here or no
+        smf_mbs_sess_release(mbs_sess);
+        break;
+    default:
+        ogs_error("Not implemented [type:%d]", type);
+        break;
+    }
+}
+
+/*
+ * BUG FIX: this send function did not exist before -- mbs_sess_5gc_timeout() above already had a
+ * complete OGS_PFCP_SESSION_DELETION_REQUEST_TYPE branch (including the smf_mbs_sess_release() call on
+ * timeout), anticipating that a deletion request would eventually be sent, but nothing ever called it.
+ * Mirrors smf_5gc_pfcp_n4mb_send_session_establishment_request() below and the non-MBS
+ * smf_5gc_pfcp_send_session_deletion_request().
+ */
+int smf_5gc_pfcp_n4mb_send_session_deletion_request(smf_mbs_sess_t *mbs_sess)
+{
+    int rv;
+    ogs_pkbuf_t *n4mbbuf = NULL;
+    ogs_pfcp_header_t h;
+    ogs_pfcp_xact_t *xact = NULL;
+
+    ogs_assert(mbs_sess);
+
+    xact = ogs_pfcp_xact_local_create(
+            mbs_sess->pfcp_node, mbs_sess_5gc_timeout, OGS_UINT_TO_POINTER(mbs_sess->id));
+    if (!xact) {
+        ogs_error("ogs_pfcp_xact_local_create() failed");
+        return OGS_ERROR;
+    }
+
+    xact->delete_trigger = OGS_PFCP_DELETE_TRIGGER_LOCAL_INITIATED;
+    xact->local_seid = mbs_sess->smf_n4mb_seid;
+
+    memset(&h, 0, sizeof(ogs_pfcp_header_t));
+    h.type = OGS_PFCP_SESSION_DELETION_REQUEST_TYPE;
+    h.seid = mbs_sess->upf_n4mb_seid;
+
+    n4mbbuf = smf_n4mb_build_session_deletion_request(h.type, mbs_sess);
+    if (!n4mbbuf) {
+        ogs_error("smf_n4mb_build_session_deletion_request() failed");
+        return OGS_ERROR;
+    }
+
+    rv = ogs_pfcp_xact_update_tx(xact, &h, n4mbbuf);
+    if (rv != OGS_OK) {
+        ogs_error("ogs_pfcp_xact_update_tx() failed");
+        return OGS_ERROR;
+    }
+
+    rv = ogs_pfcp_xact_commit(xact);
+    ogs_expect(rv == OGS_OK);
+
+    return rv;
+}
+
+/* The N4mb Session Modification Request of the change of the QoS flows of an MBS session (see
+ * smf_n4mb_build_session_modification_request()). The answer is handled by
+ * smf_n4mb_handle_session_modification_response(). */
+int smf_5gc_pfcp_n4mb_send_session_modification_request(
+        smf_mbs_sess_t *mbs_sess, const smf_n4mb_modification_t *mod)
+{
+    int rv;
+    ogs_pkbuf_t *n4mbbuf = NULL;
+    ogs_pfcp_header_t h;
+    ogs_pfcp_xact_t *xact = NULL;
+
+    ogs_assert(mbs_sess);
+    ogs_assert(mod);
+
+    if (!mbs_sess->pfcp_node || !mbs_sess->upf_n4mb_seid) {
+        ogs_error("The MBS session has no N4mb session at the MB-UPF to modify");
+        return OGS_ERROR;
+    }
+
+    xact = ogs_pfcp_xact_local_create(
+            mbs_sess->pfcp_node, mbs_sess_5gc_timeout, OGS_UINT_TO_POINTER(mbs_sess->id));
+    if (!xact) {
+        ogs_error("ogs_pfcp_xact_local_create() failed");
+        return OGS_ERROR;
+    }
+
+    xact->local_seid = mbs_sess->smf_n4mb_seid;
+
+    memset(&h, 0, sizeof(ogs_pfcp_header_t));
+    h.type = OGS_PFCP_SESSION_MODIFICATION_REQUEST_TYPE;
+    h.seid = mbs_sess->upf_n4mb_seid;
+
+    n4mbbuf = smf_n4mb_build_session_modification_request(mbs_sess, mod);
+    if (!n4mbbuf) {
+        ogs_error("smf_n4mb_build_session_modification_request() failed");
+        ogs_pfcp_xact_delete(xact);
+        return OGS_ERROR;
+    }
+
+    rv = ogs_pfcp_xact_update_tx(xact, &h, n4mbbuf);
+    if (rv != OGS_OK) {
+        ogs_error("ogs_pfcp_xact_update_tx() failed");
+        return OGS_ERROR;
+    }
+
+    rv = ogs_pfcp_xact_commit(xact);
+    ogs_expect(rv == OGS_OK);
+
+    return rv;
+}
+
+int smf_5gc_pfcp_n4mb_send_session_establishment_request(
+        smf_mbs_sess_t *mbs_sess, uint64_t flags, ogs_sbi_stream_t *stream)
+{
+    int rv;
+    ogs_pkbuf_t *n4mbbuf = NULL;
+    ogs_pfcp_header_t h;
+    ogs_pfcp_xact_t *xact = NULL;
+
+    ogs_assert(mbs_sess);
+
+    /*
+     * BUG FIX: this used to pass the raw smf_mbs_sess_t* pointer directly as the timeout callback's
+     * `data` argument. The shared callback mbs_sess_5gc_timeout() unconditionally treats `data` as a
+     * boxed pool ID (OGS_POINTER_TO_UINT(data) then smf_mbs_sess_find_by_id()), matching every other
+     * call site in this file (including smf_5gc_pfcp_n4mb_send_session_deletion_request() below). A
+     * raw pointer here would either fail the pool-ID range ogs_assert() (abort) or, if the truncated
+     * bits happened to fall in-range, misattribute the timeout to a completely unrelated MBS session.
+     */
+    xact = ogs_pfcp_xact_local_create(
+            mbs_sess->pfcp_node, mbs_sess_5gc_timeout, OGS_UINT_TO_POINTER(mbs_sess->id));
+    if (!xact) {
+        ogs_error("ogs_pfcp_xact_local_create() failed");
+        return OGS_ERROR;
+    }
+
+    xact->local_seid = mbs_sess->smf_n4mb_seid;
+    xact->create_flags = flags;
+    /* the restoration of a session after an MB-UPF restart has no consumer waiting for the answer */
+    xact->assoc_stream_id = stream ? ogs_sbi_id_from_stream(stream) : OGS_INVALID_POOL_ID;
+
+    memset(&h, 0, sizeof(ogs_pfcp_header_t));
+    h.type = OGS_PFCP_SESSION_ESTABLISHMENT_REQUEST_TYPE;
+
+/*
+ * 7.2.2.4.2 Conditions for Sending SEID=0 in PFCP Header
+ * Check smf_5gc_pfcp_send_session_establishment_request()
+ */
+    h.seid = mbs_sess->upf_n4mb_seid;
+
+    n4mbbuf = smf_n4mb_build_session_establishment_request(mbs_sess, xact);
+    if (!n4mbbuf) {
+        ogs_error("smf_n4mb_build_session_establishment_request() failed");
+        return OGS_ERROR;
+    }
+
+    rv = ogs_pfcp_xact_update_tx(xact, &h, n4mbbuf);
+    if (rv != OGS_OK) {
+        ogs_error("ogs_pfcp_xact_update_tx() failed");
+        return OGS_ERROR;
+    }
+
+    rv = ogs_pfcp_xact_commit(xact);
+    ogs_expect(rv == OGS_OK);
+
+    return rv;
+}

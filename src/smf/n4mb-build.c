@@ -1,0 +1,612 @@
+/*
+ * 5G-MAG Reference Tools
+ * Copyright (C) 2024 iTEAM UPV <borieher@iteam.upv.es>
+ *
+ * This file is part of Open5GS.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include "context.h"
+#include "n4mb-build.h"
+#include "mbs-charging.h"
+
+/* TS 29.244 V18.10.0 clause 8.2.206: "The NID field shall be encoded with 11 hexadecimal digits, bit 8 to bit 5
+ * of the octet "o" is the most significant digit and bit 8 to bit 5 of the octet "o+5" is the least significant
+ * digit, and bits 4 to 1 of octets (o+5) shall all be encoded as 0." */
+bool smf_n4mb_nid_to_octets(const char *nid, uint8_t octets[6])
+{
+    int i;
+
+    ogs_assert(octets);
+
+    if (!smf_nid_is_valid(nid))
+        return false;
+
+    memset(octets, 0, 6);
+    for (i = 0; i < 11; i++) {
+        char c = nid[i];
+        uint8_t digit = (c >= '0' && c <= '9') ? (uint8_t)(c - '0') :
+                (uint8_t)((c | 0x20) - 'a' + 10);
+        octets[i / 2] |= (i % 2 == 0) ? (digit << 4) : digit;
+    }
+    return true;
+}
+
+ogs_pkbuf_t *smf_n4mb_build_session_establishment_request(
+        smf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact)
+{
+    ogs_pfcp_message_t *pfcp_message = NULL;
+    ogs_pfcp_session_establishment_request_t *req = NULL;
+    ogs_pkbuf_t *pkbuf = NULL;
+
+    ogs_pfcp_pdr_t *pdr = NULL;
+    ogs_pfcp_far_t *far = NULL;
+    ogs_pfcp_qer_t *qer = NULL;
+    int i, rv;
+
+    ogs_pfcp_node_id_t node_id;
+    ogs_pfcp_f_seid_t f_seid;
+    char apn_dnn[OGS_MAX_DNN_LEN+1];
+    int len;
+    ogs_pfcp_mbs_session_identifier_t mbs_session_identifier;
+    uint8_t mbs_session_identifier_buf[sizeof(ogs_pfcp_mbs_session_identifier_t)];
+    ogs_pfcp_mbsn4mbreq_flags_t mbsn4mbreq_flags;
+    ogs_pfcp_local_ingress_tunnel_t local_ingress_tunnel;
+    ogs_pfcp_multicast_transport_information_t multicast_transport_information;
+    uint8_t multicast_transport_information_buf[sizeof(ogs_pfcp_multicast_transport_information_t)];
+    ogs_pfcp_outer_header_creation_t unicast_ohc[SMF_N4MB_MAX_UNICAST_PARAMS];
+    uint8_t unicast_ids[SMF_N4MB_MAX_UNICAST_PARAMS][2];
+    uint8_t qer_indications = 0x01;    /* IQFISN */
+    uint8_t traffic_endpoint_id = 1;
+    uint8_t area_session_id[2];
+
+    ogs_debug("N4mb Session Establishment Request");
+
+    ogs_assert(mbs_sess);
+    ogs_assert(xact);
+
+    pfcp_message = ogs_calloc(1, sizeof(*pfcp_message));
+    if (!pfcp_message) {
+        ogs_error("ogs_calloc() failed");
+        return NULL;
+    }
+
+    req = &pfcp_message->pfcp_session_establishment_request;
+
+    /* Node ID */
+    rv = ogs_pfcp_sockaddr_to_node_id(&node_id, &len);
+    if (rv != OGS_OK) {
+        ogs_error("ogs_pfcp_sockaddr_to_node_id() failed");
+        ogs_free(pfcp_message);
+        return NULL;
+    }
+    req->node_id.presence = 1;
+    req->node_id.data = &node_id;
+    req->node_id.len = len;
+
+    /* F-SEID */
+    rv = ogs_pfcp_sockaddr_to_f_seid(&f_seid, &len);
+    if (rv != OGS_OK) {
+        ogs_error("ogs_pfcp_sockaddr_to_f_seid() failed");
+        ogs_free(pfcp_message);
+        return NULL;
+    }
+    f_seid.seid = htobe64(mbs_sess->smf_n4mb_seid);
+    req->cp_f_seid.presence = 1;
+    req->cp_f_seid.data = &f_seid;
+    req->cp_f_seid.len = len;
+
+    ogs_pfcp_pdrbuf_init();
+
+    /* Create PDR (IP Multicast Addressing Info inside PDI) */
+    i = 0;
+    ogs_list_for_each(&mbs_sess->pfcp.pdr_list, pdr) {
+        ogs_pfcp_build_create_pdr(&req->create_pdr[i], i, pdr);
+        i++;
+    }
+
+    /* Create FAR (MBS Multicast Parameters inside) */
+    i = 0;
+    ogs_list_for_each(&mbs_sess->pfcp.far_list, far) {
+        // TODO (borieher): Avoid setting the TEID in the create_far
+        ogs_pfcp_build_create_far(&req->create_far[i], i, far);
+        /* TS 29.244 V18.10.0 cl. 5.34.2.2: the Create FAR has the Apply Action "MBSU" "together with one or more
+         * Add MBS Unicast Parameters ... if unicast transport is used over N3mb or N19mb and N3mb/N19mb DL F-TEIDs
+         * are already known, e.g. during an MBS restoration for MB-UPF failure with or without restart procedure" */
+        if ((mbs_sess->restoring || mbs_sess->relocating) && (far->apply_action & OGS_PFCP_APPLY_ACTION_MBSU)) {
+            smf_mbs_dl_tunnel_t *tunnel = NULL;
+            int n = 0;
+
+            ogs_list_for_each(&mbs_sess->dl_tunnel_list, tunnel) {
+                if (n >= SMF_N4MB_MAX_UNICAST_PARAMS)
+                    break;     /* the rest is given by the modification that follows the restoration */
+                memset(&unicast_ohc[n], 0, sizeof(unicast_ohc[n]));
+                unicast_ohc[n].teid = htobe32(tunnel->teid);
+                unicast_ids[n][0] = (tunnel->unicast_params_id >> 8) & 0xff;
+                unicast_ids[n][1] = tunnel->unicast_params_id & 0xff;
+                if (tunnel->addr.ipv4) {
+                    unicast_ohc[n].gtpu4 = 1;
+                    unicast_ohc[n].addr = tunnel->addr.addr;
+                    req->create_far[i].add_mbs_unicast_parameters[n].outer_header_creation.len =
+                            2 + 4 + OGS_IPV4_LEN;
+                } else {
+                    unicast_ohc[n].gtpu6 = 1;
+                    memcpy(unicast_ohc[n].addr6, tunnel->addr.addr6, OGS_IPV6_LEN);
+                    req->create_far[i].add_mbs_unicast_parameters[n].outer_header_creation.len =
+                            2 + 4 + OGS_IPV6_LEN;
+                }
+                req->create_far[i].add_mbs_unicast_parameters[n].presence = 1;
+                req->create_far[i].add_mbs_unicast_parameters[n].destination_interface.presence = 1;
+                req->create_far[i].add_mbs_unicast_parameters[n].destination_interface.u8 =
+                        OGS_PFCP_INTERFACE_ACCESS;
+                req->create_far[i].add_mbs_unicast_parameters[n].mbs_unicast_parameters_id.presence = 1;
+                req->create_far[i].add_mbs_unicast_parameters[n].mbs_unicast_parameters_id.data = unicast_ids[n];
+                req->create_far[i].add_mbs_unicast_parameters[n].mbs_unicast_parameters_id.len =
+                        sizeof(unicast_ids[n]);
+                req->create_far[i].add_mbs_unicast_parameters[n].outer_header_creation.presence = 1;
+                req->create_far[i].add_mbs_unicast_parameters[n].outer_header_creation.data = &unicast_ohc[n];
+                n++;
+            }
+        }
+        i++;
+    }
+
+    // NOTE (borieher): For now QER is not being used
+    /* Create QER */
+    i = 0;
+    ogs_list_for_each(&mbs_sess->pfcp.qer_list, qer) {
+        ogs_pfcp_build_create_qer(&req->create_qer[i], i, qer);
+        /* TS 29.244 V18.10.0 cl. 5.34.2.2: "the IQFISN (Insert DL MBS QFI Sequence Number) flag in the Create QER
+         * IE shall be set to "1" to request the MB-UPF to insert the DL MBS QFI Sequence Number in the PDU session
+         * container in user plane packets"; cl. 8.2.216: "Bit 1 - IQFISN" of octet 5. */
+        req->create_qer[i].qer_indications.presence = 1;
+        req->create_qer[i].qer_indications.data = &qer_indications;
+        req->create_qer[i].qer_indications.len = sizeof(qer_indications);
+        i++;
+    }
+
+    /* TS 29.244 V18.10.0 clause 5.34.2.5: with MBS charging "the MB-SMF shall provision URR(s) for the related PFCP
+     * session in the MB-UPF as defined in clause 5.4.10": a URR of the session, not of a PDR (table 7.5.2.4-1, N4mb
+     * column), volume measurement only, no quota. */
+    {
+        ogs_pfcp_urr_t *urr = smf_mbs_sess_charging_urr(mbs_sess);
+
+        if (urr)
+            ogs_pfcp_build_create_urr(&req->create_urr[0], 0, urr);
+    }
+
+    /* APN/DNN */
+    if (mbs_sess->dnn) {
+        len = ogs_fqdn_build(apn_dnn, mbs_sess->dnn, strlen(mbs_sess->dnn));
+        req->apn_dnn.presence = 1;
+        req->apn_dnn.len = len;
+        req->apn_dnn.data = apn_dnn;
+    }
+
+    /* S-NSSAI */
+    if (mbs_sess->has_s_nssai) {
+        req->s_nssai.presence = 1;
+        req->s_nssai.len = 4;
+        req->s_nssai.data = &mbs_sess->s_nssai;
+    }
+
+    // NOTE (borieher): (C), create_traffic_endpoint if UP has PDI optimization or tunnelling requested
+    /* Create "Create Traffic Endpoint" */
+    /* An MBS restoration after an MB-UPF restart gives the ingress tunnel address used before, and "shall not set the
+     * CHOOSE bit to "1"" (TS 23.527 V18.6.0 clause 8.2.2); at an alternative MB-UPF (clause 8.2.3) "the MB-SMF shall
+     * request the alternative MB-UPF to allocate a new N6mb and/or Nmb9 ingress tunnel address, if unicast transport
+     * is used over N6mb and/or Nmb9". */
+    if ((mbs_sess->ingress_tun_addr_req || (mbs_sess->relocating && mbs_sess->ingress_tun_addr)) &&
+            !(mbs_sess->restoring && mbs_sess->ingress_tun_addr)) {
+        /* TODO: (davidjw) allow choice of IPv4 and/or IPv6 */
+	if (ogs_pfcp_proto_choice_to_local_ingress_tunnel(true, false, &local_ingress_tunnel, &len) == OGS_OK) {
+            req->create_traffic_endpoint.presence = 1;
+            req->create_traffic_endpoint.local_ingress_tunnel.presence = 1;
+	    req->create_traffic_endpoint.local_ingress_tunnel.data = &local_ingress_tunnel;
+            req->create_traffic_endpoint.local_ingress_tunnel.len = len;
+            ogs_debug("local_ingress_tunnel.len = %zu, len = %i", sizeof(local_ingress_tunnel)-4, len);
+        } else {
+	    ogs_warn("Couldn't add Local Ingress Tunnel choice to PFCP request");
+        }
+    } else if (mbs_sess->ingress_tun_addr) {
+	if (ogs_pfcp_sockaddr_to_local_ingress_tunnel(mbs_sess->ingress_tun_addr, &local_ingress_tunnel, &len) == OGS_OK) {
+            req->create_traffic_endpoint.presence = 1;
+	    req->create_traffic_endpoint.local_ingress_tunnel.presence = 1;
+            req->create_traffic_endpoint.local_ingress_tunnel.data = &local_ingress_tunnel;
+                        // The length is the address-family-specific one computed by
+                        // ogs_pfcp_sockaddr_to_local_ingress_tunnel(), not sizeof the whole union: TS 29.244 cl.8.2.209
+                        // encodes flags, port and address only, 7 octets for IPv4 and 19 for IPv6, so the struct size
+                        // would pad the wire encoding with trailing zeros.
+            req->create_traffic_endpoint.local_ingress_tunnel.len = len;
+        } else {
+            ogs_warn("Couldn't add Local Ingress Tunnel address to PFCP request");
+        }
+    }
+
+    /* TS 29.244 V18.10.0 table 7.5.2.7-1: "Traffic Endpoint ID | M | This IE shall uniquely identify the Traffic
+     * Endpoint for that PFCP session." and "Local Ingress Tunnel | C | This IE shall be present over N4mb ...
+     * if Traffic Endpoint ID is present in the DL PDR." One endpoint carries the single ingress tunnel of the
+     * session (cl. 5.34.2.2: "the MB-UPF shall assign a single ingress tunnel address, regardless of the
+     * number of MBS QoS flows"); every DL PDR refers to it. */
+    if (req->create_traffic_endpoint.presence) {
+        req->create_traffic_endpoint.traffic_endpoint_id.presence = 1;
+        req->create_traffic_endpoint.traffic_endpoint_id.data = &traffic_endpoint_id;
+        req->create_traffic_endpoint.traffic_endpoint_id.len = sizeof(traffic_endpoint_id);
+        for (i = 0; i < OGS_MAX_NUM_OF_PDR && req->create_pdr[i].presence; i++) {
+            req->create_pdr[i].pdi.traffic_endpoint_id.presence = 1;
+            req->create_pdr[i].pdi.traffic_endpoint_id.data = &traffic_endpoint_id;
+            req->create_pdr[i].pdi.traffic_endpoint_id.len = sizeof(traffic_endpoint_id);
+        }
+    }
+
+    // NOTE (borieher): (O), user_plane_inactivity_timer
+
+    /* MBS Session N4mb Control Information */
+    req->mbs_session_n4mb_control_information.presence = 1;
+
+    // MBS Session ID for MBS Session N4mb Control Information
+    memset(&mbs_session_identifier, 0, sizeof(ogs_pfcp_mbs_session_identifier_t));
+
+    if (mbs_sess->mbs_session_id.is_tmgi) {
+        mbs_session_identifier.tmgif = 1;
+        ogs_uint24_t mbs_svc_id = ogs_htobe24(ogs_uint24_from_string_hexadecimal((char *)mbs_sess->mbs_session_id.tmgi->mbs_service_id));
+        memcpy(mbs_session_identifier.tmgi.mbs_service_id, &mbs_svc_id, sizeof(mbs_session_identifier.tmgi.mbs_service_id));
+
+        /* TS 24.008 V18.8.0 figure 10.5.154: octet 6 "MCC digit 2 | MCC digit 1", octet 7 "MNC digit 3 | MCC
+         * digit 3", octet 8 "MNC digit 2 | MNC digit 1" (TS 29.244 V18.10.0 cl. 8.2.206: "The TMGI field shall
+         * be encoded as octets 3 to octet 8 in the figure 10.5.154 of 3GPP TS 24.008"). The PLMN of the TMGI is an
+         * ogs_plmn_id_t, whose digit fields are not named as in that figure: it is converted to the NAS layout,
+         * which is the figure's, instead of being copied field by field. */
+        {
+            ogs_nas_plmn_id_t nas_plmn_id;
+            ogs_nas_from_plmn_id(&nas_plmn_id, &mbs_sess->mbs_session_id.tmgi->plmn_id);
+            memcpy(mbs_session_identifier.tmgi.plmn_id, &nas_plmn_id, sizeof(nas_plmn_id));
+        }
+    }
+    if (mbs_sess->mbs_session_id.is_ssm || mbs_sess->ssm) {
+	ogs_ssm_t *ssm = mbs_sess->mbs_session_id.is_ssm?mbs_sess->mbs_session_id.ssm:mbs_sess->ssm;
+        mbs_session_identifier.ssmif = 1;
+        // TODO (borieher): Build SSM as MBS Session ID
+        if (ssm->dest_ip_addr.ipv4) {
+            mbs_session_identifier.ssm.ip_multicast_distribution_address.address_type = 0; /* IPv4 */
+            mbs_session_identifier.ssm.ip_multicast_distribution_address.address_length =
+                    ssm->dest_ip_addr.len;
+            mbs_session_identifier.ssm.ip_multicast_distribution_address.ipv4_addr =
+                    ssm->dest_ip_addr.addr;
+        } else if (ssm->dest_ip_addr.ipv6) {
+            mbs_session_identifier.ssm.ip_multicast_distribution_address.address_type = 1; /* IPv6 */
+            mbs_session_identifier.ssm.ip_multicast_distribution_address.address_length =
+                    ssm->dest_ip_addr.len;
+            memcpy(mbs_session_identifier.ssm.ip_multicast_distribution_address.ipv6_addr, ssm->dest_ip_addr.addr6, sizeof(mbs_session_identifier.ssm.ip_multicast_distribution_address.ipv6_addr));
+        }
+	if (ssm->src_ip_addr.ipv4) {
+	    mbs_session_identifier.ssm.ip_source_address.address_type = 0; /* IPv4 */
+            mbs_session_identifier.ssm.ip_source_address.address_length =
+                    ssm->src_ip_addr.len;
+            mbs_session_identifier.ssm.ip_source_address.ipv4_addr =
+                    ssm->src_ip_addr.addr;
+        } else if (ssm->src_ip_addr.ipv6) {
+            mbs_session_identifier.ssm.ip_source_address.address_type = 1; /* IPv6 */
+            mbs_session_identifier.ssm.ip_source_address.address_length =
+                    ssm->src_ip_addr.len;
+            memcpy(mbs_session_identifier.ssm.ip_source_address.ipv6_addr, ssm->src_ip_addr.addr6, sizeof(mbs_session_identifier.ssm.ip_source_address.ipv6_addr));
+        }
+    }
+
+    if (mbs_sess->mbs_session_id.nid) {
+        if (!smf_n4mb_nid_to_octets(mbs_sess->mbs_session_id.nid, mbs_session_identifier.nid)) {
+            ogs_error("N4mb Session Establishment Request: NID [%s] is not 11 hexadecimal digits",
+                    mbs_sess->mbs_session_id.nid);
+            ogs_pfcp_pdrbuf_clear();
+            ogs_free(pfcp_message);
+            return NULL;
+        }
+        mbs_session_identifier.nidif = 1;
+    }
+
+    req->mbs_session_n4mb_control_information.mbs_session_identifier.presence = 1;
+    ogs_pfcp_build_mbs_session_identifier(&req->mbs_session_n4mb_control_information.mbs_session_identifier,
+            &mbs_session_identifier, mbs_session_identifier_buf, sizeof(mbs_session_identifier_buf));
+
+    // MBSN4mbReq flags for MBS Session N4mb Control Information
+    memset(&mbsn4mbreq_flags, 0, sizeof(ogs_pfcp_mbsn4mbreq_flags_t));
+
+    // If we are not using a UDP tunnel and SSM is present, add JMBSSM flag
+    if (!mbs_sess->ingress_tun_addr_req && !mbs_sess->ingress_tun_addr &&
+        (mbs_sess->mbs_session_id.is_ssm || mbs_sess->ssm)) {
+        mbsn4mbreq_flags.join_mbs_session_ssm = 1;
+    }
+
+    // Always allocate LL-SSM for talking to the RAN (or UPF)
+    mbsn4mbreq_flags.provide_lower_layer_ssm = 1;
+
+    /* TS 23.527 V18.6.0 clause 8.2.2: "the MB-SMF shall include the MBS Restoration Indication in the PFCP Session
+     * Establishment Request message to indicate to the MB-UPF that this is a request to restore the PFCP session of
+     * an existing MBS session" and "If multicast transport is used on N3mb and/or N19mb, the MB-SMF shall additionally
+     * provide, in the Multicast Transport Information for N3mb and/or N19mb IE in the PFCP Session Establishment
+     * Request, the N3mb and/or N19mb LL SSM address and GTP-U Common TEID (C-TEID) that was previously used for the
+     * MBS session ... The MB-SMF shall not set the PLLSSM flag in the MBSN4mbReq-Flags IE". */
+    if (mbs_sess->restoring) {
+        mbsn4mbreq_flags.restoration_indication = 1;
+        if (mbs_sess->ll_ssm.dest_ip_addr.ipv4 || mbs_sess->ll_ssm.dest_ip_addr.ipv6) {
+            memset(&multicast_transport_information, 0, sizeof(multicast_transport_information));
+            multicast_transport_information.c_teid = htobe32(mbs_sess->c_teid);
+            if (mbs_sess->ll_ssm.dest_ip_addr.ipv4) {
+                multicast_transport_information.ip_multicast_distribution_address.address_type = 0;
+                multicast_transport_information.ip_multicast_distribution_address.address_length = OGS_IPV4_LEN;
+                multicast_transport_information.ip_multicast_distribution_address.ipv4_addr =
+                        mbs_sess->ll_ssm.dest_ip_addr.addr;
+            } else {
+                multicast_transport_information.ip_multicast_distribution_address.address_type = 1;
+                multicast_transport_information.ip_multicast_distribution_address.address_length = OGS_IPV6_LEN;
+                memcpy(multicast_transport_information.ip_multicast_distribution_address.ipv6_addr,
+                        mbs_sess->ll_ssm.dest_ip_addr.addr6, OGS_IPV6_LEN);
+            }
+            if (mbs_sess->ll_ssm.src_ip_addr.ipv6) {
+                multicast_transport_information.ip_source_address.address_type = 1;
+                multicast_transport_information.ip_source_address.address_length = OGS_IPV6_LEN;
+                memcpy(multicast_transport_information.ip_source_address.ipv6_addr,
+                        mbs_sess->ll_ssm.src_ip_addr.addr6, OGS_IPV6_LEN);
+            } else {
+                multicast_transport_information.ip_source_address.address_type = 0;
+                multicast_transport_information.ip_source_address.address_length = OGS_IPV4_LEN;
+                multicast_transport_information.ip_source_address.ipv4_addr = mbs_sess->ll_ssm.src_ip_addr.addr;
+            }
+            req->mbs_session_n4mb_control_information.multicast_transport_information_for_n3mb_and_or_n19mb.presence = 1;
+            ogs_pfcp_build_multicast_transport_information(
+                    &req->mbs_session_n4mb_control_information.multicast_transport_information_for_n3mb_and_or_n19mb,
+                    &multicast_transport_information, multicast_transport_information_buf,
+                    sizeof(multicast_transport_information_buf));
+        }
+        mbsn4mbreq_flags.provide_lower_layer_ssm = 0;
+    }
+
+    req->mbs_session_n4mb_control_information.mbsn4mbreq_flags.presence = 1;
+    req->mbs_session_n4mb_control_information.mbsn4mbreq_flags.data = &mbsn4mbreq_flags.value;
+    req->mbs_session_n4mb_control_information.mbsn4mbreq_flags.len = sizeof(ogs_pfcp_mbsn4mbreq_flags_t);
+
+    /* "the Area Session ID, for a location dependent MBS service" (TS 29.244 V18.10.0 clause 5.34.2.2), in the group
+     * IE "MBS Session N4mb Control Information" (table 7.5.2.1-4); clause 8.2.213: 2 octets, the MBS Area Session ID
+     * (TS 23.003 clause 30.3) */
+    if (mbs_sess->location_dependent) {
+        area_session_id[0] = (mbs_sess->area_session_id >> 8) & 0xff;
+        area_session_id[1] = mbs_sess->area_session_id & 0xff;
+        req->mbs_session_n4mb_control_information.area_session_id.presence = 1;
+        req->mbs_session_n4mb_control_information.area_session_id.data = area_session_id;
+        req->mbs_session_n4mb_control_information.area_session_id.len = sizeof(area_session_id);
+    }
+
+    pfcp_message->h.type = OGS_PFCP_SESSION_ESTABLISHMENT_REQUEST_TYPE;
+    pkbuf = ogs_pfcp_build_msg(pfcp_message);
+    ogs_expect(pkbuf);
+
+    ogs_pfcp_pdrbuf_clear();
+    ogs_free(pfcp_message);
+
+    return pkbuf;
+}
+
+/*
+ * BUG FIX: no N4mb Session Deletion Request builder existed at all -- this is why the UPF's MBS session
+ * pool (OGS_MAX_NUM_OF_MBS_SESSIONS=20) filled up after repeated test session creation/deletion cycles
+ * and never drained until process restart. The N4mb Session Deletion Request carries no mandatory IEs of
+ * its own (ogs_pfcp_session_deletion_request_t is empty, same as the non-MBS
+ * smf_n4_build_session_deletion_request() this mirrors) -- the SEID in the PFCP header alone identifies
+ * which UPF-side session to release.
+ */
+ogs_pkbuf_t *smf_n4mb_build_session_deletion_request(
+        uint8_t type, smf_mbs_sess_t *mbs_sess)
+{
+    ogs_pfcp_message_t *pfcp_message = NULL;
+    ogs_pkbuf_t *pkbuf = NULL;
+
+    ogs_debug("N4mb Session Deletion Request");
+    ogs_assert(mbs_sess);
+
+    pfcp_message = ogs_calloc(1, sizeof(*pfcp_message));
+    if (!pfcp_message) {
+        ogs_error("ogs_calloc() failed");
+        return NULL;
+    }
+
+    pfcp_message->h.type = type;
+    pkbuf = ogs_pfcp_build_msg(pfcp_message);
+    ogs_expect(pkbuf);
+
+    ogs_free(pfcp_message);
+
+    return pkbuf;
+}
+
+/*
+ * TS 29.244 V18.10.0 cl. 5.34.2.2: "for each MBS QoS flow: a Create PDR ..., a Create QER ..., a Create FAR ...",
+ * table 7.5.4.1-1 (PFCP Session Modification Request, the N4mb column): Create PDR "This IE shall be present if the
+ * CP function requests the UP function to create a new PDR.", Create FAR, Create QER, and Remove PDR, Remove FAR,
+ * Remove QER "When present, this IE shall contain the ... Rule which is requested to be removed.", each "Several
+ * IEs within the same IE type may be present". A flow that came is provisioned as at the establishment (the rules
+ * are built by the same functions); a flow that went is identified by the identifiers of its three rules.
+ */
+ogs_pkbuf_t *smf_n4mb_build_session_modification_request(
+        smf_mbs_sess_t *mbs_sess, const smf_n4mb_modification_t *mod)
+{
+    const smf_mbs_flow_change_t *flows = mod->flows;
+    ogs_pfcp_far_t *far = NULL;
+    ogs_pfcp_outer_header_creation_t outer_header_creation;
+    uint8_t unicast_params_id[2], remove_params[2];
+    uint8_t destination_interface;
+
+    ogs_pfcp_message_t *pfcp_message = NULL;
+    ogs_pfcp_session_modification_request_t *req = NULL;
+    ogs_pkbuf_t *pkbuf = NULL;
+    ogs_pfcp_smreq_flags_t smreq_flags;
+    uint8_t qer_indications = 0x01;    /* IQFISN */
+    uint8_t traffic_endpoint_id = 1;
+    int i;
+
+    ogs_debug("N4mb Session Modification Request");
+
+    ogs_assert(mbs_sess);
+    ogs_assert(mod);
+
+    pfcp_message = ogs_calloc(1, sizeof(*pfcp_message));
+    if (!pfcp_message) {
+        ogs_error("ogs_calloc() failed");
+        return NULL;
+    }
+
+    req = &pfcp_message->pfcp_session_modification_request;
+
+    ogs_pfcp_pdrbuf_init();
+
+    /* Update FAR of every flow: the tunnel of an NG-RAN node that wants the session by unicast transport. Table
+     * 7.5.2.3-6 (Add MBS Unicast Parameters): Destination Interface "M", MBS Unicast Parameters ID "M", Outer Header
+     * Creation "M ... It shall contain the F-TEID of the remote GTP-U peer when adding a GTP-U/UDP/IP header." Table
+     * 7.5.4.3-4 (Remove MBS Unicast Parameters): MBS Unicast Parameters ID "M". */
+    if (mod->tunnel || mod->update_apply_action) {
+        i = 0;
+        ogs_list_for_each(&mbs_sess->pfcp.far_list, far) {
+            if (i >= OGS_MAX_NUM_OF_FAR)
+                break;
+            req->update_far[i].presence = 1;
+            req->update_far[i].far_id.presence = 1;
+            req->update_far[i].far_id.u32 = far->id;
+            if (mod->update_apply_action) {
+                req->update_far[i].apply_action.presence = 1;
+                req->update_far[i].apply_action.u16 = far->apply_action;
+            }
+            if (mod->tunnel && mod->tunnel->has_add) {
+                memset(&outer_header_creation, 0, sizeof(outer_header_creation));
+                outer_header_creation.teid = htobe32(mod->tunnel->add_teid);
+                destination_interface = OGS_PFCP_INTERFACE_ACCESS;
+                unicast_params_id[0] = (mod->tunnel->add_id >> 8) & 0xff;
+                unicast_params_id[1] = mod->tunnel->add_id & 0xff;
+                if (mod->tunnel->add_addr.ipv4) {
+                    outer_header_creation.gtpu4 = 1;
+                    outer_header_creation.addr = mod->tunnel->add_addr.addr;
+                    req->update_far[i].add_mbs_unicast_parameters[0].outer_header_creation.len = 2 + 4 + OGS_IPV4_LEN;
+                } else {
+                    outer_header_creation.gtpu6 = 1;
+                    memcpy(outer_header_creation.addr6, mod->tunnel->add_addr.addr6, OGS_IPV6_LEN);
+                    req->update_far[i].add_mbs_unicast_parameters[0].outer_header_creation.len = 2 + 4 + OGS_IPV6_LEN;
+                }
+                req->update_far[i].add_mbs_unicast_parameters[0].presence = 1;
+                req->update_far[i].add_mbs_unicast_parameters[0].destination_interface.presence = 1;
+                req->update_far[i].add_mbs_unicast_parameters[0].destination_interface.u8 = destination_interface;
+                req->update_far[i].add_mbs_unicast_parameters[0].mbs_unicast_parameters_id.presence = 1;
+                req->update_far[i].add_mbs_unicast_parameters[0].mbs_unicast_parameters_id.data = unicast_params_id;
+                req->update_far[i].add_mbs_unicast_parameters[0].mbs_unicast_parameters_id.len = sizeof(unicast_params_id);
+                req->update_far[i].add_mbs_unicast_parameters[0].outer_header_creation.presence = 1;
+                req->update_far[i].add_mbs_unicast_parameters[0].outer_header_creation.data = &outer_header_creation;
+            }
+            if (mod->tunnel && mod->tunnel->has_remove) {
+                remove_params[0] = (mod->tunnel->remove_id >> 8) & 0xff;
+                remove_params[1] = mod->tunnel->remove_id & 0xff;
+                req->update_far[i].remove_mbs_unicast_parameters[0].presence = 1;
+                req->update_far[i].remove_mbs_unicast_parameters[0].mbs_unicast_parameters_id.presence = 1;
+                req->update_far[i].remove_mbs_unicast_parameters[0].mbs_unicast_parameters_id.data = remove_params;
+                req->update_far[i].remove_mbs_unicast_parameters[0].mbs_unicast_parameters_id.len = sizeof(remove_params);
+            }
+            i++;
+        }
+    }
+
+    for (i = 0; flows && i < flows->num_removed; i++) {
+        req->remove_pdr[i].presence = 1;
+        req->remove_pdr[i].pdr_id.presence = 1;
+        req->remove_pdr[i].pdr_id.u16 = flows->removed[i].pdr_id;
+        req->remove_far[i].presence = 1;
+        req->remove_far[i].far_id.presence = 1;
+        req->remove_far[i].far_id.u32 = flows->removed[i].far_id;
+        req->remove_qer[i].presence = 1;
+        req->remove_qer[i].qer_id.presence = 1;
+        req->remove_qer[i].qer_id.u32 = flows->removed[i].qer_id;
+    }
+
+    for (i = 0; flows && i < flows->num_added; i++) {
+        ogs_pfcp_pdr_t *pdr = flows->added[i];
+
+        ogs_assert(pdr && pdr->far && pdr->qer);
+
+        ogs_pfcp_build_create_pdr(&req->create_pdr[i], i, pdr);
+        /* the downlink PDR refers to the Traffic Endpoint that carries the ingress tunnel of the session (table
+         * 7.5.2.7-1) */
+        if (mbs_sess->ingress_tun_addr_req || mbs_sess->ingress_tun_addr) {
+            req->create_pdr[i].pdi.traffic_endpoint_id.presence = 1;
+            req->create_pdr[i].pdi.traffic_endpoint_id.data = &traffic_endpoint_id;
+            req->create_pdr[i].pdi.traffic_endpoint_id.len = sizeof(traffic_endpoint_id);
+        }
+        ogs_pfcp_build_create_far(&req->create_far[i], i, pdr->far);
+        ogs_pfcp_build_create_qer(&req->create_qer[i], i, pdr->qer);
+        /* cl. 5.34.2.2: the IQFISN flag in the Create QER IE "shall be set to "1"" */
+        req->create_qer[i].qer_indications.presence = 1;
+        req->create_qer[i].qer_indications.data = &qer_indications;
+        req->create_qer[i].qer_indications.len = sizeof(qer_indications);
+    }
+
+    /* TS 29.244 V18.10.0 clause 5.34.2.5: "The MB-SMF may request the MB-UPF, in a PFCP Session Modification Request, to
+     * report its ongoing volume measurement for one or multiple URRs of the PFCP session, by including one or more
+     * Query URR IEs or by setting the QAURR (Query All URRs) flag, as defined in clause 5.2.2.3.1" */
+    if (mod->query_all_urrs) {
+        smreq_flags.value = 0;
+        smreq_flags.query_all_urrs = 1;
+        pfcp_message->pfcp_session_modification_request.pfcpsmreq_flags.presence = 1;
+        pfcp_message->pfcp_session_modification_request.pfcpsmreq_flags.u8 = smreq_flags.value;
+    }
+
+    pfcp_message->h.type = OGS_PFCP_SESSION_MODIFICATION_REQUEST_TYPE;
+    pkbuf = ogs_pfcp_build_msg(pfcp_message);
+    ogs_expect(pkbuf);
+
+    ogs_pfcp_pdrbuf_clear();
+    ogs_free(pfcp_message);
+
+    return pkbuf;
+}
+
+ogs_pkbuf_t *smf_n4mb_build_node_report_response(uint8_t cause, uint16_t offending_ie)
+{
+    ogs_pfcp_message_t *pfcp_message = NULL;
+    ogs_pfcp_node_report_response_t *rsp = NULL;
+    ogs_pfcp_node_id_t node_id;
+    ogs_pkbuf_t *pkbuf = NULL;
+    int node_id_len = 0;
+
+    pfcp_message = ogs_calloc(1, sizeof(*pfcp_message));
+    ogs_assert(pfcp_message);
+    rsp = &pfcp_message->pfcp_node_report_response;
+
+    if (ogs_pfcp_sockaddr_to_node_id(&node_id, &node_id_len) != OGS_OK) {
+        ogs_error("ogs_pfcp_sockaddr_to_node_id() failed");
+        ogs_free(pfcp_message);
+        return NULL;
+    }
+    rsp->node_id.presence = 1;
+    rsp->node_id.data = &node_id;
+    rsp->node_id.len = node_id_len;
+
+    rsp->cause.presence = 1;
+    rsp->cause.u8 = cause;
+    if (offending_ie) {
+        rsp->offending_ie.presence = 1;
+        rsp->offending_ie.u16 = offending_ie;
+    }
+
+    pfcp_message->h.type = OGS_PFCP_NODE_REPORT_RESPONSE_TYPE;
+    pkbuf = ogs_pfcp_build_msg(pfcp_message);
+    ogs_expect(pkbuf);
+    ogs_free(pfcp_message);
+
+    return pkbuf;
+}

@@ -20,6 +20,7 @@
 #include "context.h"
 #include "ngap-path.h"
 #include "sbi-path.h"
+#include "namf-build.h"
 
 int smf_sbi_open(void)
 {
@@ -45,6 +46,12 @@ int smf_sbi_open(void)
     ogs_sbi_nf_instance_add_allowed_nf_type(nf_instance, OpenAPI_nf_type_SCP);
     ogs_sbi_nf_instance_add_allowed_nf_type(nf_instance, OpenAPI_nf_type_AMF);
     ogs_sbi_nf_instance_add_allowed_nf_type(nf_instance, OpenAPI_nf_type_SMF);
+    /* The consumers of the MBS services of the MB-SMF: TS 29.532 V19.3.0 clause 5.2.2.2, "The NF Service Consumer
+     * (e.g. NEF, MBSF and AF)" */
+    ogs_sbi_nf_instance_add_allowed_nf_type(nf_instance, OpenAPI_nf_type_NEF);
+    ogs_sbi_nf_instance_add_allowed_nf_type(nf_instance, OpenAPI_nf_type_MBSF);
+    ogs_sbi_nf_instance_add_allowed_nf_type(nf_instance, OpenAPI_nf_type_AF);
+    ogs_sbi_nf_instance_add_collocated_nf_type(nf_instance, OpenAPI_collocated_nf_type_MB_SMF);
 
     /* Build NF service information. It will be transmitted to NRF. */
     if (ogs_sbi_nf_service_is_available(OpenAPI_service_name_nsmf_pdusession)) {
@@ -55,6 +62,26 @@ int smf_sbi_open(void)
                     service, OGS_SBI_API_V1, OGS_SBI_API_V1_0_0, NULL);
         ogs_sbi_nf_service_add_allowed_nf_type(service, OpenAPI_nf_type_AMF);
         ogs_sbi_nf_service_add_allowed_nf_type(service, OpenAPI_nf_type_SMF);
+    }
+    if (ogs_sbi_nf_service_is_available(OpenAPI_service_name_nmbsmf_tmgi)) {
+        service = ogs_sbi_nf_service_build_default(
+                    nf_instance, OpenAPI_service_name_nmbsmf_tmgi);
+        ogs_assert(service);
+        ogs_sbi_nf_service_add_version(
+                    service, OGS_SBI_API_V1, OGS_SBI_API_V1_0_0, NULL);
+        ogs_sbi_nf_service_add_allowed_nf_type(service, OpenAPI_nf_type_NEF);
+        ogs_sbi_nf_service_add_allowed_nf_type(service, OpenAPI_nf_type_MBSF);
+        ogs_sbi_nf_service_add_allowed_nf_type(service, OpenAPI_nf_type_AF);
+    }
+    if (ogs_sbi_nf_service_is_available(OpenAPI_service_name_nmbsmf_mbssession)) {
+        service = ogs_sbi_nf_service_build_default(
+                    nf_instance, OpenAPI_service_name_nmbsmf_mbssession);
+        ogs_assert(service);
+        ogs_sbi_nf_service_add_version(
+                    service, OGS_SBI_API_V1, OGS_SBI_API_V1_0_0, NULL);
+        ogs_sbi_nf_service_add_allowed_nf_type(service, OpenAPI_nf_type_NEF);
+        ogs_sbi_nf_service_add_allowed_nf_type(service, OpenAPI_nf_type_MBSF);
+        ogs_sbi_nf_service_add_allowed_nf_type(service, OpenAPI_nf_type_AF);
     }
 
     /* Initialize NRF NF Instance */
@@ -935,6 +962,46 @@ int smf_sbi_cleanup_session(
     return r;
 }
 
+static int mbs_status_notify_cb(
+        int status, ogs_sbi_response_t *response, void *data)
+{
+    if (status != OGS_OK) {
+        ogs_log_message(
+                status == OGS_DONE ? OGS_LOG_DEBUG : OGS_LOG_WARN, 0,
+                "mbs_status_notify_cb() failed [%d]", status);
+        return OGS_ERROR;
+    }
+
+    ogs_assert(response);
+
+    /* TS 29.532 V18.6.0 cl. 5.3.2.8.1 step 2a: "On success, the MB-SMF shall return a "204 No Content" response."
+     * The target is the subscriber's own URI, which does not follow the 3GPP path of the SBI parser: the status is
+     * all there is to read. */
+    if (response->status != OGS_SBI_HTTP_STATUS_NO_CONTENT)
+        ogs_error("MBS Session StatusNotify failed [%d]", response->status);
+
+    ogs_sbi_response_free(response);
+    return OGS_OK;
+}
+
+bool smf_sbi_send_mbs_status_notify(smf_mbs_subsc_t *subsc, ogs_sbi_request_t *request)
+{
+    bool rc;
+
+    ogs_assert(subsc);
+    ogs_assert(request);
+
+    if (!subsc->client) {
+        ogs_error("The subscription [%s] has no client to notify", subsc->id);
+        return false;
+    }
+
+    rc = ogs_sbi_send_request_to_client(subsc->client, mbs_status_notify_cb, request, NULL);
+    ogs_expect(rc == true);
+
+    return rc;
+}
+
 bool smf_sbi_send_sm_context_status_notify(smf_sess_t *sess)
 {
     bool rc;
@@ -1369,4 +1436,188 @@ void smf_sbi_send_smpolicycontrol_rule_report(
     }
     if (num_of_plain)
         rule_report_send(sess, success, plain, num_of_plain, NULL);
+}
+
+// NOTE (borieher): Temporary workaround
+int smf_sbi_old_discover_and_send(
+        OpenAPI_service_name_e service_name,
+        ogs_sbi_discovery_option_t *discovery_option,
+        ogs_sbi_request_t *(*build)(smf_mbs_sess_t *mbs_sess, void *data),
+        smf_mbs_sess_t *mbs_sess, ogs_sbi_stream_t *stream, int state, void *data)
+{
+    int r;
+    ogs_sbi_xact_t *xact = NULL;
+    OpenAPI_nf_type_e target_nf_type = OpenAPI_nf_type_NULL;
+
+    ogs_assert(service_name);
+    target_nf_type = ogs_sbi_service_name_to_nf_type(service_name);
+    ogs_assert(target_nf_type);
+    ogs_assert(mbs_sess);
+    ogs_assert(build);
+
+    xact = ogs_sbi_xact_add(
+            mbs_sess->id, &mbs_sess->sbi, service_name, discovery_option,
+            (ogs_sbi_build_f)build, mbs_sess, data);
+    if (!xact) {
+        ogs_error("smf_sbi_old_discover_and_send() failed");
+        if (stream)
+            ogs_assert(true ==
+                ogs_sbi_server_send_error(stream,
+                    OGS_SBI_HTTP_STATUS_GATEWAY_TIMEOUT, NULL,
+                    "Cannot discover", NULL, NULL));
+        return OGS_ERROR;
+    }
+
+    xact->state = state;
+
+    if (stream) {
+        xact->assoc_stream_id = ogs_sbi_id_from_stream(stream);
+        ogs_assert(xact->assoc_stream_id >= OGS_MIN_POOL_ID &&
+                xact->assoc_stream_id <= OGS_MAX_POOL_ID);
+    }
+
+    r = ogs_sbi_discover_and_send(xact);
+    if (r != OGS_OK) {
+        ogs_error("smf_sbi_old_discover_and_send() failed");
+        ogs_sbi_xact_remove(xact);
+
+        if (stream)
+            ogs_assert(true ==
+                ogs_sbi_server_send_error(stream,
+                    OGS_SBI_HTTP_STATUS_GATEWAY_TIMEOUT, NULL,
+                    "Cannot discover", NULL, NULL));
+        return r;
+    }
+
+    return OGS_OK;
+}
+
+static void mbs_bc_reset_cached_instance(smf_mbs_sess_t *mbs_sess);
+
+int smf_sbi_send_mbs_broadcast_context_create(smf_mbs_sess_t *mbs_sess)
+{
+    smf_mbs_amf_t *amf = NULL;
+    int r;
+
+    ogs_assert(mbs_sess);
+
+    /* A Create after the first one is for a session whose AMF is gone: the instance cached for the service is that
+     * AMF, so the AMF of the new context is discovered again. The slot is empty for the first Create. */
+    mbs_bc_reset_cached_instance(mbs_sess);
+
+    amf = smf_mbs_sess_amf_add(mbs_sess);
+    r = smf_sbi_old_discover_and_send(
+            OpenAPI_service_name_namf_mbs_bc, NULL,
+            smf_namf_build_mbs_broadcast_context_create_request,
+            mbs_sess, NULL, amf->id, amf);
+    if (r != OGS_OK) {
+        ogs_error("Failed to send MBS Broadcast ContextCreate for mbsSessionRef[%s]", mbs_sess->mbs_session_ref);
+        smf_mbs_sess_amf_remove(mbs_sess, amf);
+    }
+
+    return r;
+}
+
+/* The cached nf_instance of namf-mbs-bc is cleared before a call that follows the ContextCreate. mbs_sess->sbi
+ * holds whatever instance the first namf-mbs-bc call for this session resolved and reuses it for every later call to
+ * that service. By then that cached instance's nf_service_list has no "namf-mbs-bc" entry, so
+ * ogs_sbi_client_find_by_service_name() falls back to the NF-instance-level default client, which carries no port:
+ * the request goes out with a portless 3gpp-Sbi-Target-apiRoot, the SCP fails the downstream HTTP/2 connection and
+ * answers 500, and the AMF never sees the request. ContextCreate starts from an empty slot and goes through the
+ * SCP's own fresh discovery, which resolves the complete profile; clearing the slot puts the call on that path. */
+/* The discovery option that addresses the AMF instance that holds the context of \p amf (the header
+ * 3gpp-Sbi-Discovery-target-nf-instance-id, TS 29.500 V18.10.0 cl. 6.10.3.2), or NULL when the entry is not bound to an
+ * instance. The transaction owns the option. */
+static ogs_sbi_discovery_option_t *amf_discovery_option(const smf_mbs_amf_t *amf)
+{
+    ogs_sbi_discovery_option_t *discovery_option = NULL;
+
+    if (!amf->nf_instance_id)
+        return NULL;
+    discovery_option = ogs_sbi_discovery_option_new();
+    ogs_assert(discovery_option);
+    ogs_sbi_discovery_option_set_target_nf_instance_id(discovery_option, amf->nf_instance_id);
+    return discovery_option;
+}
+
+static void mbs_bc_reset_cached_instance(smf_mbs_sess_t *mbs_sess)
+{
+    if (mbs_sess->sbi.service_name_array[OpenAPI_service_name_namf_mbs_bc].nf_instance_id)
+        ogs_free(mbs_sess->sbi.service_name_array[OpenAPI_service_name_namf_mbs_bc].nf_instance_id);
+    mbs_sess->sbi.service_name_array[OpenAPI_service_name_namf_mbs_bc].nf_instance_id = NULL;
+}
+
+int smf_sbi_send_mbs_broadcast_context_delete_all(smf_mbs_sess_t *mbs_sess)
+{
+    smf_mbs_amf_t *amf = NULL;
+    int failures = 0;
+
+    ogs_assert(mbs_sess);
+
+    ogs_list_for_each(&mbs_sess->amf_list, amf) {
+        if (!amf->mbs_context_ref)
+            continue;
+
+        mbs_bc_reset_cached_instance(mbs_sess);
+
+        if (smf_sbi_old_discover_and_send(
+                OpenAPI_service_name_namf_mbs_bc, amf_discovery_option(amf),
+                smf_namf_build_mbs_broadcast_context_delete_request,
+                mbs_sess, NULL, amf->id, amf) != OGS_OK) {
+            ogs_error("Failed to send MBS Broadcast ContextDelete for mbsContextRef[%s]", amf->mbs_context_ref);
+            failures++;
+        }
+    }
+
+    return failures;
+}
+
+int smf_sbi_send_mbs_broadcast_context_update(smf_mbs_sess_t *mbs_sess, smf_namf_context_update_param_t *param)
+{
+    ogs_assert(mbs_sess);
+    ogs_assert(param);
+    ogs_assert(param->amf);
+
+    if (!param->amf->mbs_context_ref)
+        return OGS_ERROR;
+
+    mbs_bc_reset_cached_instance(mbs_sess);
+
+    return smf_sbi_old_discover_and_send(
+            OpenAPI_service_name_namf_mbs_bc, amf_discovery_option(param->amf),
+            smf_namf_build_mbs_broadcast_context_update_request,
+            mbs_sess, NULL, param->amf->id, param);
+}
+
+int smf_sbi_send_mbs_broadcast_context_update_all(
+        smf_mbs_sess_t *mbs_sess, bool service_area, bool n2_info_changed)
+{
+    smf_mbs_amf_t *amf = NULL;
+    int failures = 0;
+
+    ogs_assert(mbs_sess);
+
+    ogs_list_for_each(&mbs_sess->amf_list, amf) {
+        smf_namf_context_update_param_t param;
+
+        if (!amf->mbs_context_ref)
+            continue;
+
+        memset(&param, 0, sizeof(param));
+        param.amf = amf;
+        param.service_area = service_area;
+        param.n2_info_changed = n2_info_changed;
+
+        mbs_bc_reset_cached_instance(mbs_sess);
+
+        if (smf_sbi_old_discover_and_send(
+                OpenAPI_service_name_namf_mbs_bc, amf_discovery_option(amf),
+                smf_namf_build_mbs_broadcast_context_update_request,
+                mbs_sess, NULL, amf->id, &param) != OGS_OK) {
+            ogs_error("Failed to send MBS Broadcast ContextUpdate for mbsContextRef[%s]", amf->mbs_context_ref);
+            failures++;
+        }
+    }
+
+    return failures;
 }

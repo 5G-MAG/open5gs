@@ -25,6 +25,7 @@ extern "C" {
 #endif
 
 #include "context.h"
+#include "mbs-n3mb.h"
 
 bool smf_namf_comm_handle_n1_n2_message_transfer(
         smf_sess_t *sess, ogs_sbi_stream_t *stream,
@@ -32,6 +33,25 @@ bool smf_namf_comm_handle_n1_n2_message_transfer(
 
 bool smf_namf_comm_handle_n1_n2_message_transfer_failure_notify(
         ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg);
+
+/* Namf_MBSBroadcast Service API */
+
+bool smf_namf_handle_mbs_broadcast_context_create_response(
+        smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf, ogs_sbi_message_t *recvmsg);
+
+bool smf_namf_handle_mbs_broadcast_context_update_response(
+        smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf, ogs_sbi_message_t *recvmsg);
+
+bool smf_namf_handle_mbs_broadcast_context_delete_response(
+        smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf, ogs_sbi_message_t *recvmsg);
+
+bool smf_namf_handle_mbs_broadcast_context_status_notify(
+        ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg);
+
+/* The 200 OK of a ContextStatusNotify that carried Broadcast Session Transport Request Transfer containers: one
+ * answer of \p answers for each, \p count of them (1..SMF_MBS_MAX_TRANSPORT_ANSWERS). */
+ogs_sbi_response_t *smf_namf_build_transport_answers_response(
+        OpenAPI_context_status_notification_t *notification, const smf_mbs_transport_answer_t *answers, int count);
 
 #ifdef __cplusplus
 }

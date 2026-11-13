@@ -52,6 +52,10 @@ extern int __gsm_log_domain;
 #undef OGS_LOG_DOMAIN
 #define OGS_LOG_DOMAIN __smf_log_domain
 
+extern const char smf_mbs_sess_multicast_state_configured[];
+extern const char smf_mbs_sess_multicast_state_active[];
+extern const char smf_mbs_sess_multicast_state_inactive[];
+
 typedef enum {
     SMF_CTF_ENABLED_AUTO = 0,
     SMF_CTF_ENABLED_YES,
@@ -118,6 +122,19 @@ typedef struct smf_nsmf_pdusession_param_s {
     uint64_t pfcp_flags;
 
 } smf_nsmf_pdusession_param_t;
+typedef struct smf_mbs_sess_s smf_mbs_sess_t;
+
+typedef struct smf_mbs_sess_lnode_s {
+    ogs_lnode_t     node;
+    smf_mbs_sess_t *mbs_session; // weak link, not freed with node
+} smf_mbs_sess_lnode_t;
+
+/* What the MB-SMF does with an MBS session for which the PCF answered MBS_POLICY_CONTEXT_DENIED */
+typedef enum smf_mbs_pcf_failure_action_e {
+    SMF_MBS_PCF_FAILURE_ACTION_NONE = 0,   /* not configured */
+    SMF_MBS_PCF_FAILURE_ACTION_REJECT,
+    SMF_MBS_PCF_FAILURE_ACTION_ALLOW,
+} smf_mbs_pcf_failure_action_e;
 
 typedef struct smf_context_s {
     /*
@@ -153,6 +170,8 @@ typedef struct smf_context_s {
     ogs_hash_t      *ipv6_hash;     /* hash table (IPv6 Address) */
     ogs_hash_t      *smf_n4_seid_hash; /* hash table (SMF-N4-SEID) */
     ogs_hash_t      *n1n2message_hash; /* hash table (N1N2Message Location) */
+    ogs_hash_t	    *smf_mbs_sessions_by_ssm; /* hash table of SSM => ogs_list_t of smf_mbs_sess_lnode_t items */
+    ogs_hash_t      *smf_mbs_sessions_by_tmgi; /* hash table of TMGI => ogs_list_t of smf_mbs_sess_lnode_t items */
 
     uint16_t        mtu;            /* MTU to advertise in PCO */
 
@@ -166,6 +185,51 @@ typedef struct smf_context_s {
 #define SMF_UE_IS_LAST_SESSION(__sMF) \
      ((__sMF) && (ogs_list_count(&(__sMF)->sess_list)) == 1)
     ogs_list_t      smf_ue_list;
+
+    ogs_list_t      tmgi_list;         /* list of ogs_tmgi_t */
+    ogs_list_t      smf_mbs_sess_list; /* list of smf_mbs_sess_t */
+    ogs_list_t      smf_mbs_subsc_list; /* list of smf_mbs_subsc_t, the status subscriptions of MBS sessions */
+    uint32_t        next_mbs_subsc_id;
+
+    /* This MB-SMF instance's own configured coverage (smf.yaml mbs.serviceArea.taiList), TAI-list
+     * only -- see smf_mbs_service_area_reduce()'s own scope note. NULL (the default) means
+     * unconfigured: no coverage restriction, matching behaviour before this option existed. No
+     * clause, config option or documented default exists for what an unconfigured MB-SMF's own
+     * coverage should be (rule 12), so none is invented here. */
+    ogs_mbs_service_area_t *mbs_service_area;
+
+    /* NID of the SNPN this MB-SMF belongs to (smf.yaml `nid`, 11 hexadecimal digits); NULL for a PLMN,
+     * which has none. TS 23.003 V18.8.0 cl. 30.2: "In a SNPN (Stand-alone Non-Public Network), TMGI is
+     * used together with NID (Network Identifier) to identify an MBS Session." */
+    char *nid;
+
+    /* Maximum response time the MB-SMF asks the AMF to apply to a Namf_MBSBroadcast ContextCreate (smf.yaml
+     * `maxResponseTime`, seconds); unset when not configured, and then not sent. */
+    bool has_mbs_max_response_time;
+    int mbs_max_response_time;
+
+    /* Time, in seconds, after which the MB-SMF restores a broadcast MBS session in an NG-RAN that required its
+     * release (smf.yaml `ngranRestoreDelay`); unset when not configured, and then the MB-SMF does not. */
+    bool has_mbs_ngran_restore_delay;
+    int mbs_ngran_restore_delay;
+    /* The time the MB-SMF waits before it asks an AMF again for the broadcast context of a session whose Create failed
+     * (smf.yaml `mbsContextRetryDelay`); unset when not configured, and then the MB-SMF asks again only when an AMF
+     * registers or the previous Create timed out. */
+    bool has_mbs_context_retry_delay;
+    int mbs_context_retry_delay;
+
+    /* The MBS FSA IDs the MB-SMF selects for a broadcast MBS session whose Create request has none (smf.yaml
+     * `mbsFsaIds`, smf_mbs_fsa_id_t entries); empty when not configured, and then it selects none. */
+    ogs_list_t mbs_fsa_id_list;
+
+    /* Operator policy (smf.yaml `mbsAcceptForeignTmgi`): the MB-SMF accepts, for a location dependent broadcast MBS
+     * session, a TMGI that another MB-SMF allocated. Off unless configured. */
+    bool mbs_accept_foreign_tmgi;
+
+    /* Whether the MB-SMF requests MBS policies of a PCF (smf.yaml `mbsPolicyControl`), and what it does with an
+     * MBS session the PCF denies (`failureAction`). Off unless configured. */
+    bool mbs_pcf_enabled;
+    smf_mbs_pcf_failure_action_e mbs_pcf_failure_action;
 } smf_context_t;
 
 typedef struct smf_gtp_node_s {
@@ -792,6 +856,280 @@ typedef struct smf_sess_s {
 
 } smf_sess_t;
 
+/* TS 29.571 MbsQoSReq, as carried per media component in TS 29.532's MbsSession.mbsServInfo.mbsMediaComps
+ * (MBS Session Create/Update request). qfi is not part of that schema -- it is locally assigned, one per
+ * media component in map-iteration order, matching the same "sequential small integer" convention this
+ * SMF's own regular-PDU-session QFI handling already uses (see smf_qos_flow_add()). */
+typedef struct smf_mbs_qos_flow_s {
+    ogs_lnode_t lnode;
+    uint8_t qfi;
+    uint8_t five_qi;
+    /* The key of the media component in mbsMediaComps (the mbsMedCompNum attribute) that gave the flow, NULL
+     * for the default flow of a session without MBS service information. An update keeps the QFI and the user
+     * plane rules of the flow with the same key. */
+    char *med_comp_num;
+    /* The downlink PDR of the flow in the PFCP session (its FAR and QER are the PDR's own) */
+    ogs_pfcp_pdr_t *pdr;
+} smf_mbs_qos_flow_t;
+
+/* TS 29.571 MbsFsaId (a 24-bit value, hex-encoded on the wire), as carried in TS 29.532's
+ * MbsSession.mbsFsaIdList (MBS Session Create/Update request). */
+/* TS 29.571 NrRedCapUeInfo of an MbsSession: NONE when the attribute is absent or holds a value this MB-SMF does
+ * not know (the type is an anyOf of an enumeration and a string). */
+typedef enum smf_mbs_nr_red_cap_e {
+    SMF_MBS_NR_RED_CAP_NONE = 0,
+    SMF_MBS_NR_RED_CAP_UE_ONLY,                 /* "NR_REDCAP_UE_ONLY" */
+    SMF_MBS_NR_RED_CAP_BOTH,                    /* "BOTH_NR_REDCAP_UE_AND_NON_REDCAP_UE" */
+    SMF_MBS_NR_RED_CAP_NON_REDCAP_UE_ONLY,      /* "NON_REDCAP_UE_ONLY" */
+} smf_mbs_nr_red_cap_e;
+
+typedef struct smf_mbs_fsa_id_s {
+    ogs_lnode_t lnode;
+    ogs_uint24_t id;
+} smf_mbs_fsa_id_t;
+
+/* An AMF of the broadcast MBS session context of an MBS session */
+/* The AMF set of an AMF instance, from the amfInfo of its NF profile */
+typedef struct smf_mbs_amf_set_s {
+    bool known;
+    uint8_t set_id;
+    uint16_t region_id;
+    bool has_plmn;              /* the PLMN of the first GUAMI of the profile */
+    ogs_plmn_id_t plmn_id;
+} smf_mbs_amf_set_t;
+
+typedef struct smf_mbs_amf_s {
+    ogs_lnode_t lnode;
+
+    /* Identifies the entry in the session. It is carried in the notification URI given to the AMF, so that a
+     * Namf_MBSBroadcast ContextStatusNotify tells which AMF sent it, and in the SBI transaction of each request. */
+    uint32_t id;
+
+    /* mbsContextRef assigned by the AMF in the Location header of the 201 Created response (TS 29.518 V18.14.0
+     * cl. 5.6.2.2), so that the context can be addressed again (DELETE /namf-mbs-bc/v1/mbs-contexts/{ref}, POST
+     * .../{ref}/update). NULL until the AMF answered. */
+    char *mbs_context_ref;
+
+    /* The NRF instance of the AMF that holds the context, found from the address in the Location header of the 201
+     * Created response; every later request about the context is addressed to that instance (the discovery option
+     * 3gpp-Sbi-Discovery-target-nf-instance-id, TS 29.500 V18.10.0 cl. 6.10.3.2). NULL when the AMF could not be told
+     * from the address. */
+    char *nf_instance_id;
+
+    /* The AMF reported that the start of the broadcast MBS session is complete (TS 29.518 V18.14.0 table 6.5.6.2.3-1
+     * operationStatus: MBS_SESSION_START_COMPLETE) */
+    bool start_complete;
+
+    /* The AMF set of the instance the context is bound to (amfSetId and amfRegionId of its NF profile, read when the
+     * context was bound: the profile is gone from the NF instances when the instance leaves the NRF), so that an
+     * alternative AMF of the same set can be selected when it fails (TS 23.527 V18.6.0 cl. 8.3.2.4 step 7). */
+    smf_mbs_amf_set_t amf_set;
+
+    /* A ContextUpdate that hands the context to an alternative AMF (noNgapSignallingInd true) has been sent and is not
+     * answered yet. */
+    bool takeover;
+} smf_mbs_amf_t;
+
+/* An N3mb DL tunnel of an NG-RAN node that wants the session by unicast transport (TS 23.247 V18.8.0 cl. 7.3.1 step
+ * 7: "N3mb DL Tunnel Info and corresponding NG-RAN ID"), and the MBS Unicast Parameters ID it has at the MB-UPF. */
+typedef struct smf_mbs_dl_tunnel_s {
+    ogs_lnode_t lnode;
+
+    char *ran_id;               /* the NG-RAN node: its GlobalRanNodeId as the AMF sent it (JSON text) */
+    uint32_t amf_id;            /* the entry of the AMF that gave the tunnel (0: not known) */
+    ogs_ip_t addr;              /* transport layer address of the tunnel */
+    uint32_t teid;
+    uint16_t unicast_params_id; /* MBS Unicast Parameters ID, from 1 */
+} smf_mbs_dl_tunnel_t;
+
+/* A status subscription of an MBS session (TS 29.532 V18.6.0 cl. 5.3.2.6, StatusSubscribe), the resource
+ * /mbs-sessions/subscriptions/{subscriptionId} */
+#define SMF_MBS_EVENT(type) ((uint32_t)1 << (type))
+typedef struct smf_mbs_subsc_s {
+    ogs_lnode_t lnode;
+
+    char *id;                       /* subscriptionId */
+    ogs_pool_id_t mbs_sess_id;      /* the MBS session (the part of it, for a location dependent one) */
+    uint32_t events;                /* SMF_MBS_EVENT(OpenAPI_mbs_session_event_type_e) of the events subscribed */
+    char *notify_uri;
+    char *notify_correlation_id;
+    char *expiry_time;              /* DateTime, NULL for none */
+    char *nf_instance_id;           /* of the subscribing NF */
+    ogs_sbi_client_t *client;       /* of the notification URI */
+} smf_mbs_subsc_t;
+
+/* What the N3mb DL tunnels of an MBS session changed by, for the MB-UPF to be told (one entry for each NG-RAN node
+ * whose tunnel came, went or changed). */
+typedef struct smf_mbs_tunnel_change_s {
+    bool has_add;               /* a tunnel to give the MB-UPF */
+    ogs_ip_t add_addr;
+    uint32_t add_teid;
+    uint16_t add_id;            /* its MBS Unicast Parameters ID */
+    bool has_remove;            /* a tunnel to take from the MB-UPF */
+    uint16_t remove_id;
+} smf_mbs_tunnel_change_t;
+
+#define SMF_MBS_MAX_TUNNEL_CHANGES 16   /* more than the n2MbsSmInfoList of one answer holds (1..10) */
+typedef struct smf_mbs_tunnel_changes_s {
+    int count;
+    smf_mbs_tunnel_change_t change[SMF_MBS_MAX_TUNNEL_CHANGES];
+} smf_mbs_tunnel_changes_t;
+
+typedef struct smf_mbs_sess_s {
+    ogs_lnode_t lnode;      /* A node of list_t */
+
+    ogs_sbi_object_t sbi;
+    ogs_pool_id_t id;
+
+    uint32_t index;         /* An index of this node */
+    char *mbs_session_ref;  /* mbsSessionRef */
+
+    ogs_mbs_session_id_t mbs_session_id;
+    // expiration_time is stored in TMGI
+    ogs_tmgi_t *tmgi;
+    bool tmgi_allocated;
+    ogs_ssm_t *ssm;
+    char *service_type;
+
+    /* The AMFs the broadcast MBS session context was asked of (TS 23.247 V18.8.0 cl. 7.3.1 step 7: "The MB-SMF
+     * stores the AMF(s) which responds success in the MBS Session Context as the downstream nodes."). An entry
+     * has an mbs_context_ref once its AMF answered the Namf_MBSBroadcast ContextCreate with "201 Created". */
+    ogs_list_t amf_list;
+    uint32_t next_amf_id;
+
+    /* The broadcast context of the session is to be created again: the AMF that held it is gone. Cleared when an AMF
+     * answers the ContextCreate with 201 Created. */
+    bool broadcast_context_pending;
+
+    /* every AMF that holds a context has reported the start complete: the session has started */
+    bool started;
+
+    /* the N3mb DL tunnels the NG-RANs gave (unicast transport between the MB-UPF and the NG-RAN) */
+    ogs_list_t dl_tunnel_list;
+    uint16_t next_dl_tunnel_id;
+
+    // Multicast specific
+    OpenAPI_mbs_session_activity_status_e activity_status;
+    const char *state;
+
+    ogs_pfcp_sess_t pfcp;   /* PFCP session context */
+
+    ogs_pool_id_t *smf_n4mb_seid_node; /* A node of SMF-N4mb-SEID */
+    uint64_t smf_n4mb_seid; /* SMF N4mb SEID is derived from NODE */
+    uint64_t upf_n4mb_seid; /* UPF N4mb SEID is received from Peer */
+
+    uint32_t c_teid; /* C-TEID */
+
+    ogs_sockaddr_t *upf_n3mb_addr; /* UPF N3mb IPv4 */
+    ogs_sockaddr_t *upf_n3mb_addr6; /* UPF N3mb IPv6 */
+
+    ogs_ssm_t ll_ssm; /* lower layer SSM N3mb IPv4/IPv6 */
+
+    ogs_pfcp_node_t *pfcp_node;
+
+    char *dnn;
+
+    /* MBS start time and MBS termination time of the Create request (DateTime), echoed in the representation */
+    char *start_time;
+    char *termination_time;
+
+    /* S_NSSAI, set when the Create request carried one (has_s_nssai) */
+    bool has_s_nssai;
+    ogs_s_nssai_t s_nssai;
+
+    /* MBS UDP Tunnel */
+    bool ingress_tun_addr_req;
+    ogs_sockaddr_t *ingress_tun_addr;
+
+    /* Service Areas. mbs_service_area is the area the session runs with: the requested one reduced to the
+     * coverage of this MB-SMF when it was not entirely covered (service_area_reduced), see
+     * smf_mbs_service_area_reduce(). */
+    ogs_mbs_service_area_t *mbs_service_area;
+    bool service_area_reduced;
+    ogs_ext_mbs_service_area_t *ext_mbs_service_area;
+
+    /* TS 29.532 MbsSession.mbsServInfo.mbsMediaComps[*].mbsQoSReq, parsed from the Create/Update
+     * request -- see smf_nmbsmf_handle_mbs_session_create()'s own comment for what this closes. */
+    ogs_list_t mbs_qos_flow_list;
+
+    /* The MBS service information and the MBS service area as the consumer sent them (JSON), the documents a
+     * later Update modifies (RFC 6902 addresses members of the representation the consumer holds, not of the
+     * reduced area this MB-SMF runs with). NULL when the request carried none. */
+    char *mbs_serv_info_json;
+    char *mbs_service_area_json;
+
+    /* The MBS Policy Association at the PCF (src/smf/mbs-pcf.c): the mbsPolicyId of the Individual MBS Policy resource
+     * (NULL when there is none), the request to the PCF in flight (smf_mbs_pcf_op_e, 0 for none) with the stream of
+     * the consumer's request it answers, the timer that bounds it, and the counter of the exchanges. */
+    char *pcf_policy_id;
+    int pcf_pending;
+    ogs_pool_id_t pcf_stream_id;
+    ogs_timer_t *pcf_timer;
+    int pcf_serial;
+    char *pcf_patch_json;       /* the Update waiting for the answer of the PCF: its patch items, as a JSON array */
+
+    /* contactPcfInd of the last Update (TS 29.532 V18.6.0 cl. 5.3.2.3.1) */
+    bool has_contact_pcf_ind;
+    bool contact_pcf_ind;
+
+    /* TS 29.532 MbsSession.mbsFsaIdList, parsed from the Create/Update request -- see
+     * smf_nmbsmf_handle_mbs_session_create()'s own comment for what this closes. */
+    ogs_list_t mbs_fsa_id_list;
+
+    /* TS 29.532 MbsSession.nrRedCapUeInfo of a broadcast session, from the Create request or the last Update */
+    smf_mbs_nr_red_cap_e nr_red_cap_ue_info;
+
+    /* TS 29.532 V18.6.0 cl.5.3.2.2.1: "For a location dependent MBS service, the MB-SMF shall allocate
+     * a unique Area Session ID within the MBS session for the MBS Service Area." smf_mbs_sess_create()
+     * allocates it: the lowest value from 1 that no other location dependent session of the TMGI holds. */
+    bool location_dependent;
+    uint16_t area_session_id;
+
+    /* TS 29.532 V18.6.0 table 6.2.6.2.4-1 (MbsSessionExtension), areaSessionPolicyId: "This IE shall be present for a
+     * location-dependent MBS session if the AF/NEF/MBSF has obtained the Area Session Policy ID from the PCF"; from
+     * the Create request. TS 23.247 V18.8.0 cl. 7.1.1.3 step 22: when it is there, "the MB-SMF provides that received
+     * Area Session Policy ID" to the PCF; when it is not, "the MB-SMF uses its assigned Area Session ID as Area
+     * Session Policy ID". */
+    bool has_area_session_policy_id;
+    uint16_t area_session_policy_id;
+
+    /* TS 29.532 V18.6.0 cl. 5.3.2.2.1: "Associated Session ID to enable NG-RAN to identify multiple MBS sessions
+     * delivering the same content when an AF creates multiple broadcast MBS Sessions via different Core Networks in
+     * network sharing scenarios" (broadcast); from the Create request, NULL when there is none. TS 23.247 V18.8.0
+     * cl. 7.3.1a, step 2: "The MB-SMF includes Associated Session ID in the N2 SM information in
+     * Namf_MBSBroadcast_ContextCreate." */
+    OpenAPI_associated_session_id_t *associated_session_id;
+
+    /* BUG FIX: confirmed live this session -- MBSF's own delete-cascade sends up to three duplicate
+     * Nmbsmf_MBSSession Release requests for the exact same distribution session (same URL,
+     * same timestamp), which made smf_nmbsmf_handle_mbs_session_release() fire the AMF/UPF release
+     * requests below multiple times concurrently for the same still-live session object, and appears to
+     * have caused SMF to segfault (confirmed via dmesg). This flag makes that handler idempotent: once
+     * the real release chain has been triggered once for a session, any further duplicate release
+     * request is a safe no-op instead of re-entering the release logic on a session that may already be
+     * mid-teardown (or already freed, by the time a duplicate call is dispatched). */
+    bool release_triggered;
+
+    /* What the usage reports of the MB-UPF added up to (TS 29.244 clause 5.34.2.5): the reports taken in and the
+     * volume of MBS data they measured, in octets; kept as data (no CHF client) */
+    uint32_t usage_reports;
+    uint64_t usage_total_volume;
+    uint64_t usage_downlink_volume;
+
+    /* The PFCP session of the MBS session is being restored at the MB-UPF after an MB-UPF restart (TS 23.527 V18.6.0
+     * clause 8.2.2): the establishment request carries the MBS RESTI flag and what the session used before. */
+    bool restoring;
+    /* The PFCP session of the MBS session is being established at an alternative MB-UPF after the MB-UPF that served
+     * it failed (TS 23.527 V18.6.0 clause 8.2.3): new addresses are asked for, and the DL tunnels are given. */
+    bool relocating;
+    /* the N3mb DL tunnel changes that came while the restoration was pending, for the MB-UPF to be given once the
+     * PFCP session is restored (smf_mbs_sess_send_tunnel_changes()) */
+    smf_mbs_tunnel_changes_t deferred_tunnel_changes;
+} smf_mbs_sess_t;
+
+// NOTE (borieher): Not defined in the specs, default to 2 extra hours
+#define OGS_DEFAULT_EXPIRATION_TIME_VALIDITY 7200
+
 void smf_context_init(void);
 void smf_context_final(void);
 smf_context_t *smf_self(void);
@@ -914,6 +1252,107 @@ int smf_maximum_integrity_protected_data_rate_uplink_value2enum(
 int smf_maximum_integrity_protected_data_rate_downlink_value2enum(
         const char *value);
 int smf_instance_get_load(void);
+
+int smf_tmgi_count(void);
+char *smf_tmgi_gen_expiration_time(int validity_seconds);
+bool smf_tmgi_own_plmn(ogs_plmn_id_t *plmn_id);
+bool smf_nid_is_valid(const char *nid);
+bool smf_is_date_time(const char *date_time);
+OpenAPI_snssai_t *smf_mbs_sess_build_snssai(const smf_mbs_sess_t *mbs_sess);
+OpenAPI_list_t *smf_mbs_sess_build_fsa_id_list(const smf_mbs_sess_t *mbs_sess);
+smf_mbs_nr_red_cap_e smf_mbs_nr_red_cap_from_string(const char *value);
+const char *smf_own_nid(void);
+bool smf_mbs_max_response_time(int *seconds);
+bool smf_mbs_ngran_restore_delay(int *seconds);
+bool smf_mbs_context_retry_delay(int *seconds);
+/* Whether the MB-SMF requests MBS policies of a PCF; *action is then the configured failure action. */
+bool smf_mbs_policy_control_enabled(smf_mbs_pcf_failure_action_e *action);
+/* The configuration smf.mbsPolicyControl: \p enabled and \p failure_action are the texts of its two keys (NULL when
+ * absent). Returns false, changing nothing, when they are not acceptable: enabled is "true" or "false"; with
+ * enabled the failure action is "reject" or "allow" and has no default. */
+bool smf_mbs_policy_control_configure(const char *enabled, const char *failure_action);
+/* The configuration smf.mbsAcceptForeignTmgi: "true" or "false"; false is returned, and the setting left, for any other
+ * text. */
+bool smf_mbs_foreign_tmgi_configure(const char *value);
+bool smf_mbs_accepts_foreign_tmgi(void);
+/* Adds a TMGI that another MB-SMF allocated, as received in a Create request, to the TMGIs of this MB-SMF (it has no
+ * expiration time here). Returns NULL, with nothing added, when the MBS Service ID is not six hexadecimal digits or
+ * the pool of TMGIs is full; \p invalid says which. */
+ogs_tmgi_t *smf_tmgi_add_foreign(const ogs_tmgi_t *received, bool *invalid);
+ogs_tmgi_t *smf_tmgi_allocate(char *expiration_time);
+char *smf_tmgi_pick_mbs_service_id(
+        ogs_list_t *tmgi_list, const ogs_plmn_id_t *plmn_id, uint32_t start);
+int smf_tmgi_reclaim_expired(void);
+void smf_tmgi_deallocate(ogs_tmgi_t *tmgi);
+void smf_tmgi_deallocate_all(void);
+ogs_tmgi_t *smf_tmgi_find_by_tmgi(ogs_tmgi_t *tmgi_to_find);
+bool smf_tmgi_is_expired(ogs_tmgi_t *tmgi);
+
+/* Why smf_mbs_sess_create() returned NULL. */
+typedef enum smf_mbs_sess_create_result_e {
+    SMF_MBS_SESS_CREATE_OK = 0,
+    SMF_MBS_SESS_CREATE_POOL_FULL,                      /* no free MBS session: not a collision */
+    SMF_MBS_SESS_CREATE_ALREADY_CREATED,                /* the MBS session already exists */
+    SMF_MBS_SESS_CREATE_OVERLAPPING_MBS_SERVICE_AREA,   /* its area overlaps that of a session with the same ID */
+} smf_mbs_sess_create_result_e;
+
+ogs_sockaddr_t smf_pfcp_node_addr(ogs_pfcp_node_t *node);
+smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, bool tmgi_allocated_for_mbs_session, ogs_ssm_t *ssm, const char *service_type,
+                                    ogs_mbs_service_area_t *mbs_service_area, ogs_ext_mbs_service_area_t *ext_mbs_service_area,
+                                    bool location_dependent, smf_mbs_sess_create_result_e *result);
+void smf_mbs_sess_release(smf_mbs_sess_t *smf_mbs_sess);
+
+smf_mbs_sess_t *smf_mbs_sess_find_by_id(ogs_pool_id_t id);
+smf_mbs_sess_t *smf_mbs_sess_find_by_mbs_session_ref(char *mbs_session_ref);
+smf_mbs_sess_t *smf_mbs_sess_find_by_seid(uint64_t seid);
+smf_mbs_sess_t *smf_mbs_sess_find_by_tmgi(ogs_tmgi_t *tmgi_to_find);
+smf_mbs_amf_t *smf_mbs_sess_amf_add(smf_mbs_sess_t *mbs_sess);
+smf_mbs_amf_t *smf_mbs_sess_amf_find(smf_mbs_sess_t *mbs_sess, uint32_t id);
+void smf_mbs_sess_amf_remove(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf);
+/* The N3mb DL tunnel of an NG-RAN node: made, or replaced when the node gave another one; *changed tells whether
+ * it is new or another one. */
+smf_mbs_dl_tunnel_t *smf_mbs_sess_dl_tunnel_set(smf_mbs_sess_t *mbs_sess, const char *ran_id,
+        const ogs_ip_t *addr, uint32_t teid, bool *changed);
+smf_mbs_dl_tunnel_t *smf_mbs_sess_dl_tunnel_find(smf_mbs_sess_t *mbs_sess, const char *ran_id);
+void smf_mbs_sess_dl_tunnel_remove(smf_mbs_sess_t *mbs_sess, smf_mbs_dl_tunnel_t *tunnel);
+/* The AMF reported its broadcast MBS session context released: the entry goes. */
+void smf_mbs_sess_context_released(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf);
+smf_mbs_sess_t *smf_mbs_sess_find_by_tmgi_and_area(ogs_tmgi_t *tmgi_to_find, bool has_area_session_id, uint16_t area_session_id);
+void smf_mbs_sess_select_upf(smf_mbs_sess_t *mbs_sess);
+
+smf_mbs_subsc_t *smf_mbs_subsc_add(smf_mbs_sess_t *mbs_sess, uint32_t events, const char *notify_uri,
+        const char *notify_correlation_id, const char *expiry_time, const char *nf_instance_id);
+smf_mbs_subsc_t *smf_mbs_subsc_find_by_id(const char *id);
+void smf_mbs_subsc_remove(smf_mbs_subsc_t *subsc);
+void smf_mbs_subsc_remove_all(smf_mbs_sess_t *mbs_sess);
+/* Whether the subscription is past the expiry time, "after which the subscription becomes invalid" */
+bool smf_mbs_subsc_is_expired(const smf_mbs_subsc_t *subsc);
+/* Sets the notification URI (and its client); false if it is not a URI a client can be made for */
+bool smf_mbs_subsc_set_notify_uri(smf_mbs_subsc_t *subsc, const char *notify_uri);
+/* Provisions the user plane of the session: a PDR, a FAR and a QER for each MBS QoS flow. Returns false, with
+ * nothing provisioned, when there are more flows than the QERs of a PFCP session (OGS_MAX_NUM_OF_QER). */
+bool smf_mbs_sess_create_mbs_data_forwarding(smf_mbs_sess_t *mbs_sess);
+
+/* What the replacement of the QoS flows of an MBS session did to its user plane rules: the PDRs created (their
+ * FAR and QER are the PDR's own) and the identifiers of the rules removed. */
+typedef struct smf_mbs_flow_change_s {
+    int num_added;
+    ogs_pfcp_pdr_t *added[OGS_MAX_NUM_OF_PDR];
+    int num_removed;
+    struct {
+        uint16_t pdr_id;
+        uint32_t far_id;
+        uint32_t qer_id;
+    } removed[OGS_MAX_NUM_OF_PDR];
+    bool qos_changed;       /* a flow that stays has another 5QI */
+} smf_mbs_flow_change_t;
+
+bool smf_mbs_sess_replace_flows(smf_mbs_sess_t *mbs_sess, ogs_list_t *new_flows, smf_mbs_flow_change_t *change);
+
+bool smf_context_have_matching_mbs_session_id(smf_mbs_sess_t *mbs_session);
+
+bool smf_mbs_service_area_reduce(
+        ogs_mbs_service_area_t *requested, ogs_mbs_service_area_t **reduced);
 
 #ifdef __cplusplus
 }

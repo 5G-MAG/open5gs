@@ -32,6 +32,10 @@
 #include "npcf-handler.h"
 #include "nsmf-handler.h"
 #include "binding.h"
+#include "nmbsmf-handler.h"
+#include "mbs-subsc.h"
+#include "mbs-restore.h"
+#include "mbs-pcf.h"
 
 void smf_state_initial(ogs_fsm_t *s, smf_event_t *e)
 {
@@ -59,6 +63,9 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
     smf_sess_t *sess = NULL;
     smf_ue_t *smf_ue = NULL;
     smf_gtp_node_t *smf_gnode = NULL;
+    smf_mbs_sess_t *mbs_sess = NULL;
+    smf_mbs_amf_t *mbs_amf = NULL;
+    smf_mbs_subsc_t *mbs_subsc = NULL;
 
     ogs_gtp_xact_t *gtp_xact = NULL;
     ogs_gtp2_message_t gtp2_message;
@@ -446,6 +453,19 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
         ogs_pkbuf_free(recvbuf);
         ogs_pfcp_message_free(pfcp_message);
         break;
+    case SMF_EVT_MBS_NGRAN_RESTORE:
+        ogs_assert(e->mbs_ngran_restoration);
+        smf_mbs_ngran_restoration_expired(e->mbs_ngran_restoration);
+        break;
+
+    case SMF_EVT_MBS_CONTEXT_RETRY:
+        smf_mbs_context_retry_expired();
+        break;
+
+    case SMF_EVT_MBS_PCF_TIMEOUT:
+        smf_mbs_pcf_timeout(e->mbs_sess_id, e->h.sbi.state);
+        break;
+
     case SMF_EVT_N4_TIMER:
     case SMF_EVT_N4_NO_HEARTBEAT:
         ogs_assert(e);
@@ -510,7 +530,28 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
             CASE(OGS_SBI_RESOURCE_NAME_NF_STATUS_NOTIFY)
                 SWITCH(sbi_message.h.method)
                 CASE(OGS_SBI_HTTP_METHOD_POST)
-                    ogs_nnrf_nfm_handle_nf_status_notify(stream, &sbi_message);
+                    {
+                        bool handled = ogs_nnrf_nfm_handle_nf_status_notify(stream, &sbi_message);
+                        OpenAPI_notification_data_t *notification = sbi_message.NotificationData;
+
+                        if (handled && notification &&
+                                notification->event == OpenAPI_notification_event_type_NF_REGISTERED &&
+                                notification->nf_profile &&
+                                notification->nf_profile->nf_type == OpenAPI_nf_type_AMF) {
+                            /* an AMF is there: the sessions that wait for a broadcast context ask for it */
+                            smf_mbs_create_pending_contexts();
+                        } else if (notification &&
+                                notification->event == OpenAPI_notification_event_type_NF_DEREGISTERED &&
+                                notification->nf_instance_uri) {
+                            /* The AMF instance named by the last segment of the URI is gone (TS 23.527 cl. 8.3.2.4).
+                             * Also when the handler did not find the instance: the MB-SMF drops an instance whose
+                             * validity expired, and the broadcast contexts held in it are still lost. */
+                            const char *last = strrchr(notification->nf_instance_uri, '/');
+
+                            if (last && last[1])
+                                smf_mbs_amf_instance_lost(last + 1);
+                        }
+                    }
                     break;
 
                 DEFAULT
@@ -797,11 +838,165 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
             END
             break;
 
+        case OpenAPI_service_name_nmbsmf_tmgi:
+            SWITCH(sbi_message.h.resource.component[0])
+            CASE(OGS_SBI_RESOURCE_NAME_TMGI)
+                SWITCH(sbi_message.h.method)
+                CASE(OGS_SBI_HTTP_METHOD_POST)
+                    smf_nmbsmf_handle_tmgi_allocate(stream, &sbi_message);
+                    break;
+
+                CASE(OGS_SBI_HTTP_METHOD_DELETE)
+                    smf_nmbsmf_handle_tmgi_deallocate(stream, &sbi_message);
+                    break;
+
+                DEFAULT
+                    ogs_error("Invalid HTTP method [%s]", sbi_message.h.method);
+                    ogs_assert(true ==
+                        ogs_sbi_server_send_error(stream,
+                            OGS_SBI_HTTP_STATUS_FORBIDDEN, &sbi_message,
+                            "Invalid HTTP method", sbi_message.h.method, NULL));
+                END
+                break;
+
+            DEFAULT
+                ogs_error("Invalid resource name [%s]",
+                        sbi_message.h.resource.component[0]);
+                ogs_assert(true ==
+                    ogs_sbi_server_send_error(stream,
+                        OGS_SBI_HTTP_STATUS_BAD_REQUEST, &sbi_message,
+                        "Invalid resource name",
+                        sbi_message.h.resource.component[0], NULL));
+            END
+            break;
+
+        case OpenAPI_service_name_nmbsmf_mbssession:
+            SWITCH(sbi_message.h.resource.component[0])
+            CASE(OGS_SBI_RESOURCE_NAME_MBS_SESSIONS)
+                SWITCH(sbi_message.h.resource.component[1])
+                CASE("OGS_SWITCH_NULL")
+                    SWITCH(sbi_message.h.method)
+                    CASE(OGS_SBI_HTTP_METHOD_POST)
+                        smf_nmbsmf_handle_mbs_session_create(stream, &sbi_message);
+                        break;
+                    DEFAULT
+                        ogs_error("Invalid HTTP method [%s]", sbi_message.h.method);
+                        ogs_assert(true ==
+                            ogs_sbi_server_send_error(stream,
+                                    OGS_SBI_HTTP_STATUS_METHOD_NOT_ALLOWED, &sbi_message,
+                                    "Invalid HTTP method", sbi_message.h.method, NULL));
+                    END
+                    break;
+                CASE(OGS_SBI_RESOURCE_NAME_SUBSCRIPTIONS)
+                    /* the status subscriptions of MBS sessions (TS 29.532 V18.6.0 cl. 6.2.3.4 and 6.2.3.5):
+                     * /mbs-sessions/subscriptions and /mbs-sessions/subscriptions/{subscriptionId} */
+                    SWITCH(sbi_message.h.resource.component[2])
+                    CASE("OGS_SWITCH_NULL")
+                        SWITCH(sbi_message.h.method)
+                        CASE(OGS_SBI_HTTP_METHOD_POST)
+                            smf_nmbsmf_handle_status_subscribe(stream, &sbi_message);
+                            break;
+                        DEFAULT
+                            ogs_error("Invalid HTTP method [%s]", sbi_message.h.method);
+                            ogs_assert(true ==
+                                ogs_sbi_server_send_error(stream,
+                                        OGS_SBI_HTTP_STATUS_METHOD_NOT_ALLOWED, &sbi_message,
+                                        "Invalid HTTP method", sbi_message.h.method, NULL));
+                        END
+                        break;
+                    DEFAULT
+                        mbs_subsc = smf_mbs_subsc_find_by_id(sbi_message.h.resource.component[2]);
+                        if (!mbs_subsc) {
+                            ogs_warn("Not found [%s]", sbi_message.h.uri);
+                            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_NOT_FOUND,
+                                    &sbi_message, "Not Found", "Unknown MBS session subscription", NULL);
+                            break;
+                        }
+                        SWITCH(sbi_message.h.method)
+                        CASE(OGS_SBI_HTTP_METHOD_PATCH)
+                            smf_nmbsmf_handle_status_subscribe_patch(mbs_subsc, stream, &sbi_message);
+                            break;
+                        CASE(OGS_SBI_HTTP_METHOD_DELETE)
+                            smf_nmbsmf_handle_status_unsubscribe(mbs_subsc, stream, &sbi_message);
+                            break;
+                        DEFAULT
+                            ogs_error("Invalid HTTP method [%s]", sbi_message.h.method);
+                            ogs_assert(true ==
+                                ogs_sbi_server_send_error(stream,
+                                        OGS_SBI_HTTP_STATUS_METHOD_NOT_ALLOWED, &sbi_message,
+                                        "Invalid HTTP method", sbi_message.h.method, NULL));
+                        END
+                    END
+                    break;
+                DEFAULT
+                    mbs_sess = smf_mbs_sess_find_by_mbs_session_ref(
+                            sbi_message.h.resource.component[1]);
+                    if (!mbs_sess) {
+                        ogs_warn("Not found [%s]", sbi_message.h.uri);
+                        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_NOT_FOUND,
+                                &sbi_message, "Not Found", "Unknown MBS Session", NMBSMF_MBSESSION_UNKNOWN_MBS_SESSION);
+                        break;
+                    }
+                    SWITCH(sbi_message.h.method)
+                    CASE(OGS_SBI_HTTP_METHOD_DELETE)
+                        smf_nmbsmf_handle_mbs_session_release(mbs_sess, stream, &sbi_message);
+                        break;
+
+                    CASE(OGS_SBI_HTTP_METHOD_PATCH)
+                        smf_nmbsmf_handle_mbs_session_patch(mbs_sess, stream, &sbi_message);
+                        break;
+                    DEFAULT
+                        ogs_error("Invalid HTTP method [%s]", sbi_message.h.method);
+                        ogs_assert(true ==
+                            ogs_sbi_server_send_error(stream,
+                                OGS_SBI_HTTP_STATUS_METHOD_NOT_ALLOWED, &sbi_message,
+                                "Invalid HTTP method", sbi_message.h.method, NULL));
+                    END
+                END
+		break;
+            DEFAULT
+                ogs_error("Invalid resource name [%s]",
+                        sbi_message.h.resource.component[0]);
+                ogs_assert(true ==
+                    ogs_sbi_server_send_error(stream,
+                        OGS_SBI_HTTP_STATUS_NOT_FOUND, &sbi_message,
+                        "Invalid resource name",
+                        sbi_message.h.resource.component[0], NULL));
+            END
+	    break;
+
+        case OpenAPI_service_name_namf_mbs_bc:
+            SWITCH(sbi_message.h.resource.component[0])
+            CASE(OGS_SBI_RESOURCE_NAME_MBS_CONTEXT_STATUS_NOTIFY)
+                SWITCH(sbi_message.h.method)
+                CASE(OGS_SBI_HTTP_METHOD_POST)
+                    smf_namf_handle_mbs_broadcast_context_status_notify(
+                            stream, &sbi_message);
+                    break;
+                DEFAULT
+                    ogs_error("Invalid HTTP method [%s]", sbi_message.h.method);
+                    ogs_assert(true ==
+                        ogs_sbi_server_send_error(stream,
+                            OGS_SBI_HTTP_STATUS_FORBIDDEN, &sbi_message,
+                            "Invalid HTTP method", sbi_message.h.method, NULL));
+                END
+                break;
+            DEFAULT
+                ogs_error("Invalid resource name [%s]",
+                        sbi_message.h.resource.component[0]);
+                ogs_assert(true ==
+                    ogs_sbi_server_send_error(stream,
+                        OGS_SBI_HTTP_STATUS_BAD_REQUEST, &sbi_message,
+                        "Invalid resource name",
+                        sbi_message.h.resource.component[0], NULL));
+            END
+            break;
+
         default:
             ogs_error("Invalid API name [%s]", sbi_message.h.service.name);
             ogs_assert(true ==
                 ogs_sbi_server_send_error(stream,
-                    OGS_SBI_HTTP_STATUS_BAD_REQUEST, &sbi_message,
+                    OGS_SBI_HTTP_STATUS_NOT_FOUND, &sbi_message,
                     "Invalid API name", sbi_message.h.service.name, NULL));
         }
 
@@ -1260,6 +1455,116 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
 
             break;
 
+        case OpenAPI_service_name_namf_mbs_bc:
+            sbi_xact_id = OGS_POINTER_TO_UINT(e->h.sbi.data);
+            ogs_assert(sbi_xact_id >= OGS_MIN_POOL_ID &&
+                    sbi_xact_id <= OGS_MAX_POOL_ID);
+
+            sbi_xact = ogs_sbi_xact_find_by_id(sbi_xact_id);
+            if (!sbi_xact) {
+                /* CLIENT_WAIT timer could remove SBI transaction
+                 * before receiving SBI message */
+                ogs_error("SBI transaction has already been removed [%d]",
+                        sbi_xact_id);
+                break;
+            }
+
+            /* BUG FIX: sbi_object_id (== mbs_sess->id, set by smf_sbi_old_discover_and_send() via
+             * ogs_sbi_xact_add(mbs_sess->id, ...)) was never used to look the session back up here, so
+             * the response handlers had no way to record anything against it (e.g. the mbsContextRef
+             * needed later to release the context). Mirrors the NUDM_UECM case above. */
+            mbs_sess = smf_mbs_sess_find_by_id(sbi_xact->sbi_object_id);
+
+            /* the AMF entry of the request is in the transaction's state (smf_sbi_old_discover_and_send()) */
+            if (mbs_sess)
+                mbs_amf = smf_mbs_sess_amf_find(mbs_sess, (uint32_t)sbi_xact->state);
+
+            ogs_sbi_xact_remove(sbi_xact);
+
+            if (!mbs_sess) {
+                ogs_error("MBS Session has already been removed");
+                break;
+            }
+
+            if (!mbs_amf) {
+                ogs_error("MBS Session mbsSessionRef[%s]: the AMF of the response is not (any longer) one of the "
+                        "session", mbs_sess->mbs_session_ref);
+                break;
+            }
+
+            SWITCH(sbi_message.h.resource.component[0])
+            CASE(OGS_SBI_RESOURCE_NAME_MBS_CONTEXTS)
+                SWITCH(sbi_message.h.method)
+                CASE(OGS_SBI_HTTP_METHOD_POST)
+                    if (sbi_message.h.resource.component[1]) {
+                        /* POST on the individual context: ContextUpdate. The context stays, whatever the answer,
+                         * except that the AMF does not know it: it restarted (TS 23.527 V18.6.0 cl. 8.3.2.4) */
+                        if (sbi_message.res_status == OGS_SBI_HTTP_STATUS_NOT_FOUND)
+                            smf_mbs_amf_context_lost(mbs_sess, mbs_amf);
+                        else
+                            smf_mbs_amf_takeover_answered(mbs_sess, mbs_amf,
+                                    smf_namf_handle_mbs_broadcast_context_update_response(
+                                        mbs_sess, mbs_amf, &sbi_message));
+                    } else if (sbi_message.res_status == OGS_SBI_HTTP_STATUS_CREATED) {
+                        if (!smf_namf_handle_mbs_broadcast_context_create_response(
+                                mbs_sess, mbs_amf, &sbi_message))
+                            smf_mbs_sess_amf_remove(mbs_sess, mbs_amf);
+                    } else {
+                        /* only an AMF that answered success is stored as a downstream node */
+                        ogs_error("HTTP response error : %d",
+                                sbi_message.res_status);
+                        smf_mbs_sess_amf_remove(mbs_sess, mbs_amf);
+                        smf_mbs_context_create_failed(mbs_sess);
+                    }
+                    break;
+
+                CASE(OGS_SBI_HTTP_METHOD_DELETE)
+                    smf_namf_handle_mbs_broadcast_context_delete_response(
+                            mbs_sess, mbs_amf, &sbi_message);
+                    smf_mbs_sess_amf_remove(mbs_sess, mbs_amf);
+                    break;
+
+                DEFAULT
+                    ogs_error("Invalid HTTP method [%s]", sbi_message.h.method);
+                    ogs_assert_if_reached();
+                END
+                break;
+
+            DEFAULT
+                ogs_error("Invalid resource name [%s]",
+                        sbi_message.h.resource.component[0]);
+                ogs_assert_if_reached();
+            END
+            break;
+
+        case OpenAPI_service_name_npcf_mbspolicycontrol:
+            sbi_xact_id = OGS_POINTER_TO_UINT(e->h.sbi.data);
+            ogs_assert(sbi_xact_id >= OGS_MIN_POOL_ID &&
+                    sbi_xact_id <= OGS_MAX_POOL_ID);
+
+            sbi_xact = ogs_sbi_xact_find_by_id(sbi_xact_id);
+            if (!sbi_xact) {
+                /* CLIENT_WAIT timer could remove SBI transaction
+                 * before receiving SBI message */
+                ogs_error("SBI transaction has already been removed [%d]",
+                        sbi_xact_id);
+                break;
+            }
+
+            mbs_sess = smf_mbs_sess_find_by_id(sbi_xact->sbi_object_id);
+            {
+                int pcf_state = sbi_xact->state;
+
+                ogs_sbi_xact_remove(sbi_xact);
+
+                if (!mbs_sess) {
+                    ogs_error("MBS Session has already been removed");
+                    break;
+                }
+                smf_mbs_pcf_handle_response(mbs_sess, pcf_state, &sbi_message);
+            }
+            break;
+
         default:
             ogs_error("Invalid service name [%s]", sbi_message.h.service.name);
             ogs_assert_if_reached();
@@ -1363,6 +1668,23 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
                 stream = ogs_sbi_stream_find_by_id(sbi_xact->assoc_stream_id);
             /* Here, we should not use ogs_assert(stream)
              * since 'namf-comm' service has no an associated stream. */
+
+            if (sbi_xact->service_name == OpenAPI_service_name_namf_mbs_bc) {
+                /* a request about a broadcast MBS session context that nothing answered */
+                smf_mbs_sess_t *timed_out_sess = NULL;
+                smf_mbs_amf_t *timed_out_amf = NULL;
+
+                timed_out_sess = smf_mbs_sess_find_by_id(sbi_xact->sbi_object_id);
+                if (timed_out_sess)
+                    timed_out_amf = smf_mbs_sess_amf_find(timed_out_sess, (uint32_t)sbi_xact->state);
+
+                ogs_sbi_xact_remove(sbi_xact);
+
+                ogs_error("Cannot receive SBI message");
+                if (timed_out_sess)
+                    smf_mbs_namf_request_timed_out(timed_out_sess, timed_out_amf);
+                break;
+            }
 
             sbi_object = sbi_xact->sbi_object;
             ogs_assert(sbi_object);

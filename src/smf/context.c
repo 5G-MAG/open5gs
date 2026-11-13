@@ -16,11 +16,18 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
+#include <inttypes.h>
+#include <ctype.h>
+#include <limits.h>
 
 #include "context.h"
 #include "gtp-path.h"
 #include "pfcp-path.h"
 #include "sbi-path.h"
+#include "mbs-restore.h"
+#include "mbs-charging.h"
+#include "mbs-pcf.h"
+#include "mbs-update.h"
 
 static smf_context_t self;
 static ogs_diam_config_t g_diam_conf;
@@ -36,12 +43,50 @@ static OGS_POOL(smf_pf_pool, smf_pf_t);
 static OGS_POOL(smf_sess_pool, smf_sess_t);
 static OGS_POOL(smf_n4_seid_pool, ogs_pool_id_t);
 
+static OGS_POOL(tmgi_pool, ogs_tmgi_t);
+static OGS_POOL(smf_mbs_sess_pool, smf_mbs_sess_t);
+
 static int context_initialized = 0;
 
 static int num_of_smf_sess = 0;
 
 static void stats_add_smf_session(void);
 static void stats_remove_smf_session(smf_sess_t *sess);
+
+static void smf_tmgi_remove(ogs_tmgi_t *tmgi);
+static void smf_tmgi_remove_all(void);
+
+static void smf_mbs_sess_remove(smf_mbs_sess_t *smf_mbs_sess);
+static void smf_mbs_sess_remove_all(void);
+
+static void smf_mbs_sess_list_hash_destroy(ogs_hash_t *mbs_sess_list_hash);
+
+static void smf_mbs_sessions_by_tmgi_add_mbs_sess(smf_mbs_sess_t *mbs_sess);
+static void smf_mbs_sessions_by_tmgi_remove_mbs_sess(smf_mbs_sess_t *mbs_sess);
+/* The key of the TMGI index is the identity of the TMGI (MBS Service ID and PLMN), not the bytes of the
+ * ogs_tmgi_t, which also hold the addresses of its strings: the expiration time is replaced when a TMGI is
+ * refreshed, which would move a session to another key while it is in use. The hash keeps the pointer of the
+ * key it is given, so the key lives in the list object it indexes. */
+#define SMF_MBS_TMGI_KEY_LEN (OGS_MAX_MBS_SERVICE_ID_LEN + sizeof(ogs_plmn_id_t))
+typedef struct smf_mbs_sess_by_tmgi_s {
+    ogs_list_t list;    /* must stay first: the hash value is used as an ogs_list_t */
+    uint8_t key[SMF_MBS_TMGI_KEY_LEN];
+} smf_mbs_sess_by_tmgi_t;
+static void smf_mbs_tmgi_key(const ogs_tmgi_t *tmgi, uint8_t key[SMF_MBS_TMGI_KEY_LEN]);
+
+static void smf_mbs_sessions_by_ssm_add_mbs_sess(smf_mbs_sess_t *mbs_sess);
+static void smf_mbs_sessions_by_ssm_remove_mbs_sess(smf_mbs_sess_t *mbs_sess);
+static void *smf_mbs_sessions_by_ssm_key(ogs_ssm_t *ssm, int *klen);
+
+static bool smf_mbs_sess_list_service_areas_overlap(ogs_list_t *mbs_sess_list, smf_mbs_sess_t *mbs_session);
+static bool smf_mbs_sess_service_areas_overlap(smf_mbs_sess_t *a, smf_mbs_sess_t *b);
+
+static bool smf_tai_equal(const ogs_tai_t *a, const ogs_tai_t *b);
+static bool smf_ncgi_equal(const ogs_ncgi_t *a, const ogs_ncgi_t *b);
+
+const char smf_mbs_sess_multicast_state_configured[] = "Configured";
+const char smf_mbs_sess_multicast_state_active[] = "Active";
+const char smf_mbs_sess_multicast_state_inactive[] = "Inactive";
 
 int smf_ctf_config_init(smf_ctf_config_t *ctf_config)
 {
@@ -94,6 +139,20 @@ void smf_context_init(void)
     ogs_pool_init(&smf_n4_seid_pool, ogs_app()->pool.sess);
     ogs_pool_random_id_generate(&smf_n4_seid_pool);
 
+    /* TS 23.003 V18.8.0 clause 30.2: "MBS Service ID consists of a 6-digit fixed-length hexadecimal number
+     * between 000000 and FFFFFF." A TMGI pool larger than that cannot be given distinct identifiers. */
+    if (ogs_global_conf()->max.mbs.tmgis > (uint64_t)OGS_MAX_MBS_SERVICE_ID + 1) {
+        ogs_fatal("max.mbs.tmgis[%" PRIu64 "] exceeds the %u MBS Service IDs a TMGI can carry",
+                ogs_global_conf()->max.mbs.tmgis, OGS_MAX_MBS_SERVICE_ID + 1);
+        ogs_assert_if_reached();
+    }
+
+    ogs_pool_init(&tmgi_pool, ogs_global_conf()->max.mbs.tmgis);
+    ogs_list_init(&self.tmgi_list);
+    ogs_pool_init(&smf_mbs_sess_pool, ogs_global_conf()->max.mbs.mbs_sessions);
+    ogs_list_init(&self.smf_mbs_sess_list);
+    ogs_list_init(&self.mbs_fsa_id_list);
+
     self.supi_hash = ogs_hash_make();
     ogs_assert(self.supi_hash);
     self.imsi_hash = ogs_hash_make();
@@ -106,6 +165,10 @@ void smf_context_init(void)
     ogs_assert(self.ipv6_hash);
     self.n1n2message_hash = ogs_hash_make();
     ogs_assert(self.n1n2message_hash);
+    self.smf_mbs_sessions_by_ssm = ogs_hash_make();
+    ogs_assert(self.smf_mbs_sessions_by_ssm);
+    self.smf_mbs_sessions_by_tmgi = ogs_hash_make();
+    ogs_assert(self.smf_mbs_sessions_by_tmgi);
 
     context_initialized = 1;
 }
@@ -118,6 +181,23 @@ void smf_context_final(void)
     ogs_assert(context_initialized == 1);
 
     smf_ue_remove_all();
+    smf_mbs_ngran_restoration_remove_all();
+    smf_mbs_sess_remove_all();
+    smf_tmgi_remove_all();
+
+    if (self.nid) {
+        ogs_free(self.nid);
+        self.nid = NULL;
+    }
+
+    {
+        smf_mbs_fsa_id_t *fsa_id = NULL, *next_fsa_id = NULL;
+
+        ogs_list_for_each_safe(&self.mbs_fsa_id_list, next_fsa_id, fsa_id) {
+            ogs_list_remove(&self.mbs_fsa_id_list, fsa_id);
+            ogs_free(fsa_id);
+        }
+    }
 
     ogs_assert(self.supi_hash);
     ogs_hash_destroy(self.supi_hash);
@@ -131,6 +211,8 @@ void smf_context_final(void)
     ogs_hash_destroy(self.ipv6_hash);
     ogs_assert(self.n1n2message_hash);
     ogs_hash_destroy(self.n1n2message_hash);
+    smf_mbs_sess_list_hash_destroy(self.smf_mbs_sessions_by_ssm);
+    smf_mbs_sess_list_hash_destroy(self.smf_mbs_sessions_by_tmgi);
 
     ogs_pool_final(&smf_ue_pool);
     ogs_pool_final(&smf_bearer_pool);
@@ -138,6 +220,9 @@ void smf_context_final(void)
 
     ogs_pool_final(&smf_sess_pool);
     ogs_pool_final(&smf_n4_seid_pool);
+
+    ogs_pool_final(&smf_mbs_sess_pool);
+    ogs_pool_final(&tmgi_pool);
 
     ogs_list_for_each_entry_safe(&self.sgw_s5c_list, next_gnode, gnode, node) {
         smf_gtp_node_t *smf_gnode = gnode->data_ptr;
@@ -159,6 +244,39 @@ void smf_context_final(void)
 smf_context_t *smf_self(void)
 {
     return &self;
+}
+
+bool smf_context_have_matching_mbs_session_id(smf_mbs_sess_t *mbs_session)
+{
+    if (mbs_session->mbs_session_id.is_tmgi) {
+        void *key;
+        int klen;
+
+        ogs_debug("Checking MBS Session ID TMGI");
+        uint8_t tmgi_key[SMF_MBS_TMGI_KEY_LEN];
+        smf_mbs_tmgi_key(mbs_session->mbs_session_id.tmgi, tmgi_key);
+        key = tmgi_key;
+        klen = sizeof(tmgi_key);
+        {
+            ogs_list_t *mbs_sess_list = (ogs_list_t*)ogs_hash_get(self.smf_mbs_sessions_by_tmgi, key, klen);
+            ogs_debug("Found %i sessions matching TMGI", mbs_sess_list?ogs_list_count(mbs_sess_list):0);
+            if (smf_mbs_sess_list_service_areas_overlap(mbs_sess_list, mbs_session)) return true;
+        }
+    }
+
+    if (mbs_session->mbs_session_id.is_ssm) {
+        void *key;
+        int klen;
+        ogs_debug("Checking MBS Session ID SSM");
+        key = smf_mbs_sessions_by_ssm_key(mbs_session->mbs_session_id.ssm, &klen);
+        if (key) {
+            ogs_list_t *mbs_sess_list = (ogs_list_t*)ogs_hash_get(self.smf_mbs_sessions_by_ssm, key, klen);
+            ogs_debug("Found %i sessions matching SSM", mbs_sess_list?ogs_list_count(mbs_sess_list):0);
+            if (smf_mbs_sess_list_service_areas_overlap(mbs_sess_list, mbs_session)) return true;
+        }
+    }
+
+    return false;
 }
 
 static int smf_context_prepare(void)
@@ -1033,6 +1151,248 @@ int smf_context_parse_config(void)
                     /* handle config in sbi library */
                 } else if (!strcmp(smf_key, "metrics")) {
                     /* handle config in metrics library */
+                } else if (!strcmp(smf_key, "nid")) {
+                    /* The NID of the SNPN this MB-SMF belongs to; TS 23.003 V18.8.0 cl. 12.7.1:
+                     * "The NID shall consist of 11 hexadecimal digits". Absent for a PLMN. */
+                    const char *nid = ogs_yaml_iter_value(&smf_iter);
+                    if (!smf_nid_is_valid(nid)) {
+                        ogs_error("`smf.nid` [%s] is not 11 hexadecimal digits",
+                                nid ? nid : "");
+                        return OGS_ERROR;
+                    }
+                    if (self.nid)
+                        ogs_free(self.nid);
+                    self.nid = ogs_strdup(nid);
+                    ogs_assert(self.nid);
+                } else if (!strcmp(smf_key, "maxResponseTime")) {
+                    /* The maximum response time of a Namf_MBSBroadcast ContextCreate, which the MB-SMF "may
+                     * include" (TS 29.518 V18.14.0 cl. 5.6.2.2). No clause or documented default names a
+                     * value (rule 12), so it is the operator's: seconds, DurationSec of TS 29.571. */
+                    const char *value = ogs_yaml_iter_value(&smf_iter);
+                    char *end = NULL;
+                    long seconds = value ? strtol(value, &end, 10) : 0;
+
+                    if (!value || !*value || *end || seconds <= 0 || seconds > INT_MAX) {
+                        ogs_error("`smf.maxResponseTime` [%s] is not a positive number of seconds",
+                                value ? value : "");
+                        return OGS_ERROR;
+                    }
+                    self.has_mbs_max_response_time = true;
+                    self.mbs_max_response_time = (int)seconds;
+                } else if (!strcmp(smf_key, "mbsFsaIds")) {
+                    /* TS 23.247 V18.8.0 cl. 7.1.1.2 step 11: "if no MBS FSA ID(s) have been received, the MB-SMF
+                     * selects MBS FSA ID(s) for the Broadcast MBS session based on local configuration." The
+                     * clause names no format; this list, six hexadecimal digits each (TS 29.571 MbsFsaId), is the
+                     * configuration: the MBS FSA IDs of a broadcast session whose Create request has none. */
+                    ogs_yaml_iter_t ids_iter;
+                    ogs_yaml_iter_recurse(&smf_iter, &ids_iter);
+                    if (ogs_yaml_iter_type(&ids_iter) == YAML_MAPPING_NODE) {
+                        ogs_error("`smf.mbsFsaIds` is a list of MBS FSA IDs");
+                        return OGS_ERROR;
+                    }
+
+                    do {
+                        const char *id = NULL;
+
+                        if (ogs_yaml_iter_type(&ids_iter) == YAML_SEQUENCE_NODE) {
+                            if (!ogs_yaml_iter_next(&ids_iter))
+                                break;
+                        }
+
+                        id = ogs_yaml_iter_value(&ids_iter);
+                        if (!smf_mbs_fsa_id_configure(id)) {
+                            ogs_error("`smf.mbsFsaIds` entry [%s] is not six hexadecimal digits, is repeated, or is "
+                                    "more than %d", id ? id : "", SMF_MBS_MAX_FSA_IDS);
+                            return OGS_ERROR;
+                        }
+                    } while (ogs_yaml_iter_type(&ids_iter) == YAML_SEQUENCE_NODE);
+                } else if (!strcmp(smf_key, "mbsAcceptForeignTmgi")) {
+                    /* TS 29.532 V18.6.0 cl. 5.3.2.2.1: "For a location dependent broadcast MBS session, based on
+                     * operator's policy, the MB-SMF shall accept a TMGI value allocated by another MB-SMF." The
+                     * policy is this key, `true` or `false`; with none the MB-SMF accepts only TMGIs it allocated. */
+                    const char *value = ogs_yaml_iter_value(&smf_iter);
+
+                    if (!smf_mbs_foreign_tmgi_configure(value)) {
+                        ogs_error("`smf.mbsAcceptForeignTmgi` [%s] is not true or false", value ? value : "");
+                        return OGS_ERROR;
+                    }
+                } else if (!strcmp(smf_key, "mbsPolicyControl")) {
+                    /* TS 23.247 V18.8.0 cl. 7.1.1.3: "Deployment of dynamic PCC is optional." Off unless
+                     * `enabled: true`; `failureAction` (reject or allow) is required with it, no clause names a
+                     * default (rule 12). */
+                    ogs_yaml_iter_t pcf_iter;
+                    const char *enabled = NULL, *failure_action = NULL;
+
+                    ogs_yaml_iter_recurse(&smf_iter, &pcf_iter);
+                    while (ogs_yaml_iter_next(&pcf_iter)) {
+                        const char *pcf_key = ogs_yaml_iter_key(&pcf_iter);
+                        ogs_assert(pcf_key);
+                        if (!strcmp(pcf_key, "enabled")) {
+                            enabled = ogs_yaml_iter_value(&pcf_iter);
+                        } else if (!strcmp(pcf_key, "failureAction")) {
+                            failure_action = ogs_yaml_iter_value(&pcf_iter);
+                        } else {
+                            ogs_error("unknown key `smf.mbsPolicyControl.%s`", pcf_key);
+                            return OGS_ERROR;
+                        }
+                    }
+                    if (!smf_mbs_policy_control_configure(enabled, failure_action)) {
+                        ogs_error("`smf.mbsPolicyControl` [enabled: %s, failureAction: %s] is not acceptable: "
+                                "enabled is true or false; with true, failureAction is reject or allow",
+                                enabled ? enabled : "", failure_action ? failure_action : "");
+                        return OGS_ERROR;
+                    }
+                } else if (!strcmp(smf_key, "mbsCharging")) {
+                    /* TS 29.244 V18.10.0 cl. 5.34.2.5: MBS charging is optional ("the MB-SMF may request"). Off
+                     * unless `enabled: true`; the volume threshold (octets) and the period (seconds) of the URR
+                     * are the operator's and required with it: no clause names a value (rule 12). */
+                    ogs_yaml_iter_t charging_iter;
+                    const char *enabled = NULL, *volume = NULL, *period = NULL;
+
+                    ogs_yaml_iter_recurse(&smf_iter, &charging_iter);
+                    while (ogs_yaml_iter_next(&charging_iter)) {
+                        const char *charging_key = ogs_yaml_iter_key(&charging_iter);
+                        ogs_assert(charging_key);
+                        if (!strcmp(charging_key, "enabled")) {
+                            enabled = ogs_yaml_iter_value(&charging_iter);
+                        } else if (!strcmp(charging_key, "volumeThreshold")) {
+                            volume = ogs_yaml_iter_value(&charging_iter);
+                        } else if (!strcmp(charging_key, "period")) {
+                            period = ogs_yaml_iter_value(&charging_iter);
+                        } else {
+                            ogs_error("unknown key `smf.mbsCharging.%s`", charging_key);
+                            return OGS_ERROR;
+                        }
+                    }
+                    if (!smf_mbs_charging_configure(enabled, volume, period)) {
+                        ogs_error("`smf.mbsCharging` [enabled: %s, volumeThreshold: %s, period: %s] is not acceptable: "
+                                "enabled is true or false; with true, volumeThreshold (octets) and period (seconds) "
+                                "are positive numbers", enabled ? enabled : "", volume ? volume : "",
+                                period ? period : "");
+                        return OGS_ERROR;
+                    }
+                } else if (!strcmp(smf_key, "ngranRestoreDelay")) {
+                    /* TS 29.518 V18.14.0 cl. 5.6.2.5: on a report of the release required by NG-RANs "the MB-SMF
+                     * may attempt to re-establish the MBS session after some operator configurable time in these
+                     * NG-RANs". No clause or documented default names the time (rule 12): it is the operator's, in
+                     * seconds, and with none configured the MB-SMF does not re-establish the session. */
+                    const char *value = ogs_yaml_iter_value(&smf_iter);
+                    char *end = NULL;
+                    long seconds = value ? strtol(value, &end, 10) : 0;
+
+                    if (!value || !*value || *end || seconds <= 0 || seconds > INT_MAX) {
+                        ogs_error("`smf.ngranRestoreDelay` [%s] is not a positive number of seconds",
+                                value ? value : "");
+                        return OGS_ERROR;
+                    }
+                    self.has_mbs_ngran_restore_delay = true;
+                    self.mbs_ngran_restore_delay = (int)seconds;
+                } else if (!strcmp(smf_key, "mbsContextRetryDelay")) {
+                    /* TS 29.518 V18.14.0 cl. 5.6.2.2 defines no failure code for a ContextCreate that finds no NG-RAN
+                     * to carry it, so the AMF answers with the mandatory 500 (TS 29.500 table 5.2.7.1-1). When the MB-SMF
+                     * creates a context again after the AMF of the session was lost, it asks again after this time. No
+                     * clause or documented default names it (rule 12): it is the operator's, in seconds. */
+                    const char *value = ogs_yaml_iter_value(&smf_iter);
+                    char *end = NULL;
+                    long seconds = value ? strtol(value, &end, 10) : 0;
+
+                    if (!value || !*value || *end || seconds <= 0 || seconds > INT_MAX) {
+                        ogs_error("`smf.mbsContextRetryDelay` [%s] is not a positive number of seconds",
+                                value ? value : "");
+                        return OGS_ERROR;
+                    }
+                    self.has_mbs_context_retry_delay = true;
+                    self.mbs_context_retry_delay = (int)seconds;
+                } else if (!strcmp(smf_key, "mbsServiceArea")) {
+                    /* TS 29.532 V18.6.0 cl.5.3.2.2.1/5.3.2.3.1 step 2b: this MB-SMF instance's own
+                     * configured coverage, used by smf_mbs_service_area_reduce(). No clause,
+                     * config option or documented default exists for this (rule 12); this key
+                     * itself is what defines it. TAI list only, mirroring the AMF's own tai config
+                     * shape (plmn_id/mcc,mnc + tac), not the compact tai0/1/2 range encoding that
+                     * config uses -- this is a plain coverage declaration, not a NAS TAI list IE. */
+                    ogs_yaml_iter_t area_iter;
+                    ogs_yaml_iter_recurse(&smf_iter, &area_iter);
+                    while (ogs_yaml_iter_next(&area_iter)) {
+                        const char *area_key = ogs_yaml_iter_key(&area_iter);
+                        ogs_assert(area_key);
+                        if (!strcmp(area_key, "taiList")) {
+                            ogs_yaml_iter_t tai_array, tai_iter;
+                            ogs_yaml_iter_recurse(&area_iter, &tai_array);
+                            do {
+                                const char *mcc = NULL, *mnc = NULL, *tac = NULL;
+
+                                if (ogs_yaml_iter_type(&tai_array) ==
+                                        YAML_MAPPING_NODE) {
+                                    memcpy(&tai_iter, &tai_array,
+                                            sizeof(ogs_yaml_iter_t));
+                                } else if (ogs_yaml_iter_type(&tai_array) ==
+                                        YAML_SEQUENCE_NODE) {
+                                    if (!ogs_yaml_iter_next(&tai_array))
+                                        break;
+                                    ogs_yaml_iter_recurse(&tai_array, &tai_iter);
+                                } else if (ogs_yaml_iter_type(&tai_array) ==
+                                        YAML_SCALAR_NODE) {
+                                    break;
+                                } else
+                                    ogs_assert_if_reached();
+
+                                while (ogs_yaml_iter_next(&tai_iter)) {
+                                    const char *tai_key =
+                                        ogs_yaml_iter_key(&tai_iter);
+                                    ogs_assert(tai_key);
+                                    if (!strcmp(tai_key, "plmn_id")) {
+                                        ogs_yaml_iter_t plmn_id_iter;
+                                        ogs_yaml_iter_recurse(
+                                                &tai_iter, &plmn_id_iter);
+                                        while (ogs_yaml_iter_next(
+                                                &plmn_id_iter)) {
+                                            const char *plmn_id_key =
+                                                ogs_yaml_iter_key(
+                                                        &plmn_id_iter);
+                                            ogs_assert(plmn_id_key);
+                                            if (!strcmp(plmn_id_key, "mcc"))
+                                                mcc = ogs_yaml_iter_value(
+                                                        &plmn_id_iter);
+                                            else if (!strcmp(plmn_id_key,
+                                                    "mnc"))
+                                                mnc = ogs_yaml_iter_value(
+                                                        &plmn_id_iter);
+                                        }
+                                    } else if (!strcmp(tai_key, "tac")) {
+                                        tac = ogs_yaml_iter_value(&tai_iter);
+                                    }
+                                }
+
+                                if (mcc && mnc && tac) {
+                                    ogs_tai_t *tai =
+                                        ogs_calloc(1, sizeof(*tai));
+                                    ogs_plmn_id_build(&tai->plmn_id,
+                                            atoi(mcc), atoi(mnc), strlen(mnc));
+                                    tai->tac = ogs_strdup(tac);
+                                    if (!self.mbs_service_area) {
+                                        self.mbs_service_area = ogs_calloc(
+                                                1, sizeof(*self.mbs_service_area));
+                                    }
+                                    if (!self.mbs_service_area->tai_list) {
+                                        self.mbs_service_area->tai_list =
+                                            ogs_calloc(1, sizeof(
+                                                *self.mbs_service_area->
+                                                    tai_list));
+                                    }
+                                    ogs_list_add(
+                                            self.mbs_service_area->tai_list,
+                                            tai);
+                                } else {
+                                    ogs_warn("mbsServiceArea.taiList: "
+                                            "entry missing plmn_id or tac, "
+                                            "ignored");
+                                }
+                            } while (ogs_yaml_iter_type(&tai_array) ==
+                                    YAML_SEQUENCE_NODE);
+                        } else
+                            ogs_warn("unknown key `mbsServiceArea.%s`",
+                                    area_key);
+                    }
                 } else
                     ogs_warn("unknown key `%s`", smf_key);
             }
@@ -2270,7 +2630,9 @@ smf_sess_t *smf_sess_find_by_teid(uint32_t teid)
 
 smf_sess_t *smf_sess_find_by_seid(uint64_t seid)
 {
-    return ogs_hash_get(self.smf_n4_seid_hash, &seid, sizeof(seid));
+    smf_sess_t *sess = ogs_hash_get(self.smf_n4_seid_hash, &seid, sizeof(seid));
+    if (sess && sess != smf_sess_find_by_id(sess->id)) sess = NULL;
+    return sess;
 }
 
 smf_sess_t *smf_sess_find_by_apn(smf_ue_t *smf_ue, char *apn, uint8_t rat_type)
@@ -3936,4 +4298,1925 @@ int smf_maximum_integrity_protected_data_rate_downlink_value2enum(
 {
     ogs_assert(value);
     return smf_maximum_integrity_protected_data_rate_uplink_value2enum(value);
+}
+
+static ogs_tmgi_t *smf_tmgi_add(void)
+{
+    ogs_tmgi_t *tmgi = NULL;
+
+    ogs_pool_alloc(&tmgi_pool, &tmgi);
+    if (!tmgi) {
+        ogs_error("Maximum number of TMGIs[%" PRIu64 "] reached",
+                  ogs_global_conf()->max.mbs.tmgis);
+        return NULL;
+    }
+    memset(tmgi, 0, sizeof *tmgi);
+
+    ogs_list_add(&self.tmgi_list, tmgi);
+
+    ogs_info("[Added] Number of TMGIs in SMF is now %d",
+                ogs_list_count(&self.tmgi_list));
+
+    return tmgi;
+}
+
+static void smf_tmgi_remove(ogs_tmgi_t *tmgi)
+{
+    ogs_assert(tmgi);
+
+    ogs_list_remove(&self.tmgi_list, tmgi);
+
+    if (tmgi->mbs_service_id)
+        ogs_free(tmgi->mbs_service_id);
+
+    if (tmgi->expiration_time)
+        ogs_free(tmgi->expiration_time);
+
+    ogs_pool_free(&tmgi_pool, tmgi);
+
+    ogs_info("[Removed] Number of TMGIs in SMF is now %d",
+                ogs_list_count(&self.tmgi_list));
+}
+
+static void smf_tmgi_remove_all(void)
+{
+    ogs_tmgi_t *tmgi = NULL, *next = NULL;
+
+    ogs_list_for_each_safe(&self.tmgi_list, next, tmgi)
+        smf_tmgi_remove(tmgi);
+}
+
+int smf_tmgi_count(void)
+{
+    return ogs_list_count(&self.tmgi_list);
+}
+
+/* TS 23.003 V18.8.0 clause 30.2: "MBS Service ID uniquely identifies an MBS service within a PLMN."
+ * Starting at "start", returns the first 6-digit MBS Service ID (000000 to FFFFFF, wrapping) that no TMGI of
+ * tmgi_list with the same PLMN carries, or NULL when every value is taken. With fewer TMGIs than values it
+ * ends after at most one step per TMGI. */
+char *smf_tmgi_pick_mbs_service_id(
+        ogs_list_t *tmgi_list, const ogs_plmn_id_t *plmn_id, uint32_t start)
+{
+    uint32_t tried;
+
+    ogs_assert(tmgi_list);
+    ogs_assert(plmn_id);
+
+    for (tried = 0; tried <= OGS_MAX_MBS_SERVICE_ID; tried++) {
+        ogs_tmgi_t *tmgi = NULL;
+        bool in_use = false;
+        char *mbs_service_id = ogs_msprintf("%06X",
+                (start + tried) % (OGS_MAX_MBS_SERVICE_ID + 1));
+
+        ogs_assert(mbs_service_id);
+
+        ogs_list_for_each(tmgi_list, tmgi) {
+            if (tmgi->mbs_service_id &&
+                ogs_plmn_id_mcc(&tmgi->plmn_id) == ogs_plmn_id_mcc(plmn_id) &&
+                ogs_plmn_id_mnc(&tmgi->plmn_id) == ogs_plmn_id_mnc(plmn_id) &&
+                ogs_plmn_id_mnc_len(&tmgi->plmn_id) ==
+                    ogs_plmn_id_mnc_len(plmn_id) &&
+                ogs_strcasecmp(tmgi->mbs_service_id, mbs_service_id) == 0) {
+                in_use = true;
+                break;
+            }
+        }
+
+        if (!in_use)
+            return mbs_service_id;
+
+        ogs_free(mbs_service_id);
+    }
+
+    return NULL;
+}
+
+// Using the 2024-05-13T13:05:40.483504Z format (UTC)
+char *smf_tmgi_gen_expiration_time(int validity_seconds)
+{
+    char *expiration_time = NULL;
+
+    expiration_time = ogs_sbi_gmtime_string(
+        ogs_time_now() + ogs_time_from_sec(validity_seconds));
+
+    return expiration_time;
+}
+
+/* The maximum response time configured for a Namf_MBSBroadcast ContextCreate, if any. */
+bool smf_mbs_max_response_time(int *seconds)
+{
+    ogs_assert(seconds);
+
+    if (!self.has_mbs_max_response_time)
+        return false;
+    *seconds = self.mbs_max_response_time;
+    return true;
+}
+
+bool smf_mbs_policy_control_enabled(smf_mbs_pcf_failure_action_e *action)
+{
+    if (action)
+        *action = self.mbs_pcf_failure_action;
+    return self.mbs_pcf_enabled;
+}
+
+bool smf_mbs_foreign_tmgi_configure(const char *value)
+{
+    if (!value)
+        return false;
+    if (!strcmp(value, "true"))
+        self.mbs_accept_foreign_tmgi = true;
+    else if (!strcmp(value, "false"))
+        self.mbs_accept_foreign_tmgi = false;
+    else
+        return false;
+    return true;
+}
+
+bool smf_mbs_accepts_foreign_tmgi(void)
+{
+    return self.mbs_accept_foreign_tmgi;
+}
+
+ogs_tmgi_t *smf_tmgi_add_foreign(const ogs_tmgi_t *received, bool *invalid)
+{
+    ogs_tmgi_t *tmgi = NULL;
+    int i;
+
+    ogs_assert(received);
+    if (invalid)
+        *invalid = false;
+
+    /* TS 29.571 V18.12.0 Tmgi, mbsServiceId pattern '^[A-Fa-f0-9]{6}$' */
+    if (!received->mbs_service_id || strlen(received->mbs_service_id) != 6) {
+        if (invalid)
+            *invalid = true;
+        return NULL;
+    }
+    for (i = 0; i < 6; i++) {
+        if (!isxdigit((unsigned char)received->mbs_service_id[i])) {
+            if (invalid)
+                *invalid = true;
+            return NULL;
+        }
+    }
+
+    if ((tmgi = smf_tmgi_add()) == NULL)
+        return NULL;
+    tmgi->mbs_service_id = ogs_strdup(received->mbs_service_id);
+    ogs_assert(tmgi->mbs_service_id);
+    memcpy(&tmgi->plmn_id, &received->plmn_id, sizeof(tmgi->plmn_id));
+    return tmgi;
+}
+
+bool smf_mbs_policy_control_configure(const char *enabled, const char *failure_action)
+{
+    bool on = false;
+    smf_mbs_pcf_failure_action_e act = SMF_MBS_PCF_FAILURE_ACTION_NONE;
+
+    if (enabled) {
+        if (!strcmp(enabled, "true"))
+            on = true;
+        else if (strcmp(enabled, "false"))
+            return false;
+    }
+    if (failure_action) {
+        if (!strcmp(failure_action, "reject"))
+            act = SMF_MBS_PCF_FAILURE_ACTION_REJECT;
+        else if (!strcmp(failure_action, "allow"))
+            act = SMF_MBS_PCF_FAILURE_ACTION_ALLOW;
+        else
+            return false;
+    }
+    /* TS 29.537 V18.x cl. 5.2.2.2.2 leaves the action to "the internally configured failure actions": no default */
+    if (on && act == SMF_MBS_PCF_FAILURE_ACTION_NONE)
+        return false;
+
+    self.mbs_pcf_enabled = on;
+    self.mbs_pcf_failure_action = act;
+    return true;
+}
+
+/* The time after which an NG-RAN that required the release of a broadcast MBS session gets it again, if configured. */
+bool smf_mbs_ngran_restore_delay(int *seconds)
+{
+    ogs_assert(seconds);
+
+    if (!self.has_mbs_ngran_restore_delay)
+        return false;
+    *seconds = self.mbs_ngran_restore_delay;
+    return true;
+}
+
+bool smf_mbs_context_retry_delay(int *seconds)
+{
+    ogs_assert(seconds);
+
+    if (!self.has_mbs_context_retry_delay)
+        return false;
+    *seconds = self.mbs_context_retry_delay;
+    return true;
+}
+
+/* TS 29.571 V18.12.0 DateTime: an RFC 3339 date-time. */
+bool smf_is_date_time(const char *date_time)
+{
+    ogs_time_t t;
+
+    /* the library parser also takes a date alone; an RFC 3339 date-time has a time part, after a "T" */
+    return date_time && strchr(date_time, 'T') &&
+        ogs_sbi_time_from_string(&t, (char *)date_time);
+}
+
+/* TS 23.003 V18.8.0 clause 12.7.1: "The NID shall consist of 11 hexadecimal digits"; TS 29.571 V18.12.0
+ * Nid, pattern '^[A-Fa-f0-9]{11}$'. */
+bool smf_nid_is_valid(const char *nid)
+{
+    int i;
+
+    if (!nid || strlen(nid) != 11)
+        return false;
+    for (i = 0; i < 11; i++)
+        if (!isxdigit((unsigned char)nid[i]))
+            return false;
+    return true;
+}
+
+/* The NID of this MB-SMF's SNPN, or NULL when it belongs to a PLMN. */
+const char *smf_own_nid(void)
+{
+    return self.nid;
+}
+
+/* TS 23.003 V18.8.0 clause 30.2, item 3: "The MNC identifies the PLMN which the MB-SMF belongs to". That
+ * PLMN is the first of the serving PLMNs of the configuration and, when none is configured, the PLMN of
+ * the first tracking area of the SMF information (smf.info.tai). Returns false when the configuration
+ * names no PLMN, so that a TMGI is never given an all-zero PLMN. */
+bool smf_tmgi_own_plmn(ogs_plmn_id_t *plmn_id)
+{
+    ogs_sbi_nf_instance_t *nf_instance = NULL;
+    ogs_sbi_nf_info_t *nf_info = NULL;
+
+    ogs_assert(plmn_id);
+
+    if (ogs_local_conf()->num_of_serving_plmn_id > 0) {
+        memcpy(plmn_id, &ogs_local_conf()->serving_plmn_id[0], sizeof(*plmn_id));
+        return true;
+    }
+
+    nf_instance = ogs_sbi_self()->nf_instance;
+    ogs_assert(nf_instance);
+
+    ogs_list_for_each(&nf_instance->nf_info_list, nf_info) {
+        if (nf_info->nf_type != OpenAPI_nf_type_SMF)
+            continue;
+        if (nf_info->smf.num_of_nr_tai > 0) {
+            memcpy(plmn_id, &nf_info->smf.nr_tai[0].plmn_id, sizeof(*plmn_id));
+            return true;
+        }
+    }
+
+    return false;
+}
+
+ogs_tmgi_t *smf_tmgi_allocate(char *expiration_time)
+{
+    ogs_tmgi_t *tmgi = NULL;
+
+    ogs_assert(expiration_time);
+
+    if ((tmgi = smf_tmgi_add()) == NULL) {
+        ogs_error("smf_tmgi_allocate() failed");
+        return NULL;
+    }
+
+    // Option 1: TMGI range
+    // TODO (borieher): Grab TMGI from the TMGI range
+
+    // Option 2: the MB-SMF's own PLMN, then a random MBS Service ID that is free within that PLMN
+    if (!smf_tmgi_own_plmn(&tmgi->plmn_id)) {
+        ogs_error("smf_tmgi_allocate(): no PLMN is configured for this MB-SMF (global serving PLMN or smf.info.tai)");
+        smf_tmgi_remove(tmgi);
+        return NULL;
+    }
+
+    tmgi->mbs_service_id = smf_tmgi_pick_mbs_service_id(&self.tmgi_list,
+            &tmgi->plmn_id, ogs_random32() % (OGS_MAX_MBS_SERVICE_ID + 1));
+    if (!tmgi->mbs_service_id) {
+        ogs_error("smf_tmgi_allocate(): every MBS Service ID of the PLMN is in use");
+        smf_tmgi_remove(tmgi);
+        return NULL;
+    }
+
+    tmgi->expiration_time = ogs_strdup(expiration_time);
+
+    return tmgi;
+}
+
+void smf_tmgi_deallocate(ogs_tmgi_t *tmgi) {
+    smf_tmgi_remove(tmgi);
+}
+
+// Deallocates every TMGI not currently referenced by a live MBS session, skipping rather than freeing any
+// that are; see smf_mbs_sess_find_by_tmgi() for why that check matters. Mirrors smf_tmgi_remove_all() above
+// with that one guard added.
+//
+// NOTE: currently uncalled. TS 29.532's table marks tmgi-list Mandatory for the Deallocate operation, and
+// the prose does not license omitting it, so "deallocate all" there means enumerating every TMGI in the
+// list rather than sending none. Kept rather than removed (rule 14): it is a correct primitive for a real
+// concept, a genuine "deallocate every TMGI I hold" operation such as an admin or reset path, just not one
+// reachable through that SBI operation.
+void smf_tmgi_deallocate_all(void)
+{
+    ogs_tmgi_t *tmgi = NULL, *next = NULL;
+
+    ogs_list_for_each_safe(&self.tmgi_list, next, tmgi) {
+        if (smf_mbs_sess_find_by_tmgi(tmgi)) {
+            ogs_warn("TMGI Deallocate (all): skipping TMGI still in use by an MBS session");
+            continue;
+        }
+        smf_tmgi_remove(tmgi);
+    }
+}
+
+// An expired TMGI is not a live allocation. TS 29.532 V18.6.0, clause 6.1.7.3, table 6.1.7.3-1,
+// row UNKNOWN_TMGI: "The requested TMGI Allocate or TMGI Deallocate service operation failed,
+// because requested TMGI expired or cannot be found." The expiration time generated here, returned
+// to the consumer and carried over N4mb was otherwise never read back, so nothing in this SMF could
+// tell an expired TMGI from a live one and every allocation was held for the process's lifetime.
+// Skips any TMGI a live MBS session still references, for the reason smf_tmgi_deallocate_all()
+// gives. Returns the number reclaimed.
+int smf_tmgi_reclaim_expired(void)
+{
+    ogs_tmgi_t *tmgi = NULL, *next = NULL;
+    ogs_time_t now = ogs_time_now();
+    int reclaimed = 0;
+
+    ogs_list_for_each_safe(&self.tmgi_list, next, tmgi) {
+        ogs_time_t expiry;
+
+        if (!tmgi->expiration_time)
+            continue;
+        if (ogs_sbi_time_from_string(&expiry, tmgi->expiration_time) == false) {
+            ogs_warn("TMGI reclaim: unparsable expiration time [%s], keeping TMGI",
+                    tmgi->expiration_time);
+            continue;
+        }
+        if (expiry > now)
+            continue;
+        if (smf_mbs_sess_find_by_tmgi(tmgi)) {
+            ogs_warn("TMGI reclaim: expired TMGI still in use by an MBS session, keeping it");
+            continue;
+        }
+        smf_tmgi_remove(tmgi);
+        reclaimed++;
+    }
+
+    if (reclaimed)
+        ogs_info("TMGI reclaim: released %d expired TMGI(s)", reclaimed);
+
+    return reclaimed;
+}
+
+/* True when the TMGI's advertised expiration time has passed. A TMGI without a parsable expiration
+ * time is not reported as expired, as in smf_tmgi_reclaim_expired(). */
+bool smf_tmgi_is_expired(ogs_tmgi_t *tmgi)
+{
+    ogs_time_t expiry;
+
+    ogs_assert(tmgi);
+
+    if (!tmgi->expiration_time)
+        return false;
+    if (ogs_sbi_time_from_string(&expiry, tmgi->expiration_time) == false)
+        return false;
+
+    return expiry <= ogs_time_now();
+}
+
+/* The MBS Service ID is six hexadecimal digits of either case (TS 29.571 Tmgi.mbsServiceId pattern '^[A-Fa-f0-9]{6}$'),
+ * so every lookup by TMGI compares it without regard to case, as the allocation does (ogs_strcasecmp above). */
+ogs_tmgi_t *smf_tmgi_find_by_tmgi(ogs_tmgi_t *tmgi_to_find)
+{
+    ogs_tmgi_t *tmgi = NULL;
+
+    ogs_assert(tmgi_to_find);
+
+    ogs_list_for_each(&self.tmgi_list, tmgi) {
+
+        ogs_assert(tmgi);
+
+        // Check same MBS Session ID
+        if (ogs_plmn_id_mcc(&tmgi->plmn_id) == ogs_plmn_id_mcc(&tmgi_to_find->plmn_id) &&
+            ogs_plmn_id_mnc(&tmgi->plmn_id) == ogs_plmn_id_mnc(&tmgi_to_find->plmn_id) &&
+            ogs_plmn_id_mnc_len(&tmgi->plmn_id) == ogs_plmn_id_mnc_len(&tmgi_to_find->plmn_id) &&
+            strcasecmp(tmgi->mbs_service_id, tmgi_to_find->mbs_service_id) == 0) {
+            return tmgi;
+        }
+    }
+
+    return NULL;
+}
+
+/*
+ * Finds an MBS Session by the TMGI it carries, wherever that TMGI sits.
+ *
+ * Needed in addition to smf_context_have_matching_mbs_session_id(), which only sees a TMGI that is
+ * itself the MBS Session ID (mbs_session_id.is_tmgi). A MULTICAST session identified by an SSM
+ * carries its TMGI separately, in smf_mbs_sess->tmgi, and that one is invisible to the other
+ * lookup. smf_mbs_sess->tmgi is always set, whichever role it ended up in (see
+ * smf_mbs_sess_create()), so scanning it covers both. The comparison matches
+ * smf_tmgi_find_by_tmgi() above.
+ */
+smf_mbs_sess_t *smf_mbs_sess_find_by_tmgi(ogs_tmgi_t *tmgi_to_find)
+{
+    smf_mbs_sess_t *mbs_sess = NULL;
+
+    ogs_assert(tmgi_to_find);
+
+    ogs_list_for_each(&self.smf_mbs_sess_list, mbs_sess) {
+        ogs_assert(mbs_sess);
+
+        if (!mbs_sess->tmgi) continue;
+
+        if (strcasecmp(mbs_sess->tmgi->mbs_service_id, tmgi_to_find->mbs_service_id) == 0) {
+            /* Compared as integers rather than through ogs_plmn_id_mcc_string()/mnc_string(): those
+             * allocate, and a two-digit and a three-digit MNC are different PLMNs, which the packed
+             * representation already distinguishes. */
+            if (ogs_plmn_id_mcc(&mbs_sess->tmgi->plmn_id) == ogs_plmn_id_mcc(&tmgi_to_find->plmn_id) &&
+                ogs_plmn_id_mnc(&mbs_sess->tmgi->plmn_id) == ogs_plmn_id_mnc(&tmgi_to_find->plmn_id) &&
+                ogs_plmn_id_mnc_len(&mbs_sess->tmgi->plmn_id) == ogs_plmn_id_mnc_len(&tmgi_to_find->plmn_id))
+                return mbs_sess;
+        }
+    }
+
+    return NULL;
+}
+
+smf_mbs_amf_t *smf_mbs_sess_amf_add(smf_mbs_sess_t *mbs_sess)
+{
+    smf_mbs_amf_t *amf = NULL;
+
+    ogs_assert(mbs_sess);
+
+    amf = ogs_calloc(1, sizeof(*amf));
+    ogs_assert(amf);
+    amf->id = ++mbs_sess->next_amf_id;
+    ogs_list_add(&mbs_sess->amf_list, amf);
+
+    return amf;
+}
+
+smf_mbs_amf_t *smf_mbs_sess_amf_find(smf_mbs_sess_t *mbs_sess, uint32_t id)
+{
+    smf_mbs_amf_t *amf = NULL;
+
+    ogs_assert(mbs_sess);
+
+    ogs_list_for_each(&mbs_sess->amf_list, amf)
+        if (amf->id == id)
+            return amf;
+
+    return NULL;
+}
+
+void smf_mbs_sess_amf_remove(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf)
+{
+    ogs_assert(mbs_sess);
+    ogs_assert(amf);
+
+    ogs_list_remove(&mbs_sess->amf_list, amf);
+    if (amf->mbs_context_ref)
+        ogs_free(amf->mbs_context_ref);
+    if (amf->nf_instance_id)
+        ogs_free(amf->nf_instance_id);
+    ogs_free(amf);
+}
+
+smf_mbs_dl_tunnel_t *smf_mbs_sess_dl_tunnel_find(smf_mbs_sess_t *mbs_sess, const char *ran_id)
+{
+    smf_mbs_dl_tunnel_t *tunnel = NULL;
+
+    ogs_assert(mbs_sess);
+    ogs_assert(ran_id);
+
+    ogs_list_for_each(&mbs_sess->dl_tunnel_list, tunnel)
+        if (strcmp(tunnel->ran_id, ran_id) == 0)
+            return tunnel;
+
+    return NULL;
+}
+
+smf_mbs_dl_tunnel_t *smf_mbs_sess_dl_tunnel_set(smf_mbs_sess_t *mbs_sess, const char *ran_id,
+        const ogs_ip_t *addr, uint32_t teid, bool *changed)
+{
+    smf_mbs_dl_tunnel_t *tunnel = NULL;
+
+    ogs_assert(mbs_sess);
+    ogs_assert(ran_id);
+    ogs_assert(addr);
+
+    tunnel = smf_mbs_sess_dl_tunnel_find(mbs_sess, ran_id);
+    if (tunnel) {
+        if (changed)
+            *changed = tunnel->teid != teid || tunnel->addr.ipv4 != addr->ipv4 || tunnel->addr.ipv6 != addr->ipv6 ||
+                tunnel->addr.addr != addr->addr || memcmp(tunnel->addr.addr6, addr->addr6, OGS_IPV6_LEN) != 0;
+    } else {
+        tunnel = ogs_calloc(1, sizeof(*tunnel));
+        ogs_assert(tunnel);
+        tunnel->ran_id = ogs_strdup(ran_id);
+        tunnel->unicast_params_id = ++mbs_sess->next_dl_tunnel_id;
+        ogs_list_add(&mbs_sess->dl_tunnel_list, tunnel);
+        if (changed)
+            *changed = true;
+    }
+    tunnel->addr = *addr;
+    tunnel->teid = teid;
+
+    return tunnel;
+}
+
+void smf_mbs_sess_dl_tunnel_remove(smf_mbs_sess_t *mbs_sess, smf_mbs_dl_tunnel_t *tunnel)
+{
+    ogs_assert(mbs_sess);
+    ogs_assert(tunnel);
+
+    ogs_list_remove(&mbs_sess->dl_tunnel_list, tunnel);
+    ogs_free(tunnel->ran_id);
+    ogs_free(tunnel);
+}
+
+/* The AMF reported its broadcast MBS session context released: there is no mbsContextRef to address any more, so
+ * a later release of the MBS session sends nothing to that AMF. */
+void smf_mbs_sess_context_released(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf)
+{
+    ogs_assert(mbs_sess);
+
+    if (amf)
+        smf_mbs_sess_amf_remove(mbs_sess, amf);
+}
+
+/* The MBS session of a TMGI that a notification names: for a location dependent MBS session the part with
+ * the Area Session ID of the notification, otherwise the session of the TMGI. */
+smf_mbs_sess_t *smf_mbs_sess_find_by_tmgi_and_area(
+        ogs_tmgi_t *tmgi_to_find, bool has_area_session_id, uint16_t area_session_id)
+{
+    smf_mbs_sess_t *mbs_sess = NULL;
+
+    ogs_assert(tmgi_to_find);
+
+    ogs_list_for_each(&self.smf_mbs_sess_list, mbs_sess) {
+        if (!mbs_sess->tmgi)
+            continue;
+        if (strcasecmp(mbs_sess->tmgi->mbs_service_id, tmgi_to_find->mbs_service_id) != 0 ||
+                ogs_plmn_id_mcc(&mbs_sess->tmgi->plmn_id) != ogs_plmn_id_mcc(&tmgi_to_find->plmn_id) ||
+                ogs_plmn_id_mnc(&mbs_sess->tmgi->plmn_id) != ogs_plmn_id_mnc(&tmgi_to_find->plmn_id) ||
+                ogs_plmn_id_mnc_len(&mbs_sess->tmgi->plmn_id) != ogs_plmn_id_mnc_len(&tmgi_to_find->plmn_id))
+            continue;
+        if (has_area_session_id && mbs_sess->location_dependent &&
+                mbs_sess->area_session_id != area_session_id)
+            continue;
+        return mbs_sess;
+    }
+
+    return NULL;
+}
+
+static smf_mbs_sess_t *smf_mbs_sess_add(void)
+{
+    smf_mbs_sess_t *smf_mbs_sess = NULL;
+
+    ogs_pool_id_calloc(&smf_mbs_sess_pool, &smf_mbs_sess);
+    if (!smf_mbs_sess) {
+        ogs_error("Maximum number of MBS Sessions[%" PRIu64 "] reached",
+                    ogs_global_conf()->max.mbs.mbs_sessions);
+        return NULL;
+    }
+
+    smf_mbs_sess->index = ogs_pool_index(&smf_mbs_sess_pool, smf_mbs_sess);
+    ogs_assert(smf_mbs_sess->index > 0 && smf_mbs_sess->index <= ogs_global_conf()->max.mbs.mbs_sessions);
+
+    // Set mbsSessionRef
+    smf_mbs_sess->mbs_session_ref = ogs_msprintf("%d", smf_mbs_sess->index);
+    ogs_assert(smf_mbs_sess->mbs_session_ref);
+
+    // PFCP initialization
+    ogs_pfcp_pool_init(&smf_mbs_sess->pfcp);
+
+    // Set SEID
+    ogs_pool_alloc(&smf_n4_seid_pool, &smf_mbs_sess->smf_n4mb_seid_node);
+    ogs_assert(smf_mbs_sess->smf_n4mb_seid_node);
+
+    smf_mbs_sess->smf_n4mb_seid = *(smf_mbs_sess->smf_n4mb_seid_node);
+
+    ogs_hash_set(self.smf_n4_seid_hash, &smf_mbs_sess->smf_n4mb_seid,
+        sizeof(smf_mbs_sess->smf_n4mb_seid), smf_mbs_sess);
+
+    ogs_list_add(&self.smf_mbs_sess_list, smf_mbs_sess);
+
+    ogs_info("[Added] Number of MBS Sessions in SMF is now %d",
+            ogs_list_count(&self.smf_mbs_sess_list));
+
+    return smf_mbs_sess;
+}
+
+static void smf_mbs_sess_free(smf_mbs_sess_t *smf_mbs_sess)
+{
+    if (!smf_mbs_sess) return;
+
+    /* the subscriptions of the session end with it */
+    smf_mbs_subsc_remove_all(smf_mbs_sess);
+
+    if (smf_mbs_sess->mbs_session_ref)
+        ogs_free(smf_mbs_sess->mbs_session_ref);
+
+    {
+        smf_mbs_amf_t *amf = NULL, *next_amf = NULL;
+
+        ogs_list_for_each_safe(&smf_mbs_sess->amf_list, next_amf, amf)
+            smf_mbs_sess_amf_remove(smf_mbs_sess, amf);
+    }
+
+    {
+        smf_mbs_dl_tunnel_t *tunnel = NULL, *next_tunnel = NULL;
+
+        ogs_list_for_each_safe(&smf_mbs_sess->dl_tunnel_list, next_tunnel, tunnel)
+            smf_mbs_sess_dl_tunnel_remove(smf_mbs_sess, tunnel);
+    }
+
+    if (smf_mbs_sess->service_type)
+        ogs_free(smf_mbs_sess->service_type);
+
+    if (smf_mbs_sess->dnn)
+        ogs_free(smf_mbs_sess->dnn);
+
+    if (smf_mbs_sess->start_time)
+        ogs_free(smf_mbs_sess->start_time);
+
+    if (smf_mbs_sess->termination_time)
+        ogs_free(smf_mbs_sess->termination_time);
+
+    smf_mbs_pcf_sess_clear(smf_mbs_sess);
+
+    if (smf_mbs_sess->mbs_serv_info_json)
+        ogs_free(smf_mbs_sess->mbs_serv_info_json);
+
+    if (smf_mbs_sess->associated_session_id)
+        OpenAPI_associated_session_id_free(smf_mbs_sess->associated_session_id);
+
+    if (smf_mbs_sess->mbs_service_area_json)
+        ogs_free(smf_mbs_sess->mbs_service_area_json);
+
+    // If not allocated with MBS session, TMGI is allocated/freed separately. Location dependent sessions of
+    // one TMGI share it: it goes with the last of them.
+    if (smf_mbs_sess->tmgi_allocated && smf_mbs_sess->tmgi) {
+        smf_mbs_sess_t *sharing = smf_mbs_sess_find_by_tmgi(smf_mbs_sess->tmgi);
+        if (sharing)
+            sharing->tmgi_allocated = true;     /* the TMGI now goes with that session */
+        else
+            smf_tmgi_deallocate(smf_mbs_sess->tmgi);
+    }
+
+    if (smf_mbs_sess->mbs_session_id.is_ssm) {
+        ogs_free(smf_mbs_sess->mbs_session_id.ssm);
+    }
+
+    if (smf_mbs_sess->ssm && (!smf_mbs_sess->mbs_session_id.is_ssm || smf_mbs_sess->ssm != smf_mbs_sess->mbs_session_id.ssm))
+        ogs_free(smf_mbs_sess->ssm);
+
+    if (smf_mbs_sess->mbs_session_id.nid)
+        ogs_free(smf_mbs_sess->mbs_session_id.nid);
+
+    if (smf_mbs_sess->upf_n3mb_addr)
+        ogs_freeaddrinfo(smf_mbs_sess->upf_n3mb_addr);
+
+    if (smf_mbs_sess->upf_n3mb_addr6)
+        ogs_freeaddrinfo(smf_mbs_sess->upf_n3mb_addr6);
+
+    ogs_hash_set(self.smf_n4_seid_hash, &smf_mbs_sess->smf_n4mb_seid,
+            sizeof(smf_mbs_sess->smf_n4mb_seid), NULL);
+
+    // PFCP finalization
+    ogs_pfcp_pool_final(&smf_mbs_sess->pfcp);
+
+    ogs_pool_free(&smf_n4_seid_pool, smf_mbs_sess->smf_n4mb_seid_node);
+
+    ogs_mbs_service_area_free(smf_mbs_sess->mbs_service_area);
+    ogs_ext_mbs_service_area_free(smf_mbs_sess->ext_mbs_service_area);
+
+    {
+        smf_mbs_qos_flow_t *qos_flow = NULL, *next_qos_flow = NULL;
+        ogs_list_for_each_safe(&smf_mbs_sess->mbs_qos_flow_list, next_qos_flow, qos_flow) {
+            if (qos_flow->med_comp_num)
+                ogs_free(qos_flow->med_comp_num);
+            ogs_free(qos_flow);
+        }
+    }
+
+    {
+        smf_mbs_fsa_id_t *fsa_id = NULL, *next_fsa_id = NULL;
+        ogs_list_for_each_safe(&smf_mbs_sess->mbs_fsa_id_list, next_fsa_id, fsa_id)
+            ogs_free(fsa_id);
+    }
+
+    ogs_pool_id_free(&smf_mbs_sess_pool, smf_mbs_sess);
+}
+
+static void smf_mbs_sess_remove(smf_mbs_sess_t *smf_mbs_sess)
+{
+    ogs_assert(smf_mbs_sess);
+
+    ogs_list_remove(&self.smf_mbs_sess_list, smf_mbs_sess);
+    ogs_pfcp_sess_clear(&smf_mbs_sess->pfcp);
+
+    if (smf_mbs_sess->mbs_session_id.is_tmgi) {
+        smf_mbs_sessions_by_tmgi_remove_mbs_sess(smf_mbs_sess);
+    }
+
+    if (smf_mbs_sess->mbs_session_id.is_ssm) {
+        smf_mbs_sessions_by_ssm_remove_mbs_sess(smf_mbs_sess);
+    }
+
+    smf_mbs_sess_free(smf_mbs_sess);
+
+    ogs_info("[Removed] Number of MBS Sessions in SMF is now %d",
+            ogs_list_count(&self.smf_mbs_sess_list));
+}
+
+static void smf_mbs_sess_remove_all(void)
+{
+    smf_mbs_sess_t *smf_mbs_sess = NULL, *next = NULL;
+
+    ogs_list_for_each_safe(&self.smf_mbs_sess_list, next, smf_mbs_sess)
+        smf_mbs_sess_remove(smf_mbs_sess);
+}
+
+/* Whether two MBS service areas are the same set of TAIs and of NCGIs. Two sessions without any area (the
+ * global area) are the same; external areas are not compared (see smf_mbs_sess_service_areas_overlap()). */
+static bool smf_mbs_service_areas_equal(const smf_mbs_sess_t *a, const smf_mbs_sess_t *b)
+{
+    ogs_tai_t *a_tai, *b_tai;
+    ogs_ncgi_tai_t *a_nt, *b_nt;
+    ogs_ncgi_t *a_ncgi, *b_ncgi;
+    int a_count, b_count;
+
+    if (a->ext_mbs_service_area || b->ext_mbs_service_area)
+        return false;
+    if (!a->mbs_service_area && !b->mbs_service_area)
+        return true;
+    if (!a->mbs_service_area || !b->mbs_service_area)
+        return false;
+
+    a_count = a->mbs_service_area->tai_list ? ogs_list_count(a->mbs_service_area->tai_list) : 0;
+    b_count = b->mbs_service_area->tai_list ? ogs_list_count(b->mbs_service_area->tai_list) : 0;
+    if (a_count != b_count)
+        return false;
+    if (a_count) {
+        ogs_list_for_each(a->mbs_service_area->tai_list, a_tai) {
+            bool found = false;
+            ogs_list_for_each(b->mbs_service_area->tai_list, b_tai)
+                if (smf_tai_equal(a_tai, b_tai)) { found = true; break; }
+            if (!found)
+                return false;
+        }
+    }
+
+    a_count = a->mbs_service_area->ncgi_tai_list ? ogs_list_count(a->mbs_service_area->ncgi_tai_list) : 0;
+    b_count = b->mbs_service_area->ncgi_tai_list ? ogs_list_count(b->mbs_service_area->ncgi_tai_list) : 0;
+    if (a_count != b_count)
+        return false;
+    if (a_count) {
+        ogs_list_for_each(a->mbs_service_area->ncgi_tai_list, a_nt) {
+            bool found = false;
+            ogs_list_for_each(b->mbs_service_area->ncgi_tai_list, b_nt) {
+                if (!smf_tai_equal(&a_nt->tai, &b_nt->tai) ||
+                        ogs_list_count(&a_nt->cell_list) != ogs_list_count(&b_nt->cell_list))
+                    continue;
+                found = true;
+                ogs_list_for_each(&a_nt->cell_list, a_ncgi) {
+                    bool cell_found = false;
+                    ogs_list_for_each(&b_nt->cell_list, b_ncgi)
+                        if (smf_ncgi_equal(a_ncgi, b_ncgi)) { cell_found = true; break; }
+                    if (!cell_found) { found = false; break; }
+                }
+                if (found)
+                    break;
+            }
+            if (!found)
+                return false;
+        }
+    }
+
+    return true;
+}
+
+/* TS 29.532 V18.6.0 table 6.2.7.3-1, MBS_SESSION_ALREADY_CREATED: "For a location dependent MBS session, this
+ * error shall be used if the MBS session associated to the indicated MBS session identifier and MBS service area
+ * has already been created in the MB-SMF. For non location dependent MBS session, this error shall be used if the
+ * MBS session indicated by the MBS session identifier has been created in the MB-SMF.", and
+ * OVERLAPPING_MBS_SERVICE_AREA: "if the new MBS service area overlaps with the service area of any MBS session
+ * with the same MBS session identifier." Looks at the sessions already indexed under the MBS session ID of
+ * mbs_session (which is not indexed yet). */
+static smf_mbs_sess_create_result_e smf_mbs_sess_create_collision(smf_mbs_sess_t *mbs_session)
+{
+    smf_mbs_sess_create_result_e result = SMF_MBS_SESS_CREATE_OK;
+    ogs_list_t *lists[2] = { NULL, NULL };
+    uint8_t tmgi_key[SMF_MBS_TMGI_KEY_LEN];
+    int i;
+
+    if (mbs_session->mbs_session_id.is_tmgi) {
+        smf_mbs_tmgi_key(mbs_session->mbs_session_id.tmgi, tmgi_key);
+        lists[0] = (ogs_list_t*)ogs_hash_get(self.smf_mbs_sessions_by_tmgi, tmgi_key, sizeof(tmgi_key));
+    }
+    if (mbs_session->mbs_session_id.is_ssm) {
+        void *key;
+        int klen;
+        key = smf_mbs_sessions_by_ssm_key(mbs_session->mbs_session_id.ssm, &klen);
+        if (key)
+            lists[1] = (ogs_list_t*)ogs_hash_get(self.smf_mbs_sessions_by_ssm, key, klen);
+    }
+
+    for (i = 0; i < 2; i++) {
+        smf_mbs_sess_lnode_t *node;
+
+        if (!lists[i])
+            continue;
+        ogs_list_for_each(lists[i], node) {
+            smf_mbs_sess_t *existing = node->mbs_session;
+
+            if (existing == mbs_session)
+                continue;
+            if (!mbs_session->location_dependent || !existing->location_dependent)
+                return SMF_MBS_SESS_CREATE_ALREADY_CREATED;
+            if (smf_mbs_service_areas_equal(existing, mbs_session))
+                return SMF_MBS_SESS_CREATE_ALREADY_CREATED;
+            if ((!mbs_session->mbs_service_area && !mbs_session->ext_mbs_service_area) ||
+                    smf_mbs_sess_service_areas_overlap(existing, mbs_session))
+                result = SMF_MBS_SESS_CREATE_OVERLAPPING_MBS_SERVICE_AREA;
+        }
+    }
+
+    return result;
+}
+
+/* TS 29.532 V18.6.0 cl. 5.3.2.2.1: "For a location dependent MBS service, the MB-SMF shall allocate a unique Area
+ * Session ID within the MBS session for the MBS Service Area."; TS 23.003 V18.8.0 cl. 30.3: "An Area Session
+ * Identity shall be a decimal number between 0 and 65535 (inclusive)." The lowest value from 1 that no other
+ * location dependent session of the same TMGI holds. */
+static uint16_t smf_mbs_sess_alloc_area_session_id(const smf_mbs_sess_t *mbs_session)
+{
+    uint32_t candidate;
+
+    for (candidate = 1; candidate <= 0xFFFF; candidate++) {
+        smf_mbs_sess_t *other = NULL;
+        bool in_use = false;
+
+        ogs_list_for_each(&self.smf_mbs_sess_list, other) {
+            if (other != mbs_session && other->location_dependent &&
+                    other->tmgi == mbs_session->tmgi &&
+                    other->area_session_id == candidate) {
+                in_use = true;
+                break;
+            }
+        }
+        if (!in_use)
+            return (uint16_t)candidate;
+    }
+    ogs_assert_if_reached();
+    return 0;
+}
+
+smf_mbs_sess_t *smf_mbs_sess_create(ogs_tmgi_t *tmgi, bool tmgi_allocated, ogs_ssm_t *ssm, const char *service_type,
+        ogs_mbs_service_area_t *mbs_service_area, ogs_ext_mbs_service_area_t *ext_mbs_service_area,
+        bool location_dependent, smf_mbs_sess_create_result_e *result)
+{
+    smf_mbs_sess_t *smf_mbs_sess = NULL;
+    smf_mbs_sess_create_result_e collision;
+
+    ogs_assert(tmgi);
+    ogs_assert(service_type);
+
+    if (result)
+        *result = SMF_MBS_SESS_CREATE_OK;
+
+    if ((smf_mbs_sess = smf_mbs_sess_add()) == NULL) {
+        ogs_error("smf_mbs_sess_add() failed");
+        if (result)
+            *result = SMF_MBS_SESS_CREATE_POOL_FULL;
+        /* a TMGI allocated for this request is given up with the session that was not created, as it is with
+         * one that is released */
+        if (tmgi_allocated)
+            smf_tmgi_deallocate(tmgi);
+        /* what the caller handed over is not kept either */
+        if (mbs_service_area)
+            ogs_mbs_service_area_free(mbs_service_area);
+        if (ext_mbs_service_area)
+            ogs_ext_mbs_service_area_free(ext_mbs_service_area);
+        if (ssm)
+            ogs_free(ssm);
+        return NULL;
+    }
+
+    smf_mbs_sess->location_dependent = location_dependent;
+
+    smf_mbs_sess->tmgi = tmgi;
+    smf_mbs_sess->tmgi_allocated = tmgi_allocated;
+
+    smf_mbs_sess->service_type = ogs_strdup(service_type);
+
+    /* TS 29.532 V18.6.0 cl. 5.3.2.2.1: "If the MBS service area received in the request cannot be entirely
+     * covered by the MB-SMF service area, the MB-SMF shall reduce the MBS service area to be within the MB-SMF
+     * service area and continue the Create service operation using the reduced MBS service area." */
+    {
+        ogs_mbs_service_area_t *reduced = NULL;
+
+        if (mbs_service_area && smf_mbs_service_area_reduce(mbs_service_area, &reduced)) {
+            ogs_mbs_service_area_free(mbs_service_area);
+            mbs_service_area = reduced;
+            smf_mbs_sess->service_area_reduced = true;
+        }
+    }
+
+    smf_mbs_sess->mbs_service_area = mbs_service_area;
+    smf_mbs_sess->ext_mbs_service_area = ext_mbs_service_area;
+
+    if (ogs_strcasecmp(smf_mbs_sess->service_type, "BROADCAST") == 0) {
+        smf_mbs_sess->mbs_session_id.tmgi = tmgi;
+        smf_mbs_sess->mbs_session_id.is_tmgi = 1;
+        if (ssm)
+            smf_mbs_sess->ssm = ssm;
+    } else if (ogs_strcasecmp(smf_mbs_sess->service_type, "MULTICAST") == 0) {
+        if (ssm) {
+            /* Make sure unused bits are zero'd */
+            if (!ssm->src_ip_addr.ipv4) memset(&ssm->src_ip_addr.addr, 0, sizeof(ssm->src_ip_addr.addr));
+            if (!ssm->src_ip_addr.ipv6) memset(ssm->src_ip_addr.addr6, 0, sizeof(ssm->src_ip_addr.addr6));
+            ssm->src_ip_addr.reserved = 0;
+            if (!ssm->dest_ip_addr.ipv4) memset(&ssm->dest_ip_addr.addr, 0, sizeof(ssm->dest_ip_addr.addr));
+            if (!ssm->dest_ip_addr.ipv6) memset(ssm->dest_ip_addr.addr6, 0, sizeof(ssm->dest_ip_addr.addr6));
+            ssm->dest_ip_addr.reserved = 0;
+            smf_mbs_sess->mbs_session_id.ssm = ssm;
+            smf_mbs_sess->mbs_session_id.is_ssm = 1;
+
+            smf_mbs_sess->ssm = ssm;
+        } else {
+            smf_mbs_sess->mbs_session_id.tmgi = tmgi;
+            smf_mbs_sess->mbs_session_id.is_tmgi = 1;
+        }
+        smf_mbs_sess->state = smf_mbs_sess_multicast_state_configured;
+    }
+
+    collision = smf_mbs_sess_create_collision(smf_mbs_sess);
+    if (collision != SMF_MBS_SESS_CREATE_OK) {
+        ogs_debug("New MBS Session collides with an existing MBS Session, aborting create");
+        /* smf_mbs_sess_add() listed the session: take it out before freeing it */
+        ogs_list_remove(&self.smf_mbs_sess_list, smf_mbs_sess);
+        smf_mbs_sess_free(smf_mbs_sess);
+        smf_mbs_sess = NULL;
+        if (result)
+            *result = collision;
+    } else {
+        if (smf_mbs_sess->mbs_session_id.is_tmgi)
+            smf_mbs_sessions_by_tmgi_add_mbs_sess(smf_mbs_sess);
+        if (smf_mbs_sess->mbs_session_id.is_ssm)
+            smf_mbs_sessions_by_ssm_add_mbs_sess(smf_mbs_sess);
+        if (location_dependent)
+            smf_mbs_sess->area_session_id = smf_mbs_sess_alloc_area_session_id(smf_mbs_sess);
+    }
+
+    return smf_mbs_sess;
+}
+
+static smf_mbs_sess_t *smf_mbs_sess_find(uint32_t index)
+{
+    return ogs_pool_find(&smf_mbs_sess_pool, index);
+}
+
+smf_mbs_sess_t *smf_mbs_sess_find_by_id(ogs_pool_id_t id)
+{
+    return ogs_pool_find_by_id(&smf_mbs_sess_pool, id);
+}
+
+smf_mbs_sess_t *smf_mbs_sess_find_by_mbs_session_ref(char *mbs_session_ref)
+{
+    ogs_assert(mbs_session_ref);
+    return smf_mbs_sess_find(atoll(mbs_session_ref));
+}
+
+void smf_mbs_sess_release(smf_mbs_sess_t *smf_mbs_sess)
+{
+    smf_mbs_sess_remove(smf_mbs_sess);
+}
+
+/* The S-NSSAI the Create request carried, as an SBI Snssai, or NULL when it carried none. */
+OpenAPI_snssai_t *smf_mbs_sess_build_snssai(const smf_mbs_sess_t *mbs_sess)
+{
+    ogs_assert(mbs_sess);
+
+    if (!mbs_sess->has_s_nssai)
+        return NULL;
+
+    return OpenAPI_snssai_create(mbs_sess->s_nssai.sst,
+            mbs_sess->s_nssai.sd.v != OGS_S_NSSAI_NO_SD_VALUE ?
+                ogs_s_nssai_sd_to_string(mbs_sess->s_nssai.sd) : NULL);
+}
+
+/* The MBS FSA IDs of the session as the list of six hexadecimal digits of TS 29.571 MbsFsaId, or NULL when it
+ * has none. */
+OpenAPI_list_t *smf_mbs_sess_build_fsa_id_list(const smf_mbs_sess_t *mbs_sess)
+{
+    OpenAPI_list_t *list = NULL;
+    smf_mbs_fsa_id_t *fsa_id = NULL;
+
+    ogs_assert(mbs_sess);
+
+    if (ogs_list_empty(&mbs_sess->mbs_fsa_id_list))
+        return NULL;
+
+    list = OpenAPI_list_create();
+    ogs_list_for_each(&mbs_sess->mbs_fsa_id_list, fsa_id)
+        OpenAPI_list_add(list, ogs_uint24_to_0string(fsa_id->id));
+
+    return list;
+}
+
+smf_mbs_nr_red_cap_e smf_mbs_nr_red_cap_from_string(const char *value)
+{
+    if (!value)
+        return SMF_MBS_NR_RED_CAP_NONE;
+    if (strcmp(value, "NR_REDCAP_UE_ONLY") == 0)
+        return SMF_MBS_NR_RED_CAP_UE_ONLY;
+    if (strcmp(value, "BOTH_NR_REDCAP_UE_AND_NON_REDCAP_UE") == 0)
+        return SMF_MBS_NR_RED_CAP_BOTH;
+    if (strcmp(value, "NON_REDCAP_UE_ONLY") == 0)
+        return SMF_MBS_NR_RED_CAP_NON_REDCAP_UE_ONLY;
+    return SMF_MBS_NR_RED_CAP_NONE;
+}
+
+smf_mbs_sess_t *smf_mbs_sess_find_by_seid(uint64_t seid)
+{
+    smf_mbs_sess_t *mbs_sess = ogs_hash_get(self.smf_n4_seid_hash, &seid, sizeof(seid));
+    if (mbs_sess && mbs_sess != smf_mbs_sess_find_by_id(mbs_sess->id)) mbs_sess = NULL;
+    return mbs_sess;
+}
+
+/* The DNN criterion of the UPF selection of PDU sessions (compare_ue_info()): the node serves the session's DNN. A
+ * session without a DNN matches no node by it. */
+static bool compare_mbs_info(ogs_pfcp_node_t *node, smf_mbs_sess_t *mbs_sess)
+{
+    int i;
+
+    ogs_assert(node);
+    ogs_assert(mbs_sess);
+
+    if (!mbs_sess->dnn)
+        return false;
+    for (i = 0; i < node->num_of_dnn; i++)
+        if (ogs_strcasecmp(node->dnn[i], mbs_sess->dnn) == 0)
+            return true;
+    return false;
+}
+
+/* The associated node after \p current, going round the list of peers: one that serves the DNN of the session, else
+ * (unless parameter.no_pfcp_rr_select) the next associated one; as selected_upf_node() does for PDU sessions. */
+static ogs_pfcp_node_t *selected_mbs_upf_node(ogs_pfcp_node_t *current, smf_mbs_sess_t *mbs_sess)
+{
+    ogs_pfcp_node_t *next, *node;
+    int pass;
+
+    ogs_assert(current);
+    ogs_assert(mbs_sess);
+
+    next = ogs_list_next(current);
+    for (pass = 0; pass < 2; pass++) {
+        bool by_dnn = (pass == 0);
+
+        if (!by_dnn && ogs_global_conf()->parameter.no_pfcp_rr_select != 0)
+            break;
+        for (node = next; node; node = ogs_list_next(node))
+            if (OGS_FSM_CHECK(&node->sm, smf_pfcp_state_associated) && (!by_dnn || compare_mbs_info(node, mbs_sess)))
+                return node;
+        for (node = ogs_list_first(&ogs_pfcp_self()->pfcp_peer_list); node != next; node = ogs_list_next(node))
+            if (OGS_FSM_CHECK(&node->sm, smf_pfcp_state_associated) && (!by_dnn || compare_mbs_info(node, mbs_sess)))
+                return node;
+    }
+
+    ogs_error("No UPFs are PFCP associated that are suited to RR");
+    return ogs_list_first(&ogs_pfcp_self()->pfcp_peer_list);
+}
+
+/*
+ * TS 23.247 V18.8.0 clause 7.1.3: "The selection and reselection of the MB-UPF are performed by the MB-SMF by
+ * considering MB-UPF deployment. For the local Broadcast/Multicast MBS session and location dependent MBS session,
+ * the service area is taken into consideration for MB-UPF selection." The selection is the one of the UPF for PDU
+ * sessions (smf_sess_select_upf()): the DNN of the UPF configuration and the round robin that advances the peer.
+ * The service area is not used: the UPF configuration holds cells and TACs for NG-RAN cells of a PDU session, and
+ * no clause says how an MBS service area maps onto them.
+ */
+void smf_mbs_sess_select_upf(smf_mbs_sess_t *mbs_sess)
+{
+    ogs_assert(mbs_sess);
+
+    /*
+     * When used for the first time, if last node is set,
+     * the search is performed from the first UPF in a round-robin manner.
+     */
+    if (ogs_pfcp_self()->pfcp_node == NULL)
+        ogs_pfcp_self()->pfcp_node =
+            ogs_list_last(&ogs_pfcp_self()->pfcp_peer_list);
+
+    /* setup GTP session with selected UPF */
+    ogs_assert(ogs_pfcp_self()->pfcp_node);
+    ogs_pfcp_self()->pfcp_node = selected_mbs_upf_node(ogs_pfcp_self()->pfcp_node, mbs_sess);
+    ogs_assert(ogs_pfcp_self()->pfcp_node);
+    OGS_SETUP_PFCP_NODE(mbs_sess, ogs_pfcp_self()->pfcp_node);
+}
+
+/* The downlink PDR, FAR and QER of one MBS QoS flow (see below). precedence is the ordinal of the flow, from 1: a
+ * Precedence of 0 is not sent (ogs_pfcp_build_create_pdr() leaves it out) and the MB-UPF requires the IE. */
+static ogs_pfcp_pdr_t *smf_mbs_sess_add_flow_forwarding(smf_mbs_sess_t *mbs_sess, uint8_t qfi, uint32_t precedence)
+{
+    ogs_pfcp_pdr_t *dl_pdr = NULL;
+    ogs_pfcp_far_t *dl_far = NULL;
+    ogs_pfcp_qer_t *dl_qer = NULL;
+
+    ogs_assert(mbs_sess);
+
+    /* DL PDR */
+    dl_pdr = ogs_pfcp_pdr_add(&mbs_sess->pfcp);
+    ogs_assert(dl_pdr);
+    dl_pdr->src_if = OGS_PFCP_INTERFACE_CORE;
+    dl_pdr->precedence = precedence;
+
+    // For the PDR in MBS
+    if (mbs_sess->ssm) {
+        // TODO (borieher): Add support for IP ranges
+        // SSM from the AF
+        if (mbs_sess->ssm->dest_ip_addr.ipv4) {
+            dl_pdr->ip_multicast_addressing_info.ip_multicast_address.octet5 = 0;
+            dl_pdr->ip_multicast_addressing_info.ip_multicast_address.v4 = 1;
+            dl_pdr->ip_multicast_addressing_info.ip_multicast_address.s_ipv4_addr = mbs_sess->ssm->dest_ip_addr.addr;
+            dl_pdr->ip_multicast_addressing_info.ip_multicast_address_len =
+                sizeof(dl_pdr->ip_multicast_addressing_info.ip_multicast_address.octet5) +
+                sizeof(dl_pdr->ip_multicast_addressing_info.ip_multicast_address.s_ipv4_addr);
+        } else if (mbs_sess->ssm->dest_ip_addr.ipv6) {
+            dl_pdr->ip_multicast_addressing_info.ip_multicast_address.octet5 = 0;
+            dl_pdr->ip_multicast_addressing_info.ip_multicast_address.v6 = 1;
+            memcpy(dl_pdr->ip_multicast_addressing_info.ip_multicast_address.s_ipv6_addr,
+                mbs_sess->ssm->dest_ip_addr.addr6, OGS_IPV6_LEN);
+            dl_pdr->ip_multicast_addressing_info.ip_multicast_address_len =
+                sizeof(dl_pdr->ip_multicast_addressing_info.ip_multicast_address.octet5) +
+                sizeof(dl_pdr->ip_multicast_addressing_info.ip_multicast_address.s_ipv6_addr);
+        }
+
+        // AF source IP address
+        if (mbs_sess->ssm->src_ip_addr.ipv4) {
+            dl_pdr->ip_multicast_addressing_info.source_ip_address.octet5 = 0;
+            dl_pdr->ip_multicast_addressing_info.source_ip_address.v4 = 1;
+            dl_pdr->ip_multicast_addressing_info.source_ip_address.ipv4_addr = mbs_sess->ssm->src_ip_addr.addr;
+            dl_pdr->ip_multicast_addressing_info.source_ip_address_len =
+                sizeof(dl_pdr->ip_multicast_addressing_info.source_ip_address.octet5) +
+                sizeof(dl_pdr->ip_multicast_addressing_info.source_ip_address.ipv4_addr);
+        } else if(mbs_sess->ssm->src_ip_addr.ipv6) {
+            dl_pdr->ip_multicast_addressing_info.source_ip_address.octet5 = 0;
+            dl_pdr->ip_multicast_addressing_info.source_ip_address.v6 = 1;
+            memcpy(dl_pdr->ip_multicast_addressing_info.source_ip_address.ipv6_addr,
+                mbs_sess->ssm->src_ip_addr.addr6, OGS_IPV6_LEN);
+            dl_pdr->ip_multicast_addressing_info.source_ip_address_len =
+                sizeof(dl_pdr->ip_multicast_addressing_info.source_ip_address.octet5) +
+                sizeof(dl_pdr->ip_multicast_addressing_info.source_ip_address.ipv6_addr);
+        }
+
+        dl_pdr->ip_multicast_addressing_info_len = dl_pdr->ip_multicast_addressing_info.ip_multicast_address_len +
+            dl_pdr->ip_multicast_addressing_info.source_ip_address_len;
+    }
+
+    /* FAR */
+    dl_far = ogs_pfcp_far_add(&mbs_sess->pfcp);
+    ogs_assert(dl_far);
+    dl_far->dst_if = OGS_PFCP_INTERFACE_ACCESS;
+    ogs_pfcp_pdr_associate_far(dl_pdr, dl_far);
+
+    // NOTE (borieher): This flag should be DROP if PLLSSM is set?
+    dl_far->apply_action = OGS_PFCP_APPLY_ACTION_FSSM;
+    //dl_far->apply_action = OGS_PFCP_APPLY_ACTION_DROP;
+
+    // NOTE (borieher): When using PLLSSM the MB-UPF selects the lower layer SSM and the C-TEID
+    memset(&dl_far->outer_header_creation, 0, sizeof(ogs_pfcp_outer_header_creation_t));
+    //dl_far->outer_header_creation.gtpu4 = 1;
+    dl_far->outer_header_creation.ssm_c_teid = 1;
+    // The Outer Header Creation Description alone (2 octets): with the "Low Layer SSM and C-TEID" bit set the TEID,
+    // address and port fields are not present.
+    dl_far->outer_header_creation_len = 2;
+
+        // The MBS DL PDR is given a QER, because pdr->qer is what decides whether the GTP-U PDU Session
+        // Container extension header (TS 29.281/38.415) carrying the QFI is added: ogs_pfcp_send_g_pdu()
+        // (lib/pfcp/path.c) guards on "if (pdr->qer && pdr->qer->qfi)". Without one, every N3mb downlink G-PDU
+        // the UPF emits for a broadcast or multicast session lacks that mandatory header and a gNB rejects it
+        // ("Incomplete PDU at NG-U interface: missing or invalid PDU session container").
+        //
+        // TS 29.244 V18.10.0 cl. 5.34.2.2, "for each MBS QoS flow": a Create PDR with its PDI, a Create QER
+        // "instructing the MB-UPF to insert the QFI of the MBS QoS flow in user plane packets" and a Create FAR,
+        // the QER and the FAR associated with the PDR. This is that set for one flow, with the QFI of the flow.
+    dl_qer = ogs_pfcp_qer_add(&mbs_sess->pfcp);
+    ogs_assert(dl_qer);
+    dl_qer->qfi = qfi;
+    ogs_pfcp_pdr_associate_qer(dl_pdr, dl_qer);
+
+    return dl_pdr;
+}
+
+
+bool smf_mbs_sess_create_mbs_data_forwarding(smf_mbs_sess_t *mbs_sess)
+{
+    smf_mbs_qos_flow_t *flow = NULL;
+    uint32_t ordinal = 1;
+
+    ogs_assert(mbs_sess);
+
+    if (ogs_list_count(&mbs_sess->mbs_qos_flow_list) > OGS_MAX_NUM_OF_QER) {
+        ogs_error("%d MBS QoS flows exceed the %d QERs of a PFCP session", ogs_list_count(&mbs_sess->mbs_qos_flow_list),
+                OGS_MAX_NUM_OF_QER);
+        return false;
+    }
+
+    smf_mbs_sess_select_upf(mbs_sess);
+
+    // Check the selected UPF is associated with SMF
+    ogs_assert(mbs_sess->pfcp_node);
+    if (!OGS_FSM_CHECK(&mbs_sess->pfcp_node->sm, smf_pfcp_state_associated)) {
+        ogs_error("No existing PFCP association");
+    }
+
+    // Add the UPF N3mb address to the MBS Session
+    {
+        ogs_sockaddr_t node_addr = smf_pfcp_node_addr(mbs_sess->pfcp_node);
+
+        if (node_addr.ogs_sa_family == AF_INET)
+            ogs_assert(OGS_OK ==
+                ogs_copyaddrinfo(&mbs_sess->upf_n3mb_addr, &node_addr));
+        else if (node_addr.ogs_sa_family == AF_INET6)
+            ogs_assert(OGS_OK ==
+                ogs_copyaddrinfo(&mbs_sess->upf_n3mb_addr6, &node_addr));
+        else
+            ogs_assert_if_reached();
+    }
+
+    // TS 29.244 V18.10.0 cl. 5.34.2.2: "for each MBS QoS flow: a Create PDR ... a Create QER ... a Create FAR".
+    // A session whose request carried no QoS requirement (the handler always adds one) has the one flow QFI 1.
+    if (ogs_list_empty(&mbs_sess->mbs_qos_flow_list)) {
+        flow = ogs_calloc(1, sizeof(*flow));
+        ogs_assert(flow);
+        flow->qfi = 1;
+        flow->five_qi = 9;
+        ogs_list_add(&mbs_sess->mbs_qos_flow_list, flow);
+    }
+
+    ogs_list_for_each(&mbs_sess->mbs_qos_flow_list, flow)
+        flow->pdr = smf_mbs_sess_add_flow_forwarding(mbs_sess, flow->qfi, ordinal++);
+
+    return true;
+}
+
+static bool smf_mbs_qos_flow_same_media_component(
+        const smf_mbs_qos_flow_t *a, const smf_mbs_qos_flow_t *b)
+{
+    if (!a->med_comp_num || !b->med_comp_num)
+        return !a->med_comp_num && !b->med_comp_num;
+    return strcmp(a->med_comp_num, b->med_comp_num) == 0;
+}
+
+/* Replaces the QoS flows of an MBS session by new_flows (their key and 5QI set, QFI and PDR not), and the
+ * user plane rules with them: a flow with the key of a flow of the session keeps its QFI and its rules, another
+ * flow gets the lowest free QFI and a PDR, a FAR and a QER, a flow of the session that is not in new_flows is
+ * taken out with its rules. The rules of the new flows are added before those of the removed flows are taken
+ * out, so that no identifier is used by both in one PFCP message. TS 29.244 V18.10.0 cl. 5.34.2.2: "for each
+ * MBS QoS flow: a Create PDR ... a Create QER ... a Create FAR". On success new_flows is consumed (its flows
+ * are the session's) and *change tells what the user plane has to be told. On failure nothing is changed and
+ * new_flows is not touched. */
+bool smf_mbs_sess_replace_flows(smf_mbs_sess_t *mbs_sess, ogs_list_t *new_flows, smf_mbs_flow_change_t *change)
+{
+    smf_mbs_qos_flow_t *flow = NULL, *next = NULL, *old = NULL;
+    uint64_t used_qfi = 0;      /* bit q: QFI q is the QFI of a flow that stays or was added */
+    uint32_t precedence = 0;
+    int num_kept = 0, num_new = 0, num_old = 0;
+    ogs_pfcp_pdr_t *pdr = NULL;
+
+    ogs_assert(mbs_sess);
+    ogs_assert(new_flows);
+    ogs_assert(change);
+
+    memset(change, 0, sizeof(*change));
+
+    /* which flows stay: they decide how many rules the session has to hold at once */
+    ogs_list_for_each(new_flows, flow) {
+        num_new++;
+        ogs_list_for_each(&mbs_sess->mbs_qos_flow_list, old) {
+            if (smf_mbs_qos_flow_same_media_component(flow, old)) {
+                num_kept++;
+                break;
+            }
+        }
+    }
+    ogs_list_for_each(&mbs_sess->mbs_qos_flow_list, old)
+        num_old++;
+
+    /* the rules of the flows that go and those that come are in the session together for one message */
+    if (num_new > OGS_MAX_NUM_OF_QER ||
+            num_old + (num_new - num_kept) > OGS_MAX_NUM_OF_QER) {
+        ogs_error("MBS QoS flows %d -> %d with %d kept need more than the %d QERs of a PFCP session",
+                num_old, num_new, num_kept, OGS_MAX_NUM_OF_QER);
+        return false;
+    }
+
+    ogs_list_for_each(&mbs_sess->mbs_qos_flow_list, old)
+        if (old->pdr && old->pdr->precedence > precedence)
+            precedence = old->pdr->precedence;
+
+    /* flows that stay */
+    ogs_list_for_each(new_flows, flow) {
+        ogs_list_for_each(&mbs_sess->mbs_qos_flow_list, old) {
+            if (!smf_mbs_qos_flow_same_media_component(flow, old))
+                continue;
+            flow->qfi = old->qfi;
+            flow->pdr = old->pdr;
+            if (flow->five_qi != old->five_qi)
+                change->qos_changed = true;
+            used_qfi |= (uint64_t)1 << flow->qfi;
+            break;
+        }
+    }
+
+    /* flows that come: the lowest free QFI, 1 to SMF_MBS_MAX_QOS_FLOWS */
+    ogs_list_for_each(new_flows, flow) {
+        uint8_t qfi;
+
+        if (flow->qfi)
+            continue;
+        for (qfi = 1; qfi <= 63 && (used_qfi & ((uint64_t)1 << qfi)); qfi++)
+            ;
+        if (qfi > 63) {
+            ogs_error("No free QFI for an MBS QoS flow");
+            return false;
+        }
+        flow->qfi = qfi;
+        used_qfi |= (uint64_t)1 << qfi;
+    }
+
+    /* From here nothing can fail but the allocation of the rules: those of the flows that come are added
+     * first. */
+    ogs_list_for_each(new_flows, flow) {
+        if (flow->pdr)
+            continue;
+        pdr = smf_mbs_sess_add_flow_forwarding(mbs_sess, flow->qfi, ++precedence);
+        flow->pdr = pdr;
+        change->added[change->num_added++] = pdr;
+    }
+
+    /* flows that go */
+    ogs_list_for_each_safe(&mbs_sess->mbs_qos_flow_list, next, old) {
+        bool stays = false;
+
+        ogs_list_for_each(new_flows, flow) {
+            if (flow->pdr == old->pdr) {
+                stays = true;
+                break;
+            }
+        }
+        ogs_list_remove(&mbs_sess->mbs_qos_flow_list, old);
+        if (!stays && old->pdr) {
+            change->removed[change->num_removed].pdr_id = old->pdr->id;
+            change->removed[change->num_removed].far_id = old->pdr->far->id;
+            change->removed[change->num_removed].qer_id = old->pdr->qer->id;
+            change->num_removed++;
+            ogs_pfcp_far_remove(old->pdr->far);
+            ogs_pfcp_qer_remove(old->pdr->qer);
+            ogs_pfcp_pdr_remove(old->pdr);
+        }
+        if (old->med_comp_num)
+            ogs_free(old->med_comp_num);
+        ogs_free(old);
+    }
+
+    ogs_list_for_each_safe(new_flows, next, flow) {
+        ogs_list_remove(new_flows, flow);
+        ogs_list_add(&mbs_sess->mbs_qos_flow_list, flow);
+    }
+
+    return true;
+}
+
+static int smf_mbs_sess_list_delete_hash_entry(void *rec, const void *key, int klen, const void *value)
+{
+    ogs_hash_t *mbs_sess_list_hash = (ogs_hash_t*)rec;
+    ogs_list_t *mbs_sess_list = (ogs_list_t*)value;
+    smf_mbs_sess_lnode_t *lnode;
+    smf_mbs_sess_lnode_t *next;
+
+    ogs_hash_set(mbs_sess_list_hash, key, klen, NULL);
+
+    ogs_list_for_each_safe(mbs_sess_list, next, lnode) {
+        ogs_list_remove(mbs_sess_list, lnode);
+        ogs_free(lnode);
+    }
+
+    ogs_free(mbs_sess_list);
+
+    return 1;
+}
+
+static void smf_mbs_sess_list_hash_destroy(ogs_hash_t *mbs_sess_list_hash)
+{
+    ogs_assert(mbs_sess_list_hash);
+    ogs_hash_do(smf_mbs_sess_list_delete_hash_entry, mbs_sess_list_hash, mbs_sess_list_hash);
+    ogs_hash_destroy(mbs_sess_list_hash);
+}
+
+static void smf_mbs_sessions_by_tmgi_add_mbs_sess(smf_mbs_sess_t *mbs_sess)
+{
+    uint8_t key[SMF_MBS_TMGI_KEY_LEN];
+
+    if (mbs_sess && mbs_sess->mbs_session_id.is_tmgi) {
+        smf_mbs_sess_by_tmgi_t *entry = NULL;
+
+        smf_mbs_tmgi_key(mbs_sess->mbs_session_id.tmgi, key);
+        entry = (smf_mbs_sess_by_tmgi_t*)ogs_hash_get(self.smf_mbs_sessions_by_tmgi, key, sizeof(key));
+        if (!entry) {
+            entry = (smf_mbs_sess_by_tmgi_t*)ogs_calloc(1, sizeof(*entry));
+            ogs_assert(entry);
+            memcpy(entry->key, key, sizeof(key));
+            ogs_hash_set(self.smf_mbs_sessions_by_tmgi, entry->key, sizeof(entry->key), entry);
+        }
+        smf_mbs_sess_lnode_t *lnode = (smf_mbs_sess_lnode_t*)ogs_calloc(1, sizeof(smf_mbs_sess_lnode_t));
+        lnode->mbs_session = mbs_sess;
+        ogs_list_add(&entry->list, lnode);
+    }
+}
+
+static void smf_mbs_sessions_by_tmgi_remove_mbs_sess(smf_mbs_sess_t *mbs_sess)
+{
+    uint8_t key[SMF_MBS_TMGI_KEY_LEN];
+
+    if (mbs_sess && mbs_sess->mbs_session_id.is_tmgi) {
+        smf_mbs_sess_by_tmgi_t *entry = NULL;
+
+        smf_mbs_tmgi_key(mbs_sess->mbs_session_id.tmgi, key);
+        entry = (smf_mbs_sess_by_tmgi_t*)ogs_hash_get(self.smf_mbs_sessions_by_tmgi, key, sizeof(key));
+        if (entry) {
+            smf_mbs_sess_lnode_t *next;
+            smf_mbs_sess_lnode_t *lnode;
+            ogs_list_for_each_safe(&entry->list, next, lnode) {
+                if (lnode->mbs_session == mbs_sess) {
+                    ogs_list_remove(&entry->list, lnode);
+                    ogs_free(lnode);
+                    break;
+                }
+            }
+            if (ogs_list_count(&entry->list) == 0) {
+                ogs_hash_set(self.smf_mbs_sessions_by_tmgi, key, sizeof(key), NULL);
+                ogs_free(entry);
+            }
+        }
+    }
+}
+
+static void smf_mbs_tmgi_key(const ogs_tmgi_t *tmgi, uint8_t key[SMF_MBS_TMGI_KEY_LEN])
+{
+    ogs_assert(tmgi);
+
+    memset(key, 0, SMF_MBS_TMGI_KEY_LEN);
+    if (tmgi->mbs_service_id)
+        memcpy(key, tmgi->mbs_service_id,
+                strnlen(tmgi->mbs_service_id, OGS_MAX_MBS_SERVICE_ID_LEN));
+    memcpy(key + OGS_MAX_MBS_SERVICE_ID_LEN, &tmgi->plmn_id, sizeof(tmgi->plmn_id));
+}
+
+static void smf_mbs_sessions_by_ssm_add_mbs_sess(smf_mbs_sess_t *mbs_sess)
+{
+    int klen;
+    void *key;
+
+    if (mbs_sess && mbs_sess->mbs_session_id.is_ssm) {
+        key = smf_mbs_sessions_by_ssm_key(mbs_sess->mbs_session_id.ssm, &klen);
+        ogs_list_t *mbs_sess_list = (ogs_list_t*)ogs_hash_get(self.smf_mbs_sessions_by_ssm, key, klen);
+        if (!mbs_sess_list) {
+            mbs_sess_list = (ogs_list_t*)ogs_calloc(1, sizeof(ogs_list_t));
+            ogs_assert(mbs_sess_list);
+            ogs_hash_set(self.smf_mbs_sessions_by_ssm, key, klen, mbs_sess_list);
+        }
+        smf_mbs_sess_lnode_t *lnode = (smf_mbs_sess_lnode_t*)ogs_calloc(1, sizeof(smf_mbs_sess_lnode_t));
+        lnode->mbs_session = mbs_sess;
+        ogs_list_add(mbs_sess_list, lnode);
+    }
+}
+
+static void smf_mbs_sessions_by_ssm_remove_mbs_sess(smf_mbs_sess_t *mbs_sess)
+{
+    int klen;
+    void *key;
+
+    if (mbs_sess && mbs_sess->mbs_session_id.is_ssm) {
+        key = smf_mbs_sessions_by_ssm_key(mbs_sess->mbs_session_id.ssm, &klen);
+        ogs_list_t *mbs_sess_list = (ogs_list_t*)ogs_hash_get(self.smf_mbs_sessions_by_ssm, key, klen);
+        if (mbs_sess_list) {
+            smf_mbs_sess_lnode_t *next;
+            smf_mbs_sess_lnode_t *lnode;
+            ogs_list_for_each_safe(mbs_sess_list, next, lnode) {
+                if (lnode->mbs_session == mbs_sess) {
+                    ogs_list_remove(mbs_sess_list, lnode);
+                    ogs_free(lnode);
+                    break;
+                }
+            }
+            if (ogs_list_count(mbs_sess_list) == 0) {
+                ogs_hash_set(self.smf_mbs_sessions_by_ssm, key, klen, NULL);
+                ogs_free(mbs_sess_list);
+            }
+        }
+    }
+}
+
+static void *smf_mbs_sessions_by_ssm_key(ogs_ssm_t *ssm, int *klen)
+{
+    if (!ssm) {
+        *klen = 0;
+        return NULL;
+    }
+
+    *klen = sizeof(ogs_ssm_t) - sizeof(ogs_lnode_t);
+    return (void*)(((char*)ssm) + sizeof(ogs_lnode_t));
+}
+
+static bool smf_mbs_sess_list_service_areas_overlap(ogs_list_t *mbs_sess_list, smf_mbs_sess_t *mbs_session)
+{
+    smf_mbs_sess_lnode_t *node;
+
+    if (!mbs_sess_list || !mbs_session) return false;
+
+        // The list is checked for entries before reporting an overlap. "No service area means overlaps with
+        // everything" holds only once there is at least one session to overlap with: ogs_hash_get can return a
+        // live but empty list object rather than NULL once its one-time occupant is torn down, so returning true
+        // on the bucket alone rejects a brand-new SSM address as "already exists" on its first use.
+    /* The global-Service-Area case does not depend on the list entry, so it is answered before the
+     * loop rather than re-evaluated on every iteration. */
+    if (ogs_list_empty(mbs_sess_list)) return false;
+    if (!mbs_session->mbs_service_area && !mbs_session->ext_mbs_service_area) return true;
+
+    ogs_list_for_each(mbs_sess_list, node) {
+        if (smf_mbs_sess_service_areas_overlap(node->mbs_session, mbs_session)) return true;
+    }
+
+    return false;
+}
+
+static bool smf_mbs_sess_service_areas_overlap(smf_mbs_sess_t *a, smf_mbs_sess_t *b)
+{
+    // If either MBS Session is for the global Service Area, then there's an overlap.
+    if (!a->mbs_service_area && !a->ext_mbs_service_area) return true;
+    // if (!b->mbs_service_area && !b->ext_mbs_service_area) return true; // Already tested
+
+    if (a->mbs_service_area && b->mbs_service_area) {
+        // check MBS Service Areas overlap
+        if (a->mbs_service_area->ncgi_tai_list) {
+            ogs_ncgi_tai_t *a_ncgi_tai;
+            ogs_list_for_each(a->mbs_service_area->ncgi_tai_list, a_ncgi_tai) {
+                if (b->mbs_service_area->ncgi_tai_list) {
+                    ogs_ncgi_tai_t *b_ncgi_tai;
+                    ogs_list_for_each(b->mbs_service_area->ncgi_tai_list, b_ncgi_tai) {
+                        if (smf_tai_equal(&a_ncgi_tai->tai, &b_ncgi_tai->tai)) {
+                            ogs_ncgi_t *a_ncgi;
+                            ogs_list_for_each(&a_ncgi_tai->cell_list, a_ncgi) {
+                                ogs_ncgi_t *b_ncgi;
+                                ogs_list_for_each(&b_ncgi_tai->cell_list, b_ncgi) {
+                                    if (smf_ncgi_equal(a_ncgi, b_ncgi)) return true;
+                                }
+                            }
+                        }
+                    }
+                }
+                if (b->mbs_service_area->tai_list) {
+                    ogs_tai_t *b_tai;
+                    ogs_list_for_each(b->mbs_service_area->tai_list, b_tai) {
+                        if (smf_tai_equal(&a_ncgi_tai->tai, b_tai)) return true;
+                    }
+                }
+            }
+        }
+        if (a->mbs_service_area->tai_list) {
+            ogs_tai_t *a_tai;
+            ogs_list_for_each(a->mbs_service_area->tai_list, a_tai) {
+                if (b->mbs_service_area->ncgi_tai_list) {
+                    ogs_ncgi_tai_t *b_ncgi_tai;
+                    ogs_list_for_each(b->mbs_service_area->ncgi_tai_list, b_ncgi_tai) {
+                        if (smf_tai_equal(a_tai, &b_ncgi_tai->tai)) return true;
+                    }
+                }
+                if (b->mbs_service_area->tai_list) {
+                    ogs_tai_t *b_tai;
+                    ogs_list_for_each(b->mbs_service_area->tai_list, b_tai) {
+                        if (smf_tai_equal(a_tai, b_tai)) return true;
+                    }
+                }
+            }
+        }
+    }
+
+    if (a->ext_mbs_service_area && b->ext_mbs_service_area) {
+        // TODO: check External MBS Service Areas overlap
+        ogs_warn("smf_mbs_sess_service_areas_overlap: External MBS Service Area comparison not implemented yet!");
+    }
+
+    return false;
+}
+
+/* TS 29.532 V18.6.0 clause 5.3.2.2.1 (Create) and clause 5.3.2.3.1 (Update), step 2b, quoted without
+ * elision: "If the MBS service area received in the request cannot be entirely covered by the MB-SMF
+ * service area, the MB-SMF shall reduce the MBS service area to be within the MB-SMF service area and
+ * continue the Update service operation using the reduced MBS service area."  The reduced area is then
+ * reported in the redMbsServArea attribute.  The MB-SMF service area is this MB-SMF
+ * instance's own configured coverage (smf.yaml mbs.serviceArea, self.mbs_service_area below) -- no
+ * clause, config option or documented default names what an unconfigured MB-SMF's own coverage is
+ * (rule 12), so absent configuration means no restriction: every requested TAI is accepted
+ * unreduced, exactly as before this option existed.
+ *
+ * Coverage is a TAI list (smf.yaml mbsServiceArea.taiList): no configuration of cells exists. An NcgiTai of the
+ * requested area (TS 29.571 NcgiTai: "tai" and "cellList") names the TAI its cells belong to, so a cell list is within
+ * the coverage when its TAI is: an NcgiTai whose TAI is outside is left out with its cells, one whose TAI is inside
+ * keeps all its cells. A coverage with no tai_list, or none configured, restricts nothing.
+ *
+ * Returns true only if `requested` carries at least one TAI, or one NcgiTai, outside the configured coverage, and in
+ * that case allocates *reduced (caller frees with ogs_mbs_service_area_free()) containing exactly the requested TAIs
+ * and NcgiTai that are within it. Returns false, leaving *reduced untouched, if unconfigured, if `requested` has
+ * neither list, or if all of it is already covered.
+ */
+static bool tai_in_coverage(const ogs_tai_t *tai, ogs_mbs_service_area_t *own)
+{
+    ogs_tai_t *own_tai;
+
+    ogs_list_for_each(own->tai_list, own_tai)
+        if (smf_tai_equal(tai, own_tai))
+            return true;
+    return false;
+}
+
+bool smf_mbs_service_area_reduce(
+        ogs_mbs_service_area_t *requested, ogs_mbs_service_area_t **reduced)
+{
+    ogs_mbs_service_area_t *own;
+    ogs_tai_t *req_tai;
+    ogs_ncgi_tai_t *req_nt;
+    bool any_uncovered = false;
+
+    ogs_assert(requested);
+    ogs_assert(reduced);
+
+    own = smf_self()->mbs_service_area;
+    if (!own || !own->tai_list) return false;
+    if (!requested->tai_list && !requested->ncgi_tai_list) return false;
+
+    if (requested->tai_list)
+        ogs_list_for_each(requested->tai_list, req_tai)
+            if (!tai_in_coverage(req_tai, own)) { any_uncovered = true; break; }
+    if (!any_uncovered && requested->ncgi_tai_list)
+        ogs_list_for_each(requested->ncgi_tai_list, req_nt)
+            if (!tai_in_coverage(&req_nt->tai, own)) { any_uncovered = true; break; }
+    if (!any_uncovered) return false;
+
+    *reduced = ogs_calloc(1, sizeof(**reduced));
+    (*reduced)->tai_list = ogs_calloc(1, sizeof(*(*reduced)->tai_list));
+    if (requested->tai_list)
+        ogs_list_for_each(requested->tai_list, req_tai) {
+            if (tai_in_coverage(req_tai, own)) {
+                ogs_tai_t *copy = ogs_calloc(1, sizeof(*copy));
+                copy->plmn_id = req_tai->plmn_id;
+                copy->tac = ogs_strdup(req_tai->tac);
+                if (req_tai->nid) copy->nid = ogs_strdup(req_tai->nid);
+                ogs_list_add((*reduced)->tai_list, copy);
+            }
+        }
+    if (requested->ncgi_tai_list)
+        ogs_list_for_each(requested->ncgi_tai_list, req_nt) {
+            ogs_ncgi_tai_t *copy;
+            ogs_ncgi_t *cell;
+
+            if (!tai_in_coverage(&req_nt->tai, own))
+                continue;
+            if (!(*reduced)->ncgi_tai_list)
+                (*reduced)->ncgi_tai_list = ogs_calloc(1, sizeof(*(*reduced)->ncgi_tai_list));
+            copy = ogs_calloc(1, sizeof(*copy));
+            copy->tai.plmn_id = req_nt->tai.plmn_id;
+            copy->tai.tac = ogs_strdup(req_nt->tai.tac);
+            if (req_nt->tai.nid) copy->tai.nid = ogs_strdup(req_nt->tai.nid);
+            ogs_list_for_each(&req_nt->cell_list, cell) {
+                ogs_ncgi_t *cell_copy = ogs_calloc(1, sizeof(*cell_copy));
+
+                cell_copy->plmn_id = cell->plmn_id;
+                if (cell->nr_cell_id) cell_copy->nr_cell_id = ogs_strdup(cell->nr_cell_id);
+                if (cell->nid) cell_copy->nid = ogs_strdup(cell->nid);
+                ogs_list_add(&copy->cell_list, cell_copy);
+            }
+            ogs_list_add((*reduced)->ncgi_tai_list, copy);
+        }
+    return true;
+}
+
+/* The address of a PFCP peer, one entry of its address list (the one in use, else the first), as a standalone value */
+ogs_sockaddr_t smf_pfcp_node_addr(ogs_pfcp_node_t *node)
+{
+    ogs_sockaddr_t addr;
+    const ogs_sockaddr_t *src = NULL;
+
+    ogs_assert(node);
+    src = node->current_addr ? node->current_addr : node->addr_list;
+    memset(&addr, 0, sizeof(addr));
+    if (src) {
+        addr = *src;
+        addr.next = NULL;
+    }
+    return addr;
+}
+
+/* A TAC string read as a hexadecimal number of at most 24 bits, the way the AMF reads one (ogs_uint24_from_string()).
+ * False for anything else, such as an empty string, a sign, a "0x" prefix or a longer number. */
+static bool smf_tac_value(const char *tac, uint32_t *value)
+{
+    uint32_t v = 0;
+
+    if (!tac || !*tac) return false;
+    for (; *tac; tac++) {
+        unsigned char c = (unsigned char)*tac;
+
+        if (!isxdigit(c)) return false;
+        v = v * 16 + (uint32_t)(c <= '9' ? c - '0' : tolower(c) - 'a' + 10);
+        if (v > 0xFFFFFF) return false;
+    }
+    *value = v;
+    return true;
+}
+
+/* The same TAC in any spelling ("1", "000001", "0000FF" and "ff") is the same TAC, as it is for the AMF; what is not a
+ * number is compared as text. */
+static bool smf_tac_equal(const char *a, const char *b)
+{
+    uint32_t va, vb;
+
+    if (!a || !b) return !a && !b;
+    if (smf_tac_value(a, &va) && smf_tac_value(b, &vb)) return va == vb;
+    return strcmp(a, b) == 0;
+}
+
+static bool smf_tai_equal(const ogs_tai_t *a, const ogs_tai_t *b)
+{
+    if (!a && !b) return true;
+    if (!a || !b) return false;
+    if (ogs_plmn_id_mcc(&a->plmn_id) == ogs_plmn_id_mcc(&b->plmn_id) &&
+        ogs_plmn_id_mnc(&a->plmn_id) == ogs_plmn_id_mnc(&b->plmn_id)) {
+        if (smf_tac_equal(a->tac, b->tac)) {
+            if (!a->nid && !b->nid) return true;
+            if (!a->nid || !b->nid) return false;
+            return (strcmp(a->nid, b->nid) == 0);
+        }
+    }
+    return false;
+}
+
+static bool smf_ncgi_equal(const ogs_ncgi_t *a, const ogs_ncgi_t *b)
+{
+    if (!a && !b) return true;
+    if (!a || !b) return false;
+    if (ogs_plmn_id_mcc(&a->plmn_id) == ogs_plmn_id_mcc(&b->plmn_id) &&
+        ogs_plmn_id_mnc(&a->plmn_id) == ogs_plmn_id_mnc(&b->plmn_id)) {
+        if (strcmp(a->nr_cell_id, b->nr_cell_id) == 0) {
+            if (!a->nid && !b->nid) return true;
+            if (!a->nid || !b->nid) return false;
+            return (strcmp(a->nid, b->nid) == 0);
+        }
+    }
+    return false;
+}
+
+/* ---- the status subscriptions of MBS sessions ---- */
+
+bool smf_mbs_subsc_set_notify_uri(smf_mbs_subsc_t *subsc, const char *notify_uri)
+{
+    OpenAPI_uri_scheme_e scheme = OpenAPI_uri_scheme_NULL;
+    char *fqdn = NULL;
+    uint16_t fqdn_port = 0;
+    ogs_sockaddr_t *addr = NULL, *addr6 = NULL;
+    ogs_sbi_client_t *client = NULL;
+    bool rc;
+
+    ogs_assert(subsc);
+    ogs_assert(notify_uri);
+
+    rc = ogs_sbi_getaddr_from_uri(&scheme, &fqdn, &fqdn_port, &addr, &addr6, (char *)notify_uri);
+    if (rc == false || scheme == OpenAPI_uri_scheme_NULL) {
+        ogs_error("Invalid notification URI [%s]", notify_uri);
+        rc = false;
+    } else {
+        client = ogs_sbi_client_find(scheme, fqdn, fqdn_port, addr, addr6);
+        if (!client)
+            client = ogs_sbi_client_add(scheme, fqdn, fqdn_port, addr, addr6);
+        if (!client) {
+            ogs_error("ogs_sbi_client_add() failed for the notification URI [%s]", notify_uri);
+            rc = false;
+        } else {
+            /* the client holds the address only; the target of a notification is the whole URI */
+            if (subsc->notify_uri)
+                ogs_free(subsc->notify_uri);
+            subsc->notify_uri = ogs_strdup(notify_uri);
+            subsc->client = client;
+            rc = true;
+        }
+    }
+    if (fqdn)
+        ogs_free(fqdn);
+    ogs_freeaddrinfo(addr);
+    ogs_freeaddrinfo(addr6);
+
+    return rc;
+}
+
+smf_mbs_subsc_t *smf_mbs_subsc_add(smf_mbs_sess_t *mbs_sess, uint32_t events, const char *notify_uri,
+        const char *notify_correlation_id, const char *expiry_time, const char *nf_instance_id)
+{
+    smf_mbs_subsc_t *subsc = NULL;
+
+    ogs_assert(mbs_sess);
+    ogs_assert(notify_uri);
+
+    subsc = ogs_calloc(1, sizeof(*subsc));
+    ogs_assert(subsc);
+    subsc->id = ogs_msprintf("%u", ++self.next_mbs_subsc_id);
+    subsc->mbs_sess_id = mbs_sess->id;
+    subsc->events = events;
+    if (!smf_mbs_subsc_set_notify_uri(subsc, notify_uri)) {
+        ogs_free(subsc->id);
+        ogs_free(subsc);
+        return NULL;
+    }
+    if (notify_correlation_id)
+        subsc->notify_correlation_id = ogs_strdup(notify_correlation_id);
+    if (expiry_time)
+        subsc->expiry_time = ogs_strdup(expiry_time);
+    if (nf_instance_id)
+        subsc->nf_instance_id = ogs_strdup(nf_instance_id);
+    ogs_list_add(&self.smf_mbs_subsc_list, subsc);
+
+    return subsc;
+}
+
+smf_mbs_subsc_t *smf_mbs_subsc_find_by_id(const char *id)
+{
+    smf_mbs_subsc_t *subsc = NULL;
+
+    if (!id)
+        return NULL;
+    ogs_list_for_each(&self.smf_mbs_subsc_list, subsc)
+        if (strcmp(subsc->id, id) == 0)
+            return subsc;
+
+    return NULL;
+}
+
+void smf_mbs_subsc_remove(smf_mbs_subsc_t *subsc)
+{
+    ogs_assert(subsc);
+
+    ogs_list_remove(&self.smf_mbs_subsc_list, subsc);
+    ogs_free(subsc->id);
+    if (subsc->notify_uri)
+        ogs_free(subsc->notify_uri);
+    if (subsc->notify_correlation_id)
+        ogs_free(subsc->notify_correlation_id);
+    if (subsc->expiry_time)
+        ogs_free(subsc->expiry_time);
+    if (subsc->nf_instance_id)
+        ogs_free(subsc->nf_instance_id);
+    ogs_free(subsc);
+}
+
+void smf_mbs_subsc_remove_all(smf_mbs_sess_t *mbs_sess)
+{
+    smf_mbs_subsc_t *subsc = NULL, *next = NULL;
+
+    ogs_assert(mbs_sess);
+
+    ogs_list_for_each_safe(&self.smf_mbs_subsc_list, next, subsc)
+        if (subsc->mbs_sess_id == mbs_sess->id)
+            smf_mbs_subsc_remove(subsc);
+}
+
+bool smf_mbs_subsc_is_expired(const smf_mbs_subsc_t *subsc)
+{
+    ogs_time_t expiry;
+
+    ogs_assert(subsc);
+
+    if (!subsc->expiry_time)
+        return false;
+    if (ogs_sbi_time_from_string(&expiry, subsc->expiry_time) == false)
+        return false;
+
+    return expiry <= ogs_time_now();
 }

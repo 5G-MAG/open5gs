@@ -260,6 +260,33 @@ void smf_sbi_send_smpolicycontrol_qos_monitoring_report(
         const ogs_pfcp_qos_monitoring_measurement_t *measurement);
 void smf_sbi_send_smpolicycontrol_rule_report(
         smf_sess_t *sess, bool success, smf_bearer_t **qos_flow, int num_of_qos_flow);
+// NOTE (borieher): Temporary workaround
+int smf_sbi_old_discover_and_send(
+        OpenAPI_service_name_e service_name,
+        ogs_sbi_discovery_option_t *discovery_option,
+        ogs_sbi_request_t *(*build)(smf_mbs_sess_t *mbs_sess, void *data),
+        smf_mbs_sess_t *mbs_sess, ogs_sbi_stream_t *stream, int state, void *data);
+
+/* Namf_MBSBroadcast ContextCreate towards an AMF of the MBS session: a new entry of amf_list (kept only while the
+ * request is outstanding or answered with "201 Created"). */
+int smf_sbi_send_mbs_broadcast_context_create(smf_mbs_sess_t *mbs_sess);
+
+/* Namf_MBSBroadcast ContextRelease towards every AMF that has a context of the MBS session. Returns the number of
+ * requests that could not be sent. */
+int smf_sbi_send_mbs_broadcast_context_delete_all(smf_mbs_sess_t *mbs_sess);
+
+/* A StatusNotify request to the notification URI of a status subscription */
+bool smf_sbi_send_mbs_status_notify(smf_mbs_subsc_t *subsc, ogs_sbi_request_t *request);
+
+/* Namf_MBSBroadcast ContextUpdate towards every AMF that has a context of the MBS session: with the updated MBS
+ * service area if service_area, and telling whether the N2 information changed. Returns the number of requests that
+ * could not be sent. */
+int smf_sbi_send_mbs_broadcast_context_update_all(
+        smf_mbs_sess_t *mbs_sess, bool service_area, bool n2_info_changed);
+
+/* Namf_MBSBroadcast ContextUpdate towards the one AMF param->amf, built from \p param (which has to stay valid until
+ * the request is built). Returns OGS_OK when the request was handed to the SBI. */
+int smf_sbi_send_mbs_broadcast_context_update(smf_mbs_sess_t *mbs_sess, smf_namf_context_update_param_t *param);
 
 #ifdef __cplusplus
 }
