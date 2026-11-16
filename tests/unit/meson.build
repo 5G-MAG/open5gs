@@ -66,3 +66,11 @@ smf_mbs_unit_exe = executable('smf-mbs',
     dependencies : libsmf_dep)
 
 test('smf-mbs', smf_mbs_unit_exe, is_parallel : false, suite: 'unit')
+
+upf_mbs_tunnel_unit_exe = executable('upf-mbs-tunnel',
+    sources : files('upf-mbs-tunnel-test.c'),
+    include_directories : include_directories('../../src/upf'),
+    c_args : [testunit_core_cc_flags, sbi_cc_flags],
+    dependencies : libupf_dep)
+
+test('upf-mbs-tunnel', upf_mbs_tunnel_unit_exe, is_parallel : false, suite: 'unit')

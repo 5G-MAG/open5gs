@@ -240,6 +240,8 @@ typedef struct upf_mbs_sess_s {
     bool pdr_has_ingress_tunnel[OGS_MAX_NUM_OF_PDR];  /* by Create PDR index: the PDI asked for the ingress tunnel */
     bool pdr_f_teid_allocated[OGS_MAX_NUM_OF_PDR];  /* by Create PDR index: the PDI asked the UP function to choose the local F-TEID (CH) */
     unsigned int udp_tunnel_mtu;
+    /* datagrams of the tunnel refused for being longer than udp_tunnel_mtu */
+    unsigned int udp_tunnel_oversize;
     ogs_pkbuf_pool_t *udp_tunnel_pkbuf_pool;
 
     /* User plane inactivity detection and reporting (TS 29.244 cl. 5.11.2), see mbs-report.c */

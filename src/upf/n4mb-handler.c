@@ -2033,6 +2033,25 @@ void upf_n4mb_handle_session_deletion_request(
     upf_gtpu_path_sync();
 }
 
+ssize_t upf_mbs_tunnel_recv(ogs_socket_t fd, void *buf, unsigned int mtu, unsigned int *oversize)
+{
+    /* MSG_TRUNC makes recv() return the length the datagram had, not the part of it that fitted the buffer. Without
+     * it a datagram longer than mtu was cut to that length without a sign, and forwarded as a whole packet whose IP
+     * header still declared the longer one: the receiver of it found a header that did not match its length. A
+     * datagram that does not fit is refused. */
+    ssize_t read_bytes = ogs_recv(fd, buf, mtu, MSG_DONTWAIT | MSG_TRUNC);
+
+    if (read_bytes > 0 && (unsigned int)read_bytes > mtu) {
+        /* The first, and then every thousandth, is logged: the sender sends the same size again and again */
+        if (((*oversize)++ % 1000) == 0)
+            ogs_error("[DROP] N6mb/N9mb datagram of %zd octets is longer than the %u octets the tunnel carries; "
+                    "refused, not cut (%u refused so far). The sender must size its packets for the path MTU less the "
+                    "GTP-U encapsulation.", read_bytes, mtu, *oversize);
+        return -1;
+    }
+    return read_bytes > 0 ? read_bytes : 0;
+}
+
 static void _mbs_tunnel_poll_handler(short when, ogs_socket_t fd, void *data)
 {
     upf_mbs_sess_t *mbs_sess = data;
@@ -2045,13 +2064,14 @@ static void _mbs_tunnel_poll_handler(short when, ogs_socket_t fd, void *data)
     data_buf = ogs_pkbuf_put(buf, mbs_sess->udp_tunnel_mtu); /* reserve buffer for read */
 
     /* TODO: use ogs_recvfrom and check that the sending IP is allowed to send to this port */
-    read_bytes = ogs_recv(fd, data_buf, mbs_sess->udp_tunnel_mtu, MSG_DONTWAIT);
+    read_bytes = upf_mbs_tunnel_recv(fd, data_buf, mbs_sess->udp_tunnel_mtu, &mbs_sess->udp_tunnel_oversize);
     if (read_bytes > 0) {
         ogs_pkbuf_trim(buf, read_bytes);
         /* call pkbuf processing routine for incoming N6mb/N9mb */
         upf_gtpv1_receive_buffer_for_mbs_sess(buf, mbs_sess);
     } else {
-        /* nothing to read (the datagram was dropped by the kernel after the wake-up, e.g. a wrong checksum) or an error */
+        /* refused as too long, nothing to read (the datagram was dropped by the kernel after the wake-up, e.g. a wrong
+         * checksum) or an error */
         ogs_pkbuf_free(buf);
     }
 }

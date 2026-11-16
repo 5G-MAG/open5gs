@@ -36,6 +36,11 @@ void upf_n4mb_handle_session_modification_request(
         upf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
         ogs_pfcp_session_modification_request_t *req);
 
+/* Reads one datagram of a session's UDP tunnel into buf, which holds mtu octets. Returns the number of octets of a
+ * datagram that fits; 0 when there was nothing to read or the read failed; -1 when the datagram was longer than mtu,
+ * which is refused (not cut): it is counted in *oversize, and logged the first time and then every thousandth. */
+ssize_t upf_mbs_tunnel_recv(ogs_socket_t fd, void *buf, unsigned int mtu, unsigned int *oversize);
+
 void upf_n4mb_handle_session_deletion_request(
         upf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
         ogs_pfcp_session_deletion_request_t *req);
