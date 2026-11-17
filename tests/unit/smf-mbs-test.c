@@ -3559,6 +3559,38 @@ static void test_node_report(void)
 /* TS 23.527 V18.6.0 clause 8.2.2, restoration after an MB-UPF restart: the establishment request carries the MBS
  * RESTI flag, not PLLSSM, the Multicast Transport Information (LL SSM and C-TEID of before), and for unicast the
  * ingress tunnel address without CHOOSE and the MBSU FAR with the DL tunnels. */
+static ogs_sbi_request_t *build_context_request(void *context, void *data)
+{
+    ogs_sbi_message_t message;
+
+    memset(&message, 0, sizeof(message));
+    message.h.method = (char *)OGS_SBI_HTTP_METHOD_POST;
+    message.h.service.name = (char *)OGS_SBI_SERVICE_NAME_NAMF_MBS_BC;
+    message.h.api.version = (char *)OGS_SBI_API_V1;
+    message.h.resource.component[0] = (char *)OGS_SBI_RESOURCE_NAME_MBS_CONTEXTS;
+    return ogs_sbi_build_request(&message);
+}
+
+/* The SBI transactions of an MBS session go with it: none is left pointing at the freed session. */
+static void test_sbi_transactions_go_with_the_session(void)
+{
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    ogs_sbi_xact_t *xact;
+    ogs_pool_id_t xact_id;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+    xact = ogs_sbi_xact_add(mbs_sess->id, &mbs_sess->sbi, OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC, NULL,
+            build_context_request, mbs_sess, NULL);
+    CHECK(xact != NULL);
+    if (!xact) return;
+    xact_id = xact->id;
+    CHECK(ogs_sbi_xact_find_by_id(xact_id) == xact);
+
+    smf_mbs_sess_release(mbs_sess);
+    CHECK(ogs_sbi_xact_find_by_id(xact_id) == NULL);
+}
+
 /* A Create whose N4mb Session Establishment Request gets no answer is answered with an error and its session is
  * released with its TMGI, as on a rejection; the establishment of a restoration is left to the restoration. */
 static void test_establishment_without_answer(void)
@@ -6006,6 +6038,7 @@ int main(void)
     test_amf_change_event();
     test_node_report();
     test_establishment_without_answer();
+    test_sbi_transactions_go_with_the_session();
     test_restoration_request();
     test_area_session_id_in_establishment();
     test_changes_during_restoration();
