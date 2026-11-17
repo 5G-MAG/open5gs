@@ -929,10 +929,10 @@ bool smf_nmbsmf_handle_mbs_session_create(
 
         if (smf_tmgi_count() >= ogs_global_conf()->max.mbs.tmgis) {
             ogs_error("MBS Session Create: Cannot allocate TMGI");
-            // Custom error handling, not the 3GPP TS
-            // Avoid reaching the maximum number of TMGI, send error (403)
-            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
-                message, "Forbidden", "Cannot allocate TMGIs", NULL);
+            /* No TMGI left: TS 29.500 V18.10.0 table 5.2.7.2-1, row INSUFFICIENT_RESOURCES, "500 Internal Server
+             * Error": "The request is rejected due to insufficient resources.", as the Nmbsmf_TMGI service answers */
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+                message, "Insufficient resources", "Cannot allocate a TMGI", NMBSMF_MBSSESSION_INSUFFICIENT_RESOURCES);
             rv = OGS_ERROR;
             goto cleanup;
         }
