@@ -1452,6 +1452,80 @@ static ogs_pfcp_message_t *build_and_parse_modification(smf_mbs_sess_t *mbs_sess
  * include the corresponding "contactPcfInd" attribute within the set of requested modifications."; TS 23.247
  * V18.8.0 cl. 7.1.1.6 step 4: "This may lead to addition of new MBS QoS Flow(s), removal of existing MBS QoS
  * Flow(s) or update of existing MBS QoS Flow(s)." */
+/* TS 29.571 MbsQoSReq: "reqMbsArp | Arp | O | 0..1". The MBS QoS Flow Level QoS Parameters of the N2 SM information
+ * carry the ARP the AF requested for the flow, and priority 8 without pre-emption for a flow without one. TS 38.413
+ * clause 9.3.1.19: Priority Level, Pre-emption Capability and Pre-emption Vulnerability are mandatory. */
+static int arp_of_flow(smf_mbs_sess_t *mbs_sess, long qfi, long *level, long *cap, long *vuln)
+{
+    ogs_pkbuf_t *pkbuf = ngap_build_mbs_session_setup_or_modification_request_transfer(mbs_sess);
+    NGAP_MBSSessionSetupOrModRequestTransfer_t message;
+    int i, n, found = 0;
+
+    if (!pkbuf)
+        return 0;
+    memset(&message, 0, sizeof(message));
+    CHECK(ogs_asn_decode(&asn_DEF_NGAP_MBSSessionSetupOrModRequestTransfer, &message, sizeof(message), pkbuf) ==
+            OGS_OK);
+    for (i = 0; i < OGS_ASN_LIST_COUNT(message.protocolIEs); i++) {
+        NGAP_MBSSessionSetupOrModRequestTransferIEs_t *ie = OGS_ASN_LIST_GET(message.protocolIEs, i);
+
+        if (ie->id != NGAP_ProtocolIE_ID_id_MBS_QoSFlowsToBeSetupModList)
+            continue;
+        for (n = 0; n < ie->value.choice.MBS_QoSFlowsToBeSetupList->list.count; n++) {
+            NGAP_MBS_QoSFlowsToBeSetupItem_t *item = ie->value.choice.MBS_QoSFlowsToBeSetupList->list.array[n];
+            NGAP_AllocationAndRetentionPriority_t *arp =
+                item->mBSqosFlowLevelQosParameters->allocationAndRetentionPriority;
+
+            if (item->mBSqosFlowIdentifier != qfi)
+                continue;
+            *level = arp->priorityLevelARP;
+            *cap = arp->pre_emptionCapability;
+            *vuln = arp->pre_emptionVulnerability;
+            found = 1;
+        }
+    }
+    ogs_asn_free(&asn_DEF_NGAP_MBSSessionSetupOrModRequestTransfer, &message);
+    ogs_pkbuf_free(pkbuf);
+    return found;
+}
+
+static void test_requested_arp(void)
+{
+    static const char *const with_arp =
+        "{\"mbsMediaComps\":{\"1\":{\"mbsMedCompNum\":1,\"mbsQoSReq\":{\"5qi\":9,\"reqMbsArp\":"
+        "{\"priorityLevel\":3,\"preemptCap\":\"MAY_PREEMPT\",\"preemptVuln\":\"PREEMPTABLE\"}}},"
+        "\"2\":{\"mbsMedCompNum\":2,\"mbsQoSReq\":{\"5qi\":5}}}}";
+    static const char *const bad_arp =
+        "{\"mbsMediaComps\":{\"1\":{\"mbsMedCompNum\":1,\"mbsQoSReq\":{\"5qi\":9,\"reqMbsArp\":"
+        "{\"priorityLevel\":16,\"preemptCap\":\"MAY_PREEMPT\",\"preemptVuln\":\"PREEMPTABLE\"}}}}}";
+    smf_mbs_sess_t *mbs_sess = make_session(with_arp, area_1_text);
+    long level = 0, cap = -1, vuln = -1;
+    const char *detail = NULL;
+    cJSON *json;
+    OpenAPI_mbs_service_info_t *info;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess)
+        return;
+    CHECK(arp_of_flow(mbs_sess, 1, &level, &cap, &vuln));
+    CHECK(level == 3 && cap == NGAP_Pre_emptionCapability_may_trigger_pre_emption &&
+            vuln == NGAP_Pre_emptionVulnerability_pre_emptable);
+    CHECK(arp_of_flow(mbs_sess, 2, &level, &cap, &vuln));
+    CHECK(level == 8 && cap == NGAP_Pre_emptionCapability_shall_not_trigger_pre_emption &&
+            vuln == NGAP_Pre_emptionVulnerability_not_pre_emptable);
+    smf_mbs_sess_release(mbs_sess);
+
+    /* a priority level outside 1 to 15 is not an ARP */
+    json = cJSON_Parse(bad_arp);
+    info = OpenAPI_mbs_service_info_parseFromJSON(json);
+    cJSON_Delete(json);
+    CHECK(info != NULL);
+    CHECK(info && !smf_nmbsmf_mbs_service_info_is_valid(info, &detail));
+    CHECK(detail && strstr(detail, "reqMbsArp") != NULL);
+    if (info)
+        OpenAPI_mbs_service_info_free(info);
+}
+
 static void test_update(void)
 {
     smf_mbs_sess_t *mbs_sess = make_session(serv_info_2_text, area_1_text);
@@ -6151,6 +6225,7 @@ int main(void)
     test_service_info_validity();
     test_flow_description_restrictions();
     test_per_flow_user_plane();
+    test_requested_arp();
     test_json_patch();
     test_update();
     test_update_reduced_area();

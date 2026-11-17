@@ -1146,9 +1146,8 @@ ogs_pkbuf_t *ngap_build_mbs_session_modification_request_transfer(smf_mbs_sess_t
 
         // The QoS flows come from what the AF requested: TS 29.571 MbsSession.mbsServInfo.mbsMediaComps[*].
         // mbsQoSReq, which smf_nmbsmf_handle_mbs_session_create() parses into mbs_sess->mbs_qos_flow_list.
-        // The Allocation and Retention Priority fields have no per-flow source in this SMF's schema, MbsQoSReq
-        // carrying a 5QI and bit rates but no ARP, so fixed priority and pre-emption defaults are used for every
-        // flow.
+        // The Allocation and Retention Priority is the reqMbsArp of the mbsQoSReq when the AF gave one (no PCF
+        // decides the MBS policy here); otherwise priority 8, no pre-emption either way.
     {
         smf_mbs_qos_flow_t *qos_flow = NULL;
         ogs_list_for_each(&mbs_sess->mbs_qos_flow_list, qos_flow) {
@@ -1184,13 +1183,19 @@ ogs_pkbuf_t *ngap_build_mbs_session_modification_request_transfer(smf_mbs_sess_t
             nonDynamic5QIDescriptor->fiveQI = qos_flow->five_qi;
 
             // Priority Level - INTEGER (M)
-            allocationAndRetentionPriority->priorityLevelARP = 8;
+            allocationAndRetentionPriority->priorityLevelARP = qos_flow->arp_present ? qos_flow->arp_priority_level : 8;
 
             // Pre-emption Capability - ENUMERATED (M)
-            allocationAndRetentionPriority->pre_emptionCapability = NGAP_Pre_emptionCapability_shall_not_trigger_pre_emption;
+            allocationAndRetentionPriority->pre_emptionCapability =
+                qos_flow->arp_present && qos_flow->arp_may_preempt ?
+                    NGAP_Pre_emptionCapability_may_trigger_pre_emption :
+                    NGAP_Pre_emptionCapability_shall_not_trigger_pre_emption;
 
             // Pre-emption Vulnerability - ENUMERATED (M)
-            allocationAndRetentionPriority->pre_emptionVulnerability = NGAP_Pre_emptionVulnerability_not_pre_emptable;
+            allocationAndRetentionPriority->pre_emptionVulnerability =
+                qos_flow->arp_present && qos_flow->arp_preemptable ?
+                    NGAP_Pre_emptionVulnerability_pre_emptable :
+                    NGAP_Pre_emptionVulnerability_not_pre_emptable;
         }
     }
 

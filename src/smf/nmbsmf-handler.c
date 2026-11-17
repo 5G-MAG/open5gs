@@ -380,6 +380,18 @@ bool smf_nmbsmf_mbs_service_info_is_valid(
                 *detail = "[5qi] of an [mbsQoSReq] is outside 0 to 255";
             return false;
         }
+        /* TS 29.571 Arp: priorityLevel is an ArpPriorityLevel, 1 to 15; preemptCap and preemptVuln are mandatory */
+        if (media_comp->mbs_qo_s_req->req_mbs_arp) {
+            OpenAPI_arp_t *arp = media_comp->mbs_qo_s_req->req_mbs_arp;
+
+            if (arp->priority_level < 1 || arp->priority_level > 15 ||
+                    arp->preempt_cap == OpenAPI_preemption_capability_NULL ||
+                    arp->preempt_vuln == OpenAPI_preemption_vulnerability_NULL) {
+                if (detail)
+                    *detail = "[reqMbsArp] of an [mbsQoSReq] is not a valid ARP";
+                return false;
+            }
+        }
         flows++;
     }
 
