@@ -42,6 +42,11 @@ uint8_t smf_n4mb_handle_session_establishment_response(
         smf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
         ogs_pfcp_session_establishment_response_t *rsp);
 
+/* An N4mb Session Establishment Request of a Create that gets no answer, or cannot be sent: the consumer on \p stream
+ * (if any) is answered with an error and the session is released, as on a rejection. Returns false, doing nothing,
+ * for the establishment of a restoration or relocation, which the restoration handles. */
+bool smf_n4mb_handle_session_establishment_failure(smf_mbs_sess_t *mbs_sess, ogs_sbi_stream_t *stream);
+
 /* The answer to an N4mb Session Modification Request: the Cause decides (TS 29.244 V18.10.0 table 7.5.5.1-1, Cause
  * "M"); a rejection is reported, the MBS session keeps what the MB-SMF decided. */
 uint8_t smf_n4mb_handle_session_modification_response(
