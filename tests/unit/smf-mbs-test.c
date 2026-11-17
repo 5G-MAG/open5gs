@@ -2164,8 +2164,13 @@ static void test_status_subscription(void)
     }
 
     /* the subscriptions of a session end with it, the others stay */
-    smf_mbs_sess_release(mbs_sess);
-    CHECK(smf_mbs_subsc_find_by_id(subsc->id) == NULL || 1);   /* subsc is freed: not dereferenced */
+    {
+        char *subsc_id = ogs_strdup(subsc->id);   /* subsc is freed with the session */
+
+        smf_mbs_sess_release(mbs_sess);
+        CHECK(smf_mbs_subsc_find_by_id(subsc_id) == NULL);
+        ogs_free(subsc_id);
+    }
     CHECK(ogs_list_count(&smf_self()->smf_mbs_subsc_list) == before + 1);
     smf_mbs_sess_release(other);
     CHECK(ogs_list_count(&smf_self()->smf_mbs_subsc_list) == before);
