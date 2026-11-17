@@ -656,6 +656,40 @@ static void test_create_outcomes(void)
 /* TS 29.532 V18.6.0 cl. 5.3.2.2.1: "If the MBS service area received in the request cannot be entirely covered by
  * the MB-SMF service area, the MB-SMF shall reduce the MBS service area to be within the MB-SMF service area and
  * continue the Create service operation using the reduced MBS service area." */
+/* TS 29.518 V18.14.0 table 6.5.6.2.2-1 NOTE 1: "Either the mbsServiceAreaInfoList IE or the mbsServiceArea IE shall be
+ * present." A broadcast session requested without an MBS service area takes the MB-SMF service area; an MB-SMF with none
+ * configured has none to give. */
+static void test_own_service_area(void)
+{
+    ogs_mbs_service_area_t *saved = smf_self()->mbs_service_area;
+    ogs_mbs_service_area_t *coverage = area_of_tacs("1", "2");
+    ogs_mbs_service_area_t *empty = ogs_calloc(1, sizeof(*empty));
+    ogs_mbs_service_area_t *copy;
+    ogs_tai_t *tai;
+    int count = 0;
+
+    CHECK(smf_mbs_service_area_is_empty(NULL));
+    CHECK(smf_mbs_service_area_is_empty(empty));
+    CHECK(!smf_mbs_service_area_is_empty(coverage));
+
+    smf_self()->mbs_service_area = NULL;
+    CHECK(smf_mbs_own_service_area() == NULL);
+
+    smf_self()->mbs_service_area = coverage;
+    copy = smf_mbs_own_service_area();
+    CHECK(copy != NULL && copy != coverage && copy->tai_list != NULL);
+    if (copy && copy->tai_list) {
+        ogs_list_for_each(copy->tai_list, tai)
+            count++;
+        CHECK(count == 2);
+    }
+    ogs_mbs_service_area_free(copy);
+
+    smf_self()->mbs_service_area = saved;
+    ogs_mbs_service_area_free(coverage);
+    ogs_mbs_service_area_free(empty);
+}
+
 static void test_reduced_area_is_used(void)
 {
     ogs_mbs_service_area_t *saved = smf_self()->mbs_service_area;
@@ -6210,6 +6244,7 @@ int main(void)
     test_default_s_nssai();
     test_tmgi_index_after_refresh();
     test_create_outcomes();
+    test_own_service_area();
     test_reduced_area_is_used();
     test_tac_spelling_is_not_significant();
     test_reduced_area_cells();

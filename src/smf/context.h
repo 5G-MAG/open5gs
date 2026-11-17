@@ -1357,6 +1357,10 @@ bool smf_mbs_sess_replace_flows(smf_mbs_sess_t *mbs_sess, ogs_list_t *new_flows,
 
 bool smf_context_have_matching_mbs_session_id(smf_mbs_sess_t *mbs_session);
 
+/* Whether \p area names no TAI and no cell */
+bool smf_mbs_service_area_is_empty(const ogs_mbs_service_area_t *area);
+/* A copy of the MB-SMF service area (smf.yaml mbsServiceArea.taiList), NULL when none is configured */
+ogs_mbs_service_area_t *smf_mbs_own_service_area(void);
 bool smf_mbs_service_area_reduce(
         ogs_mbs_service_area_t *requested, ogs_mbs_service_area_t **reduced);
 
