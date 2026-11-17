@@ -1418,6 +1418,11 @@ void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess)
 
     upf_mbs_session_id_clear(&upf_mbs_sess->mbs_session_id);
 
+    if (upf_mbs_sess->dnn) {
+        ogs_free(upf_mbs_sess->dnn);
+        upf_mbs_sess->dnn = NULL;
+    }
+
     // PFCP finalization
     ogs_pfcp_pool_final(&upf_mbs_sess->pfcp);
 
