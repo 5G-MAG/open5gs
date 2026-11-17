@@ -1064,6 +1064,61 @@ static void test_update_action_enters_area(void)
     ogs_free(c);
 }
 
+/* An area given by its NCGI list only, with one entry per TAC of PLMN 999/70 (TS 29.571 clause 5.9.4.5, NcgiTai: "These
+ * cells pertain to the TAI indicated in the tai IE.") */
+static ogs_mbs_service_area_t *ncgi_area_of(int n, const uint32_t *tacs)
+{
+    ogs_mbs_service_area_t *area = ogs_calloc(1, sizeof(*area));
+    int i;
+
+    area->ncgi_tai_list = ogs_calloc(1, sizeof(*area->ncgi_tai_list));
+    ogs_list_init(area->ncgi_tai_list);
+    for (i = 0; i < n; i++) {
+        ogs_ncgi_tai_t *ncgi_tai = ogs_calloc(1, sizeof(*ncgi_tai));
+
+        ogs_plmn_id_build(&ncgi_tai->tai.plmn_id, 999, 70, 2);
+        ncgi_tai->tai.tac = ogs_msprintf("%06x", tacs[i]);
+        ogs_list_init(&ncgi_tai->cell_list);
+        ogs_list_add(area->ncgi_tai_list, ncgi_tai);
+    }
+    return area;
+}
+
+/* TS 23.247 V18.8.0 cl. 7.3.1 step 3: the AMF transfers the request "to all NG-RANs which support MBS in the MBS service
+ * area". An area given by NCGIs is narrowed by the TAIs of its cells, as an area given by TAIs: a node that serves none
+ * of them does not take the session, and one that comes to serve the area enters it. */
+static void test_update_action_ncgi_area(void)
+{
+    static const uint32_t t1[] = { 1 }, t2[] = { 2 }, t12[] = { 1, 2 };
+    amf_gnb_t *a = make_gnb(0x100, 22), *b = make_gnb(0x200, 22);
+    amf_mbs_context_t ctx = make_context();
+    amf_mbs_update_plan_t plan;
+    ogs_mbs_service_area_t *old_area = ncgi_area_of(1, t1), *new_area = ncgi_area_of(2, t12);
+
+    ogs_list_init(&ctx.involved_gnb_list);
+    a->id = 1; b->id = 2;
+    gnb_serves(a, 1, t1);
+    gnb_serves(b, 1, t2);
+
+    /* the session of the area of TAC 1 does not go to a node of TAC 2 */
+    ctx.mbs_service_area = old_area;
+    memset(&plan, 0, sizeof(plan));
+    plan.old_area = old_area;
+    CHECK(amf_namf_mbs_update_action(&ctx, a, &plan) == AMF_MBS_UPDATE_MODIFY);
+    CHECK(amf_namf_mbs_update_action(&ctx, b, &plan) == AMF_MBS_UPDATE_SKIP);
+
+    /* {1} to {1,2}: the node of TAC 2 enters */
+    ctx.mbs_service_area = new_area;
+    CHECK(amf_namf_mbs_update_action(&ctx, b, &plan) == AMF_MBS_UPDATE_SETUP);
+    CHECK(amf_namf_mbs_update_action(&ctx, a, &plan) == AMF_MBS_UPDATE_MODIFY);
+
+    ctx.mbs_service_area = NULL;
+    ogs_mbs_service_area_free(new_area);
+    ogs_mbs_service_area_free(old_area);
+    ogs_free(a);
+    ogs_free(b);
+}
+
 /* TS 23.247 V18.8.0 cl. 7.3.3 step 3: "the AMF may send MBS Session Resource Setup to some NG-RANs in new MBS service
  * area (see clause 7.3.1) and MBS Session Resource Release to some other NG-RANs in old MBS service area." */
 static void test_update_action_leaves_area(void)
@@ -2237,6 +2292,7 @@ int main(int argc, const char *argv[])
     test_other_requests_have_no_associated_session_id();
     test_notify_response_any_uri();
     test_update_action_enters_area();
+    test_update_action_ncgi_area();
     test_update_action_leaves_area();
     test_update_action_info_unchanged();
     test_context_update_req_data_no_ngap_signalling_ind();
