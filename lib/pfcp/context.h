@@ -41,6 +41,9 @@ extern "C" {
 
 typedef struct ogs_pfcp_node_s ogs_pfcp_node_t;
 
+/* 232.0.0.4, the default first low layer SSM group */
+#define OGS_PFCP_LLSSM_DEFAULT_BASE 0xe8000004
+
 typedef struct ogs_pfcp_context_s {
     uint32_t        pfcp_port;      /* PFCP local port */
 
@@ -70,6 +73,8 @@ typedef struct ogs_pfcp_context_s {
     ogs_list_t      subnet_list;    /* UE Subnet List */
 
     ogs_list_t      llssm_list;    /* Lower Layer SSM List (N3mb) */
+    /* First group of the low layer SSM addresses the MB-UPF allocates (IPv4, host order) */
+    uint32_t        llssm_base;
 
     ogs_hash_t      *object_teid_hash; /* hash table for PFCP OBJ(TEID) */
     ogs_hash_t      *far_f_teid_hash;  /* hash table for FAR(TEID+ADDR) */

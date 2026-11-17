@@ -52,6 +52,10 @@ void ogs_pfcp_context_init(void)
 
     self.local_recovery = ogs_time_ntp32_now();
 
+    /* TS 29.281 clause 4.2.6.2: the destination of the N3mb G-PDUs "shall be an address in the multicast address range as
+     * specified in IETF RFC 4607" (232.0.0.0/8 for IPv4) */
+    self.llssm_base = OGS_PFCP_LLSSM_DEFAULT_BASE;
+
     ogs_log_install_domain(&__ogs_pfcp_domain, "pfcp", ogs_core()->log.level);
 
     ogs_pool_init(&ogs_pfcp_node_pool, ogs_app()->pool.nf);
@@ -2818,8 +2822,7 @@ ogs_ssm_t *ogs_pfcp_llssm_add(void)
         memset(ll_ssm, 0, sizeof *ll_ssm);
         ll_ssm->dest_ip_addr.ipv4 = 1;
         ll_ssm->dest_ip_addr.len = OGS_IPV4_LEN;
-        ogs_ipv4_from_string(&ll_ssm->dest_ip_addr.addr, "239.0.0.4");
-        ll_ssm->dest_ip_addr.addr += htobe32(ogs_pool_index(&ogs_pfcp_llssm_pool, ll_ssm) - 1);
+        ll_ssm->dest_ip_addr.addr = htobe32(self.llssm_base + (ogs_pool_index(&ogs_pfcp_llssm_pool, ll_ssm) - 1));
         if (!ogs_pfcp_llssm_dest_in_use(&ll_ssm->dest_ip_addr))
             break;
         ogs_list_add(&skipped, ll_ssm);
@@ -2853,9 +2856,13 @@ ogs_ssm_t *ogs_pfcp_llssm_add(void)
      */
     offset = ogs_pool_index(&ogs_pfcp_llssm_pool, ll_ssm) - 1;
 
-    // N3mb address:
-    ogs_ipv4_from_string(&ll_ssm->dest_ip_addr.addr, "239.0.0.4");
-    ll_ssm->dest_ip_addr.addr += htobe32(offset);
+    // N3mb address: the base plus the slot, within 232.0.0.0/8
+    if ((uint64_t)self.llssm_base + offset > 0xe8ffffff) {
+        ogs_error("LL-SSM: no group left above the base %08x for slot %d", self.llssm_base, offset);
+        ogs_pool_free(&ogs_pfcp_llssm_pool, ll_ssm);
+        return NULL;
+    }
+    ll_ssm->dest_ip_addr.addr = htobe32(self.llssm_base + offset);
     ll_ssm->dest_ip_addr.ipv4 = 1;
     ll_ssm->dest_ip_addr.len = OGS_IPV4_LEN;
 
