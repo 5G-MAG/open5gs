@@ -23,6 +23,7 @@
 #include "sbi-path.h"
 #include "pfcp-path.h"
 #include "nmbsmf-handler.h"
+#include "n4mb-handler.h"
 #include "mbs-pcf.h"
 #include "mbs-update.h"
 #include "mbs-subsc.h"
@@ -1367,7 +1368,8 @@ void smf_nmbsmf_mbs_session_create_continue(smf_mbs_sess_t *mbs_sess, ogs_sbi_st
     ogs_assert(mbs_sess);
     ogs_assert(stream);
 
-    smf_5gc_pfcp_n4mb_send_session_establishment_request(mbs_sess, 0, stream);
+    if (smf_5gc_pfcp_n4mb_send_session_establishment_request(mbs_sess, 0, stream) != OGS_OK)
+        smf_n4mb_handle_session_establishment_failure(mbs_sess, stream);
 }
 
 /* The release of an MBS session once the MBS Policy Association is deleted (or none was made): the AMFs, the MB-UPF,

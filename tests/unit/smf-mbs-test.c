@@ -16,6 +16,7 @@
 #include "smf-sm.h"
 #include "pfcp-path.h"
 #include "n4mb-handler.h"
+#include "n4mb-handler.h"
 #include "ngap-build.h"
 #include "namf-build.h"
 #include "namf-handler.h"
@@ -3580,6 +3581,31 @@ static void test_node_report(void)
 /* TS 23.527 V18.6.0 clause 8.2.2, restoration after an MB-UPF restart: the establishment request carries the MBS
  * RESTI flag, not PLLSSM, the Multicast Transport Information (LL SSM and C-TEID of before), and for unicast the
  * ingress tunnel address without CHOOSE and the MBSU FAR with the DL tunnels. */
+/* A Create whose N4mb Session Establishment Request gets no answer is answered with an error and its session is
+ * released with its TMGI, as on a rejection; the establishment of a restoration is left to the restoration. */
+static void test_establishment_without_answer(void)
+{
+    int sessions_before = ogs_list_count(&smf_self()->smf_mbs_sess_list);
+    int tmgis_before = smf_tmgi_count();
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    ogs_pool_id_t id;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+    id = mbs_sess->id;
+    CHECK(smf_tmgi_count() == tmgis_before + 1);
+
+    mbs_sess->restoring = true;
+    CHECK(!smf_n4mb_handle_session_establishment_failure(mbs_sess, NULL));
+    CHECK(smf_mbs_sess_find_by_id(id) == mbs_sess);
+    mbs_sess->restoring = false;
+
+    CHECK(smf_n4mb_handle_session_establishment_failure(mbs_sess, NULL));
+    CHECK(smf_mbs_sess_find_by_id(id) == NULL);
+    CHECK(smf_tmgi_count() == tmgis_before);
+    CHECK(ogs_list_count(&smf_self()->smf_mbs_sess_list) == sessions_before);
+}
+
 static void test_restoration_request(void)
 {
     smf_mbs_sess_t *mbs_sess = new_broadcast_session();
@@ -6087,6 +6113,7 @@ int main(void)
     test_ngran_failure_events();
     test_amf_change_event();
     test_node_report();
+    test_establishment_without_answer();
     test_restoration_request();
     test_area_session_id_in_establishment();
     test_changes_during_restoration();
