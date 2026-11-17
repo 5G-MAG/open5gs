@@ -3689,6 +3689,21 @@ def t_N3mb_low_layer_ssm_group_range():
         U.restart()
 
 
+@test
+def t_N3mb_ttl():
+    """The N3mb G-PDUs leave with TTL upf.mbs.n3mb.ttl, 2 by default (Linux sends multicast with TTL 1, which no router
+    forwards); 0 is a configuration error."""
+    _, ttls = n3mb_egress(0xf920)
+    assert ttls and ttls == [2] * len(ttls), 'TTL %s, not 2' % ttls
+    try:
+        U.restart(extra_upf='    n3mb:\n      ttl: 8\n')
+        _, ttls = n3mb_egress(0xf921)
+        assert ttls and ttls == [8] * len(ttls), 'TTL %s, configured 8' % ttls
+        upfd_refuses('      ttl: 0\n')
+    finally:
+        U.restart()
+
+
 def main():
     global U
     U = Upf()

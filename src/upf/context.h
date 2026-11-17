@@ -47,6 +47,9 @@ extern int __upf_log_domain;
 
 struct upf_route_trie_node;
 
+/* The N3mb multicast reaches an NG-RAN node one router away by default */
+#define UPF_N3MB_DEFAULT_TTL 2
+
 typedef struct upf_context_s {
     ogs_hash_t *upf_n4_seid_hash;   /* hash table (UPF-N4-SEID) */
     ogs_hash_t *smf_n4_seid_hash;   /* hash table (SMF-N4-SEID) */
@@ -70,6 +73,9 @@ typedef struct upf_context_s {
      */
     uint32_t qer_averaging_window;
     ogs_list_t upf_mbs_sess_list;
+
+    /* TTL of the N3mb multicast G-PDUs (upf.mbs.n3mb.ttl) */
+    uint8_t n3mb_ttl;
 
     /* MBS UDP Tunnel configuration */
     ogs_sockaddr_t *mbs_udp_tun_base_addr;

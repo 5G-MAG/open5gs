@@ -50,6 +50,7 @@ void upf_context_init(void)
     /* Initialize UPF context */
     memset(&self, 0, sizeof(upf_context_t));
     self.qer_averaging_window = 2000;
+    self.n3mb_ttl = UPF_N3MB_DEFAULT_TTL;
 
     ogs_log_install_domain(&__upf_log_domain, "upf", ogs_core()->log.level);
 
@@ -244,7 +245,16 @@ int upf_context_parse_config(void)
                                 const char *n3mb_key = ogs_yaml_iter_key(&n3mb_iter);
                                 const char *n3mb_val = ogs_yaml_iter_value(&n3mb_iter);
                                 ogs_assert(n3mb_key);
-                                if (!strcmp(n3mb_key, "llssm")) {
+                                if (!strcmp(n3mb_key, "ttl")) {
+                                    char *error = NULL;
+                                    uint16_t ttl = _uint16_from_string(n3mb_val, 1, 255, &error);
+                                    if (error) {
+                                        ogs_error("upf/mbs/n3mb/ttl: %s", error);
+                                        ogs_free(error);
+                                        return OGS_ERROR;
+                                    }
+                                    self.n3mb_ttl = (uint8_t)ttl;
+                                } else if (!strcmp(n3mb_key, "llssm")) {
                                     struct in_addr base;
                                     /* TS 29.281 clause 4.2.6.2: an address "in the multicast address range as specified in
                                      * IETF RFC 4607", 232.0.0.0/8 for IPv4 */
