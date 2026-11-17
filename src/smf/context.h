@@ -579,6 +579,11 @@ typedef struct smf_mbs_qos_flow_s {
     ogs_lnode_t lnode;
     uint8_t qfi;
     uint8_t five_qi;
+    /* The reqMbsArp of the mbsQoSReq (TS 29.571 MbsQoSReq), when the AF gave one */
+    bool arp_present;
+    uint8_t arp_priority_level;
+    bool arp_may_preempt;
+    bool arp_preemptable;
     /* The key of the media component in mbsMediaComps (the mbsMedCompNum attribute) that gave the flow, NULL
      * for the default flow of a session without MBS service information. An update keeps the QFI and the user
      * plane rules of the flow with the same key. */

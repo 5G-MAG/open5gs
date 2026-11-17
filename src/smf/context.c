@@ -4894,7 +4894,9 @@ bool smf_mbs_sess_replace_flows(smf_mbs_sess_t *mbs_sess, ogs_list_t *new_flows,
                 continue;
             flow->qfi = old->qfi;
             flow->pdr = old->pdr;
-            if (flow->five_qi != old->five_qi)
+            if (flow->five_qi != old->five_qi || flow->arp_present != old->arp_present ||
+                    flow->arp_priority_level != old->arp_priority_level ||
+                    flow->arp_may_preempt != old->arp_may_preempt || flow->arp_preemptable != old->arp_preemptable)
                 change->qos_changed = true;
             used_qfi |= (uint64_t)1 << flow->qfi;
             break;

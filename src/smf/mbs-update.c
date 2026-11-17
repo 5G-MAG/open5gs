@@ -437,6 +437,14 @@ void smf_mbs_qos_flows_from_service_info(OpenAPI_mbs_service_info_t *mbs_serv_in
             flow = ogs_calloc(1, sizeof(*flow));
             ogs_assert(flow);
             flow->five_qi = (uint8_t)media_comp->mbs_qo_s_req->_5qi;
+            if (media_comp->mbs_qo_s_req->req_mbs_arp) {
+                OpenAPI_arp_t *arp = media_comp->mbs_qo_s_req->req_mbs_arp;
+
+                flow->arp_present = true;
+                flow->arp_priority_level = (uint8_t)arp->priority_level;
+                flow->arp_may_preempt = arp->preempt_cap == OpenAPI_preemption_capability_MAY_PREEMPT;
+                flow->arp_preemptable = arp->preempt_vuln == OpenAPI_preemption_vulnerability_PREEMPTABLE;
+            }
             if (pair->key)
                 flow->med_comp_num = ogs_strdup(pair->key);
             ogs_list_add(flows, flow);
