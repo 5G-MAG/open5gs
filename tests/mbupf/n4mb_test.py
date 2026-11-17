@@ -3624,6 +3624,20 @@ def t_U03_9_application_id_in_the_pdi_is_a_rule_that_cannot_be_applied():
 # E-TESTS-BELOW
 
 
+T_APN_DNN = 159
+
+
+@test
+def t_dnn_of_a_session_is_freed_with_it():
+    """The APN/DNN of an N4mb session is freed with the session: nothing of it is left when the MB-UPF exits."""
+    U.restart()
+    accepted_and_deleted(U.establish(good() + [ie(T_APN_DNN, b'\x0bmbsdnnleak9')]), 'with an APN/DNN')
+    U.stop()
+    err = open(U.err, errors='replace').read()
+    U.start()
+    assert 'mbsdnnleak9' not in err, 'the APN/DNN of the session was not freed'
+
+
 def main():
     global U
     U = Upf()
