@@ -5047,6 +5047,10 @@ static void smf_mbs_sess_remove(smf_mbs_sess_t *smf_mbs_sess)
     ogs_list_remove(&self.smf_mbs_sess_list, smf_mbs_sess);
     ogs_pfcp_sess_clear(&smf_mbs_sess->pfcp);
 
+    /* A transaction left behind would unlink itself from the freed session when it ends; an answer still to come is
+     * then dropped as one for a removed transaction */
+    ogs_sbi_xact_remove_all(&smf_mbs_sess->sbi);
+
     if (smf_mbs_sess->mbs_session_id.is_tmgi) {
         smf_mbs_sessions_by_tmgi_remove_mbs_sess(smf_mbs_sess);
     }
