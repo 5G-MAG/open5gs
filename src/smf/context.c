@@ -5205,6 +5205,36 @@ static bool smf_mbs_sess_service_areas_overlap(smf_mbs_sess_t *a, smf_mbs_sess_t
  * and NcgiTai that are within it. Returns false, leaving *reduced untouched, if unconfigured, if `requested` has
  * neither list, or if all of it is already covered.
  */
+bool smf_mbs_service_area_is_empty(const ogs_mbs_service_area_t *area)
+{
+    return !area || ((!area->tai_list || ogs_list_count(area->tai_list) == 0) &&
+            (!area->ncgi_tai_list || ogs_list_count(area->ncgi_tai_list) == 0));
+}
+
+ogs_mbs_service_area_t *smf_mbs_own_service_area(void)
+{
+    ogs_mbs_service_area_t *own = smf_self()->mbs_service_area, *area;
+    ogs_tai_t *tai;
+
+    if (!own || !own->tai_list || ogs_list_count(own->tai_list) == 0)
+        return NULL;
+
+    area = ogs_calloc(1, sizeof(*area));
+    ogs_assert(area);
+    area->tai_list = ogs_calloc(1, sizeof(*area->tai_list));
+    ogs_assert(area->tai_list);
+    ogs_list_for_each(own->tai_list, tai) {
+        ogs_tai_t *copy = ogs_calloc(1, sizeof(*copy));
+
+        ogs_assert(copy);
+        copy->plmn_id = tai->plmn_id;
+        copy->tac = tai->tac ? ogs_strdup(tai->tac) : NULL;
+        copy->nid = tai->nid ? ogs_strdup(tai->nid) : NULL;
+        ogs_list_add(area->tai_list, copy);
+    }
+    return area;
+}
+
 static bool tai_in_coverage(const ogs_tai_t *tai, ogs_mbs_service_area_t *own)
 {
     ogs_tai_t *own_tai;

@@ -1153,6 +1153,28 @@ bool smf_nmbsmf_handle_mbs_session_create(
         }
     }
 
+    /* TS 29.518 V18.14.0 table 6.5.6.2.2-1 NOTE 1: "Either the mbsServiceAreaInfoList IE or the mbsServiceArea IE shall
+     * be present." The MBS service area is requested for a location dependent or a local MBS service (TS 29.532 V18.6.0
+     * cl. 5.3.2.2.1); a broadcast session requested without one is delivered in the MB-SMF service area, and an MB-SMF
+     * that has none configured cannot deliver it (Table 6.2.7.3-1, MBS_POLICY_CONTEXT_DENIED: "rejected due to operator
+     * policies and/or local configuration"). */
+    if (service_type && strcmp(service_type, "BROADCAST") == 0 && !ext_mbs_service_area &&
+            !(CreateReqData->mbs_session->is_location_dependent && CreateReqData->mbs_session->location_dependent) &&
+            smf_mbs_service_area_is_empty(mbs_service_area)) {
+        if (mbs_service_area)
+            ogs_mbs_service_area_free(mbs_service_area);
+        mbs_service_area = smf_mbs_own_service_area();
+        if (!mbs_service_area) {
+            ogs_error("MBS Session Create: a broadcast session without MBS service area, and no MB-SMF service area");
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
+                message, "Forbidden",
+                "MBS Session Create failed, no MBS service area requested and none configured in the MB-SMF",
+                NMBSMF_MBSSESSION_MBS_POLICY_CONTEXT_DENIED);
+            rv = OGS_ERROR;
+            goto cleanup;
+        }
+    }
+
     // MBS Session create
     mbs_sess = smf_mbs_sess_create(tmgi, tmgi_allocated, ssm, service_type, mbs_service_area, ext_mbs_service_area,
             CreateReqData->mbs_session->is_location_dependent && CreateReqData->mbs_session->location_dependent,
