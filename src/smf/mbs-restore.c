@@ -322,6 +322,20 @@ void smf_mbs_namf_request_timed_out(smf_mbs_sess_t *mbs_sess, smf_mbs_amf_t *amf
         smf_mbs_create_pending_contexts();
 }
 
+int smf_mbs_create_first_context(smf_mbs_sess_t *mbs_sess)
+{
+    ogs_assert(mbs_sess);
+
+    mbs_sess->broadcast_context_pending = true;
+    if (context_create_sender(mbs_sess) != OGS_OK) {
+        ogs_error("MBS session mbsSessionRef[%s]: the broadcast context could not be asked for",
+                mbs_sess->mbs_session_ref ? mbs_sess->mbs_session_ref : "");
+        smf_mbs_context_create_failed(mbs_sess);
+        return OGS_ERROR;
+    }
+    return OGS_OK;
+}
+
 void smf_mbs_context_create_failed(smf_mbs_sess_t *mbs_sess)
 {
     ogs_assert(mbs_sess);

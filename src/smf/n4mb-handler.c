@@ -454,7 +454,7 @@ uint8_t smf_n4mb_handle_session_establishment_response(
         // context to create here and instead uses Namf_MBSCommunication at UE-join time, a separate procedure
         // that is NOT IMPLEMENTED.
     if (ogs_strcasecmp(mbs_sess->service_type, "BROADCAST") == 0) {
-        r = smf_sbi_send_mbs_broadcast_context_create(mbs_sess);
+        r = smf_mbs_create_first_context(mbs_sess);
         ogs_expect(r == OGS_OK);
     }
 
