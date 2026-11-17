@@ -3979,6 +3979,34 @@ static int count_context_create(smf_mbs_sess_t *mbs_sess)
     return OGS_OK;
 }
 
+/* The first broadcast context of a session is asked for again when its Create gets no answer, as after the loss of an
+ * AMF; before, the session stayed without a context. */
+static void test_first_context_create_is_asked_again(void)
+{
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    smf_mbs_amf_t *amf;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+    smf_mbs_set_context_create_sender(count_context_create);
+    smf_mbs_set_amf_available_check(fake_amf_available);
+    amf_registered = true;
+    context_creates = 0;
+
+    CHECK(smf_mbs_create_first_context(mbs_sess) == OGS_OK);
+    CHECK(context_creates == 1);
+    CHECK(mbs_sess->broadcast_context_pending);
+
+    /* the Create (its AMF entry, as the real sender adds it) gets no answer: it is asked again */
+    amf = smf_mbs_sess_amf_add(mbs_sess);
+    smf_mbs_namf_request_timed_out(mbs_sess, amf);
+    CHECK(context_creates == 2);
+
+    smf_mbs_set_context_create_sender(NULL);
+    smf_mbs_set_amf_available_check(NULL);
+    smf_mbs_sess_release(mbs_sess);
+}
+
 /* TS 23.527 V18.6.0 cl. 8.3.2.4: the AMF that holds the broadcast context failed; the MB-SMF "detects that the AMF1 has
  * failed ... via notifications from the NRF for the NF Status Change", and the context is created again in an AMF */
 static void test_amf_context_lost(void)
@@ -6051,6 +6079,7 @@ int main(void)
     test_usage_reports();
     test_query_all_urrs();
     test_local_ingress_tunnel_answer();
+    test_first_context_create_is_asked_again();
     test_amf_context_lost();
     test_no_ngap_signalling_ind_in_request();
     test_amf_takeover();
