@@ -1235,6 +1235,41 @@ bool ogs_sbi_nf_service_is_available(const OpenAPI_service_name_e name)
     return false;
 }
 
+ogs_collocated_nf_instance_t *ogs_collocated_nf_instance_create(
+        const char *nf_instance_id, OpenAPI_collocated_nf_type_e nf_type)
+{
+    ogs_collocated_nf_instance_t *collocated_nf_instance = NULL;
+    ogs_uuid_t uuid;
+    char id[OGS_UUID_FORMATTED_LENGTH + 1];
+
+    ogs_assert(nf_type);
+
+    if (!nf_instance_id) {
+        ogs_uuid_get(&uuid);
+        ogs_uuid_format(id, &uuid);
+        nf_instance_id = id;
+    }
+
+    collocated_nf_instance = ogs_calloc(1, sizeof(*collocated_nf_instance));
+    ogs_assert(collocated_nf_instance);
+    collocated_nf_instance->nf_instance_id = ogs_strdup(nf_instance_id);
+    ogs_assert(collocated_nf_instance->nf_instance_id);
+    collocated_nf_instance->nf_type = nf_type;
+
+    return collocated_nf_instance;
+}
+
+void ogs_collocated_nf_instance_free(
+        ogs_collocated_nf_instance_t *collocated_nf_instance)
+{
+    if (!collocated_nf_instance)
+        return;
+
+    if (collocated_nf_instance->nf_instance_id)
+        ogs_free(collocated_nf_instance->nf_instance_id);
+    ogs_free(collocated_nf_instance);
+}
+
 ogs_sbi_nf_instance_t *ogs_sbi_nf_instance_add(void)
 {
     ogs_sbi_nf_instance_t *nf_instance = NULL;
@@ -1304,6 +1339,17 @@ void ogs_sbi_nf_instance_add_allowed_nf_type(
     }
 }
 
+void ogs_sbi_nf_instance_add_collocated_nf_type(
+        ogs_sbi_nf_instance_t *nf_instance,
+        OpenAPI_collocated_nf_type_e collocated_nf_type)
+{
+    ogs_assert(nf_instance);
+    ogs_assert(collocated_nf_type);
+
+    ogs_list_add(&nf_instance->collocated_nf_list,
+            ogs_collocated_nf_instance_create(NULL, collocated_nf_type));
+}
+
 bool ogs_sbi_nf_instance_is_allowed_nf_type(
         ogs_sbi_nf_instance_t *nf_instance, OpenAPI_nf_type_e allowed_nf_type)
 {
@@ -1330,6 +1376,7 @@ bool ogs_sbi_nf_instance_is_allowed_nf_type(
 void ogs_sbi_nf_instance_clear(ogs_sbi_nf_instance_t *nf_instance)
 {
     int i;
+    ogs_collocated_nf_instance_t *node = NULL, *next = NULL;
 
     ogs_assert(nf_instance);
 
@@ -1348,6 +1395,11 @@ void ogs_sbi_nf_instance_clear(ogs_sbi_nf_instance_t *nf_instance)
             ogs_freeaddrinfo(nf_instance->ipv6[i]);
     }
     nf_instance->num_of_ipv6 = 0;
+
+    ogs_list_for_each_safe(&nf_instance->collocated_nf_list, next, node) {
+        ogs_list_remove(&nf_instance->collocated_nf_list, node);
+        ogs_collocated_nf_instance_free(node);
+    }
 
     nf_instance->num_of_allowed_nf_type = 0;
 

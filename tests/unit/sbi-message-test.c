@@ -919,6 +919,92 @@ static void sbi_message_test10(abts_case *tc, void *param)
     }
 }
 
+/*
+ * NFProfile.collocatedNfInstances (TS29.510 6.1.6.2.2, 6.1.6.2.99):
+ * build -> JSON -> parse -> handle must keep every collocated NF instance.
+ */
+static void sbi_message_test11(abts_case *tc, void *param)
+{
+    ogs_sbi_nf_instance_t *src, *dst;
+    ogs_collocated_nf_instance_t *node;
+    OpenAPI_nf_profile_t *built, *parsed;
+    OpenAPI_collocated_nf_instance_t *entry;
+    cJSON *item;
+    char *generated_id;
+    int n;
+
+    src = ogs_calloc(1, sizeof(*src));
+    ABTS_PTR_NOTNULL(tc, src);
+    dst = ogs_calloc(1, sizeof(*dst));
+    ABTS_PTR_NOTNULL(tc, dst);
+
+    src->id = "SRC-INSTANCE-ID";
+    src->nf_type = OpenAPI_nf_type_SMF;
+    src->nf_status = OpenAPI_nf_status_REGISTERED;
+
+    /* One entry with a generated id, one with an explicit id */
+    ogs_sbi_nf_instance_add_collocated_nf_type(
+            src, OpenAPI_collocated_nf_type_MB_SMF);
+    ogs_list_add(&src->collocated_nf_list,
+            ogs_collocated_nf_instance_create(
+                "COLLOCATED-ID", OpenAPI_collocated_nf_type_UPF));
+
+    built = ogs_nnrf_nfm_build_nf_profile(
+            src, OpenAPI_service_name_NULL, NULL, false);
+    ABTS_PTR_NOTNULL(tc, built);
+    ABTS_PTR_NOTNULL(tc, built->collocated_nf_instances);
+    ABTS_INT_EQUAL(tc, 2, built->collocated_nf_instances->count);
+
+    item = OpenAPI_nf_profile_convertToJSON(built);
+    ABTS_PTR_NOTNULL(tc, item);
+    parsed = OpenAPI_nf_profile_parseFromJSON(item);
+    ABTS_PTR_NOTNULL(tc, parsed);
+    ABTS_PTR_NOTNULL(tc, parsed->collocated_nf_instances);
+    ABTS_INT_EQUAL(tc, 2, parsed->collocated_nf_instances->count);
+
+    ABTS_TRUE(tc, ogs_nnrf_nfm_handle_nf_profile(dst, parsed));
+
+    n = 0;
+    ogs_list_for_each(&dst->collocated_nf_list, node)
+        n++;
+    ABTS_INT_EQUAL(tc, 2, n);
+
+    node = ogs_list_first(&dst->collocated_nf_list);
+    ABTS_PTR_NOTNULL(tc, node);
+    ABTS_INT_EQUAL(tc, OpenAPI_collocated_nf_type_MB_SMF, node->nf_type);
+    generated_id = ogs_list_first(&src->collocated_nf_list) ?
+        ((ogs_collocated_nf_instance_t *)
+            ogs_list_first(&src->collocated_nf_list))->nf_instance_id : NULL;
+    ABTS_PTR_NOTNULL(tc, generated_id);
+    ABTS_STR_EQUAL(tc, generated_id, node->nf_instance_id);
+
+    node = ogs_list_next(node);
+    ABTS_PTR_NOTNULL(tc, node);
+    ABTS_INT_EQUAL(tc, OpenAPI_collocated_nf_type_UPF, node->nf_type);
+    ABTS_STR_EQUAL(tc, "COLLOCATED-ID", node->nf_instance_id);
+
+    /* Clearing an instance must release its collocated list */
+    ogs_sbi_nf_instance_clear(dst);
+    ABTS_TRUE(tc, ogs_list_empty(&dst->collocated_nf_list));
+
+    /* Entry without NF type is ignored, not fatal */
+    entry = parsed->collocated_nf_instances->first->data;
+    entry->nf_type = OpenAPI_collocated_nf_type_NULL;
+    ABTS_TRUE(tc, ogs_nnrf_nfm_handle_nf_profile(dst, parsed));
+    n = 0;
+    ogs_list_for_each(&dst->collocated_nf_list, node)
+        n++;
+    ABTS_INT_EQUAL(tc, 1, n);
+
+    ogs_sbi_nf_instance_clear(dst);
+    ogs_sbi_nf_instance_clear(src);
+    OpenAPI_nf_profile_free(parsed);
+    cJSON_Delete(item);
+    ogs_nnrf_nfm_free_nf_profile(built);
+    ogs_free(dst);
+    ogs_free(src);
+}
+
 abts_suite *test_sbi_message(abts_suite *suite)
 {
     suite = ADD_SUITE(suite)
@@ -933,6 +1019,7 @@ abts_suite *test_sbi_message(abts_suite *suite)
     abts_run_test(suite, sbi_message_test8, NULL);
     abts_run_test(suite, sbi_message_test9, NULL);
     abts_run_test(suite, sbi_message_test10, NULL);
+    abts_run_test(suite, sbi_message_test11, NULL);
 
     return suite;
 }
