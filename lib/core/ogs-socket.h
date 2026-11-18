@@ -65,6 +65,10 @@ ssize_t ogs_read(ogs_socket_t fd, void *buf, size_t len);
 ssize_t ogs_send(ogs_socket_t fd, const void *buf, size_t len, int flags);
 ssize_t ogs_sendto(ogs_socket_t fd,
         const void *buf, size_t len, int flags, const ogs_sockaddr_t *to);
+/* ogs_sendto() with the IPv4 Type-of-Service or IPv6 Traffic Class of this datagram set to tos (a control message, so a
+ * socket shared by several flows does not change their marking) */
+ssize_t ogs_sendto_tos(ogs_socket_t fd,
+        const void *buf, size_t len, int flags, const ogs_sockaddr_t *to, uint8_t tos);
 ssize_t ogs_recv(ogs_socket_t fd, void *buf, size_t len, int flags);
 ssize_t ogs_recvfrom(ogs_socket_t fd,
         void *buf, size_t len, int flags, ogs_sockaddr_t *from);

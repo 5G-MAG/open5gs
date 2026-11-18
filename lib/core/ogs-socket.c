@@ -227,6 +227,57 @@ ssize_t ogs_sendto(ogs_socket_t fd,
     return sendto(fd, buf, len, flags, &to->sa, addrlen);
 }
 
+ssize_t ogs_sendto_tos(ogs_socket_t fd,
+        const void *buf, size_t len, int flags, const ogs_sockaddr_t *to, uint8_t tos)
+{
+#if !defined(_WIN32) && defined(IP_TOS) && defined(IPV6_TCLASS)
+    struct iovec iov;
+    struct msghdr msg;
+    union {
+        struct cmsghdr align;
+        char space[CMSG_SPACE(sizeof(int))];
+    } control;
+    struct cmsghdr *cmsg;
+    int tclass = tos;
+
+    ogs_assert(fd != INVALID_SOCKET);
+    ogs_assert(to);
+
+    memset(&msg, 0, sizeof(msg));
+    memset(&control, 0, sizeof(control));
+    iov.iov_base = (void *)buf;
+    iov.iov_len = len;
+    msg.msg_name = (void *)&to->sa;
+    msg.msg_namelen = ogs_sockaddr_len(to);
+    ogs_assert(msg.msg_namelen);
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control.space;
+    msg.msg_controllen = sizeof(control.space);
+
+    cmsg = CMSG_FIRSTHDR(&msg);
+    if (to->sa.sa_family == AF_INET) {
+        cmsg->cmsg_level = IPPROTO_IP;
+        cmsg->cmsg_type = IP_TOS;
+        cmsg->cmsg_len = CMSG_LEN(sizeof(tos));
+        memcpy(CMSG_DATA(cmsg), &tos, sizeof(tos));
+        msg.msg_controllen = CMSG_SPACE(sizeof(tos));
+    } else {
+        /* ogs_sockaddr_len() has refused any family other than AF_INET and AF_INET6 */
+        cmsg->cmsg_level = IPPROTO_IPV6;
+        cmsg->cmsg_type = IPV6_TCLASS;
+        cmsg->cmsg_len = CMSG_LEN(sizeof(tclass));
+        memcpy(CMSG_DATA(cmsg), &tclass, sizeof(tclass));
+        msg.msg_controllen = CMSG_SPACE(sizeof(tclass));
+    }
+
+    return sendmsg(fd, &msg, flags);
+#else
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
 ssize_t ogs_recv(ogs_socket_t fd, void *buf, size_t len, int flags)
 {
     ogs_assert(fd != INVALID_SOCKET);

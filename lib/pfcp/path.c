@@ -436,6 +436,19 @@ void ogs_pfcp_send_gtpu(ogs_pfcp_pdr_t *pdr, ogs_pkbuf_t *sendbuf)
     ogs_pkbuf_free(sendbuf);
 }
 
+/*
+ * TS 29.244 V19.6.0 clause 5.4.13: "The UP function shall perform the transport level marking for the detected traffic and sends the marked
+ * packet to the peer entity." The DSCP is the first octet of the Transport Level Marking IE (clause 8.2.12), the second its mask, which "shall be
+ * set to "0xFC"": the two ECN bits of the outer IP header are not part of the marking (the NOTE of clause 8.2.12).
+ */
+static int send_g_pdu_mbs_copy(ogs_sock_t *sock, ogs_pkbuf_t *buf, uint32_t teid, ogs_sockaddr_t *to,
+        bool transport_level_marking, uint8_t tos, uint8_t tos_mask)
+{
+    if (transport_level_marking)
+        return ogs_gtp_send_with_teid_tos(sock, buf, teid, to, tos & tos_mask & 0xFC);
+    return ogs_gtp_send_with_teid(sock, buf, teid, to);
+}
+
 void ogs_pfcp_send_g_pdu_mbs(ogs_pfcp_pdr_t *pdr, ogs_pkbuf_t *sendbuf)
 {
     ogs_pfcp_far_t *far = NULL;
@@ -481,7 +494,8 @@ void ogs_pfcp_send_g_pdu_mbs(ogs_pfcp_pdr_t *pdr, ogs_pkbuf_t *sendbuf)
         sent++;
         buf = sent == num_of_destinations ? sendbuf : ogs_pkbuf_copy(sendbuf);
         if (buf) {
-            ogs_gtp_send_with_teid(gnode->sock, buf, far->outer_header_creation.teid, &gnode->addr);
+            send_g_pdu_mbs_copy(gnode->sock, buf, far->outer_header_creation.teid, &gnode->addr,
+                    far->transport_level_marking, far->tos, far->tos_mask);
             ogs_pkbuf_free(buf);
         } else
             ogs_error("ogs_pkbuf_copy() failed");
@@ -503,7 +517,8 @@ void ogs_pfcp_send_g_pdu_mbs(ogs_pfcp_pdr_t *pdr, ogs_pkbuf_t *sendbuf)
                 ogs_error("ogs_pkbuf_copy() failed");
                 continue;
             }
-            ogs_gtp_send_with_teid(gnode->sock, buf, mu->outer_header_creation.teid, &gnode->addr);
+            send_g_pdu_mbs_copy(gnode->sock, buf, mu->outer_header_creation.teid, &gnode->addr,
+                    mu->transport_level_marking, mu->tos, mu->tos_mask);
             ogs_pkbuf_free(buf);
         }
     }

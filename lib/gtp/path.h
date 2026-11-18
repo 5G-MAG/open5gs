@@ -73,6 +73,11 @@ int ogs_gtp_send_with_teid(
         ogs_sock_t *sock,
         ogs_pkbuf_t *pkbuf, uint32_t teid,
         ogs_sockaddr_t *to);
+/* The same, with the IPv4 Type-of-Service or IPv6 Traffic Class of the outer IP header set to tos */
+int ogs_gtp_send_with_teid_tos(
+        ogs_sock_t *sock,
+        ogs_pkbuf_t *pkbuf, uint32_t teid,
+        ogs_sockaddr_t *to, uint8_t tos);
 
 void ogs_gtp_send_error_message(
         ogs_gtp_xact_t *xact, uint32_t teid, uint8_t type, uint8_t cause_value);

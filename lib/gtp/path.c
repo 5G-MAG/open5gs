@@ -129,10 +129,10 @@ int ogs_gtp_sendto(ogs_gtp_node_t *gnode, ogs_pkbuf_t *pkbuf)
     return OGS_OK;
 }
 
-int ogs_gtp_send_with_teid(
+static int gtp_send_with_teid(
         ogs_sock_t *sock,
         ogs_pkbuf_t *pkbuf, uint32_t teid,
-        ogs_sockaddr_t *to)
+        ogs_sockaddr_t *to, bool marked, uint8_t tos)
 {
     char buf[OGS_ADDRSTRLEN];
     ssize_t sent;
@@ -148,14 +148,33 @@ int ogs_gtp_send_with_teid(
 
     ogs_trace("SEND GTP-U to Peer[%s] : TEID[0x%x]", OGS_ADDR(to, buf), teid);
 
-    sent = ogs_sendto(sock->fd, pkbuf->data, pkbuf->len, 0, to);
+    if (marked)
+        sent = ogs_sendto_tos(sock->fd, pkbuf->data, pkbuf->len, 0, to, tos);
+    else
+        sent = ogs_sendto(sock->fd, pkbuf->data, pkbuf->len, 0, to);
     if (sent < 0 || sent != pkbuf->len) {
         ogs_log_message(OGS_LOG_ERROR, ogs_socket_errno,
-                "ogs_sendto() failed");
+                marked ? "ogs_sendto_tos() failed" : "ogs_sendto() failed");
         return OGS_ERROR;
     }
 
     return OGS_OK;
+}
+
+int ogs_gtp_send_with_teid(
+        ogs_sock_t *sock,
+        ogs_pkbuf_t *pkbuf, uint32_t teid,
+        ogs_sockaddr_t *to)
+{
+    return gtp_send_with_teid(sock, pkbuf, teid, to, false, 0);
+}
+
+int ogs_gtp_send_with_teid_tos(
+        ogs_sock_t *sock,
+        ogs_pkbuf_t *pkbuf, uint32_t teid,
+        ogs_sockaddr_t *to, uint8_t tos)
+{
+    return gtp_send_with_teid(sock, pkbuf, teid, to, true, tos);
 }
 
 void ogs_gtp_send_error_message(
