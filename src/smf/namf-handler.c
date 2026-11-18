@@ -705,9 +705,17 @@ bool smf_namf_handle_mbs_broadcast_context_status_notify(
     /* TS 29.518 V18.14.0 table 6.5.6.2.4-1, releasedInd: "This shall be present and set to "true" if all NG-RANs
      * serving the Broadcast MBS session requested the AMF to release the Broadcast MBS session and the Broadcast
      * MBS session (context) has been released in the AMF." */
-    if ((ContextStatusNotification->is_released_ind && ContextStatusNotification->released_ind))
+    if ((ContextStatusNotification->is_released_ind && ContextStatusNotification->released_ind)) {
+        /* TS 29.518 V19.8.0 clause 5.6.2.5: the POST of a status change carries "one or more N2 MBS Session Management containers, if N2 MBS
+         * Session Management information (e.g. ... MBS Session Release Response Transfer IE ...) has been received from one or more NG-RANs
+         * that needs to be transferred to the NF Service Consumer". The notification that reports the release can carry the Release Response
+         * Transfer of the last NG-RAN, so its tunnels are taken out of the MB-UPF before the context is forgotten, as for the notifications
+         * that do not release the context. */
+        if (ContextStatusNotification->n2_mbs_sm_info_list && ContextStatusNotification->n2_mbs_sm_info_list->count > 0)
+            take_amf_answer(mbs_sess, amf, ContextStatusNotification->operation_status,
+                    ContextStatusNotification->n2_mbs_sm_info_list, recvmsg);
         smf_mbs_sess_context_released(mbs_sess, amf);
-    else
+    } else
         /* the containers of the NG-RANs that answered after the AMF's own answer, and the completion of the
          * operation (TS 29.518 cl. 5.6.2.2: "the AMF shall transfer such information by sending one or more
          * Namf_MBSBroadcast_ContextStatusNotify requests to the MB-SMF") */
