@@ -73,12 +73,12 @@ static ogs_inline void *ogs_list_prev(void *lnode)
     ptr ? ogs_container_of(ptr, type, member) : NULL
 
 #define ogs_list_for_each(list, node) \
-    for (node = ogs_list_first(list); (node); \
-        node = ogs_list_next(node))
+    for (node = (typeof(node))ogs_list_first(list); (node); \
+        node = (typeof(node))ogs_list_next(node))
 
 #define ogs_list_reverse_for_each(list, node) \
-    for (node = ogs_list_last(list); (node); \
-        node = ogs_list_prev(node))
+    for (node = (typeof(node))ogs_list_last(list); (node); \
+        node = (typeof(node))ogs_list_prev(node))
 
 #define ogs_list_for_each_entry(list, node, member) \
     for (node = ogs_list_entry(ogs_list_first(list), typeof(*node), member); \
@@ -87,8 +87,8 @@ static ogs_inline void *ogs_list_prev(void *lnode)
                         ogs_list_next(&node->member), typeof(*node), member))
 
 #define ogs_list_for_each_safe(list, n, node) \
-    for (node = ogs_list_first(list); \
-        (node) && (n = ogs_list_next(node), 1); \
+    for (node = (typeof(node))ogs_list_first(list); \
+        (node) && (n = (typeof(node))ogs_list_next(node), 1); \
         node = n)
 
 #define ogs_list_for_each_entry_safe(list, n, node, member) \

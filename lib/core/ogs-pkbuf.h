@@ -171,8 +171,8 @@ static ogs_inline int ogs_pkbuf_trim(ogs_pkbuf_t *pkbuf, int len)
 {
     if (ogs_unlikely(len < 0))
         ogs_assert_if_reached();
-    if (ogs_unlikely(len > pkbuf->len)) {
-        ogs_error("len(%d) > pkbuf->len(%d)", len, pkbuf->len);
+    if (ogs_unlikely((unsigned int)len > pkbuf->len)) {
+        ogs_error("len(%d) > pkbuf->len(%u)", len, pkbuf->len);
         return OGS_ERROR;
     }
 

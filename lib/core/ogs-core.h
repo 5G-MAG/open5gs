@@ -20,6 +20,7 @@
 #ifndef OGS_CORE_H
 #define OGS_CORE_H
 
+#undef _GNU_SOURCE
 #include "core/core-config.h"
 
 #define OGS_CORE_INSIDE
