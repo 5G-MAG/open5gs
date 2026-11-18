@@ -720,6 +720,35 @@ static void test_tac_spelling_is_not_significant(void)
     reduced = NULL;
     ogs_mbs_service_area_free(requested);
 
+    /* the NR NTN Intended Service Areas of the request are kept, in order, by the reduction (TS 29.571 V19.8.0 clause 5.9.4.4
+     * NOTE 2: the MB-SMF transfers them transparently) */
+    requested = area_of_tacs("000001", "000063");
+    requested->intended_area_list = ogs_calloc(1, sizeof(*requested->intended_area_list));
+    {
+        const char *isa_text[] = {"AQID/v8=", "oA=="};
+        int i;
+
+        for (i = 0; i < 2; i++) {
+            ogs_intended_service_area_t *isa = ogs_calloc(1, sizeof(*isa));
+
+            isa->bytes = ogs_strdup(isa_text[i]);
+            ogs_list_add(requested->intended_area_list, isa);
+        }
+    }
+    CHECK(smf_mbs_service_area_reduce(requested, &reduced));
+    CHECK(reduced && reduced->intended_area_list && ogs_list_count(reduced->intended_area_list) == 2);
+    if (reduced && reduced->intended_area_list && ogs_list_count(reduced->intended_area_list) == 2) {
+        ogs_intended_service_area_t *first = ogs_list_first(reduced->intended_area_list);
+        ogs_intended_service_area_t *second = ogs_list_next(first);
+
+        CHECK_STR("AQID/v8=", first->bytes);
+        CHECK_STR("oA==", second->bytes);
+        CHECK(first != ogs_list_first(requested->intended_area_list));
+    }
+    ogs_mbs_service_area_free(reduced);
+    reduced = NULL;
+    ogs_mbs_service_area_free(requested);
+
     /* a TAC that is not a number is compared as text */
     smf_self()->mbs_service_area = NULL;
     ogs_mbs_service_area_free(coverage);

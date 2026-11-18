@@ -6017,6 +6017,19 @@ bool smf_mbs_service_area_reduce(
             }
             ogs_list_add((*reduced)->ncgi_tai_list, copy);
         }
+    /* The NR NTN Intended Service Areas only further restrict, inside the NG-RAN, the cells of the TAIs and cells above
+     * (TS 29.571 V19.8.0 clause 5.9.4.4 NOTE 2); the MB-SMF transfers them as they came, so the reduced area keeps them. */
+    if (requested->intended_area_list && ogs_list_count(requested->intended_area_list)) {
+        ogs_intended_service_area_t *isa;
+
+        (*reduced)->intended_area_list = ogs_calloc(1, sizeof(*(*reduced)->intended_area_list));
+        ogs_list_for_each(requested->intended_area_list, isa) {
+            ogs_intended_service_area_t *isa_copy = ogs_calloc(1, sizeof(*isa_copy));
+
+            isa_copy->bytes = ogs_strdup(isa->bytes);
+            ogs_list_add((*reduced)->intended_area_list, isa_copy);
+        }
+    }
     return true;
 }
 
