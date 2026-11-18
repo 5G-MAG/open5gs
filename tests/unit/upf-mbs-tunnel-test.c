@@ -106,6 +106,24 @@ static void test_far_drop(void)
     CHECK(!upf_mbs_far_drops_packets(&far));
 }
 
+/* TS 29.244 V19.6.0 clause 8.2.7: a Gate value of 2 or 3 "If received, shall be interpreted as the value "1"" */
+static void test_gate_status(void)
+{
+    ogs_pfcp_gate_status_t g;
+    int ul, dl;
+
+    for (ul = 0; ul < 4; ul++) {
+        for (dl = 0; dl < 4; dl++) {
+            memset(&g, 0, sizeof(g));
+            g.uplink = ul;
+            g.downlink = dl;
+            ogs_pfcp_gate_status_interpret(&g);
+            CHECK(g.uplink == (ul == 0 ? OGS_PFCP_GATE_OPEN : OGS_PFCP_GATE_CLOSE));
+            CHECK(g.downlink == (dl == 0 ? OGS_PFCP_GATE_OPEN : OGS_PFCP_GATE_CLOSE));
+        }
+    }
+}
+
 int main(void)
 {
     ogs_core_initialize();
@@ -113,6 +131,7 @@ int main(void)
     ogs_log_install_domain(&__upf_log_domain, "upf", ogs_core()->log.level);
     test_tunnel_recv();
     test_far_drop();
+    test_gate_status();
     printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

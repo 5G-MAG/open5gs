@@ -1036,6 +1036,16 @@ ED3(uint8_t     spare:4;,
     };
 } __attribute__ ((packed)) ogs_pfcp_gate_status_t;
 
+/* TS 29.244 V19.6.0 clause 8.2.7, tables 8.2.7-1 and 8.2.7-2: a UL Gate or DL Gate value of 2 or 3 is "For future use. Shall not
+ * be sent. If received, shall be interpreted as the value "1"", that is closed. */
+static inline void ogs_pfcp_gate_status_interpret(ogs_pfcp_gate_status_t *gate_status)
+{
+    if (gate_status->uplink > OGS_PFCP_GATE_CLOSE)
+        gate_status->uplink = OGS_PFCP_GATE_CLOSE;
+    if (gate_status->downlink > OGS_PFCP_GATE_CLOSE)
+        gate_status->downlink = OGS_PFCP_GATE_CLOSE;
+}
+
 /* 8.2.19 Reporting Triggers
  */
 typedef struct ogs_pfcp_reporting_triggers_s {
