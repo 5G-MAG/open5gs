@@ -2052,6 +2052,11 @@ ssize_t upf_mbs_tunnel_recv(ogs_socket_t fd, void *buf, unsigned int mtu, unsign
     return read_bytes > 0 ? read_bytes : 0;
 }
 
+bool upf_mbs_far_drops_packets(const ogs_pfcp_far_t *far)
+{
+    return far && (far->apply_action & OGS_PFCP_APPLY_ACTION_DROP);
+}
+
 static void _mbs_tunnel_poll_handler(short when, ogs_socket_t fd, void *data)
 {
     upf_mbs_sess_t *mbs_sess = data;

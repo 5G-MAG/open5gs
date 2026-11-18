@@ -88,12 +88,31 @@ static void test_tunnel_recv(void)
     close(tx);
 }
 
+/* TS 29.244 V19.6.0 clause 8.2.26: the Apply Action bit DROP is a request to drop the packets; forwarding and buffering are not */
+static void test_far_drop(void)
+{
+    ogs_pfcp_far_t far;
+
+    memset(&far, 0, sizeof(far));
+    CHECK(!upf_mbs_far_drops_packets(NULL));
+    CHECK(!upf_mbs_far_drops_packets(&far));
+    far.apply_action = OGS_PFCP_APPLY_ACTION_DROP;
+    CHECK(upf_mbs_far_drops_packets(&far));
+    far.apply_action = OGS_PFCP_APPLY_ACTION_FSSM;
+    CHECK(!upf_mbs_far_drops_packets(&far));
+    far.apply_action = OGS_PFCP_APPLY_ACTION_MBSU;
+    CHECK(!upf_mbs_far_drops_packets(&far));
+    far.apply_action = OGS_PFCP_APPLY_ACTION_BUFF | OGS_PFCP_APPLY_ACTION_NOCP;
+    CHECK(!upf_mbs_far_drops_packets(&far));
+}
+
 int main(void)
 {
     ogs_core_initialize();
     /* the UPF's log domain, which the error of a refusal is written to; upf_context_init() installs it in the UPF */
     ogs_log_install_domain(&__upf_log_domain, "upf", ogs_core()->log.level);
     test_tunnel_recv();
+    test_far_drop();
     printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

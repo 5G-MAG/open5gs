@@ -41,6 +41,10 @@ void upf_n4mb_handle_session_modification_request(
  * which is refused (not cut): it is counted in *oversize, and logged the first time and then every thousandth. */
 ssize_t upf_mbs_tunnel_recv(ogs_socket_t fd, void *buf, unsigned int mtu, unsigned int *oversize);
 
+/* Whether the Apply Action of a FAR says to drop the packets (TS 29.244 V19.6.0 clause 8.2.26: "Bit 1 - DROP (Drop): when set
+ * to "1", this indicates a request to drop the packets.") */
+bool upf_mbs_far_drops_packets(const ogs_pfcp_far_t *far);
+
 void upf_n4mb_handle_session_deletion_request(
         upf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
         ogs_pfcp_session_deletion_request_t *req);

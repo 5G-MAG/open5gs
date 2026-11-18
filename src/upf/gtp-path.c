@@ -18,6 +18,7 @@
  */
 
 #include "context.h"
+#include "n4mb-handler.h"
 #include "path-management.h"
 #include "mbs-report.h"
 #include "mbs-charging.h"
@@ -307,6 +308,14 @@ void upf_gtpv1_receive_buffer_for_mbs_sess(ogs_pkbuf_t *recvbuf, upf_mbs_sess_t 
         if (ogs_global_conf()->parameter.multicast) {
             upf_gtp_handle_multicast(recvbuf);
         }
+        ogs_pkbuf_free(recvbuf);
+        return;
+    }
+
+    /* TS 29.244 V19.6.0 clause 8.2.26: the Apply Action DROP of the FAR of the selected PDR is a request to drop the packets; they are not held for
+     * a later Update FAR either (a FAR without a destination holds the packets of the other actions). */
+    if (mbs_sess && upf_mbs_far_drops_packets(pdr->far)) {
+        ogs_debug("MBS data dropped: the Apply Action of FAR[%d] is DROP", pdr->far->id);
         ogs_pkbuf_free(recvbuf);
         return;
     }
