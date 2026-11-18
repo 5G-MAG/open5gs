@@ -2261,34 +2261,67 @@ static bool amf_namf_gnb_serves_tai(const amf_gnb_t *gnb, const ogs_tai_t *tai)
     return false;
 }
 
+/* Whether \p area names at least one TAI: in its TAI list or, with a cell, in its NCGI TAI list */
+static bool amf_namf_area_names_tais(const ogs_mbs_service_area_t *area)
+{
+    return area && ((area->tai_list && ogs_list_count(area->tai_list) > 0) ||
+            (area->ncgi_tai_list && ogs_list_count(area->ncgi_tai_list) > 0));
+}
+
 /*
- * Whether \p gnb serves one of the TAIs of \p area, or \p area does not narrow the choice (none given, or without a TAI
- * list: NCGI matching is not implemented).
+ * Whether \p gnb serves one of the TAIs of \p area, or \p area does not narrow the choice (none given). The TAIs are those
+ * of the TAI list and those that come with the cells of the NCGI TAI list: TS 23.247 V19.3.0 clause 6.21, NOTE 2: "the MB-SMF
+ * selects the AMF based on TAIs, and the AMF also selects NG-RAN nodes in the same manner. (Cell IDs are provided together with
+ * related TAIs to enable this selection)."
  */
 static bool amf_namf_gnb_serves_tai_list(const amf_gnb_t *gnb, const ogs_mbs_service_area_t *area)
 {
     ogs_tai_t *tai = NULL;
+    ogs_ncgi_tai_t *ncgi_tai = NULL;
 
-    if (!area || !area->tai_list || ogs_list_count(area->tai_list) == 0)
+    if (!amf_namf_area_names_tais(area))
         return true;
 
-    ogs_list_for_each(area->tai_list, tai) {
-        if (amf_namf_gnb_serves_tai(gnb, tai))
-            return true;
+    if (area->tai_list) {
+        ogs_list_for_each(area->tai_list, tai) {
+            if (amf_namf_gnb_serves_tai(gnb, tai))
+                return true;
+        }
+    }
+    if (area->ncgi_tai_list) {
+        ogs_list_for_each(area->ncgi_tai_list, ncgi_tai) {
+            if (amf_namf_gnb_serves_tai(gnb, &ncgi_tai->tai))
+                return true;
+        }
     }
 
     return false;
 }
 
+static bool amf_namf_tai_equal(const ogs_tai_t *a, const ogs_tai_t *b)
+{
+    return ogs_uint24_from_string_hexadecimal(a->tac ? a->tac : (char *)"0").v ==
+            ogs_uint24_from_string_hexadecimal(b->tac ? b->tac : (char *)"0").v &&
+            memcmp(&a->plmn_id, &b->plmn_id, sizeof(ogs_plmn_id_t)) == 0;
+}
+
+/* Whether \p tai is one of the TAIs of \p area: in its TAI list or with a cell of its NCGI TAI list */
 static bool amf_namf_area_has_tai(const ogs_mbs_service_area_t *area, const ogs_tai_t *tai)
 {
     ogs_tai_t *other = NULL;
+    ogs_ncgi_tai_t *ncgi_tai = NULL;
 
-    ogs_list_for_each(area->tai_list, other) {
-        if (ogs_uint24_from_string_hexadecimal(other->tac ? other->tac : (char *)"0").v ==
-                ogs_uint24_from_string_hexadecimal(tai->tac ? tai->tac : (char *)"0").v &&
-                memcmp(&other->plmn_id, &tai->plmn_id, sizeof(ogs_plmn_id_t)) == 0)
-            return true;
+    if (area->tai_list) {
+        ogs_list_for_each(area->tai_list, other) {
+            if (amf_namf_tai_equal(other, tai))
+                return true;
+        }
+    }
+    if (area->ncgi_tai_list) {
+        ogs_list_for_each(area->ncgi_tai_list, ncgi_tai) {
+            if (amf_namf_tai_equal(&ncgi_tai->tai, tai))
+                return true;
+        }
     }
 
     return false;
@@ -2296,30 +2329,47 @@ static bool amf_namf_area_has_tai(const ogs_mbs_service_area_t *area, const ogs_
 
 /*
  * Whether the change of the MBS service area from \p old_area to \p new_area affects \p gnb: it serves a TAI that is in
- * one of them and not in the other. When either area has no TAI list (none given, or NCGIs only) the change cannot be
- * told by TAI and every node is taken to be affected: NCGI matching is not implemented.
+ * one of them and not in the other (TAIs of the TAI list and of the NCGI TAI list alike). When either area names no TAI
+ * the change cannot be told by TAI and every node is taken to be affected: matching of the cells themselves is not
+ * implemented.
  */
 static bool amf_namf_gnb_affected_by_area_change(const amf_gnb_t *gnb,
         const ogs_mbs_service_area_t *old_area, const ogs_mbs_service_area_t *new_area)
 {
     ogs_tai_t *tai = NULL;
+    ogs_ncgi_tai_t *ncgi_tai = NULL;
 
     /* A change of the NR NTN Intended Service Areas is for every NG-RAN node that takes the session (TS 38.413 V19.4.0
      * clause 8.17.2.2: "the NG-RAN node shall, if supported, update the intended service area information") */
     if (!ogs_mbs_service_area_intended_equal(old_area, new_area))
         return true;
 
-    if (!old_area || !old_area->tai_list || ogs_list_count(old_area->tai_list) == 0 ||
-        !new_area || !new_area->tai_list || ogs_list_count(new_area->tai_list) == 0)
+    if (!amf_namf_area_names_tais(old_area) || !amf_namf_area_names_tais(new_area))
         return true;
 
-    ogs_list_for_each(new_area->tai_list, tai) {
-        if (!amf_namf_area_has_tai(old_area, tai) && amf_namf_gnb_serves_tai(gnb, tai))
-            return true;
+    if (new_area->tai_list) {
+        ogs_list_for_each(new_area->tai_list, tai) {
+            if (!amf_namf_area_has_tai(old_area, tai) && amf_namf_gnb_serves_tai(gnb, tai))
+                return true;
+        }
     }
-    ogs_list_for_each(old_area->tai_list, tai) {
-        if (!amf_namf_area_has_tai(new_area, tai) && amf_namf_gnb_serves_tai(gnb, tai))
-            return true;
+    if (new_area->ncgi_tai_list) {
+        ogs_list_for_each(new_area->ncgi_tai_list, ncgi_tai) {
+            if (!amf_namf_area_has_tai(old_area, &ncgi_tai->tai) && amf_namf_gnb_serves_tai(gnb, &ncgi_tai->tai))
+                return true;
+        }
+    }
+    if (old_area->tai_list) {
+        ogs_list_for_each(old_area->tai_list, tai) {
+            if (!amf_namf_area_has_tai(new_area, tai) && amf_namf_gnb_serves_tai(gnb, tai))
+                return true;
+        }
+    }
+    if (old_area->ncgi_tai_list) {
+        ogs_list_for_each(old_area->ncgi_tai_list, ncgi_tai) {
+            if (!amf_namf_area_has_tai(new_area, &ncgi_tai->tai) && amf_namf_gnb_serves_tai(gnb, &ncgi_tai->tai))
+                return true;
+        }
     }
 
     return false;
@@ -2329,8 +2379,9 @@ static bool amf_namf_gnb_affected_by_area_change(const amf_gnb_t *gnb,
  * Whether an MBS session's setup or modification goes to \p gnb. TS 23.247 V18.8.0 cl. 7.3.1 step 3: "The AMF transfers
  * the MBS Session Resource Setup Request message ... to all NG-RANs which support MBS in the MBS service area."
  * A gNB that has not completed NG Setup is not reachable for non-UE signalling. When the stored service area carries
- * TAIs, the gNB must serve one of them. A service area without TAIs (none given, or NCGIs only) does not narrow the
- * choice here. NOT IMPLEMENTED: whether the gNB supports MBS (no NGAP indication of it is held), NCGI matching.
+ * TAIs (in its TAI list or with the cells of its NCGI TAI list), the gNB must serve one of them. A service area without
+ * TAIs does not narrow the choice here. NOT IMPLEMENTED: whether the gNB supports MBS (no NGAP indication of it is held),
+ * matching of the cells themselves.
  */
 static bool amf_gnb_takes_mbs_session(amf_gnb_t *gnb, amf_mbs_context_t *mbs_context)
 {
