@@ -3784,6 +3784,23 @@ const char *smf_own_nid(void)
     return self.nid;
 }
 
+/* Default S-NSSAI of an MBS session (TS 29.518 table 6.5.6.2.2-1 NOTE 2): first slice of smf.info, or NULL */
+const ogs_s_nssai_t *smf_mbs_default_s_nssai(void)
+{
+    ogs_sbi_nf_instance_t *nf_instance = NULL;
+    ogs_sbi_nf_info_t *nf_info = NULL;
+
+    nf_instance = ogs_sbi_self()->nf_instance;
+    ogs_assert(nf_instance);
+
+    ogs_list_for_each(&nf_instance->nf_info_list, nf_info) {
+        if (nf_info->nf_type == OpenAPI_nf_type_SMF && nf_info->smf.num_of_slice > 0)
+            return &nf_info->smf.slice[0].s_nssai;
+    }
+
+    return NULL;
+}
+
 /* TS 23.003 V18.8.0 clause 30.2, item 3: "The MNC identifies the PLMN which the MB-SMF belongs to". That
  * PLMN is the first of the serving PLMNs of the configuration and, when none is configured, the PLMN of
  * the first tracking area of the SMF information (smf.info.tai). Returns false when the configuration
@@ -4264,6 +4281,10 @@ static void smf_mbs_sess_remove(smf_mbs_sess_t *smf_mbs_sess)
 
     ogs_list_remove(&self.smf_mbs_sess_list, smf_mbs_sess);
     ogs_pfcp_sess_clear(&smf_mbs_sess->pfcp);
+
+    /* A transaction left behind would unlink itself from the freed session when it ends; an answer still to come is
+     * then dropped as one for a removed transaction */
+    ogs_sbi_xact_remove_all(&smf_mbs_sess->sbi);
 
     if (smf_mbs_sess->mbs_session_id.is_tmgi) {
         smf_mbs_sessions_by_tmgi_remove_mbs_sess(smf_mbs_sess);
@@ -4873,7 +4894,9 @@ bool smf_mbs_sess_replace_flows(smf_mbs_sess_t *mbs_sess, ogs_list_t *new_flows,
                 continue;
             flow->qfi = old->qfi;
             flow->pdr = old->pdr;
-            if (flow->five_qi != old->five_qi)
+            if (flow->five_qi != old->five_qi || flow->arp_present != old->arp_present ||
+                    flow->arp_priority_level != old->arp_priority_level ||
+                    flow->arp_may_preempt != old->arp_may_preempt || flow->arp_preemptable != old->arp_preemptable)
                 change->qos_changed = true;
             used_qfi |= (uint64_t)1 << flow->qfi;
             break;
@@ -5182,6 +5205,36 @@ static bool smf_mbs_sess_service_areas_overlap(smf_mbs_sess_t *a, smf_mbs_sess_t
  * and NcgiTai that are within it. Returns false, leaving *reduced untouched, if unconfigured, if `requested` has
  * neither list, or if all of it is already covered.
  */
+bool smf_mbs_service_area_is_empty(const ogs_mbs_service_area_t *area)
+{
+    return !area || ((!area->tai_list || ogs_list_count(area->tai_list) == 0) &&
+            (!area->ncgi_tai_list || ogs_list_count(area->ncgi_tai_list) == 0));
+}
+
+ogs_mbs_service_area_t *smf_mbs_own_service_area(void)
+{
+    ogs_mbs_service_area_t *own = smf_self()->mbs_service_area, *area;
+    ogs_tai_t *tai;
+
+    if (!own || !own->tai_list || ogs_list_count(own->tai_list) == 0)
+        return NULL;
+
+    area = ogs_calloc(1, sizeof(*area));
+    ogs_assert(area);
+    area->tai_list = ogs_calloc(1, sizeof(*area->tai_list));
+    ogs_assert(area->tai_list);
+    ogs_list_for_each(own->tai_list, tai) {
+        ogs_tai_t *copy = ogs_calloc(1, sizeof(*copy));
+
+        ogs_assert(copy);
+        copy->plmn_id = tai->plmn_id;
+        copy->tac = tai->tac ? ogs_strdup(tai->tac) : NULL;
+        copy->nid = tai->nid ? ogs_strdup(tai->nid) : NULL;
+        ogs_list_add(area->tai_list, copy);
+    }
+    return area;
+}
+
 static bool tai_in_coverage(const ogs_tai_t *tai, ogs_mbs_service_area_t *own)
 {
     ogs_tai_t *own_tai;

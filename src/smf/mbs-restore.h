@@ -130,6 +130,10 @@ void smf_mbs_context_retry_expired(void);
 /* An AMF refused the ContextCreate of a session that waits for its context. */
 void smf_mbs_context_create_failed(smf_mbs_sess_t *mbs_sess);
 
+/* The first broadcast context of a session, once the MB-UPF set it up: until an AMF answers it, the session waits for
+ * its context as after the loss of an AMF, so that a Create refused, unanswered or not sent is asked again. */
+int smf_mbs_create_first_context(smf_mbs_sess_t *mbs_sess);
+
 /* A request to an AMF about the context of \p mbs_sess got no answer within the SBI client wait time. \p amf is the
  * entry of the request, or NULL. A Create that nothing answered drops its entry; a session that waits for its context
  * sends its ContextCreate again. */

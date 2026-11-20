@@ -16,6 +16,7 @@
 #include "smf-sm.h"
 #include "pfcp-path.h"
 #include "n4mb-handler.h"
+#include "n4mb-handler.h"
 #include "ngap-build.h"
 #include "namf-build.h"
 #include "namf-handler.h"
@@ -439,6 +440,8 @@ static void test_dnn_snssai(void)
         CHECK(dnn->len == 4 && memcmp(dnn->data, "\x03mbs", 4) == 0);
         CHECK(nssai->presence);
         CHECK(nssai->len == 4 && ((uint8_t *)nssai->data)[0] == 3);
+        /* TS 29.244 V18.10.0 clause 8.2.176, TS 23.003 clause 28.4.2: the SD most significant octet first */
+        CHECK(nssai->len == 4 && memcmp(nssai->data, "\x03\x00\x00\xab", 4) == 0);
     }
     snssai = smf_mbs_sess_build_snssai(mbs_sess);
     CHECK(snssai != NULL);
@@ -465,6 +468,32 @@ static void test_dnn_snssai(void)
     }
 
     smf_mbs_sess_release(mbs_sess);
+}
+
+/* TS 29.518 V18.14.0 table 6.5.6.2.2-1, NOTE 2: the pre-configured default S-NSSAI is the first slice of smf.info,
+ * and there is none when the configuration lists no slice. */
+static void test_default_s_nssai(void)
+{
+    ogs_sbi_nf_info_t *nf_info = NULL;
+    const ogs_s_nssai_t *s_nssai = smf_mbs_default_s_nssai();
+    int saved[8], n = 0;
+
+    CHECK(s_nssai != NULL);
+    if (s_nssai) {
+        CHECK(s_nssai->sst == 1);
+        CHECK(s_nssai->sd.v == 1);
+    }
+
+    ogs_list_for_each(&ogs_sbi_self()->nf_instance->nf_info_list, nf_info) {
+        if (n < 8) saved[n++] = nf_info->smf.num_of_slice;
+        nf_info->smf.num_of_slice = 0;
+    }
+    CHECK(smf_mbs_default_s_nssai() == NULL);
+    n = 0;
+    ogs_list_for_each(&ogs_sbi_self()->nf_instance->nf_info_list, nf_info) {
+        if (n < 8) nf_info->smf.num_of_slice = saved[n++];
+    }
+    CHECK(smf_mbs_default_s_nssai() == s_nssai);
 }
 
 /* A TMGI refreshed while an MBS session uses it keeps its place in the index of sessions by TMGI: a second
@@ -629,6 +658,40 @@ static void test_create_outcomes(void)
 /* TS 29.532 V18.6.0 cl. 5.3.2.2.1: "If the MBS service area received in the request cannot be entirely covered by
  * the MB-SMF service area, the MB-SMF shall reduce the MBS service area to be within the MB-SMF service area and
  * continue the Create service operation using the reduced MBS service area." */
+/* TS 29.518 V18.14.0 table 6.5.6.2.2-1 NOTE 1: "Either the mbsServiceAreaInfoList IE or the mbsServiceArea IE shall be
+ * present." A broadcast session requested without an MBS service area takes the MB-SMF service area; an MB-SMF with none
+ * configured has none to give. */
+static void test_own_service_area(void)
+{
+    ogs_mbs_service_area_t *saved = smf_self()->mbs_service_area;
+    ogs_mbs_service_area_t *coverage = area_of_tacs("1", "2");
+    ogs_mbs_service_area_t *empty = ogs_calloc(1, sizeof(*empty));
+    ogs_mbs_service_area_t *copy;
+    ogs_tai_t *tai;
+    int count = 0;
+
+    CHECK(smf_mbs_service_area_is_empty(NULL));
+    CHECK(smf_mbs_service_area_is_empty(empty));
+    CHECK(!smf_mbs_service_area_is_empty(coverage));
+
+    smf_self()->mbs_service_area = NULL;
+    CHECK(smf_mbs_own_service_area() == NULL);
+
+    smf_self()->mbs_service_area = coverage;
+    copy = smf_mbs_own_service_area();
+    CHECK(copy != NULL && copy != coverage && copy->tai_list != NULL);
+    if (copy && copy->tai_list) {
+        ogs_list_for_each(copy->tai_list, tai)
+            count++;
+        CHECK(count == 2);
+    }
+    ogs_mbs_service_area_free(copy);
+
+    smf_self()->mbs_service_area = saved;
+    ogs_mbs_service_area_free(coverage);
+    ogs_mbs_service_area_free(empty);
+}
+
 static void test_reduced_area_is_used(void)
 {
     ogs_mbs_service_area_t *saved = smf_self()->mbs_service_area;
@@ -1400,6 +1463,80 @@ static ogs_pfcp_message_t *build_and_parse_modification(smf_mbs_sess_t *mbs_sess
  * include the corresponding "contactPcfInd" attribute within the set of requested modifications."; TS 23.247
  * V18.8.0 cl. 7.1.1.6 step 4: "This may lead to addition of new MBS QoS Flow(s), removal of existing MBS QoS
  * Flow(s) or update of existing MBS QoS Flow(s)." */
+/* TS 29.571 MbsQoSReq: "reqMbsArp | Arp | O | 0..1". The MBS QoS Flow Level QoS Parameters of the N2 SM information
+ * carry the ARP the AF requested for the flow, and priority 8 without pre-emption for a flow without one. TS 38.413
+ * clause 9.3.1.19: Priority Level, Pre-emption Capability and Pre-emption Vulnerability are mandatory. */
+static int arp_of_flow(smf_mbs_sess_t *mbs_sess, long qfi, long *level, long *cap, long *vuln)
+{
+    ogs_pkbuf_t *pkbuf = ngap_build_mbs_session_setup_or_modification_request_transfer(mbs_sess);
+    NGAP_MBSSessionSetupOrModRequestTransfer_t message;
+    int i, n, found = 0;
+
+    if (!pkbuf)
+        return 0;
+    memset(&message, 0, sizeof(message));
+    CHECK(ogs_asn_decode(&asn_DEF_NGAP_MBSSessionSetupOrModRequestTransfer, &message, sizeof(message), pkbuf) ==
+            OGS_OK);
+    for (i = 0; i < message.protocolIEs.list.count; i++) {
+        NGAP_MBSSessionSetupOrModRequestTransferIEs_t *ie = message.protocolIEs.list.array[i];
+
+        if (ie->id != NGAP_ProtocolIE_ID_id_MBS_QoSFlowsToBeSetupModList)
+            continue;
+        for (n = 0; n < ie->value.choice.MBS_QoSFlowsToBeSetupList.list.count; n++) {
+            NGAP_MBS_QoSFlowsToBeSetupItem_t *item = ie->value.choice.MBS_QoSFlowsToBeSetupList.list.array[n];
+            NGAP_AllocationAndRetentionPriority_t *arp =
+                &item->mBSqosFlowLevelQosParameters.allocationAndRetentionPriority;
+
+            if (item->mBSqosFlowIdentifier != qfi)
+                continue;
+            *level = arp->priorityLevelARP;
+            *cap = arp->pre_emptionCapability;
+            *vuln = arp->pre_emptionVulnerability;
+            found = 1;
+        }
+    }
+    ogs_asn_free(&asn_DEF_NGAP_MBSSessionSetupOrModRequestTransfer, &message);
+    ogs_pkbuf_free(pkbuf);
+    return found;
+}
+
+static void test_requested_arp(void)
+{
+    static const char *const with_arp =
+        "{\"mbsMediaComps\":{\"1\":{\"mbsMedCompNum\":1,\"mbsQoSReq\":{\"5qi\":9,\"reqMbsArp\":"
+        "{\"priorityLevel\":3,\"preemptCap\":\"MAY_PREEMPT\",\"preemptVuln\":\"PREEMPTABLE\"}}},"
+        "\"2\":{\"mbsMedCompNum\":2,\"mbsQoSReq\":{\"5qi\":5}}}}";
+    static const char *const bad_arp =
+        "{\"mbsMediaComps\":{\"1\":{\"mbsMedCompNum\":1,\"mbsQoSReq\":{\"5qi\":9,\"reqMbsArp\":"
+        "{\"priorityLevel\":16,\"preemptCap\":\"MAY_PREEMPT\",\"preemptVuln\":\"PREEMPTABLE\"}}}}}";
+    smf_mbs_sess_t *mbs_sess = make_session(with_arp, area_1_text);
+    long level = 0, cap = -1, vuln = -1;
+    const char *detail = NULL;
+    cJSON *json;
+    OpenAPI_mbs_service_info_t *info;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess)
+        return;
+    CHECK(arp_of_flow(mbs_sess, 1, &level, &cap, &vuln));
+    CHECK(level == 3 && cap == NGAP_Pre_emptionCapability_may_trigger_pre_emption &&
+            vuln == NGAP_Pre_emptionVulnerability_pre_emptable);
+    CHECK(arp_of_flow(mbs_sess, 2, &level, &cap, &vuln));
+    CHECK(level == 8 && cap == NGAP_Pre_emptionCapability_shall_not_trigger_pre_emption &&
+            vuln == NGAP_Pre_emptionVulnerability_not_pre_emptable);
+    smf_mbs_sess_release(mbs_sess);
+
+    /* a priority level outside 1 to 15 is not an ARP */
+    json = cJSON_Parse(bad_arp);
+    info = OpenAPI_mbs_service_info_parseFromJSON(json);
+    cJSON_Delete(json);
+    CHECK(info != NULL);
+    CHECK(info && !smf_nmbsmf_mbs_service_info_is_valid(info, &detail));
+    CHECK(detail && strstr(detail, "reqMbsArp") != NULL);
+    if (info)
+        OpenAPI_mbs_service_info_free(info);
+}
+
 static void test_update(void)
 {
     smf_mbs_sess_t *mbs_sess = make_session(serv_info_2_text, area_1_text);
@@ -2135,8 +2272,13 @@ static void test_status_subscription(void)
     }
 
     /* the subscriptions of a session end with it, the others stay */
-    smf_mbs_sess_release(mbs_sess);
-    CHECK(smf_mbs_subsc_find_by_id(subsc->id) == NULL || 1);   /* subsc is freed: not dereferenced */
+    {
+        char *subsc_id = ogs_strdup(subsc->id);   /* subsc is freed with the session */
+
+        smf_mbs_sess_release(mbs_sess);
+        CHECK(smf_mbs_subsc_find_by_id(subsc_id) == NULL);
+        ogs_free(subsc_id);
+    }
     CHECK(ogs_list_count(&smf_self()->smf_mbs_subsc_list) == before + 1);
     smf_mbs_sess_release(other);
     CHECK(ogs_list_count(&smf_self()->smf_mbs_subsc_list) == before);
@@ -3525,6 +3667,63 @@ static void test_node_report(void)
 /* TS 23.527 V18.6.0 clause 8.2.2, restoration after an MB-UPF restart: the establishment request carries the MBS
  * RESTI flag, not PLLSSM, the Multicast Transport Information (LL SSM and C-TEID of before), and for unicast the
  * ingress tunnel address without CHOOSE and the MBSU FAR with the DL tunnels. */
+static ogs_sbi_request_t *build_context_request(void *context, void *data)
+{
+    ogs_sbi_message_t message;
+
+    memset(&message, 0, sizeof(message));
+    message.h.method = (char *)OGS_SBI_HTTP_METHOD_POST;
+    message.h.service.name = (char *)OGS_SBI_SERVICE_NAME_NAMF_MBS_BC;
+    message.h.api.version = (char *)OGS_SBI_API_V1;
+    message.h.resource.component[0] = (char *)OGS_SBI_RESOURCE_NAME_MBS_CONTEXTS;
+    return ogs_sbi_build_request(&message);
+}
+
+/* The SBI transactions of an MBS session go with it: none is left pointing at the freed session. */
+static void test_sbi_transactions_go_with_the_session(void)
+{
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    ogs_sbi_xact_t *xact;
+    ogs_pool_id_t xact_id;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+    xact = ogs_sbi_xact_add(mbs_sess->id, &mbs_sess->sbi, OGS_SBI_SERVICE_TYPE_NAMF_MBS_BC, NULL,
+            build_context_request, mbs_sess, NULL);
+    CHECK(xact != NULL);
+    if (!xact) return;
+    xact_id = xact->id;
+    CHECK(ogs_sbi_xact_find_by_id(xact_id) == xact);
+
+    smf_mbs_sess_release(mbs_sess);
+    CHECK(ogs_sbi_xact_find_by_id(xact_id) == NULL);
+}
+
+/* A Create whose N4mb Session Establishment Request gets no answer is answered with an error and its session is
+ * released with its TMGI, as on a rejection; the establishment of a restoration is left to the restoration. */
+static void test_establishment_without_answer(void)
+{
+    int sessions_before = ogs_list_count(&smf_self()->smf_mbs_sess_list);
+    int tmgis_before = smf_tmgi_count();
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    ogs_pool_id_t id;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+    id = mbs_sess->id;
+    CHECK(smf_tmgi_count() == tmgis_before + 1);
+
+    mbs_sess->restoring = true;
+    CHECK(!smf_n4mb_handle_session_establishment_failure(mbs_sess, NULL));
+    CHECK(smf_mbs_sess_find_by_id(id) == mbs_sess);
+    mbs_sess->restoring = false;
+
+    CHECK(smf_n4mb_handle_session_establishment_failure(mbs_sess, NULL));
+    CHECK(smf_mbs_sess_find_by_id(id) == NULL);
+    CHECK(smf_tmgi_count() == tmgis_before);
+    CHECK(ogs_list_count(&smf_self()->smf_mbs_sess_list) == sessions_before);
+}
+
 static void test_restoration_request(void)
 {
     smf_mbs_sess_t *mbs_sess = new_broadcast_session();
@@ -3886,6 +4085,34 @@ static int count_context_create(smf_mbs_sess_t *mbs_sess)
 {
     context_creates++;
     return OGS_OK;
+}
+
+/* The first broadcast context of a session is asked for again when its Create gets no answer, as after the loss of an
+ * AMF; before, the session stayed without a context. */
+static void test_first_context_create_is_asked_again(void)
+{
+    smf_mbs_sess_t *mbs_sess = new_broadcast_session();
+    smf_mbs_amf_t *amf;
+
+    CHECK(mbs_sess != NULL);
+    if (!mbs_sess) return;
+    smf_mbs_set_context_create_sender(count_context_create);
+    smf_mbs_set_amf_available_check(fake_amf_available);
+    amf_registered = true;
+    context_creates = 0;
+
+    CHECK(smf_mbs_create_first_context(mbs_sess) == OGS_OK);
+    CHECK(context_creates == 1);
+    CHECK(mbs_sess->broadcast_context_pending);
+
+    /* the Create (its AMF entry, as the real sender adds it) gets no answer: it is asked again */
+    amf = smf_mbs_sess_amf_add(mbs_sess);
+    smf_mbs_namf_request_timed_out(mbs_sess, amf);
+    CHECK(context_creates == 2);
+
+    smf_mbs_set_context_create_sender(NULL);
+    smf_mbs_set_amf_available_check(NULL);
+    smf_mbs_sess_release(mbs_sess);
 }
 
 /* TS 23.527 V18.6.0 cl. 8.3.2.4: the AMF that holds the broadcast context failed; the MB-SMF "detects that the AMF1 has
@@ -5906,8 +6133,10 @@ int main(void)
     test_tmgi_plmn();
     test_nid();
     test_dnn_snssai();
+    test_default_s_nssai();
     test_tmgi_index_after_refresh();
     test_create_outcomes();
+    test_own_service_area();
     test_reduced_area_is_used();
     test_tac_spelling_is_not_significant();
     test_reduced_area_cells();
@@ -5923,6 +6152,7 @@ int main(void)
     test_service_info_validity();
     test_flow_description_restrictions();
     test_per_flow_user_plane();
+    test_requested_arp();
     test_json_patch();
     test_update();
     test_update_reduced_area();
@@ -5945,6 +6175,8 @@ int main(void)
     test_ngran_failure_events();
     test_amf_change_event();
     test_node_report();
+    test_establishment_without_answer();
+    test_sbi_transactions_go_with_the_session();
     test_restoration_request();
     test_area_session_id_in_establishment();
     test_changes_during_restoration();
@@ -5957,6 +6189,7 @@ int main(void)
     test_usage_reports();
     test_query_all_urrs();
     test_local_ingress_tunnel_answer();
+    test_first_context_create_is_asked_again();
     test_amf_context_lost();
     test_no_ngap_signalling_ind_in_request();
     test_amf_takeover();

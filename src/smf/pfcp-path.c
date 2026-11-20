@@ -19,6 +19,7 @@
 
 #include "sbi-path.h"
 #include "pfcp-path.h"
+#include "n4mb-handler.h"
 
 /* Converts PFCP "Usage Report" "Report Trigger" bitmask to Gy "Reporting-Reason" AVP enum value.
  * PFCP: 3GPP TS 29.244 sec 8.2.41
@@ -970,6 +971,10 @@ static void mbs_sess_5gc_timeout(ogs_pfcp_xact_t *xact, void *data)
     switch (type) {
     case OGS_PFCP_SESSION_ESTABLISHMENT_REQUEST_TYPE:
         ogs_warn("No PFCP N4mb session establishment response");
+
+        /* the consumer of a Create gets an answer; a restoration is handled by the PFCP state machine */
+        if (smf_n4mb_handle_session_establishment_failure(mbs_sess, stream))
+            break;
 
         e = smf_event_new(SMF_EVT_N4_TIMER);
         ogs_assert(e);

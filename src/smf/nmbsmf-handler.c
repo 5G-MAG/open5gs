@@ -23,6 +23,7 @@
 #include "sbi-path.h"
 #include "pfcp-path.h"
 #include "nmbsmf-handler.h"
+#include "n4mb-handler.h"
 #include "mbs-pcf.h"
 #include "mbs-update.h"
 #include "mbs-subsc.h"
@@ -378,6 +379,18 @@ bool smf_nmbsmf_mbs_service_info_is_valid(
             if (detail)
                 *detail = "[5qi] of an [mbsQoSReq] is outside 0 to 255";
             return false;
+        }
+        /* TS 29.571 Arp: priorityLevel is an ArpPriorityLevel, 1 to 15; preemptCap and preemptVuln are mandatory */
+        if (media_comp->mbs_qo_s_req->req_mbs_arp) {
+            OpenAPI_arp_t *arp = media_comp->mbs_qo_s_req->req_mbs_arp;
+
+            if (arp->is_priority_level_null || arp->priority_level < 1 || arp->priority_level > 15 ||
+                    arp->preempt_cap == OpenAPI_preemption_capability_NULL ||
+                    arp->preempt_vuln == OpenAPI_preemption_vulnerability_NULL) {
+                if (detail)
+                    *detail = "[reqMbsArp] of an [mbsQoSReq] is not a valid ARP";
+                return false;
+            }
         }
         flows++;
     }
@@ -872,6 +885,16 @@ bool smf_nmbsmf_handle_mbs_session_create(
         }
     }
 
+    /* No S-NSSAI to use (TS 29.518 table 6.5.6.2.2-1 NOTE 2): SYSTEM_FAILURE (TS 29.500 table 5.2.7.2-1) */
+    if (!CreateReqData->mbs_session->snssai && !smf_mbs_default_s_nssai()) {
+        ogs_error("MBS Session Create: no [snssai] in the request and no S-NSSAI in smf.info");
+        ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+            message, "System failure", "MBS Session Create failed, no S-NSSAI in the request and no default S-NSSAI",
+            NMBSMF_MBSSESSION_SYSTEM_FAILURE);
+        rv = OGS_ERROR;
+        goto cleanup;
+    }
+
     // Extract the SSM
     is_multicast_service = (ogs_strcasecmp(service_type, "MULTICAST") == 0);
     if (CreateReqData->mbs_session->mbs_session_id && CreateReqData->mbs_session->mbs_session_id->ssm && is_multicast_service) {
@@ -918,10 +941,10 @@ bool smf_nmbsmf_handle_mbs_session_create(
 
         if (smf_tmgi_count() >= ogs_global_conf()->max.mbs.tmgis) {
             ogs_error("MBS Session Create: Cannot allocate TMGI");
-            // Custom error handling, not the 3GPP TS
-            // Avoid reaching the maximum number of TMGI, send error (403)
-            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
-                message, "Forbidden", "Cannot allocate TMGIs", NULL);
+            /* No TMGI left: TS 29.500 V18.10.0 table 5.2.7.2-1, row INSUFFICIENT_RESOURCES, "500 Internal Server
+             * Error": "The request is rejected due to insufficient resources.", as the Nmbsmf_TMGI service answers */
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+                message, "Insufficient resources", "Cannot allocate a TMGI", NMBSMF_MBSSESSION_INSUFFICIENT_RESOURCES);
             rv = OGS_ERROR;
             goto cleanup;
         }
@@ -1125,6 +1148,28 @@ bool smf_nmbsmf_handle_mbs_session_create(
                 message, "Forbidden",
                 "MBS Session Create failed, provided TMGI is already in use by an existing MBS Session",
                 NMBSMF_MBSSESSION_MBS_SESSION_ALREADY_CREATED);
+            rv = OGS_ERROR;
+            goto cleanup;
+        }
+    }
+
+    /* TS 29.518 V18.14.0 table 6.5.6.2.2-1 NOTE 1: "Either the mbsServiceAreaInfoList IE or the mbsServiceArea IE shall
+     * be present." The MBS service area is requested for a location dependent or a local MBS service (TS 29.532 V18.6.0
+     * cl. 5.3.2.2.1); a broadcast session requested without one is delivered in the MB-SMF service area, and an MB-SMF
+     * that has none configured cannot deliver it (Table 6.2.7.3-1, MBS_POLICY_CONTEXT_DENIED: "rejected due to operator
+     * policies and/or local configuration"). */
+    if (service_type && strcmp(service_type, "BROADCAST") == 0 && !ext_mbs_service_area &&
+            !(CreateReqData->mbs_session->is_location_dependent && CreateReqData->mbs_session->location_dependent) &&
+            smf_mbs_service_area_is_empty(mbs_service_area)) {
+        if (mbs_service_area)
+            ogs_mbs_service_area_free(mbs_service_area);
+        mbs_service_area = smf_mbs_own_service_area();
+        if (!mbs_service_area) {
+            ogs_error("MBS Session Create: a broadcast session without MBS service area, and no MB-SMF service area");
+            ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_FORBIDDEN,
+                message, "Forbidden",
+                "MBS Session Create failed, no MBS service area requested and none configured in the MB-SMF",
+                NMBSMF_MBSSESSION_MBS_POLICY_CONTEXT_DENIED);
             rv = OGS_ERROR;
             goto cleanup;
         }
@@ -1342,7 +1387,8 @@ void smf_nmbsmf_mbs_session_create_continue(smf_mbs_sess_t *mbs_sess, ogs_sbi_st
     ogs_assert(mbs_sess);
     ogs_assert(stream);
 
-    smf_5gc_pfcp_n4mb_send_session_establishment_request(mbs_sess, 0, stream);
+    if (smf_5gc_pfcp_n4mb_send_session_establishment_request(mbs_sess, 0, stream) != OGS_OK)
+        smf_n4mb_handle_session_establishment_failure(mbs_sess, stream);
 }
 
 /* The release of an MBS session once the MBS Policy Association is deleted (or none was made): the AMFs, the MB-UPF,

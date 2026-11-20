@@ -31,6 +31,17 @@ upf:
       - address: 127.0.0.7
         port: 9090
   mbs:
+#    n3mb:
+#      # N3mb IP multicast towards the NG-RAN (MBS broadcast). The MB-UPF sends the data of each MBS session to its own
+#      # low layer source specific multicast group (LL SSM), allocated from this base onwards, one group per session,
+#      # with the GTP-U address above as the source. TS 29.281 clause 4.2.6.2 asks for the source specific multicast range
+#      # of IETF RFC 4607, so the base has to be in 232.0.0.0/8. Default: 232.0.0.4
+#      llssm: 232.0.0.4
+#      # TTL of the N3mb multicast G-PDUs, 1 to 255. Linux sends multicast with TTL 1, which no router forwards: with 1
+#      # the MB-UPF only reaches NG-RAN nodes on its own link. Set it to the number of routers between the MB-UPF and the
+#      # farthest NG-RAN node plus one; a larger value lets the multicast reach further than needed, if the network
+#      # routes it. Default: 2 (one router in between)
+#      ttl: 2
     udptunnel:
        address: 127.0.0.7
 # UDP tunnel for MBS uses ephemeral ports
