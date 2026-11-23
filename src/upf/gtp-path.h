@@ -31,6 +31,8 @@ int upf_gtp_init(void);
 void upf_gtp_final(void);
 
 int upf_gtp_open(void);
+/* Sets the TTL of the multicast G-PDUs an IPv4 N3 socket sends (N3mb) */
+int upf_gtp_set_n3mb_ttl(ogs_sock_t *sock, uint8_t ttl);
 void upf_gtp_close(void);
 
 typedef struct ogs_pkbuf_s ogs_pkbuf_t;

@@ -119,6 +119,23 @@ static void _abandon_failed_establishment(smf_mbs_sess_t *mbs_sess,
     smf_mbs_sess_release(mbs_sess);
 }
 
+bool smf_n4mb_handle_session_establishment_failure(smf_mbs_sess_t *mbs_sess, ogs_sbi_stream_t *stream)
+{
+    ogs_assert(mbs_sess);
+
+    if (mbs_sess->restoring || mbs_sess->relocating)
+        return false;
+
+    ogs_error("MBS session mbsSessionRef[%s]: no answer to the N4mb Session Establishment Request",
+            mbs_sess->mbs_session_ref ? mbs_sess->mbs_session_ref : "");
+    if (stream)
+        ogs_assert(true == ogs_sbi_server_send_error(stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR, NULL,
+                    "Unable to establish MBS session", "No answer from the MB-UPF to the N4mb Session Establishment",
+                    "SYSTEM_FAILURE"));
+    smf_mbs_sess_release(mbs_sess);
+    return true;
+}
+
 uint8_t smf_n4mb_handle_session_establishment_response(
         smf_mbs_sess_t *mbs_sess, ogs_pfcp_xact_t *xact,
         ogs_pfcp_session_establishment_response_t *rsp)
@@ -434,7 +451,7 @@ uint8_t smf_n4mb_handle_session_establishment_response(
         // context to create here and instead uses Namf_MBSCommunication at UE-join time, a separate procedure
         // that is NOT IMPLEMENTED.
     if (ogs_strcasecmp(mbs_sess->service_type, "BROADCAST") == 0) {
-        r = smf_sbi_send_mbs_broadcast_context_create(mbs_sess);
+        r = smf_mbs_create_first_context(mbs_sess);
         ogs_expect(r == OGS_OK);
     }
 

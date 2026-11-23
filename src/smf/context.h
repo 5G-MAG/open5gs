@@ -579,6 +579,11 @@ typedef struct smf_mbs_qos_flow_s {
     ogs_lnode_t lnode;
     uint8_t qfi;
     uint8_t five_qi;
+    /* The reqMbsArp of the mbsQoSReq (TS 29.571 MbsQoSReq), when the AF gave one */
+    bool arp_present;
+    uint8_t arp_priority_level;
+    bool arp_may_preempt;
+    bool arp_preemptable;
     /* The key of the media component in mbsMediaComps (the mbsMedCompNum attribute) that gave the flow, NULL
      * for the default flow of a session without MBS service information. An update keeps the QFI and the user
      * plane rules of the flow with the same key. */
@@ -960,6 +965,7 @@ bool smf_tmgi_own_plmn(ogs_plmn_id_t *plmn_id);
 bool smf_nid_is_valid(const char *nid);
 bool smf_is_date_time(const char *date_time);
 OpenAPI_snssai_t *smf_mbs_sess_build_snssai(const smf_mbs_sess_t *mbs_sess);
+const ogs_s_nssai_t *smf_mbs_default_s_nssai(void);
 OpenAPI_list_t *smf_mbs_sess_build_fsa_id_list(const smf_mbs_sess_t *mbs_sess);
 smf_mbs_nr_red_cap_e smf_mbs_nr_red_cap_from_string(const char *value);
 const char *smf_own_nid(void);
@@ -1051,6 +1057,10 @@ bool smf_mbs_sess_replace_flows(smf_mbs_sess_t *mbs_sess, ogs_list_t *new_flows,
 
 bool smf_context_have_matching_mbs_session_id(smf_mbs_sess_t *mbs_session);
 
+/* Whether \p area names no TAI and no cell */
+bool smf_mbs_service_area_is_empty(const ogs_mbs_service_area_t *area);
+/* A copy of the MB-SMF service area (smf.yaml mbsServiceArea.taiList), NULL when none is configured */
+ogs_mbs_service_area_t *smf_mbs_own_service_area(void);
 bool smf_mbs_service_area_reduce(
         ogs_mbs_service_area_t *requested, ogs_mbs_service_area_t **reduced);
 

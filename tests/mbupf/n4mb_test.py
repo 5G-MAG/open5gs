@@ -1842,13 +1842,13 @@ def t_U02_9_restoration_with_the_requested_llssm_and_c_teid():
         lst.close()
     # and what the allocation gives to a session without RESTI is never a held group: sessions asking for the
     # addresses the allocator would hand out next
-    held = [accepted(U.establish(resti_request(0xe610 + i, mti(0x100 + i, socket.inet_aton('239.0.0.%d' % (4 + 3 + i)), UPF_ADDR))), 'held group %d' % i) for i in range(5)]
+    held = [accepted(U.establish(resti_request(0xe610 + i, mti(0x100 + i, socket.inet_aton('232.0.0.%d' % (4 + 3 + i)), UPF_ADDR))), 'held group %d' % i) for i in range(5)]
     got = []
     for i in range(6):
         r = U.establish(good(cp_seid=0xe620 + i))
         held.append(accepted(r, 'allocated session %d' % i))
         got.append(mc_group_of(r))
-    taken = ['239.0.0.%d' % (4 + 3 + i) for i in range(5)]
+    taken = ['232.0.0.%d' % (4 + 3 + i) for i in range(5)]
     assert len(set(got)) == len(got) and not set(got) & set(taken), 'allocated groups %s, held by restoration %s' % (got, taken)
     for h in held:
         U.delete(h)
@@ -3622,6 +3622,86 @@ def t_U03_9_application_id_in_the_pdi_is_a_rule_that_cannot_be_applied():
 
 
 # E-TESTS-BELOW
+
+
+T_APN_DNN = 159
+
+
+@test
+def t_dnn_of_a_session_is_freed_with_it():
+    """The APN/DNN of an N4mb session is freed with the session: nothing of it is left when the MB-UPF exits."""
+    U.restart()
+    accepted_and_deleted(U.establish(good() + [ie(T_APN_DNN, b'\x0bmbsdnnleak9')]), 'with an APN/DNN')
+    U.stop()
+    err = open(U.err, errors='replace').read()
+    U.start()
+    assert 'mbsdnnleak9' not in err, 'the APN/DNN of the session was not freed'
+
+
+def n3mb_egress(cp_seid):
+    """The group of a data session and the TTLs of the G-PDUs a listener on lo receives for it."""
+    s, group = data_session(cp_seid, b'\x02' + V4G, b'\x02' + socket.inet_aton('10.46.0.1'))
+    lst = N3mbListener(group)
+    lst.sock.setsockopt(socket.IPPROTO_IP, getattr(socket, 'IP_RECVTTL', 12), 1)
+    ttls = []
+    try:
+        send_multicast('10.46.0.1', '232.1.1.1')
+        try:
+            while True:
+                data, anc, _, _ = lst.sock.recvmsg(65535, 64)
+                if b'mbs-data' in data:
+                    ttls += [val[0] for level, typ, val in anc if level == socket.IPPROTO_IP and typ == 2]
+        except socket.timeout:
+            pass
+    finally:
+        lst.close()
+        U.delete(s)
+    return group, ttls
+
+
+def upfd_refuses(n3mb):
+    """upfd does not start with the given upf.mbs.n3mb block."""
+    U.stop()
+    U.write_config('0', '    n3mb:\n' + n3mb)
+    proc = subprocess.Popen([UPFD, '-c', U.cfg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.terminate()
+        proc.wait()
+        raise AssertionError('upfd started with ' + n3mb.strip())
+
+
+@test
+def t_N3mb_low_layer_ssm_group_range():
+    """TS 29.281 clause 4.2.6.2: the destination of the N3mb G-PDUs "shall be an address in the multicast address range as
+    specified in IETF RFC 4607" (232.0.0.0/8). The group comes from upf.mbs.n3mb.llssm, 232.0.0.4 by default; a base
+    outside 232/8 is a configuration error."""
+    group, _ = n3mb_egress(0xf910)
+    assert group.startswith('232.'), 'low layer SSM group %s is not in 232/8' % group
+    try:
+        U.restart(extra_upf='    n3mb:\n      llssm: 232.9.0.1\n')
+        group, ttls = n3mb_egress(0xf911)
+        assert group == '232.9.0.1', 'low layer SSM group %s, configured base 232.9.0.1' % group
+        assert ttls, 'nothing received on the configured group'
+        upfd_refuses('      llssm: 239.1.1.1\n')
+    finally:
+        U.restart()
+
+
+@test
+def t_N3mb_ttl():
+    """The N3mb G-PDUs leave with TTL upf.mbs.n3mb.ttl, 2 by default (Linux sends multicast with TTL 1, which no router
+    forwards); 0 is a configuration error."""
+    _, ttls = n3mb_egress(0xf920)
+    assert ttls and ttls == [2] * len(ttls), 'TTL %s, not 2' % ttls
+    try:
+        U.restart(extra_upf='    n3mb:\n      ttl: 8\n')
+        _, ttls = n3mb_egress(0xf921)
+        assert ttls and ttls == [8] * len(ttls), 'TTL %s, configured 8' % ttls
+        upfd_refuses('      ttl: 0\n')
+    finally:
+        U.restart()
 
 
 def main():

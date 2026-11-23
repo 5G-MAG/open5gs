@@ -935,6 +935,22 @@ static void _get_dev_mac_addr(char *ifname, uint8_t *mac_addr)
 #endif
 }
 
+/* Linux sends multicast with TTL 1, which no router forwards: the N3mb G-PDUs to the low layer SSM group take the
+ * configured TTL, so that they reach an NG-RAN node behind routers. */
+int upf_gtp_set_n3mb_ttl(ogs_sock_t *sock, uint8_t ttl)
+{
+    unsigned char mttl = ttl;
+
+    ogs_assert(sock);
+    if (sock->family != AF_INET)
+        return OGS_OK;
+    if (setsockopt(sock->fd, IPPROTO_IP, IP_MULTICAST_TTL, &mttl, sizeof(mttl)) != 0) {
+        ogs_log_message(OGS_LOG_ERROR, ogs_socket_errno, "setsockopt(IP_MULTICAST_TTL) failed");
+        return OGS_ERROR;
+    }
+    return OGS_OK;
+}
+
 int upf_gtp_open(void)
 {
     ogs_pfcp_dev_t *dev = NULL;
@@ -947,9 +963,11 @@ int upf_gtp_open(void)
         sock = ogs_gtp_server(node);
         if (!sock) return OGS_ERROR;
 
-        if (sock->family == AF_INET)
+        if (sock->family == AF_INET) {
             ogs_gtp_self()->gtpu_sock = sock;
-        else if (sock->family == AF_INET6)
+            if (upf_gtp_set_n3mb_ttl(sock, upf_self()->n3mb_ttl) != OGS_OK)
+                return OGS_ERROR;
+        } else if (sock->family == AF_INET6)
             ogs_gtp_self()->gtpu_sock6 = sock;
 
         node->poll = ogs_pollset_add(ogs_app()->pollset,

@@ -48,6 +48,7 @@ void upf_context_init(void)
 
     /* Initialize UPF context */
     memset(&self, 0, sizeof(upf_context_t));
+    self.n3mb_ttl = UPF_N3MB_DEFAULT_TTL;
 
     ogs_log_install_domain(&__upf_log_domain, "upf", ogs_core()->log.level);
 
@@ -221,7 +222,37 @@ int upf_context_parse_config(void)
                     while (ogs_yaml_iter_next(&upf_mbs_iter)) {
                         const char *upf_mbs_key = ogs_yaml_iter_key(&upf_mbs_iter);
                         ogs_assert(upf_mbs_key);
-                        if (!strcmp(upf_mbs_key, "udptunnel")) {
+                        if (!strcmp(upf_mbs_key, "n3mb")) {
+                            ogs_yaml_iter_t n3mb_iter;
+                            ogs_yaml_iter_recurse(&upf_mbs_iter, &n3mb_iter);
+                            while (ogs_yaml_iter_next(&n3mb_iter)) {
+                                const char *n3mb_key = ogs_yaml_iter_key(&n3mb_iter);
+                                const char *n3mb_val = ogs_yaml_iter_value(&n3mb_iter);
+                                ogs_assert(n3mb_key);
+                                if (!strcmp(n3mb_key, "ttl")) {
+                                    char *error = NULL;
+                                    uint16_t ttl = _uint16_from_string(n3mb_val, 1, 255, &error);
+                                    if (error) {
+                                        ogs_error("upf/mbs/n3mb/ttl: %s", error);
+                                        ogs_free(error);
+                                        return OGS_ERROR;
+                                    }
+                                    self.n3mb_ttl = (uint8_t)ttl;
+                                } else if (!strcmp(n3mb_key, "llssm")) {
+                                    struct in_addr base;
+                                    /* TS 29.281 clause 4.2.6.2: an address "in the multicast address range as specified in
+                                     * IETF RFC 4607", 232.0.0.0/8 for IPv4 */
+                                    if (!n3mb_val || inet_pton(AF_INET, n3mb_val, &base) != 1 ||
+                                            (be32toh(base.s_addr) & 0xff000000) != 0xe8000000) {
+                                        ogs_error("upf/mbs/n3mb/llssm `%s` is not an IPv4 address of 232.0.0.0/8, the "
+                                                "source specific multicast range", n3mb_val ? n3mb_val : "");
+                                        return OGS_ERROR;
+                                    }
+                                    ogs_pfcp_self()->llssm_base = be32toh(base.s_addr);
+                                } else
+                                    ogs_warn("unknown key `upf.mbs.n3mb.%s`", n3mb_key);
+                            }
+                        } else if (!strcmp(upf_mbs_key, "udptunnel")) {
                             ogs_yaml_iter_t upf_mbs_tunnel_iter;
                             ogs_yaml_iter_recurse(&upf_mbs_iter, &upf_mbs_tunnel_iter);
                             while (ogs_yaml_iter_next(&upf_mbs_tunnel_iter)) {
@@ -1362,6 +1393,11 @@ void upf_mbs_sess_remove(upf_mbs_sess_t *upf_mbs_sess)
     }
 
     upf_mbs_session_id_clear(&upf_mbs_sess->mbs_session_id);
+
+    if (upf_mbs_sess->dnn) {
+        ogs_free(upf_mbs_sess->dnn);
+        upf_mbs_sess->dnn = NULL;
+    }
 
     // PFCP finalization
     ogs_pfcp_pool_final(&upf_mbs_sess->pfcp);
