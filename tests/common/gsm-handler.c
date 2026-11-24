@@ -63,4 +63,15 @@ void testgsm_handle_pdu_session_modification_command(test_sess_t *sess,
 {
     ogs_assert(sess);
     ogs_assert(pdu_session_modification_command);
+
+    sess->qos_rule_precedence = 0;
+    if (pdu_session_modification_command->presencemask &
+        OGS_NAS_5GS_PDU_SESSION_MODIFICATION_COMMAND_AUTHORIZED_QOS_RULES_PRESENT) {
+        ogs_nas_qos_rule_t rule[OGS_NAS_MAX_NUM_OF_QOS_RULE];
+        int num = ogs_nas_parse_qos_rules(rule,
+                &pdu_session_modification_command->authorized_qos_rules);
+
+        if (num > 0)
+            sess->qos_rule_precedence = rule[num - 1].precedence;
+    }
 }

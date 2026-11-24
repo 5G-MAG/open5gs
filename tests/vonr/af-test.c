@@ -6706,6 +6706,70 @@ static void test39_func(abts_case *tc, void *data)
     test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
 }
 
+/*
+ * TS 23.501 clause 5.7.1.9: the QoS rules of a PDU session have precedence values of their own. Two media components of one application
+ * session make two QoS rules; with the same precedence the UE asks to delete the first one.
+ */
+static void test40_func(abts_case *tc, void *data)
+{
+    ogs_socknode_t *ngap = NULL;
+    ogs_socknode_t *gtpu = NULL;
+    test_ue_t *test_ue = NULL;
+    test_sess_t *sess = NULL;
+    test_bearer_t *qos_flow = NULL;
+    af_sess_t *af_sess = NULL;
+    af_npcf_policyauthorization_param_t af_param;
+    af_npcf_policyauthorization_raw_t raw;
+    int first;
+
+    test_af_qos_reference_setup(tc, "0000000040",
+            &test_ue, &sess, &af_sess, &ngap, &gtpu);
+
+    memset(&af_param, 0, sizeof(af_param));
+    af_param.med_type = OpenAPI_media_type_AUDIO;
+    af_param.qos_type = 1;
+    af_param.flow_type = 99;
+    af_local_send_to_pcf(af_sess, &af_param,
+            af_npcf_policyauthorization_build_create);
+    qos_flow = test_af_complete_qos_flow_modify(tc, test_ue, sess, ngap);
+    ogs_assert(qos_flow);
+    first = sess->qos_rule_precedence;
+    ABTS_TRUE(tc, first > 0);
+
+    /* media component 1 comes: a second QoS flow, QFI 3 */
+    raw.method = "PATCH";
+    raw.path = "";
+    raw.body = "{\"ascReqData\":{\"medComponents\":{"
+        "\"1\":{\"medCompN\":1,\"fStatus\":\"ENABLED\",\"medType\":\"AUDIO\","
+        "\"marBwDl\":\"96000 bps\",\"marBwUl\":\"96000 bps\","
+        "\"medSubComps\":{\"0\":{\"fNum\":0,\"flowUsage\":\"NO_INFO\","
+        "\"fDescs\":[\"permit out 17 from 172.20.166.84 to 10.45.0.2 20001\","
+        "\"permit in 17 from 10.45.0.2 to 172.20.166.84 20360\"]}}}}}}";
+    af_local_send_to_pcf(af_sess, &raw, af_npcf_policyauthorization_build_raw);
+    ogs_msleep(300);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_pcf_status);
+    qos_flow = test_af_complete_qos_flow_modify_qfi(tc, test_ue, sess, ngap, 3);
+    ogs_assert(qos_flow);
+    ABTS_TRUE(tc, sess->qos_rule_precedence > 0);
+    ABTS_TRUE(tc, sess->qos_rule_precedence != first);
+
+    /* media component 1 goes, then the application session ends with media component 0 */
+    raw.body = "{\"ascReqData\":{\"medComponents\":{\"1\":null}}}";
+    af_local_send_to_pcf(af_sess, &raw, af_npcf_policyauthorization_build_raw);
+    ogs_msleep(300);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_OK, af_sess->last_pcf_status);
+    test_af_qos_flow_release_qfi(tc, test_ue, sess, ngap, 3);
+
+    af_local_send_to_pcf(af_sess, NULL,
+            af_npcf_policyauthorization_build_delete);
+    ogs_msleep(100);
+    ABTS_INT_EQUAL(tc, OGS_SBI_HTTP_STATUS_NO_CONTENT,
+            af_sess->last_pcf_status);
+    test_af_qos_flow_release_qfi(tc, test_ue, sess, ngap, 2);
+
+    test_af_qos_reference_cleanup(tc, test_ue, ngap, gtpu);
+}
+
 abts_suite *test_af(abts_suite *suite)
 {
     suite = ADD_SUITE(suite)
@@ -6756,6 +6820,7 @@ abts_suite *test_af(abts_suite *suite)
     abts_run_test(suite, test37_func, NULL);
     abts_run_test(suite, test38_func, NULL);
     abts_run_test(suite, test39_func, NULL);
+    abts_run_test(suite, test40_func, NULL);
 
     return suite;
 }
