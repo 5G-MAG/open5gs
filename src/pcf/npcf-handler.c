@@ -1666,6 +1666,33 @@ bool pcf_npcf_policyauthorization_handle_get(pcf_sess_t *sess,
     return true;
 }
 
+/*
+ * TS 23.501 clause 5.7.1.9: QoS rules and PDRs are evaluated in increasing order of their precedence value, so the rules of a PDU
+ * session need values of their own (the UE drops a QoS rule whose precedence another one takes). Rules of the same QoS reference
+ * share the precedence of the reference: the rule gets the next free value from it up, the first one keeps it.
+ */
+static uint32_t pcc_rule_precedence(pcf_sess_t *sess, const ogs_pcc_rule_t *self, uint32_t wanted)
+{
+    pcf_app_t *app = NULL;
+    uint32_t precedence = wanted;
+    int i;
+    bool taken;
+
+    do {
+        taken = false;
+        ogs_list_for_each(&sess->app_list, app) {
+            for (i = 0; i < app->num_of_pcc_rule; i++) {
+                if (&app->pcc_rule[i] != self && app->pcc_rule[i].precedence == precedence)
+                    taken = true;
+            }
+        }
+        if (taken)
+            precedence++;
+    } while (taken && precedence < 255);
+
+    return taken ? wanted : precedence;
+}
+
 bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
         ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg)
 {
@@ -2105,7 +2132,7 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
             memcpy(&pcc_rule->qos, &db_pcc_rule->qos, sizeof(ogs_qos_t));
 
             pcc_rule->flow_status = db_pcc_rule->flow_status;
-            pcc_rule->precedence = db_pcc_rule->precedence;
+            pcc_rule->precedence = pcc_rule_precedence(sess, pcc_rule, db_pcc_rule->precedence);
 
             /* Install Flow */
             flow_presence = 1;
@@ -2729,7 +2756,7 @@ bool pcf_npcf_policyauthorization_handle_update(
             memcpy(&pcc_rule->qos, &db_pcc_rule->qos, sizeof(ogs_qos_t));
 
             pcc_rule->flow_status = db_pcc_rule->flow_status;
-            pcc_rule->precedence = db_pcc_rule->precedence;
+            pcc_rule->precedence = pcc_rule_precedence(sess, pcc_rule, db_pcc_rule->precedence);
 
             /* Install Flow */
             flow_presence = 1;
@@ -2751,7 +2778,7 @@ bool pcf_npcf_policyauthorization_handle_update(
             if (pcc_rule->qos.index != db_pcc_rule->qos.index) {
                 memcpy(&pcc_rule->qos, &db_pcc_rule->qos, sizeof(ogs_qos_t));
                 pcc_rule->flow_status = db_pcc_rule->flow_status;
-                pcc_rule->precedence = db_pcc_rule->precedence;
+                pcc_rule->precedence = pcc_rule_precedence(sess, pcc_rule, db_pcc_rule->precedence);
             }
 
             /* Check Flow */
