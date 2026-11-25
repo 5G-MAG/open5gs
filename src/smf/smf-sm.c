@@ -528,22 +528,30 @@ void smf_state_operational(ogs_fsm_t *s, smf_event_t *e)
             CASE(OGS_SBI_RESOURCE_NAME_NF_STATUS_NOTIFY)
                 SWITCH(sbi_message.h.method)
                 CASE(OGS_SBI_HTTP_METHOD_POST)
-                    if (ogs_nnrf_nfm_handle_nf_status_notify(stream, &sbi_message) &&
-                            sbi_message.NotificationData) {
-                        OpenAPI_notification_data_t *notification = sbi_message.NotificationData;
+                    {
+                        /* false when the notification is answered with an error, which is what an NF_DEREGISTERED event
+                         * for an NF instance that this SMF no longer has in its NF cache is */
+                        bool handled = ogs_nnrf_nfm_handle_nf_status_notify(stream, &sbi_message);
 
-                        if (notification->event == OpenAPI_notification_event_type_NF_REGISTERED &&
-                                notification->nf_profile &&
-                                notification->nf_profile->nf_type == OpenAPI_nf_type_AMF) {
-                            /* an AMF is there: the sessions that wait for a broadcast context ask for it */
-                            smf_mbs_create_pending_contexts();
-                        } else if (notification->event == OpenAPI_notification_event_type_NF_DEREGISTERED &&
-                                notification->nf_instance_uri) {
-                            /* the AMF instance named by the last segment of the URI is gone (TS 23.527 cl. 8.3.2.4) */
-                            const char *last = strrchr(notification->nf_instance_uri, '/');
+                        if (sbi_message.NotificationData) {
+                            OpenAPI_notification_data_t *notification = sbi_message.NotificationData;
 
-                            if (last && last[1])
-                                smf_mbs_amf_instance_lost(last + 1);
+                            if (handled && notification->event == OpenAPI_notification_event_type_NF_REGISTERED &&
+                                    notification->nf_profile &&
+                                    notification->nf_profile->nf_type == OpenAPI_nf_type_AMF) {
+                                /* an AMF is there: the sessions that wait for a broadcast context ask for it */
+                                smf_mbs_create_pending_contexts();
+                            } else if (notification->event == OpenAPI_notification_event_type_NF_DEREGISTERED &&
+                                    notification->nf_instance_uri) {
+                                /* the AMF instance named by the last segment of the URI is gone (TS 23.527 cl. 8.3.2.4).
+                                 * The MBS sessions hold the identifier of the AMF instance that has their context: the
+                                 * loss is theirs to handle also when the NF cache no longer had the instance, as it has
+                                 * not after the validity of its NF profile (30 s) without a use. */
+                                const char *last = strrchr(notification->nf_instance_uri, '/');
+
+                                if (last && last[1])
+                                    smf_mbs_amf_instance_lost(last + 1);
+                            }
                         }
                     }
                     break;
